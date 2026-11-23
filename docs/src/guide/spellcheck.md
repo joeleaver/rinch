@@ -107,7 +107,9 @@ App::new(app)
   (`HunspellChecker::from_bytes("en_US", AFF, DIC)`).
 - **The personal dictionary** is the app's to load and save:
   `PersonalDictionary::with_words` fills it, `add_listener` reports each
-  change so the app can persist it.
+  change (the context menu's "Add to dictionary" included) so the app can
+  persist it. A word the app adds or removes itself clears or brings back
+  its marks too.
 
 Change the settings while the app runs with `rinch::spellcheck::configure(..)`
 or `rinch::spellcheck::set_enabled(..)`: every mark is dropped and the fields
@@ -118,6 +120,45 @@ The dictionaries are loaded, and words checked, on a background thread
 (`rinch-spellcheck`), started the first time a field is checked. An app that
 turns spellcheck off, or whose user never touches a text field, starts
 nothing and loads nothing.
+
+## Suggestions and "Add to dictionary"
+
+A right press on a marked word, in a text field or the `Editor`, selects the
+word and opens the text context menu with its suggestions on top, as Chrome
+does: up to three corrections, then "Add to dictionary", then Cut, Copy,
+Paste and Select all. A word with no suggestion shows only "Add to
+dictionary". A right press anywhere else (or inside a wider selection) opens
+the plain menu.
+
+- **Choosing a suggestion** replaces the word as if it had been typed: one
+  edit that one undo (Ctrl+Z) takes back, `oninput` fires (and `onchange` on
+  blur, as after typing), the editor's `on_change` fires, and the caret ends
+  up after the new word.
+- **Add to dictionary** adds the word to the personal dictionary: its
+  `add_listener` callback fires (save the list there), and the word's marks
+  go at once in every field and editor. `rinch::spellcheck::add_to_dictionary(word)`
+  does the same from app code.
+
+All of it is the app's to change:
+
+```rust
+SpellcheckConfig::new()
+    .menu_suggestions(5)            // default 3 (Chrome's); 0 for none
+    .menu_add_to_dictionary(false)  // default true
+    .menu_no_suggestions_row(true)  // a greyed "No spelling suggestions" row; default false (Chrome shows none)
+```
+
+The rows use the menu's own classes (`rinch-tcm-item`, `rinch-tcm-sep`), and
+each spelling row also carries `rinch-tcm-suggestion`,
+`rinch-tcm-add-to-dictionary` or `rinch-tcm-no-suggestions` for a rule of its
+own. Suggestions are computed on a background thread when the menu opens; if
+they take longer than a tenth of a second, the menu opens without them and
+fills them in when they arrive.
+
+A shell with its own text toolbar (`TextContextMenuPresentation::Shell`) finds
+the word and its suggestions in `RinchApp::text_edit_state().spelling` and
+runs `perform_text_edit(TextEditAction::Suggestion(i))` or
+`TextEditAction::AddToDictionary`.
 
 ## Styling the squiggle
 

@@ -65,7 +65,7 @@ pub use rinch_editor_collab::{CollabError, OversizedTable, StickyAssoc, StickyLo
 // and a diff are both opaque `Vec<u8>`, and a diff is applied through the same
 // [`EditorHandle::collab_receive`] as a broadcast delta.
 #[cfg(not(target_family = "wasm"))]
-pub use spellcheck::{SPELL_ERROR_CLASS, SPELLCHECK_KEY, SpellcheckPlugin};
+pub use spellcheck::{Misspelling, SPELL_ERROR_CLASS, SPELLCHECK_KEY, SpellcheckPlugin};
 pub use view::RinchDomEditorView;
 
 use std::rc::Rc;

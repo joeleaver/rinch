@@ -4,7 +4,8 @@ Read this page when your task touches spellchecking: `crates/rinch-spell`, or
 the stages of #2862 that build on it (marking misspelled words in fields and
 the editor, the context menu's suggestions, platform backends). Stage 1 is
 the engine; stage 2 marks misspelled words in text fields ("Marking text
-fields" below). `rinch` re-exports the crate as `rinch::spellcheck`.
+fields" below); stage 3 puts suggestions and "Add to dictionary" in the text
+context menu ("The context menu" below). `rinch` re-exports the crate as `rinch::spellcheck`.
 
 ## Shape
 
@@ -377,6 +378,109 @@ inherited attribute) and `crates/rinch/src/app/editor_spellcheck_tests.rs`
 (a press marks the words as red waves over the right IFC bytes, a script
 focus marks nothing, the custom properties, the prop).
 
+## The context menu (stage 3)
+
+### Chrome's menu, measured
+
+Chrome 158 on Linux, headful under a nested headless `sway` with its own
+`Xwayland` (`--ozone-platform=x11`, so `xdotool` can drive the native menu),
+a fresh profile with the `en-US-10-1.bdic` dictionary, `grim` screenshots
+(2026-11-23). A `<textarea>` holding `the helo wrld qwzxqvj ok`:
+
+| Step | Chrome |
+|---|---|
+| right press on `helo` (marked) | the word is selected (`select` event, 4..8); menu: **hole, help, helot**, separator, **Add to dictionary**, Use enhanced spell check, Search Google for "helo", separator, Cut, Copy, Paste, Open in reading mode, … |
+| right press on `qwzxqvj` (no suggestion) | word selected; menu starts with **Add to dictionary**: no "No suggestions" row |
+| right press on an unmarked word | caret at the press, plain menu (Undo, Redo, Cut … Select all, Spell check ›, Writing Direction ›) |
+| right press on `helo` inside a selection 0..22 | selection kept, plain menu, no spelling rows |
+| choose `help` | `beforeinput` + `input`, `inputType` `insertReplacementText`, data `help`; value `the help wrld …`; caret 8..8 (after the word) |
+| Ctrl+Z after it | one `historyUndo` brings `helo` back, selected (4..8) |
+| Add to dictionary on `wrld` | every `wrld` mark goes, in the textarea and a `contenteditable`; selection kept; no input event |
+
+So three suggestions (although the engine is asked for five,
+`kMaxSuggestions`), then "Add to dictionary". Left out, recorded here: "Use
+enhanced spell check" and "Search Google for" (Google services); Chrome's
+spelling menu has no "Ignore" row, and its "Spell check ›" submenu (languages,
+"Check the spelling of text fields") appears only on the plain menu: rinch's
+switch and languages are the app's (`SpellcheckConfig`), not the user's
+menu. Chrome's own spelling menu also drops Undo/Redo/Select all; rinch keeps
+its four edit rows as they are.
+
+### The rule
+
+`text_context_menu.rs`: `prepare_target` runs the caret rule as before, then
+`spell_select_in_input` / `spell_select_in_editor`: the mark at the press
+(`RinchApp::spell_misspelling_at`, a field's marks while it still shows the
+text they were made for; `EditorHandle::misspelling_at`), ends included. A
+collapsed selection (or one that is exactly the word) becomes the word; any
+other selection the press kept stays, with no spelling. The word, its range and
+its suggestions are `RinchApp::text_spell` (`SpellTarget`), reported by
+`text_edit_state().spelling` (`TextSpelling`) only while the selection is
+still the word and the word still marked (`live_spell_target`). A field's
+spelling costs nothing when no field was ever checked
+(`FieldSpelling::is_empty`).
+
+### Suggestions without blocking
+
+`new_spell_target` asks the loaded checker (`Session::loaded_checker`, never
+loading on the UI thread) for `menu_suggestions` words on a thread of its own
+(`rinch-spell-suggest`; the `rinch-spellcheck` thread may be busy with a whole
+document), and the press waits up to `SUGGEST_WAIT` (100 ms) for them. Past
+that, the menu opens with `suggestions_pending` (only "Add to dictionary"
+shows) and the answer arrives through the app's inbox
+(`text_spell_arrived`), which redraws the open menu at the same point (the
+highlight, if any, is reset). Hunspell's suggest is the slow call; check is
+cheap. Under `set_inline_jobs` (tests, and always on wasm32) it runs at the
+press.
+
+### Choosing a suggestion, adding a word
+
+`TextEditAction::Suggestion(i)` replaces the selected word through the typing
+path: `handle_input_edit_command(EditCommand::InsertText)` in a field (one undo
+step, `oninput`, the caret after it, the dirty flag for `onchange`), and
+`EditorHandle::insert_text` in the editor (one history event whose selection
+is the word, so undo brings it back selected, as in Chrome; `on_change`). The
+edit drops the word's mark at once (`map_through_edit` / the plugin's
+`changed_ranges`) and the re-check after the pause finds the replacement
+correct.
+
+`TextEditAction::AddToDictionary` runs `runtime::add_to_dictionary(word)`:
+the loaded checker's `add_to_dictionary` (the app's `PersonalDictionary`
+listener hears `Added`), then `deliver_changes`, which calls this thread's
+`on_words_accepted` listeners: each editor drops the marks whose word the
+checker now takes (`SpellMeta::Drop`, a meta-only transaction), and the fields'
+listener does the same through the inbox; the menu also runs
+`spell_words_accepted` itself, so every field's marks go in the same event.
+Only the marked words are asked about, on the loaded checker.
+
+Changes the app makes itself (on the `PersonalDictionary`, `ignore`, from any
+thread) reach the marks too: the runtime subscribes to the checker's
+`add_change_listener` when it resolves (`Changes`), the listener sets a flag
+and calls the wake rinch installs (`set_change_wake`, a
+`dispatch_main_callback` of `deliver_changes`). A word **removed** (or the
+ignores cleared) starts a new generation and calls the `on_config_change`
+listeners instead: everything is checked again. A replaced configuration
+unsubscribes from its checker.
+
+### Configuration and the seam
+
+`SpellcheckConfig::menu_suggestions` (default `DEFAULT_MENU_SUGGESTIONS`, 3;
+`0` asks for none), `menu_add_to_dictionary` (default on),
+`menu_no_suggestions_row` (default off, Chrome's; on shows a disabled "No
+spelling suggestions" row, Chrome's string, that is not an item). The rows use
+the menu's classes (`rinch-tcm-item`, `rinch-tcm-label`, `rinch-tcm-sep`)
+plus `rinch-tcm-suggestion`, `rinch-tcm-add-to-dictionary` and
+`rinch-tcm-no-suggestions` for an app's own rules. A shell (Android) reads
+`TextEditState::spelling` and runs `perform_text_edit(Suggestion(i))` /
+`AddToDictionary`; Android's toolbar does not show them yet (no UI built).
+
+Pins: `crates/rinch/src/app/spellcheck_menu_tests.rs` (rows and order, the
+count, the no-suggestions cases, an unmarked word and a wider selection, a
+suggestion in an `<input>`, a `<textarea>` and the editor with one undo, Add to
+dictionary everywhere, row and seam agreeing, slow suggestions filled in),
+`rinch-spell` `runtime::tests::add_to_dictionary_reaches_the_app_and_the_marks`
+and `rinch-editor-view` `spellcheck::tests::add_to_dictionary_drops_the_word_in_every_editor`.
+
 ## What stage 2 builds on
 
 - Run `words()` over a changed text run and `check()` each range off the
@@ -384,5 +488,5 @@ focus marks nothing, the custom properties, the prop).
 - The editor plugin turns ranges into wavy decorations (decoration ranges map
   through transactions, so only changed words need re-checking).
 - `rinch-web` never runs this engine: the browser checks.
-- The context menu (stage 3) calls `suggest(word, DEFAULT_MAX_SUGGESTIONS)` and
-  `add_to_dictionary`.
+- The context menu (stage 3) calls `suggest(word, menu_suggestions)` and
+  `runtime::add_to_dictionary` (see "The context menu" above).
