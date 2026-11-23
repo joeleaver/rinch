@@ -186,7 +186,8 @@ own declaration beats:
 | `small`, `sub`, `sup` | `font-size: smaller` |
 | `hr` | `color: gray`, a 1px `inset` border, `margin-block: 0.5em`, `margin-inline: auto`, `height: 0`, `overflow: hidden` |
 | `[dir=rtl]`, `[dir=ltr]` | that `direction`, and `unicode-bidi: isolate` (so do `bdi`, `output` and any `[dir]`) |
-| `[dir=auto]`, `bdi` without `dir` | `unicode-bidi: plaintext` — the content isolated in the direction of its first strong letter, as Chrome lays it out (whose computed value is `isolate` with a direction from the content) |
+| `[dir=auto]`, `bdi` without `dir` | `unicode-bidi: isolate`, and the `direction` of the first strong letter of the element's text (a text field's: its value), `ltr` when there is none, as in Chrome. Text in a `bdi`, `script`, `style`, `textarea` or an element with its own `dir` does not count. The direction is a presentational hint, so an author `direction` beats it, and it follows the text as it changes (#2272) |
+| `textarea[dir=auto]`, `pre[dir=auto]` | `unicode-bidi: plaintext`, as in Chrome |
 | `bdo` | `unicode-bidi: isolate-override` — its letters in its `direction`'s order |
 
 Before this an `<hr>` rendered **nothing at all** — the UA sheet's own

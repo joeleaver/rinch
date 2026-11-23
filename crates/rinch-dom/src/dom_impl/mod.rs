@@ -377,11 +377,12 @@ impl RinchDocument {
             /* The `dir` attribute (HTML's rendering section, #2588): an
                explicit `ltr`/`rtl` sets `direction`, and every `dir`
                isolates its element, as do `<bdi>` and `<output>`; `<bdo>`
-               overrides. `dir=auto` takes the direction from the content's
-               first strong letter, which rinch does as `plaintext` (FSI … PDI
-               on an inline, a first-strong paragraph on a block) where
-               Chrome's computed value is `isolate`; so is a `<bdi>` with no
-               `dir`, whose `dir` is `auto`. (HTML also isolates `div`, `p`
+               overrides. `dir=auto` (and a `<bdi>` with no `dir`) takes its
+               `direction` from its text's first strong letter, which is not
+               a rule: the cascade maps it as a presentational hint
+               (`legacy_hints::auto_direction`, #2272). A `<textarea>` or
+               `<pre>` with `dir=auto` is `plaintext`, as in Chrome, so each
+               of its paragraphs takes its own. (HTML also isolates `div`, `p`
                and the other block elements; that only shows when one is made
                `display: inline`, and is left out.) */
             [dir=ltr i] {
@@ -393,7 +394,7 @@ impl RinchDocument {
             bdi, output, [dir] {
                 unicode-bidi: isolate;
             }
-            [dir=auto i], bdi:not([dir]) {
+            textarea[dir=auto i], pre[dir=auto i] {
                 unicode-bidi: plaintext;
             }
             bdo, bdo[dir] {

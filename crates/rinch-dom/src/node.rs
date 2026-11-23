@@ -3750,8 +3750,14 @@ pub struct NodeTree {
     /// Tables owed a `RinchDocument::resolve_tables` rebuild: a part restyled,
     /// a child inserted, moved or removed.
     pub tables_owed: Vec<RawNodeId>,
-    /// Parsed `legacy_hints::cell_hints_css` blocks, by their CSS text.
+    /// Parsed hint blocks many elements share, by their CSS text: what
+    /// `legacy_hints::cell_hints_css` maps onto cells, and the `direction` a
+    /// `dir=auto` element resolves to (#2272).
     pub cell_hints: std::sync::Mutex<HashMap<String, ServoArc<Locked<PropertyDeclarationBlock>>>>,
+    /// Whether the cascade has met an element in the `dir=auto` state (#2272).
+    /// Sticky. Until it has, a text or child-list change looks for no
+    /// `dir=auto` ancestor to restyle (`RinchDocument::note_dir_auto_content`).
+    pub dir_auto_seen: std::sync::atomic::AtomicBool,
     /// Cells read back (or restyled) this layout and owed their
     /// `vertical-align`.
     pub cells_to_align: Vec<RawNodeId>,
@@ -4628,6 +4634,7 @@ impl NodeTree {
             ifc_float_bands: Default::default(),
             cells_to_align: Vec::new(),
             cell_hints: Default::default(),
+            dir_auto_seen: Default::default(),
             style_roots: Vec::new(),
             free_prune_steps: 0,
             sibling_mark_steps: 0,
