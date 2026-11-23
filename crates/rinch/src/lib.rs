@@ -162,7 +162,7 @@ pub mod web_gpu;
 /// alike (issue #1770): [`open_url`],
 /// [`set_window_title`], and the reactive
 /// [`scale_factor`], [`window_size`], [`window_physical_size`]
-/// and [`window_focused`].
+/// and [`window_focused`], and the user's zoom ([`set_zoom`], [`zoom()`]).
 pub mod window;
 /// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
 /// [`ExitWhen`] and [`exit`].
@@ -175,6 +175,8 @@ mod window_perf;
 mod window_roles;
 #[cfg(feature = "windowing")]
 pub mod windows;
+/// The user's zoom; the API is re-exported through [`window`].
+mod zoom;
 /// What `rsx!`'s `Window { … }` element calls (#2416).
 #[cfg(feature = "windowing")]
 #[doc(hidden)]
@@ -412,8 +414,8 @@ pub mod prelude {
     pub use rinch_macros::{component, rsx};
     // Window facts and acts on every target (#1770)
     pub use crate::window::{
-        OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
-        window_focused, window_physical_size, window_size,
+        OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title, set_zoom,
+        window_focused, window_physical_size, window_size, zoom,
     };
     // Pointer lock and raw motion (#2092)
     pub use crate::window::{
@@ -585,8 +587,8 @@ pub use shell::{
 #[allow(deprecated)]
 pub use shell::{run_with_external_device, run_with_gpu_config};
 pub use window::{
-    OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
-    window_focused, window_physical_size, window_size,
+    OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title, set_zoom,
+    window_focused, window_physical_size, window_size, zoom,
 };
 
 /// Re-export of the exact `wgpu` rinch links against.

@@ -727,19 +727,35 @@ impl ShellWindow {
     pub(super) fn logical_size(&self) -> (u32, u32) {
         // `self.width`/`self.height` are already the requested *logical* size
         // (`create_window` hands them to winit as a `LogicalSize`), so the
-        // no-window fallback must not divide them again.
+        // no-window fallback must not divide them by the display's scale
+        // again; only by the app's zoom, which lays that size out smaller.
         self.window
             .as_ref()
             .map(|w| w.logical_size())
-            .unwrap_or((self.width.max(1), self.height.max(1)))
+            .unwrap_or_else(|| {
+                let zoom = crate::zoom::current();
+                let css = |v: u32| ((v.max(1) as f64 / zoom).round() as u32).max(1);
+                (css(self.width), css(self.height))
+            })
     }
 
-    /// Get the current scale factor.
+    /// Get the current scale factor: the display's times the app's zoom
+    /// (`rinch::window::set_zoom`). With no window yet, the zoom alone: the
+    /// fallback [`Self::window_size`] is the requested size in the
+    /// display's logical pixels, which a zoom lays out at that size ÷ zoom,
+    /// as the window will be once it is made.
     pub(super) fn scale_factor(&self) -> f64 {
         self.window
             .as_ref()
             .map(|w| w.scale_factor())
-            .unwrap_or(1.0)
+            .unwrap_or_else(|| crate::zoom::apply(1.0))
+    }
+
+    /// The display's own scale, without the app's zoom
+    /// ([`WinitWindow::os_scale_factor`]): what winit's logical units and a
+    /// layer surface's margins are in. `1.0` with no window yet.
+    pub(super) fn os_scale_factor(&self) -> f64 {
+        self.window.as_ref().map_or(1.0, |w| w.os_scale_factor())
     }
 }
 

@@ -354,6 +354,10 @@ impl RinchRuntime {
                 self.apply_vsync();
                 return;
             }
+            RinchNativeEvent::ApplyZoom => {
+                self.apply_zoom(event_loop);
+                return;
+            }
             RinchNativeEvent::SetWindowOutput(output) => {
                 self.w(role).output_override = Some(output);
                 // A layer surface cannot change output: make it again there,
@@ -445,6 +449,19 @@ impl RinchRuntime {
     }
 
     /// Hand `event` to window `role`'s app and carry out what it asks.
+    /// `rinch::window::set_zoom` changed the app's zoom: every open window
+    /// takes its new scale ([`ShellWindow::rezoom`]). A hidden window takes
+    /// it when it is shown, from its new surface's scale.
+    fn apply_zoom(&mut self, event_loop: &dyn ActiveEventLoop) {
+        for role in self.roles() {
+            if self.w(role).window.is_none() {
+                continue;
+            }
+            let actions = self.w(role).rezoom();
+            self.process_actions(role, actions, event_loop);
+        }
+    }
+
     fn dispatch_to_app(
         &mut self,
         role: WindowRole,

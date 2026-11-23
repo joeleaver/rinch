@@ -24,6 +24,13 @@ impl WinitWindow {
     pub fn raw(&self) -> &dyn Window {
         &*self.window
     }
+
+    /// The display's own scale, without the app's zoom: what winit's
+    /// logical sizes and positions (window geometry, a layer surface's
+    /// place) are in.
+    pub fn os_scale_factor(&self) -> f64 {
+        self.window.scale_factor()
+    }
 }
 
 impl PlatformWindow for WinitWindow {
@@ -32,8 +39,12 @@ impl PlatformWindow for WinitWindow {
         (s.width, s.height)
     }
 
+    /// The scale the window's document is drawn at: the display's times
+    /// the app's zoom (`rinch::window::set_zoom`). What layout, paint and
+    /// the pointer stream use; [`WinitWindow::os_scale_factor`] is the
+    /// display's alone, for winit's own logical units.
     fn scale_factor(&self) -> f64 {
-        self.window.scale_factor()
+        crate::zoom::apply(self.window.scale_factor())
     }
 
     fn request_redraw(&self) {

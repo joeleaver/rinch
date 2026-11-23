@@ -400,7 +400,9 @@ impl ShellWindow {
             tracing::debug!("window drag/resize refused: no button is down");
             return true;
         }
-        let scale = w.scale_factor();
+        // A layer surface's place and size are in the display's logical
+        // pixels, without the app's zoom.
+        let scale = w.os_scale_factor();
         let size = w.raw().surface_size().to_logical::<f64>(scale);
         let size = (size.width, size.height);
         let position = match self.layer.as_ref().and_then(|l| l.position) {
@@ -420,9 +422,12 @@ impl ShellWindow {
                 p
             }
         };
+        // The pointer is in CSS pixels; the gesture in the display's.
         let (cx, cy) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
+        let zoom = crate::zoom::current();
+        let cursor = (cx as f64 * zoom, cy as f64 * zoom);
         if let Some(layer) = self.layer.as_mut() {
-            layer.gesture = Some(Gesture::start(kind, (cx as f64, cy as f64), position, size));
+            layer.gesture = Some(Gesture::start(kind, cursor, position, size));
         }
         true
     }
@@ -442,7 +447,10 @@ impl RinchRuntime {
         };
         if let Some(new_size) = resize {
             let current = self.w(role).window.as_ref().map(|w| {
-                let s = w.raw().surface_size().to_logical::<f64>(w.scale_factor());
+                let s = w
+                    .raw()
+                    .surface_size()
+                    .to_logical::<f64>(w.os_scale_factor());
                 (s.width, s.height)
             });
             if current != Some(new_size) {
@@ -468,7 +476,7 @@ impl ShellWindow {
     /// where the compositor has the surface ([`LayerState`]). `None` when no
     /// gesture runs; `Some(Some(size))` for a resize, which the caller asks
     /// the window for.
-    fn follow_layer_gesture(&mut self, local: (f64, f64)) -> Option<Option<(f64, f64)>> {
+    pub(super) fn follow_layer_gesture(&mut self, local: (f64, f64)) -> Option<Option<(f64, f64)>> {
         let layer = self.layer.as_ref()?;
         let kind = layer.gesture?.kind;
         let (new_position, new_size) = layer.follow(local)?;
@@ -489,7 +497,9 @@ impl ShellWindow {
     /// processed the move to `physical`, and pointer positions after this
     /// are over the surface there.
     pub(super) fn layer_moved(&mut self, physical: (i32, i32)) {
-        let scale = self.scale_factor();
+        // The fork sends the margins times the display's scale, without the
+        // app's zoom: the gesture works in the display's logical px.
+        let scale = self.os_scale_factor();
         if let Some(layer) = self.layer.as_mut() {
             layer.moved(crate::shell::layer_shell::moved_origin(physical, scale));
         }
@@ -719,7 +729,7 @@ impl ShellWindow {
         // (#2652), so it is made at its content's size there. Every other
         // main window is mounted after it (#211).
         if !second && self.app.is_content_sized() && self.app.doc.is_none() {
-            let scale = self.initial_surface_scale(true);
+            let scale = crate::zoom::apply(self.initial_surface_scale(true));
             self.mount_document_before_window(scale);
         }
         let backend = Backend::of(event_loop);
@@ -730,6 +740,7 @@ impl ShellWindow {
             with_content_size(
                 self.main_window_attributes(steps, backend, true, true),
                 content_size,
+                crate::zoom::current(),
             ),
             hidden,
         );
@@ -750,7 +761,8 @@ impl ShellWindow {
         }
 
         let size = window.surface_size();
-        let scale = window.scale_factor();
+        // The document's scale: the display's times the app's zoom.
+        let scale = crate::zoom::apply(window.scale_factor());
 
         // Create the GPU renderer when the choice wants one and it starts; the
         // software renderer is created lazily by the first software paint. A
@@ -963,6 +975,7 @@ impl ShellWindow {
         let window_attrs = with_content_size(
             self.main_window_attributes(steps, backend, false, first_show),
             content_size,
+            crate::zoom::current(),
         );
         self.maximize_wait = window_geometry::MaximizeWait::after_create(
             &window_attrs,
@@ -1008,7 +1021,7 @@ impl ShellWindow {
         // The new surface's own size (`window_physical_size`) goes out with
         // the scale, in one batch, or alone at the same scale; a `Resized`
         // that follows publishes the same value and wakes nothing.
-        let scale = window.scale_factor();
+        let scale = crate::zoom::apply(window.scale_factor());
         let size = window.surface_size();
         self.app
             .set_surface_size((size.width.max(1), size.height.max(1)));
@@ -1175,7 +1188,9 @@ impl ShellWindow {
         }
         let (name, id) = self.requested_output();
         let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
-        likely_output_scale(&outputs, id, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
+        likely_output_scale(&outputs, id, name.as_deref())
+            .map(crate::zoom::apply)
+            .unwrap_or(self.app.device_pixel_ratio)
     }
 
     /// The output the window asks for, by name and by id: the name
@@ -1201,9 +1216,14 @@ impl ShellWindow {
     /// scale it had when last on screen; with no outputs listed, the scale
     /// its document has. The first frame is painted at it, so when it is the
     /// compositor's that frame is the only one.
+    ///
+    /// The display's scale, without the app's zoom (the document's scales
+    /// above are divided by it): the document's is
+    /// `crate::zoom::apply` of it.
     pub(super) fn initial_surface_scale(&self, first_appearance: bool) -> f64 {
+        let unzoomed = |scale: f64| scale / crate::zoom::current();
         if let Some((scale, _)) = self.prepared {
-            return scale;
+            return unzoomed(scale);
         }
         let (name, id) = self.requested_output();
         let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
@@ -1217,25 +1237,37 @@ impl ShellWindow {
             return output.scale;
         }
         if !first_appearance {
-            return self.app.device_pixel_ratio;
+            return unzoomed(self.app.device_pixel_ratio);
         }
         outputs
             .first()
-            .map_or(self.app.device_pixel_ratio, |o| o.scale)
+            .map_or(unzoomed(self.app.device_pixel_ratio), |o| o.scale)
     }
 
     /// The logical size a hidden window is shown at: the size it was hidden
     /// at or the app set while hidden (`saved_geometry`), unless it comes
     /// back maximized; else the size its document was last laid out at;
     /// else the size its props asked for.
+    ///
+    /// In the document's CSS px at `scale` (the display's times the app's
+    /// zoom): the saved size and the props' are the display's logical px,
+    /// which the zoom lays out smaller.
     pub(super) fn hidden_size(&self, scale: f64) -> (u32, u32) {
+        let zoom = crate::zoom::current();
+        let css = |width: f64, height: f64| {
+            (
+                ((width / zoom).round() as u32).max(1),
+                ((height / zoom).round() as u32).max(1),
+            )
+        };
         if !self.saved_geometry.maximized
             && let Some(size) = self.saved_geometry.size
         {
-            let size: LogicalSize<f64> = size.to_logical(scale);
-            return (size.width.round() as u32, size.height.round() as u32);
+            let size: LogicalSize<f64> = size.to_logical(scale / zoom);
+            return css(size.width, size.height);
         }
-        self.laid_out_size().unwrap_or((self.width, self.height))
+        self.laid_out_size()
+            .unwrap_or_else(|| css(self.width as f64, self.height as f64))
     }
 
     /// The logical size the document was last laid out at, if it has been.
@@ -1488,10 +1520,18 @@ fn starts_hidden(props: Option<&rinch_core::element::WindowProps>) -> bool {
 }
 
 /// `attrs` made at a content-sized window's content size, when it has one
-/// (#2552).
-fn with_content_size(attrs: WindowAttributes, size: Option<(u32, u32)>) -> WindowAttributes {
+/// (#2552). The content's size is in CSS px; winit's logical size is the
+/// display's, which the app's `zoom` makes larger (as `follow_content_size`
+/// asks), so the first buffer is the content's size at the zoomed scale.
+pub(super) fn with_content_size(
+    attrs: WindowAttributes,
+    size: Option<(u32, u32)>,
+    zoom: f64,
+) -> WindowAttributes {
     match size {
-        Some((width, height)) => attrs.with_surface_size(LogicalSize::new(width, height)),
+        Some((width, height)) => {
+            attrs.with_surface_size(LogicalSize::new(width as f64 * zoom, height as f64 * zoom))
+        }
         None => attrs,
     }
 }

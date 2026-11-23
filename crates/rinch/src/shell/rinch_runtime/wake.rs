@@ -259,6 +259,8 @@ pub enum RinchNativeEvent {
     ApplyWindowTitle,
     /// Apply the vsync setting `rinch::window::set_vsync` stored (#2095).
     ApplyVsync,
+    /// Apply the zoom `rinch::window::set_zoom` set to every open window.
+    ApplyZoom,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
