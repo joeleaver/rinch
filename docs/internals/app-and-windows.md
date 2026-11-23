@@ -667,7 +667,9 @@ then `115200` for a 240x120 window at scale 2, glyphs rasterized at both).
 first appearance the first output listed (`crate::outputs`, fractional from
 the mode over the `xdg_output` size) and on a later show the scale the
 document has (the one it was last on screen at); with no outputs listed, the
-document's. `create_window` already read `window.scale_factor()` into the
+document's, except that a second window's mount scale (`mount_scale`, chosen
+before its document is mounted, whose own scale is still the unset 1.0) uses
+the main window's (`initial_surface_scale_or`, #2886). `create_window` already read `window.scale_factor()` into the
 document; `show_window` now hands the document a `ScaleFactorChanged` when the
 new window's scale differs from it, because the fork sends none when the
 compositor's scale equals the one the window started at (a hidden window whose
@@ -2087,7 +2089,8 @@ guide's "A window sized by its content" has what an app sees; here is how.
   gives it the real scale and size.
 - **At the scale it starts at** (#2652): a content-sized `open_window`
   window is mounted at its `initial_surface_scale(true)`
-  (`ShellWindow::mount_scale`; every other `open_window` window still at the
+  (`ShellWindow::mount_scale`, with the main window's scale where no outputs
+  are listed yet, #2886; every other `open_window` window still at the
   main window's scale), a content-sized main window too, and before each new
   surface `start_at_surface_scale` gives the document that surface's
   starting scale, so the content is measured at it and #2652's scale sync
