@@ -51,6 +51,12 @@ thread_local! {
 /// `font-size` (Chrome resolves an `em` width where it is declared and
 /// inherits the length). [`TextPaintValue::PLAIN`] on a page that never
 /// wrote one, with no look-up.
+///
+/// A value that is no value of its property — what a `var()` substituted
+/// into it can leave (#2820) — is read as the initial value here; the
+/// cascade then gives such an element its parent's value instead, as Chrome
+/// does for a declaration invalid at computed-value time
+/// ([`ComputedStyle::inherit_invalid_text_paint`]).
 fn text_paint_from_stylo(
     cv: &ComputedValues,
     color: Option<peniko::Color>,
@@ -63,36 +69,102 @@ fn text_paint_from_stylo(
     if props.inherited.is_empty() && props.non_inherited.is_empty() {
         return TextPaintValue::PLAIN;
     }
+    text_paint_with(cv, color, font_size, |_| false, &TextPaintValue::PLAIN)
+}
+
+/// The text-paint values, each read off its custom property: a computed
+/// value that parses is taken; one that does not, or a property `inherits`
+/// says the element takes from its parent though it has no value, is
+/// `parent`'s.
+fn text_paint_with(
+    cv: &ComputedValues,
+    color: Option<peniko::Color>,
+    font_size: f32,
+    inherits: impl Fn(&str) -> bool,
+    parent: &TextPaintValue,
+) -> TextPaintValue {
+    use crate::webkit_box::{
+        PAINT_ORDER as ORDER, TEXT_FILL_COLOR as FILL, TEXT_STROKE_COLOR as STROKE,
+        TEXT_STROKE_WIDTH as WIDTH,
+    };
     let current = color.unwrap_or(peniko::Color::BLACK);
-    let fill = custom_property(cv, &TEXT_FILL_COLOR, |v| {
+    // `Some(Some(v))` parsed, `Some(None)` is no value of the property, `None`
+    // no computed value at all.
+    let fill = match custom_property(cv, &TEXT_FILL_COLOR, |v| {
         if v.eq_ignore_ascii_case("currentcolor") {
-            None
+            Some(None)
         } else {
-            crate::layout::parse_color_with_current(v, current)
+            crate::layout::parse_color_with_current(v, current).map(Some)
         }
-    })
-    .flatten();
-    let stroke_width = custom_property(cv, &TEXT_STROKE_WIDTH, |v| {
-        crate::webkit_box::parse_stroke_width(v, font_size)
-    })
-    .flatten()
-    .unwrap_or(0.0);
+    }) {
+        Some(Some(fill)) => fill,
+        Some(None) => parent.fill,
+        None if inherits(FILL) => parent.fill,
+        None => None,
+    };
+    // Each `-webkit-text-stroke-*` value is the longhand's, or its half of a
+    // shorthand that held a `var()` (#2820, `webkit_box::stroke_half`).
+    let stroke_width = match custom_property(cv, &TEXT_STROKE_WIDTH, |v| {
+        crate::webkit_box::stroke_half(v, true)
+            .and_then(|v| crate::webkit_box::parse_stroke_width(&v, font_size))
+    }) {
+        Some(Some(w)) => w,
+        Some(None) => parent.stroke_width,
+        None if inherits(WIDTH) => parent.stroke_width,
+        None => 0.0,
+    };
     let stroke_color = (stroke_width > 0.0).then(|| {
-        custom_property(cv, &TEXT_STROKE_COLOR, |v| {
-            crate::layout::parse_color_with_current(v, current)
-        })
-        .flatten()
-        .unwrap_or(current)
+        match custom_property(cv, &TEXT_STROKE_COLOR, |v| {
+            crate::webkit_box::stroke_half(v, false)
+                .and_then(|v| crate::layout::parse_color_with_current(&v, current))
+        }) {
+            Some(Some(c)) => c,
+            Some(None) => parent.stroke_color.unwrap_or(current),
+            None if inherits(STROKE) => parent.stroke_color.unwrap_or(current),
+            None => current,
+        }
     });
     let stroke_first = stroke_width > 0.0
-        && custom_property(cv, &PAINT_ORDER, crate::paint::parse_paint_order)
-            .flatten()
-            .unwrap_or(false);
+        && match custom_property(cv, &PAINT_ORDER, crate::paint::parse_paint_order) {
+            Some(Some(first)) => first,
+            Some(None) => parent.stroke_first,
+            None if inherits(ORDER) => parent.stroke_first,
+            None => false,
+        };
     TextPaintValue {
         fill,
         stroke_width,
         stroke_color,
         stroke_first,
+    }
+}
+
+impl ComputedStyle {
+    /// Give the text-paint values a `var()` left invalid their parent's
+    /// (#2820), as Chrome does for a declaration invalid at computed-value
+    /// time (the four properties inherit): a computed value that is no value
+    /// of its property, or none at all where the element's own winning
+    /// declaration is not `initial` (a substitution that failed leaves the
+    /// custom property unset). `self` was just converted from `cv`; `parent`
+    /// is the parent element's style. Only a parent whose text is painted
+    /// otherwise than plainly can make a difference, so nothing is read
+    /// for any other.
+    pub(crate) fn inherit_invalid_text_paint(
+        &mut self,
+        cv: &ComputedValues,
+        guard: &style::shared_lock::SharedRwLockReadGuard,
+        parent: &ComputedStyle,
+    ) {
+        if !crate::webkit_box::text_paint_seen() || parent.text_paint.is_plain() {
+            return;
+        }
+        self.text_paint = text_paint_with(
+            cv,
+            self.color,
+            self.font_size,
+            |name| crate::webkit_box::own_declaration_inherits(cv, guard, name),
+            &parent.text_paint,
+        );
     }
 }
 

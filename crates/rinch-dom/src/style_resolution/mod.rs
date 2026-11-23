@@ -1044,6 +1044,20 @@ impl RinchDocument {
                 }
             }
 
+            // A text-paint value a `var()` left invalid is the parent's
+            // (#2820). Only a parent painting its text otherwise than
+            // plainly can give it anything.
+            if crate::webkit_box::text_paint_seen()
+                && let Some(parent) = node
+                    .parent
+                    .and_then(|p| self.tree.nodes.get(p))
+                    .map(|p| &p.computed_style)
+                    .filter(|p| !p.text_paint.is_plain())
+            {
+                let guard = self.tree.guard.read();
+                new_style.inherit_invalid_text_paint(&computed_values, &guard, parent);
+            }
+
             // Whether it was a containing block for absolute descendants,
             // asked before the filter bit below changes: a filter makes one
             // (#2719), and the answer reads that bit.

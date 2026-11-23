@@ -259,6 +259,8 @@ pub enum RinchNativeEvent {
     ApplyWindowTitle,
     /// Apply the vsync setting `rinch::window::set_vsync` stored (#2095).
     ApplyVsync,
+    /// Apply the zoom `rinch::window::set_zoom` set to every open window.
+    ApplyZoom,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
@@ -280,8 +282,10 @@ pub enum RinchNativeEvent {
     OpenWindow(u64),
     /// Close the window, with no veto asked (`WindowHandle::close`, #2416).
     CloseWindow,
-    /// Bring the window to the front and give it the keyboard (#2416).
-    FocusWindow,
+    /// Bring the window to the front and give it the keyboard (#2416), with
+    /// the xdg-activation token that lets a Wayland compositor do so, when
+    /// the app has one (#2817).
+    FocusWindow(Option<String>),
     /// Set the window's title (`WindowHandle::set_title`, #2416).
     SetWindowTitle(String),
     /// End the event loop after this turn (`rinch::exit`, #2416).

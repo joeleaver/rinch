@@ -74,7 +74,13 @@ var(--rinch-color-text)        /* Primary text */
 var(--rinch-color-dimmed)      /* Secondary text */
 var(--rinch-color-border)      /* Borders */
 var(--rinch-color-placeholder) /* Input placeholders */
+var(--rinch-color-option-hover)    /* A hovered list item: neutral gray (gray-2 light, dark-5 dark) */
+var(--rinch-color-option-selected) /* The selected list item: primary tint (primary-0 light, primary at 15% dark) */
 ```
+
+`option-hover` and `option-selected` are what `Select` paints its hovered and
+selected options with; use them for any list with both states (a taskbar, a
+sidebar) and the two stay distinguishable in both schemes.
 
 ### Spacing
 
@@ -195,8 +201,9 @@ Four things about that set are worth knowing before they surprise you.
   flex row (a column under `-webkit-box-orient: vertical`) whose block
   children are items that grow and shrink only by `-webkit-box-flex`, each
   run of inline content one item, and no `text-overflow` "…" (#1703,
-  #2581). A `var()` in `-webkit-line-clamp` or `-webkit-box-orient` is not
-  read (#2581).
+  #2581). A `var()` in `-webkit-line-clamp`, `-webkit-box-orient` or
+  `-webkit-box-flex` is read (#2820); one in `display` naming
+  `-webkit-box` is not.
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the

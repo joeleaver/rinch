@@ -4,6 +4,7 @@
 /// [`ActivationTokenError::Unsupported`].
 pub use crate::activation::{
     ActivationToken, ActivationTokenError, ActivationTokenResult, request_activation_token,
+    take_launch_activation_token,
 };
 
 pub fn minimize_current_window() {}
@@ -11,6 +12,8 @@ pub fn toggle_maximize_current_window() {}
 pub fn hide_current_window() {}
 pub fn show_current_window() {}
 pub fn focus_current_window() {}
+/// Android has no xdg-activation, and its one window is always in front.
+pub fn activate_current_window_with_token(_token: &str) {}
 /// Android shows its one window always: nothing to prepare.
 pub fn prepare_current_window() {}
 /// Android shows its one window always: nothing to prepare.

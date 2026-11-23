@@ -67,6 +67,12 @@
 //! (`CompositedFrame`), for recording or streaming the whole window without a
 //! CPU readback.
 //!
+//! # Zoom
+//!
+//! [`set_zoom`] / [`zoom()`]: the user's zoom, everything drawn larger or
+//! smaller as a browser zooms a page (see `zoom` in the crate source for
+//! where it applies).
+//!
 //! # Window roles (#2659)
 //!
 //! `window_roles` / `layer_shell_available` say, before any window is
@@ -88,6 +94,7 @@ pub use crate::pointer_lock::{
     set_pointer_lock_host,
 };
 pub use crate::window_roles::{WindowRoles, layer_shell_available, window_roles};
+pub use crate::zoom::{ZOOM_MAX, ZOOM_MIN, set_zoom, zoom};
 
 /// Why [`open_url`] did not open the URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,7 +208,10 @@ pub fn set_window_title(title: &str) {
 
 /// The current window's display scale — physical pixels per logical (CSS)
 /// pixel: `2.0` on a typical HiDPI display, the page's `devicePixelRatio` on
-/// the web (browser zoom included). Reactive: a reader re-runs when the window
+/// the web (browser zoom included). On the desktop it includes the app's
+/// [`zoom`] too: the scale the document is drawn at, the display's times the
+/// zoom (from the event loop's turn after [`set_zoom`], when the windows
+/// apply it). Reactive: a reader re-runs when the window
 /// moves to a display with another scale or the scale is changed.
 ///
 /// `1.0` until something publishes it (see the [module docs](self)).

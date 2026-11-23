@@ -346,6 +346,43 @@ static RGBA_LOADER: LazyLock<Arc<dyn ImageLoader>> = LazyLock::new(|| {
     })
 });
 
+/// What the built-in [`register_rgba`] registry answers for `src` now, if it
+/// is the one to answer: `src` is a [`RGBA_SCHEME`] source and no app loader
+/// has taken the scheme over. `None` otherwise, and the source is loaded as
+/// any other (on a background thread, through whichever loader answers it).
+///
+/// The registry's pixels are decoded and in memory already, so a rendering
+/// backend resolves such a source in the frame that names it (#2857): no
+/// thread hop, so an element whose picture moves from one registered name to
+/// another draws the new one in that frame, and an unknown or unregistered
+/// name fails in it ([`ImageLoadResult::Failed`]). For rendering backends.
+///
+/// With the answer comes the loader that gave it (the built-in one, the
+/// same `Arc` [`image_scheme_loader`] answers for the scheme), read in the
+/// same look at the app's loaders, so that a backend keying a cache by
+/// loader cannot key the registry's answer by a loader an app installed in
+/// between.
+#[doc(hidden)]
+pub fn registered_rgba_answer(src: &str) -> Option<(Arc<dyn ImageLoader>, ImageLoadResult)> {
+    let scheme = scheme_of(src)?;
+    if scheme != RGBA_SCHEME {
+        return None;
+    }
+    let taken_over = SCHEME_LOADERS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|(s, _)| *s == scheme);
+    (!taken_over).then(|| (RGBA_LOADER.clone(), RGBA_LOADER.load(src)))
+}
+
+/// Whether `src` is a [`RGBA_SCHEME`] source, whoever answers it: what a
+/// backend checks before recording that a document asks for it.
+#[doc(hidden)]
+pub fn is_rgba_source(src: &str) -> bool {
+    rgba_name(src).is_some()
+}
+
 /// The name in a `rinch-image:<name>` source (scheme in any case), or `None`
 /// for a source of another scheme.
 fn rgba_name(src: &str) -> Option<&str> {
@@ -377,6 +414,12 @@ pub fn rgba_src(name: &str) -> String {
 /// the old one staying on screen until the new one is in. A name registered
 /// after an element asked for it (and drew the broken-image state) is shown
 /// too. [`unregister_rgba`] takes it away.
+///
+/// An element **given** a registered name (a new `src`, a new
+/// `background-image`) draws its picture in the frame that applies the
+/// change: the registry answers at once, not from a load thread
+/// ([`registered_rgba_answer`]). An app loader for [`RGBA_SCHEME`] takes this
+/// over, and is asked on the load thread like any loader.
 ///
 /// Callable from **any thread** (a notification daemon's D-Bus thread, a
 /// decoder's worker): the registry is behind a lock, and the repaint is

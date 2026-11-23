@@ -120,15 +120,19 @@ pub(crate) fn content_max_of(
 }
 
 impl ShellWindow {
-    /// A content-sized window's largest size now, logical px
-    /// ([`content_max_of`], at its layer surface's position and on the
-    /// output chosen for it). `None` for any other window.
+    /// A content-sized window's largest size now, in its document's CSS px:
+    /// [`content_max_of`] (the display's logical px, at its layer surface's
+    /// position and on the output chosen for it) divided by the app's zoom,
+    /// so a zoomed window asks for no more of the output than an unzoomed
+    /// one. `None` for any other window.
     pub(super) fn content_max(&self) -> Option<(f32, f32)> {
-        content_max_of(
+        let (width, height) = content_max_of(
             &self.app,
             self.layer.and_then(|l| l.position),
             self.output_override.clone(),
-        )
+        )?;
+        let zoom = crate::zoom::current() as f32;
+        Some(((width / zoom).max(1.0), (height / zoom).max(1.0)))
     }
 
     /// The scale a second window's document is mounted at: the main window's
@@ -137,7 +141,7 @@ impl ShellWindow {
     /// content's size there.
     pub(super) fn mount_scale(&self, main: f64) -> f64 {
         if self.app.is_content_sized() {
-            self.initial_surface_scale(true)
+            crate::zoom::apply(self.initial_surface_scale(true))
         } else {
             main
         }
@@ -153,7 +157,7 @@ impl ShellWindow {
         if !self.app.is_content_sized() {
             return;
         }
-        let scale = self.initial_surface_scale(first_appearance);
+        let scale = crate::zoom::apply(self.initial_surface_scale(first_appearance));
         if scale != self.app.device_pixel_ratio {
             self.app.set_device_pixel_ratio(scale);
         }
@@ -262,7 +266,10 @@ impl RinchRuntime {
         let Some((width, height)) = w.content_size_to_ask(viewport) else {
             return;
         };
-        let size = Size::Logical(LogicalSize::new(width as f64, height as f64));
+        // The content's size is in CSS pixels; winit's logical size is the
+        // display's, which the app's zoom makes larger.
+        let zoom = crate::zoom::current();
+        let size = Size::Logical(LogicalSize::new(width as f64 * zoom, height as f64 * zoom));
         let Some(physical) = w
             .window
             .as_ref()

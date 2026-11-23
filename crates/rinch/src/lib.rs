@@ -162,7 +162,7 @@ pub mod web_gpu;
 /// alike (issue #1770): [`open_url`],
 /// [`set_window_title`], and the reactive
 /// [`scale_factor`], [`window_size`], [`window_physical_size`]
-/// and [`window_focused`].
+/// and [`window_focused`], and the user's zoom ([`set_zoom`], [`zoom()`]).
 pub mod window;
 /// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
 /// [`ExitWhen`] and [`exit`].
@@ -175,6 +175,8 @@ mod window_perf;
 mod window_roles;
 #[cfg(feature = "windowing")]
 pub mod windows;
+/// The user's zoom; the API is re-exported through [`window`].
+mod zoom;
 /// What `rsx!`'s `Window { … }` element calls (#2416).
 #[cfg(feature = "windowing")]
 #[doc(hidden)]
@@ -412,8 +414,8 @@ pub mod prelude {
     pub use rinch_macros::{component, rsx};
     // Window facts and acts on every target (#1770)
     pub use crate::window::{
-        OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
-        window_focused, window_physical_size, window_size,
+        OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title, set_zoom,
+        window_focused, window_physical_size, window_size, zoom,
     };
     // Pointer lock and raw motion (#2092)
     pub use crate::window::{
@@ -436,24 +438,26 @@ pub mod prelude {
     #[cfg(feature = "windowing")]
     pub use crate::windows::{
         ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
-        close_current_window, current_window_position, current_window_restore, current_window_size,
-        current_window_surface_kind, focus_current_window, hide_current_window,
-        minimize_current_window, prepare_current_window, prepare_current_window_at_scale,
-        request_activation_token, set_click_through_current_window, set_current_window_layer,
-        set_current_window_output, set_current_window_position, set_current_window_size,
-        set_input_region_current_window, show_current_window, start_window_drag,
-        start_window_resize, toggle_maximize_current_window,
+        activate_current_window_with_token, close_current_window, current_window_position,
+        current_window_restore, current_window_size, current_window_surface_kind,
+        focus_current_window, hide_current_window, minimize_current_window, prepare_current_window,
+        prepare_current_window_at_scale, request_activation_token,
+        set_click_through_current_window, set_current_window_layer, set_current_window_output,
+        set_current_window_position, set_current_window_size, set_input_region_current_window,
+        show_current_window, start_window_drag, start_window_resize, take_launch_activation_token,
+        toggle_maximize_current_window,
     };
     #[cfg(all(feature = "android", not(feature = "windowing")))]
     pub use crate::windows_stub::{
         ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
-        close_current_window, current_window_position, current_window_restore, current_window_size,
-        current_window_surface_kind, focus_current_window, hide_current_window,
-        minimize_current_window, prepare_current_window, prepare_current_window_at_scale,
-        request_activation_token, set_click_through_current_window, set_current_window_layer,
-        set_current_window_output, set_current_window_position, set_current_window_size,
-        set_input_region_current_window, show_current_window, start_window_drag,
-        start_window_resize, toggle_maximize_current_window,
+        activate_current_window_with_token, close_current_window, current_window_position,
+        current_window_restore, current_window_size, current_window_surface_kind,
+        focus_current_window, hide_current_window, minimize_current_window, prepare_current_window,
+        prepare_current_window_at_scale, request_activation_token,
+        set_click_through_current_window, set_current_window_layer, set_current_window_output,
+        set_current_window_position, set_current_window_size, set_input_region_current_window,
+        show_current_window, start_window_drag, start_window_resize, take_launch_activation_token,
+        toggle_maximize_current_window,
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
@@ -585,8 +589,8 @@ pub use shell::{
 #[allow(deprecated)]
 pub use shell::{run_with_external_device, run_with_gpu_config};
 pub use window::{
-    OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
-    window_focused, window_physical_size, window_size,
+    OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title, set_zoom,
+    window_focused, window_physical_size, window_size, zoom,
 };
 
 /// Re-export of the exact `wgpu` rinch links against.

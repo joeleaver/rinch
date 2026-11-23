@@ -330,9 +330,72 @@ the keyboard.
 The system has the last word. A system that prevents focus stealing may only
 mark the window as wanting attention. On Wayland an app cannot raise its own
 shown window without an xdg-activation token from the input that asked for it,
-and rinch has none to give, so the window is only marked as wanting attention
-(KDE and GNOME show that in the taskbar or as a notification); a hidden window
-is shown as a new window, which the compositor usually focuses.
+so `focus_current_window()` only marks the window as wanting attention (KDE and
+GNOME show that in the taskbar or as a notification); a hidden window is shown
+as a new window, which KWin and sway focus when it maps, while GNOME's
+focus-stealing prevention may hold it back without a token.
+
+#### Raising it on Wayland: pass the launch's token
+
+The launcher that started the second copy (a desktop's menu, a browser opening
+a link) gave it a token in `XDG_ACTIVATION_TOKEN`, tied to the click that asked.
+Take it first thing in `main`. If a copy is already running, hand the token to
+it, and it raises its window with it. If none is, this launch is the first one
+and the token is its own: give it to `App::activation_token`, which creates the
+first window with it (as GTK and Qt do with theirs), since once taken from the
+environment nothing else would use it.
+
+```rust
+use rinch::prelude::*;
+
+fn main() {
+    // First thing in main: it removes XDG_ACTIVATION_TOKEN from the
+    // environment, so programs this one starts do not inherit it.
+    // SAFETY: no other thread is running yet.
+    let token = unsafe { rinch::windows::take_launch_activation_token() };
+    if let Some(running) = my_ipc::connect_to_running_copy() {
+        running.send_open(std::env::args().nth(1), token);
+        return;
+    }
+    App::new(app).activation_token(token).run();
+}
+
+// In the running copy, when the IPC message arrives (on the UI thread or not):
+fn on_open(link: Option<String>, token: Option<String>) {
+    match token {
+        Some(token) => rinch::windows::activate_current_window_with_token(&token),
+        None => rinch::windows::focus_current_window(),
+    }
+    // ... open the link
+}
+```
+
+`activate_current_window_with_token(token)` (`WindowHandle::activate_with_token`
+for any window) does what `focus_current_window()` does, and on Wayland
+activates the window with the token: a shown window is raised and given the
+keyboard, and a hidden one is shown with the token in its new window's
+attributes (activated before the window first appears, as a first launch's
+window is). The compositor decides what
+the token is worth: one from a recent click raises the window on KWin, and on
+sway with `focus_on_window_activation focus` (sway's default marks the window
+urgent); a stale or unknown token is ignored without an error. Off Wayland the
+token is not used and the call is `focus_current_window()`. A Wayland
+layer-shell window is not activated, and a non-activating window is only
+shown or restored, token or not.
+
+**Which window.** The *current* window is the window of the document whose
+code is running. Called from anywhere else, such as the IPC thread above, or a
+timer or `main` outside any component, `activate_current_window_with_token`
+(like `focus_current_window`) acts on the main window. A multi-window app
+that wants another window raised, and a
+[windowless](#starting-with-no-window-tray-only-apps) app, which has no main
+window, call `WindowHandle::activate_with_token(&token)` on the window's
+handle instead.
+
+`take_launch_activation_token()` is `unsafe` because it changes the process's
+environment, which is undefined behaviour while another thread reads it: call
+it before anything starts a thread. It reads only `XDG_ACTIVATION_TOKEN`
+(X11's `DESKTOP_STARTUP_ID` is left alone) and answers `Some` once.
 
 ### Preparing a hidden window for its first show
 
@@ -687,7 +750,8 @@ the browser (issue #1770):
 |----------|---------|-----|
 | `open_url(url) -> Result<(), OpenUrlError>` | `xdg-open` / `open` / `ShellExecuteW` | a new tab (`window.open`, `opener` cleared) |
 | `set_window_title(title)` | the main window's title bar (any thread) | `document.title` |
-| `scale_factor() -> f64` | the main window's display scale | `devicePixelRatio` |
+| `scale_factor() -> f64` | the main window's display scale times the app's [zoom](#zoom) | `devicePixelRatio` |
+| `set_zoom(z) -> f64`, `zoom() -> f64` | the app's [zoom](#zoom) | not applied (`1.0`): the browser's own zoom |
 | `window_size() -> (f64, f64)` | the main window's content size, logical px | `innerWidth`, `innerHeight` |
 | `window_physical_size() -> (u32, u32)` | the main window's surface size, device px | `innerWidth`, `innerHeight` times `devicePixelRatio`, rounded |
 | `window_focused() -> bool` | the main window has the system's focus | the page's window has focus |
@@ -773,6 +837,52 @@ Calling `bounds_signal()` again for the same element from the same owner — the
 same component render, effect run or handler — returns the same signal, so
 asking for it per event costs nothing after the first call. A call from
 another component gets a signal of its own, freed with that component.
+
+## Zoom
+
+`rinch::window::set_zoom(z)` draws everything in the app's windows `z` times
+larger (or smaller), as a browser's `Ctrl` `+` / `Ctrl` `-` zooms a page: for
+people who read more easily at another size. `zoom()` reads it back
+(reactive); `1.0` is actual size, and the value is clamped to
+`ZOOM_MIN..=ZOOM_MAX` (0.25 to 5, as browsers allow).
+
+```rust
+#[component]
+fn zoom_controls() -> NodeHandle {
+    rsx! {
+        button { onclick: || { set_zoom(zoom() * 1.25); }, "Zoom in" }
+        button { onclick: || { set_zoom(1.0); }, "Actual size" }
+        span { {|| format!("{:.0}%", zoom() * 100.0)} }
+    }
+}
+```
+
+- **It multiplies the display scale.** A window on a 2x display zoomed to
+  1.5 is laid out and painted at 3 device pixels per CSS pixel: text, borders,
+  images, SVG and `RenderSurface`s are drawn at that scale, so they stay sharp.
+  `scale_factor()` answers that scale, zoom included (the browser's
+  `devicePixelRatio` includes its zoom too), from the event loop's next turn
+  after `set_zoom` (when the windows apply it; `zoom()` changes at once), and
+  a move to a display with another scale keeps the zoom.
+- **The window keeps its size on screen; the viewport changes.**
+  `window_size()` (CSS pixels) shrinks by the zoom, as a browser's
+  `innerWidth` does, and `window_physical_size()` does not change. Window
+  geometry (`set_current_window_size`, positions) stays in the display's
+  logical pixels.
+- Pointer positions, hit testing, the IME's caret area, input regions and the
+  size a content-sized window asks for all follow the zoom, so an app that
+  reads pointer positions in CSS pixels (every `PlatformEvent`, the click
+  context, a `Drag`, a surface's pointer events) needs no change.
+- It is the app's, for every window it opens (DevTools too), and it is not
+  saved: an app that remembers it sets it again at start, before its first
+  window when it can, so the first frame is drawn at it. Call it on the UI
+  thread; elsewhere it is ignored with a warning.
+- **Web:** not applied. The browser zooms the page itself (its own
+  `Ctrl` `+`), which already reaches the app as `devicePixelRatio`;
+  `set_zoom` changes nothing and `zoom()` answers `1.0`, so an app can tell
+  and point the person to the browser's zoom. **Android:** not applied either.
+- **Native embed:** `RinchContext` keeps the scale its host gives it. A host
+  that wants the app's zoom passes `scale * zoom()` to `set_scale_factor`.
 
 ## Outputs (Monitors)
 
