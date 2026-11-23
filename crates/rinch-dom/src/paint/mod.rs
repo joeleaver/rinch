@@ -417,17 +417,34 @@ fn compute_damage_impl(
                 ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get_live(id)),
                 scale,
             );
+            // A span's own `filter` (#2869, drawn in its own entry through
+            // `filter::paint_filtered_span`) spreads what it draws by its
+            // reach, now and as it was painted: a filter added, removed or
+            // changed damages the root's ink grown by the larger of the two.
+            // The span's fragments are inside that ink.
+            let own_reach = {
+                let now = if node.computed_style.filter.is_empty() {
+                    0.0
+                } else {
+                    filter::list_outsets(&node.computed_style.filter)
+                        .into_iter()
+                        .fold(0.0_f32, f32::max)
+                };
+                let (sx, sy) = filter::axis_scales(rt);
+                now.max(old_filter_reach) as f64 * scale * sx.max(sy)
+            };
             if rw > 0.0
                 && rh > 0.0
                 && add(
-                    rt.transform_rect_bbox(root_ink.grow(Rect::new(rx, ry, rx + rw, ry + rh))),
+                    rt.transform_rect_bbox(root_ink.grow(Rect::new(rx, ry, rx + rw, ry + rh)))
+                        .inflate(own_reach, own_reach),
                     clip_now(root_id),
                 )
             {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
             if let Some(r) = painted_rect_with(tree, root_id, scale, Outsets::ZERO)
-                && add(r, clip_then(root_id))
+                && add(r.inflate(own_reach, own_reach), clip_then(root_id))
             {
                 return DamageRegion::full(viewport_w, viewport_h);
             }

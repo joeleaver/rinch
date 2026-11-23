@@ -439,7 +439,15 @@ composited at its `opacity`; a list of `drop-shadow()`s alone draws the
 shadows from the raster and the span again over them. A relative span's
 filter goes the same way. Hit testing is unchanged by the filter (Chrome: a
 filter does not affect hit testing): the span's text and atomic inlines are
-hit at its entry, and its shadow is not hit. The raster is not cached, and a
+hit at its entry, and its shadow is not hit. Damage: a span has no box, so
+its change damages its IFC root's rect and ink (`compute_damage`'s box-less
+inline branch), grown by the span's own filter reach now and as it was painted
+(`PaintedState::filter_reach`), so a filter added, removed or changed repaints
+the shadow past the root (review of #2895: a hover glow on a link in a
+shrink-wrapped label); a change inside the span is grown by the span's reach
+as an ancestor's (`filter::ancestor_reach`). Pinned in
+`tests/inline_filter_damage_2869_tests.rs` (partial frame against a fresh full
+paint, static and relative spans). The raster is not cached, and a
 positioned box inside a filtered span reaching past the span's lines is cut
 at the raster's edge. Pinned in `tests/inline_filter_gradient_2869_tests.rs`
 (Chrome 158 pixels: a shadow under a span's box and its text, `invert()`, a

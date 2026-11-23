@@ -174,7 +174,7 @@ pub(crate) fn list_outsets(list: &[FilterOp]) -> [f32; 4] {
 }
 
 /// The lengths of `t`'s columns: how far it stretches each axis.
-fn axis_scales(t: Affine) -> (f64, f64) {
+pub(super) fn axis_scales(t: Affine) -> (f64, f64) {
     let c = t.as_coeffs();
     (c[0].hypot(c[1]), c[2].hypot(c[3]))
 }
