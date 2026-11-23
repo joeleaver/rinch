@@ -106,6 +106,24 @@ lines take the form its frames do, `[PERF] trimmed` and `[PERF] untrimmed`. A
 window with `IdleTrim::Never`, a GPU window, and a window whose surface does
 not keep its contents (the trim applies only on Wayland) print neither.
 
+Whether a window will say `trimmed` at all, and when, is printed before its
+first presented frame's line, when its software presentation is made (#2917),
+and again when it is shown after a hide:
+
+```text
+[PERF] window 3 idle_trim=2000ms
+[PERF] window 3 frame 1: ...
+```
+
+`idle_trim=<n>ms` is the idle period after the window's last present at which
+it trims (fractions of a millisecond are kept, `idle_trim=1.5ms`).
+`idle_trim=never` is a software window that will not trim: one opened with
+`IdleTrim::Never`, or one whose surface does not keep its contents. A GPU
+window never trims and prints no `idle_trim=` line. So a tool waiting for the
+idle trim before it measures an idle window waits for `trimmed` from exactly
+the windows that printed a period. The main window's line is
+`[PERF] idle_trim=…`.
+
 On the desktop, one redraw is one frame. On Android, one pass of the loop that
 tries to present a frame is one frame. On an embedded `RinchContext`, one
 `update()` plus the `scene()` call that follows it is one frame.
