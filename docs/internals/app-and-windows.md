@@ -2348,8 +2348,13 @@ table are in the stage 2 PR; what they showed:
   process build theirs. One that holds anything of its document beyond its next
   full frame (`holds_document_state`: split slices, surface frames, layers)
   is dropped. A device replacement drops it with the rest
-  (`replace_gpu_device`, `drop_spare_renderers`). Pin:
-  `gpu_a_closed_popups_renderer_is_kept_for_the_next_2552`.
+  (`replace_gpu_device`, `drop_spare_renderers`). The pool
+  (`SparePool`) never drops what it holds as a thread-local: a renderer
+  dropped while the thread's locals are destroyed touched others already
+  gone and aborted a test process on lavapipe, so what is left at the
+  thread's end is let go. Pins:
+  `gpu_a_closed_popups_renderer_is_kept_for_the_next_2552`,
+  `the_spare_pool_keeps_the_last_three_last_first_2552`.
 - **KWin, driven live.** KWin offers `org_kde_kwin_fake_input` only to an
   executable a desktop file grants it to
   (`X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input`, `Exec` its absolute
