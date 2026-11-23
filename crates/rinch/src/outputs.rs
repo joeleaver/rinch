@@ -118,10 +118,11 @@
 //! [`WindowProps::output`]: rinch_core::element::WindowProps::output
 //! [`current_window_position`]: crate::windows::current_window_position
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
-use rinch_core::Signal;
 pub use rinch_core::element::OutputId;
+use rinch_core::{Memo, Signal};
 
 /// An output (monitor) connected to the desktop. See the [module
 /// docs](self) for the units.
@@ -248,9 +249,12 @@ pub fn output_ids() -> Vec<OutputId> {
 }
 
 /// The connected output whose [id](Output::id) is `id`, as it is now, or
-/// `None` once it is gone. Reactive: a reader runs again when any output
-/// changes. With [`output_ids`], how a window per output follows its output's
-/// position, size and scale without being made again.
+/// `None` once it is gone. Reactive, and only to this output: a reader runs
+/// again when its record changes (moved, resized, rescaled, renamed), when it
+/// appears and when it goes, and not when another output changes or comes
+/// (#2837; a memo per id over the list). With [`output_ids`], how a window
+/// per output follows its output's position, size and scale without being
+/// made again.
 ///
 /// **Never unwrap it in a row of `for id in output_ids()`.** When the output
 /// is unplugged, the row's readers of `output(id)` run once more, with `None`,
@@ -272,9 +276,30 @@ pub fn output_ids() -> Vec<OutputId> {
 /// }
 /// ```
 pub fn output(id: OutputId) -> Option<Output> {
-    signals()
-        .list
-        .with(|list| list.iter().find(|o| o.id == id).cloned())
+    by_id(id).get()
+}
+
+thread_local! {
+    /// One memo per id [`output`] was asked for, made on first use and kept
+    /// for the thread's life: a reader holds the memo it read, so one made
+    /// again would never wake it. A memo nobody reads is only marked stale
+    /// at a change (push-dirty, pull-value), so an id that went costs next
+    /// to nothing.
+    static BY_ID: RefCell<HashMap<OutputId, Memo<Option<Output>>>> = RefCell::default();
+}
+
+/// The memo of the output whose id is `id` ([`output`]): equal while that
+/// output's record is, so a change to another output wakes no reader of it.
+fn by_id(id: OutputId) -> Memo<Option<Output>> {
+    if let Some(m) = BY_ID.with(|m| m.borrow().get(&id).copied()) {
+        return m;
+    }
+    let list = signals().list;
+    let m = rinch_core::unowned(|| {
+        Memo::new(move || list.with(|l| l.iter().find(|o| o.id == id).cloned()))
+    });
+    BY_ID.with(|c| c.borrow_mut().insert(id, m));
+    m
 }
 
 /// Whether [`outputs`] follows changes on this platform. Reactive: it turns

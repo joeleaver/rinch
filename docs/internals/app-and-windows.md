@@ -840,7 +840,13 @@ its item changes by `PartialEq` (`for_each_dom_typed_with_key_source`'s
 opened another at every move or rescale (deskrinch's wallpaper). Iterating ids
 keeps the row, so its window lives until the id leaves the list. `output_ids()`
 is a `Memo` over the list (made with the signals, `unowned`), so a move or
-rescale wakes none of its readers. **On an unplug the row's readers of
+rescale wakes none of its readers. `output(id)` reads a memo too, one per id
+(#2837): `outputs.rs`'s `BY_ID`, made `unowned` on the first read of that id
+and kept for the thread's life (a reader holds the memo it read, so one made
+again would never wake it; one nobody reads is only marked stale at a change).
+Its value is that output's record or `None`, so a reader runs again only when
+its own output changes, appears or goes, not when another output moves or
+comes; #2836's `readers_run_again_on_each_change` table pins the counts. **On an unplug the row's readers of
 `output(id)` run once with `None` before the row goes**: the list write wakes
 both the content's effect and the `ids` memo's `for`, and the content's effect
 runs first. Pinned by

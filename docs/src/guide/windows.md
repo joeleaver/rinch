@@ -863,7 +863,9 @@ that output moves, is resized or is rescaled: its `Window` closes and a new one
 opens on the same output, a frame with nothing there and the window's whole
 first-frame cost again. So iterate the ids, which stay equal while the same
 outputs are connected, and read the rest of the output inside the row with
-`output(id)`, which is reactive and `None` once the output is gone:
+`output(id)`, which is reactive and `None` once the output is gone. A reader
+of `output(id)` runs again only when that output changes, appears or goes, so
+one window's content does not run when another monitor changes:
 
 ```rust
 use rinch::prelude::*;
