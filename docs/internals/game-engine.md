@@ -687,6 +687,27 @@ added later). Composition comes back in through
 `update` as `PlatformEvent::Ime`. A `wants_keyboard()` node that takes no text
 wants no IME. Pins: `rinch/tests/embed_ime_state_1147.rs`.
 
+**A context's window requests are its host's** (#2801). `send_native_event_for`
+(`shell/rinch_runtime/wake.rs`) hands an event to `testing::capture_native_event`,
+then to `embed::window_requests::capture`. That takes a window request
+(`WindowRequest::from_native` is `Some`) for a live context: the document
+`EventFor::Sender` names, else for `Sender(None)` (`rinch::exit`) the one
+dispatching, else the context being mounted (`window_requests::mounting`, which
+`RinchContext::new` runs around `mount_component`, since the document has no
+key before the build). `EventFor::Window` (a handle) is never a context's. A
+re-render or debug command goes on as before. Requests are kept in a
+`doc_keyed!` `DocMap<Vec<WindowRequest>>`, so they go with the context's
+document. `RinchContext::take_window_requests` takes them. `set_window_title`
+from a context's code is kept there too (`capture_title`) and not put in
+`STORED_TITLE`. Then, in a process where no `RinchRuntime` was ever made
+(`wake::RUNTIME_MADE`, set by `RinchRuntime::with_app`, never cleared), the
+event is dropped with a `tracing::debug!` rather than queued, since nothing
+would drain it. The crate's own unit tests drive the queue with no runtime,
+so they count as drained (`cfg!(test)`). `WindowRequest` lives in
+`window_request.rs` (`windowing`); `rinch::testing` and `rinch::embed` both
+re-export it. Pins: `rinch/tests/embed_window_requests_2801.rs` (its own
+process, so no runtime is ever made there).
+
 **`wants_mouse`/`wants_keyboard` decide HUD input routing, and `wants_keyboard`
 does not mean "any node is focused"** (#548). A `<button>`/`<a href>` is
 focusable with no `tabindex` (issue #252's tag-implied set), so a plain mouse

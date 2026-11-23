@@ -77,8 +77,13 @@ pub use crate::host_texture::{
     HostTexture, HostTextureError, HostTextureImages, HostTextureOptions, TextureAlpha,
     TextureRefresh, host_texture,
 };
+#[cfg(feature = "windowing")]
+pub use crate::window_request::WindowRequest;
 /// The rect type of [`ImeState::cursor_area`].
 pub use rinch_core::ElementBounds;
+
+#[cfg(feature = "windowing")]
+pub(crate) mod window_requests;
 
 // ── LayoutRect ───────────────────────────────────────────────────────────────
 
@@ -287,6 +292,14 @@ impl RinchContext {
         app.set_surface_size((width, height));
         app.set_device_pixel_ratio(scale_factor);
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
+        // What the component's code asks of its window, from its first line,
+        // is this context's for its host to read (#2801).
+        #[cfg(feature = "windowing")]
+        window_requests::mounting(|| {
+            app.mount_component(logical_w as f32, logical_h as f32);
+            app.doc_key()
+        });
+        #[cfg(not(feature = "windowing"))]
         app.mount_component(logical_w as f32, logical_h as f32);
         // On wasm32 the mount's image loads were only queued (a loader is app
         // code, not run inside the document's borrow): run them now, and lay
@@ -914,6 +927,22 @@ impl RinchContext {
     pub fn take_ime_change(&mut self) -> Option<ImeChange> {
         let desired = self.app.ime_state();
         self.ime_reported.change_to(desired)
+    }
+
+    /// The requests this context's code made of its window since the last
+    /// call, oldest first: what [`rinch::windows`](mod@crate::windows),
+    /// [`set_window_title`](crate::window::set_window_title) and
+    /// [`rinch::exit`](crate::exit) ask for (a title, show and hide, a size,
+    /// exit, …), the same [`WindowRequest`] `rinch::testing`'s `TestApp`
+    /// reports. A context has no window of rinch's, so nothing is applied:
+    /// the host may honour each for its own window, or ignore it.
+    ///
+    /// Only this context's: another context's requests are its own, and a
+    /// request made outside any context's code goes to a desktop runtime if
+    /// one runs in the process, and is dropped if none was ever made.
+    #[cfg(feature = "windowing")]
+    pub fn take_window_requests(&mut self) -> Vec<WindowRequest> {
+        window_requests::take(self.app.doc_key())
     }
 
     /// Register font data for text rendering **after** the initial mount.

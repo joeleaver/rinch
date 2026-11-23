@@ -588,6 +588,9 @@ impl RinchRuntime {
         // fallback and reflows once the real face arrives.
         #[cfg(test)]
         let _queue_lock = TestQueueLock::hold();
+        // From here native events are queued: this runtime drains them
+        // (#2801).
+        wake::note_runtime_made();
         // The named video sink factory (rinch-core's hook), so video players
         // and rinch-rtc's remote tracks deliver frames through the
         // RenderSurface compositing pipeline. Here rather than in the two
