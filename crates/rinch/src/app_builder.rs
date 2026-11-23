@@ -753,6 +753,43 @@ where
         self
     }
 
+    /// The xdg-activation token the app was launched with, for its first
+    /// window (#2817): `window`'s first shown OS window is created with it
+    /// (winit's `with_activation_token`), so that on Wayland the compositor
+    /// gives it the focus. `None` gives none.
+    ///
+    /// For an app that takes its token first thing in `main`
+    /// ([`take_launch_activation_token`](crate::windows::take_launch_activation_token)),
+    /// which a single-instance app does to hand it to a copy already running.
+    /// When no copy is running the token is this launch's own, and goes
+    /// here, as GTK and Qt give theirs to their first window: taken from the
+    /// environment, it would otherwise be lost. An app that never takes it
+    /// needs none of this: winit does not read `XDG_ACTIVATION_TOKEN` itself,
+    /// but a new window is given the focus anyway on most compositors (KWin
+    /// and sway), and the token decides it only where focus-stealing
+    /// prevention holds a new window back.
+    ///
+    /// A main window that starts hidden ([`WindowProps::visible`] `false`)
+    /// is given it at its first show. Ignored off Wayland, by a layer-shell
+    /// window and by a non-activating one.
+    ///
+    /// ```ignore
+    /// fn main() {
+    ///     // SAFETY: nothing else runs yet.
+    ///     let token = unsafe { rinch::windows::take_launch_activation_token() };
+    ///     if let Some(running) = my_ipc::connect_to_running_copy() {
+    ///         running.send_open(std::env::args().nth(1), token);
+    ///         return;
+    ///     }
+    ///     App::new(app).activation_token(token).run();
+    /// }
+    /// ```
+    #[cfg(feature = "windowing")]
+    pub fn activation_token(self, token: Option<String>) -> Self {
+        crate::shell::activation_tokens::set_launch_token(token);
+        self
+    }
+
     /// When the event loop ends (#2416). `App::new` defaults to
     /// [`ExitWhen::MainWindowCloses`](crate::ExitWhen::MainWindowCloses), as
     /// every app has always run: closing the main window ends the app, whatever

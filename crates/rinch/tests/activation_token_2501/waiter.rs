@@ -6,12 +6,17 @@
 //! the compositors tested: KWin and sway both focus a *new* window when it
 //! maps, token or not, while an activation of a window that is already
 //! there is granted only for a token the compositor trusts.
+//!
+//! For #2817 (`tests/activation_token_2501/raise_2817.rs`) it is the other side: the
+//! program a key is pressed in, which asks for a token naming that press
+//! and gives it away ([`Waiter::token`]).
 
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{
@@ -28,9 +33,19 @@ pub(crate) struct Waiter {
     connection: Connection,
     surface: wl_surface::WlSurface,
     activation: xdg_activation_v1::XdgActivationV1,
+    seat: wl_seat::WlSeat,
     qh: QueueHandle<State>,
     focused: Arc<AtomicBool>,
     mapped: Arc<AtomicBool>,
+    last_key: Arc<AtomicU32>,
+}
+
+/// What a token the waiter asked for is for.
+enum TokenUse {
+    /// Activate the waiter's own window with it.
+    ActivateSelf,
+    /// Give it to the test.
+    Give(mpsc::Sender<String>),
 }
 
 struct State {
@@ -40,6 +55,8 @@ struct State {
     keyboard: Option<wl_keyboard::WlKeyboard>,
     focused: Arc<AtomicBool>,
     mapped: Arc<AtomicBool>,
+    /// The serial of the latest key press its window received (0: none).
+    last_key: Arc<AtomicU32>,
 }
 
 impl Waiter {
@@ -56,7 +73,7 @@ impl Waiter {
         let wm_base: xdg_wm_base::XdgWmBase = globals.bind(&qh, 1..=6, ()).expect("xdg_wm_base");
         let activation: xdg_activation_v1::XdgActivationV1 =
             globals.bind(&qh, 1..=1, ()).expect("xdg_activation_v1");
-        let _seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).expect("wl_seat");
+        let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).expect("wl_seat");
 
         let path = runtime.join("rinch-test-waiter-buffer");
         let file = std::fs::File::options()
@@ -81,6 +98,7 @@ impl Waiter {
 
         let focused = Arc::new(AtomicBool::new(false));
         let mapped = Arc::new(AtomicBool::new(false));
+        let last_key = Arc::new(AtomicU32::new(0));
         let mut state = State {
             surface: surface.clone(),
             buffer,
@@ -88,6 +106,7 @@ impl Waiter {
             keyboard: None,
             focused: Arc::clone(&focused),
             mapped: Arc::clone(&mapped),
+            last_key: Arc::clone(&last_key),
         };
         queue.roundtrip(&mut state).expect("a roundtrip");
         std::thread::spawn(move || {
@@ -99,9 +118,11 @@ impl Waiter {
             connection,
             surface,
             activation,
+            seat,
             qh,
             focused,
             mapped,
+            last_key,
         }
     }
 
@@ -125,10 +146,44 @@ impl Waiter {
     /// can: requested for its own surface, which does not have the focus,
     /// with no input serial. The activation follows the compositor's answer.
     pub(crate) fn activate_with_own_token(&self) {
-        let token = self.activation.get_activation_token(&self.qh, ());
+        let token = self
+            .activation
+            .get_activation_token(&self.qh, TokenUse::ActivateSelf);
         token.set_surface(&self.surface);
         token.commit();
         self.connection.flush().expect("flush");
+    }
+
+    /// The serial of the latest key press the window received, once one has
+    /// come (within `limit`).
+    pub(crate) fn wait_for_key(&self, limit: Duration) -> Option<u32> {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            match self.last_key.load(Ordering::SeqCst) {
+                0 if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                0 => return None,
+                serial => return Some(serial),
+            }
+        }
+    }
+
+    /// A token for the waiter's surface, as a launcher asks for one to start
+    /// a program with: naming the seat and `serial` of the input that asked
+    /// (a key press it received), or, for `None`, no input at all.
+    pub(crate) fn token(&self, serial: Option<u32>, limit: Duration) -> String {
+        let (tx, rx) = mpsc::channel();
+        let token = self
+            .activation
+            .get_activation_token(&self.qh, TokenUse::Give(tx));
+        token.set_surface(&self.surface);
+        if let Some(serial) = serial {
+            token.set_serial(serial, &self.seat);
+        }
+        token.commit();
+        self.connection.flush().expect("flush");
+        rx.recv_timeout(limit).expect("the compositor's token")
     }
 }
 
@@ -237,22 +292,32 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
         match event {
             wl_keyboard::Event::Enter { .. } => state.focused.store(true, Ordering::SeqCst),
             wl_keyboard::Event::Leave { .. } => state.focused.store(false, Ordering::SeqCst),
+            wl_keyboard::Event::Key {
+                serial,
+                state: WEnum::Value(wl_keyboard::KeyState::Pressed),
+                ..
+            } => state.last_key.store(serial, Ordering::SeqCst),
             _ => {}
         }
     }
 }
 
-impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for State {
+impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, TokenUse> for State {
     fn event(
         state: &mut Self,
         token: &xdg_activation_token_v1::XdgActivationTokenV1,
         event: xdg_activation_token_v1::Event,
-        _: &(),
+        to: &TokenUse,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let xdg_activation_token_v1::Event::Done { token: text } = event {
-            state.activation.activate(text, &state.surface);
+            match to {
+                TokenUse::ActivateSelf => state.activation.activate(text, &state.surface),
+                TokenUse::Give(tx) => {
+                    let _ = tx.send(text);
+                }
+            }
             token.destroy();
         }
     }

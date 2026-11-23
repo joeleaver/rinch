@@ -174,18 +174,34 @@ impl RinchRuntime {
                 }
                 return;
             }
-            RinchNativeEvent::FocusWindow => {
+            RinchNativeEvent::FocusWindow(token) => {
                 let backend = Backend::of(event_loop);
                 let w = self.w(role);
+                let non_activating = w
+                    .app
+                    .window_props
+                    .as_ref()
+                    .is_some_and(|p| p.non_activating);
                 // A hidden window has no OS window: it is shown, as
                 // `show_current_window` does, which focuses it as a first
                 // appearance does (and leaves a non-activating one unfocused).
-                let Some(window) = &w.window else {
-                    return self.dispatch_to_app(
+                // A token goes in the new window's attributes, as winit's
+                // `with_activation_token`: activated before the surface's
+                // initial commit (`main_window_attributes` leaves it out
+                // where it does not apply).
+                if w.window.is_none() {
+                    w.activation_token = token;
+                    self.dispatch_to_app(
                         role,
                         PlatformEvent::UserEvent(UserEvent::ShowWindow),
                         event_loop,
                     );
+                    // Not shown after all: no stale token for a later show.
+                    self.w(role).activation_token = None;
+                    return;
+                }
+                let Some(window) = &w.window else {
+                    return;
                 };
                 // The shell's alone, like click-through. A non-activating
                 // window never takes focus, so it is only restored. Only a
@@ -195,28 +211,18 @@ impl RinchRuntime {
                 if window.raw().is_minimized() == Some(true) {
                     window.raw().set_minimized(false);
                 }
-                let non_activating = w
-                    .app
-                    .window_props
-                    .as_ref()
-                    .is_some_and(|p| p.non_activating);
                 if non_activating {
                     return;
                 }
-                if backend == Backend::Wayland {
-                    // winit's Wayland `focus_window` does nothing: raising a
-                    // window takes an xdg-activation token from the input
-                    // that asked, and there is none here. Ask for attention
-                    // instead (a token for this surface, activated), which
-                    // the compositor may honour or show as urgency. Not for
-                    // a layer surface, which has no activation to ask for.
-                    if w.layer.is_none() {
-                        window.raw().request_user_attention(Some(
-                            winit::window::UserAttentionType::Informational,
-                        ));
+                match raise_step(backend, w.layer.is_some(), token.as_deref()) {
+                    Raise::Focus => window.raw().focus_window(),
+                    Raise::ActivateWithToken(token) => {
+                        if !activate_with_token(window.raw(), token) {
+                            request_attention(window.raw());
+                        }
                     }
-                } else {
-                    window.raw().focus_window();
+                    Raise::Attention => request_attention(window.raw()),
+                    Raise::Nothing => {}
                 }
                 return;
             }
@@ -455,6 +461,91 @@ impl RinchRuntime {
         let scale = self.w(role).scale_factor();
         let actions = self.w(role).app.handle_event(event, size, scale);
         self.process_actions(role, actions, event_loop);
+    }
+}
+
+/// What a focus request does to a shown window that may take the keyboard
+/// (#2310, #2817).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Raise<'a> {
+    /// winit's `focus_window`: X11, Windows, macOS.
+    Focus,
+    /// `xdg_activation_v1.activate` with the app's token, on Wayland.
+    ActivateWithToken(&'a str),
+    /// Wayland with no token: winit's `focus_window` there does nothing, as
+    /// raising a window takes an xdg-activation token from the input that
+    /// asked. A request for attention (a token for this surface, made with
+    /// no input serial, activated), which the compositor may honour or show
+    /// as urgency.
+    Attention,
+    /// A Wayland layer surface: it has no activation to ask for.
+    Nothing,
+}
+
+/// The step a focus request with `token` takes on `backend`, for a layer
+/// surface (`layer`) or a toplevel.
+pub(super) fn raise_step(backend: Backend, layer: bool, token: Option<&str>) -> Raise<'_> {
+    match (backend, layer, token) {
+        (Backend::Wayland, true, _) => Raise::Nothing,
+        (Backend::Wayland, false, Some(token)) => Raise::ActivateWithToken(token),
+        (Backend::Wayland, false, None) => Raise::Attention,
+        _ => Raise::Focus,
+    }
+}
+
+/// Ask for attention, informationally: on Wayland, a token for the window's
+/// own surface, activated.
+fn request_attention(window: &dyn winit::window::Window) {
+    window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+}
+
+/// Activate `window` with an xdg-activation `token` (the winit fork's
+/// `WindowExtWayland::activate_with_token`). False when it could not be
+/// sent: not a Wayland window, or a compositor without `xdg_activation_v1`.
+fn activate_with_token(window: &dyn winit::window::Window, token: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::WindowExtWayland;
+        match window
+            .activate_with_token(winit::window::ActivationToken::from_raw(token.to_string()))
+        {
+            Ok(()) => return true,
+            Err(e) => tracing::debug!("Could not activate the window with a token: {e}"),
+        }
+    }
+    let _ = (window, token);
+    false
+}
+
+#[cfg(test)]
+mod raise_step_tests {
+    use super::*;
+
+    /// #2817: a token is used on Wayland, by a toplevel only; elsewhere a
+    /// focus request is winit's `focus_window`, token or not.
+    #[test]
+    fn a_token_activates_a_wayland_toplevel_and_nothing_else_2817() {
+        let t = Some("kwin-4271");
+        assert_eq!(
+            raise_step(Backend::Wayland, false, t),
+            Raise::ActivateWithToken("kwin-4271")
+        );
+        assert_eq!(raise_step(Backend::Wayland, false, None), Raise::Attention);
+        assert_eq!(raise_step(Backend::Wayland, true, t), Raise::Nothing);
+        assert_eq!(raise_step(Backend::Wayland, true, None), Raise::Nothing);
+        for backend in [
+            Backend::X11,
+            Backend::Windows,
+            Backend::MacOs,
+            Backend::Other,
+        ] {
+            assert_eq!(raise_step(backend, false, t), Raise::Focus, "{backend:?}");
+            assert_eq!(
+                raise_step(backend, false, None),
+                Raise::Focus,
+                "{backend:?}"
+            );
+        }
     }
 }
 

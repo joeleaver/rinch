@@ -373,21 +373,41 @@ set_current_window_size(700.0, 200.0);
 
 These functions are available in the prelude and work from onclick handlers.
 
-**Focus** (#2310). `focus_current_window()` and `WindowHandle::focus()` send
-`RinchNativeEvent::FocusWindow`, handled in
+**Focus** (#2310, #2817). `focus_current_window()` and `WindowHandle::focus()` send
+`RinchNativeEvent::FocusWindow(None)`; `activate_current_window_with_token(t)`
+and `WindowHandle::activate_with_token(t)` send `FocusWindow(Some(t))`. Handled in
 `shell/rinch_runtime/native_events.rs`: a window with no OS window (hidden)
 gets the app's `ShowWindow`, as `show_current_window` does; a shown one is
-`set_minimized(false)`, then, unless `non_activating`, `focus_window()` — except
+`set_minimized(false)`, then, unless `non_activating`, the step `raise_step`
+picks (pure, unit-tested there): `focus_window()` off Wayland, token or not;
 on Wayland, where winit's `focus_window` is empty (raising takes an
-xdg-activation token from the input that asked, and the running copy has
-none), so a toplevel gets `request_user_attention(Informational)`, which
-activates a token for its own surface with no serial: the compositor shows it
-as urgency or, by its own policy, raises it. A layer surface gets nothing. Raising a
-running window on Wayland properly needs the token the second launch was
-started with (`XDG_ACTIVATION_TOKEN`) handed over and `xdg_activation_v1.activate`d
-on the window's surface, which winit offers only at window creation.
-`TestApp` models it: a `Focus` request shows a hidden window and focuses any
-window but a non-activating one.
+xdg-activation token from the input that asked), a toplevel with a token is
+activated with it (the winit fork's `WindowExtWayland::activate_with_token`,
+`xdg_activation_v1.activate(token, surface)`), and one without gets
+`request_user_attention(Informational)`, which activates a token for its own
+surface with no serial: the compositor shows it as urgency or, by its own
+policy, raises it. A layer surface gets nothing either way. A token that
+cannot be sent (no `xdg_activation_v1`) falls back to the attention request.
+A hidden window shown by a request with a token gets it in its new window's
+attributes: the handler stores it in `ShellWindow::activation_token` before
+the show, and `main_window_attributes` hands it to `apply_to_attributes`,
+which sets winit's `WindowAttributesWayland::with_activation_token`; winit
+then activates the new surface before its initial commit (not after
+`create_window`, which has already made that commit). It is left out off
+Wayland, for a layer surface and for a non-activating window, and cleared
+once a shown window is made (or the show made none). The same field carries
+a first launch's own token: `App::activation_token(Option<String>)` stores it
+(`shell::activation_tokens::set_launch_token`, a process global, as
+`gpu_init_threads` stores its count), and the main window's `create_window`
+takes it into the field; a main window that starts hidden keeps it for the
+window its first show makes. The token is the second
+launch's `XDG_ACTIVATION_TOKEN`, which `take_launch_activation_token()`
+(`activation.rs`) reads and removes from the environment (an `unsafe fn`,
+since `std::env::remove_var` is unsound with another thread reading the
+environment). `TestApp` models it: a `Focus` or `ActivateWithToken` request
+shows a hidden window and focuses any window but a non-activating one. Live,
+on sway and KWin: `tests/activation_token_2501/raise_2817.rs` (below, "Activation
+Tokens").
 
 **Hide / show keeps the geometry** (#1546, `shell/window_geometry.rs`).
 `hide_window` still destroys the OS window (Wayland has no invisible toplevel;
@@ -1197,6 +1217,29 @@ request; a drag source's `onclick`, which comes on the release, asks and is
 not refused; a move handler is refused; an unmounted component is never
 called). Live, on a compositor:
 `tests/activation_token_2501/`.
+
+**Using a token given to the app** (#2817) is the other direction: a
+single-instance app's second launch takes the token it was started with
+(`take_launch_activation_token`) and hands it to the running copy, which
+calls `activate_current_window_with_token` (see "Focus" above for the
+shell's side). The protocol answers nothing to an `activate`, so there is no
+callback and no error: a token the compositor does not trust changes
+nothing. Live: `tests/activation_token_2501/raise_2817.rs`, a module of the
+2501 test binary (its sway, keyboard, waiter and probe): the probe
+(`examples/activation_token_probe.rs`, with `PROBE_ACTIVATE_FILE`) is mapped
+first, the waiter maps over it and takes the keyboard, Enter is pressed into
+the waiter, which asks for a token naming that press, and the token goes to
+a second run of the probe as `XDG_ACTIVATION_TOKEN` (`PROBE_RELAY_TO`), which
+takes it, checks the variable is gone, and writes it to the file the first
+probe watches. The first probe then activates its window with it and gets
+the keyboard back. Two controls: `focus_current_window()` (no token, what an
+app could do before) and a token the waiter made for itself with no input
+serial both leave the keyboard with the waiter. A window *made* with a token
+(a first launch's, or a hidden window shown by a request with one) cannot show
+a difference in focus there, since KWin and sway focus a new window when it
+maps; its two tests read the probe's `WAYLAND_DEBUG=client` log instead and
+check that `xdg_activation_v1.activate` names the new surface before that
+surface's first commit.
 
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
@@ -2060,10 +2103,10 @@ guide's "A window sized by its content" has what an app sees; here is how.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`43f05ac88f226a08302a08654cb2e56d8d550237`,
+`rinch-patch-beta4`, pinned by rev** (`19bfe4dad624fd3d619cde3f2ce09046bcc6a256`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
 #2652, #2489, #2552's content sizing, #2741's input regions and #2826's
-one-commit layer turn). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+one-commit layer turn, and #2817's activation of an existing window). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -2097,7 +2140,18 @@ joeleaver/winit-fork#10) are on the branch, and a surface's input region
 (#2741, branch `input-region-2741`, one commit on `9610ebc4`: `70dcdc7c`;
 joeleaver/winit-fork#11) is on the branch, and a layer surface's changes and
 size request in one commit (#2826, branch `layer-one-commit-2464`, one
-commit on `70dcdc7c`: `43f05ac8`; joeleaver/winit-fork#12) is the pin:
+commit on `70dcdc7c`: `43f05ac8`; joeleaver/winit-fork#12) is on the branch.
+An existing window's activation with a token (#2817, branch `rinch-2817`, one
+commit on `43f05ac8`: `19bfe4da`; joeleaver/winit-fork#13) is the pin:
+
+- **An existing window activated with a token (#2817, fork PR 13).**
+  `WindowExtWayland::activate_with_token(token)` sends
+  `xdg_activation_v1.activate(token, surface)` for the window's surface,
+  which upstream does only at creation (`with_activation_token`). `Ok` says
+  only that the request went out: the protocol answers nothing. A popup, X11
+  and a compositor without `xdg_activation_v1` get `NotSupported`. Works for
+  an xdg-toplevel and a layer surface (rinch sends none for a layer surface).
+  rinch's `activate_current_window_with_token` uses it.
 
 - **Layer changes and a size in one commit (#2826, fork PR 12).**
   `WindowExtWayland::set_layer_shell_changes_and_size(changes, size)` makes

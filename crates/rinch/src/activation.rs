@@ -181,6 +181,65 @@ pub fn request_activation_token(callback: impl FnOnce(ActivationTokenResult) + '
     ask(request);
 }
 
+/// The environment variable a launcher hands a Wayland program its
+/// xdg-activation token in.
+const LAUNCH_TOKEN_VAR: &str = "XDG_ACTIVATION_TOKEN";
+
+/// The xdg-activation token this process was started with, taken out of its
+/// environment (#2817).
+///
+/// A launcher (a desktop's menu, a browser opening a link, a file manager)
+/// starts a Wayland program with a token in `XDG_ACTIVATION_TOKEN`, tied to
+/// the user action that started it. A single-instance app's second launch
+/// takes it here and hands it to the instance that is already running, over
+/// the app's own IPC, and that instance raises its window with it
+/// ([`activate_current_window_with_token`](crate::windows::activate_current_window_with_token),
+/// [`WindowHandle::activate_with_token`](crate::WindowHandle::activate_with_token)).
+///
+/// The variable is removed from the environment, as the xdg-activation
+/// protocol asks, so that a program this one starts does not inherit a
+/// token meant for this one. So it answers `Some` once per process; an
+/// empty or non-UTF-8 value is `None` (and removed as well). It reads only
+/// `XDG_ACTIVATION_TOKEN`: X11's startup notification (`DESKTOP_STARTUP_ID`)
+/// is another mechanism, left where it is.
+///
+/// An app's first launch, which opens its own window, needs none of this:
+/// its window is new, and a compositor gives a new window the focus when it
+/// maps.
+///
+/// # Safety
+///
+/// It changes the process's environment ([`std::env::remove_var`]), so no
+/// other thread may read or write the environment while it runs (in Rust
+/// or in C: `getenv` in a library counts). Call it first thing in `main`,
+/// before the app or any library starts a thread.
+///
+/// # Example
+///
+/// ```ignore
+/// fn main() {
+///     // SAFETY: nothing else runs yet.
+///     let token = unsafe { rinch::windows::take_launch_activation_token() };
+///     if let Some(running) = my_ipc::connect_to_running_instance() {
+///         running.send_open(link, token); // it calls activate_current_window_with_token
+///         return;
+///     }
+///     App::new(app).run();
+/// }
+/// ```
+#[must_use]
+pub unsafe fn take_launch_activation_token() -> Option<String> {
+    let token = launch_token(std::env::var_os(LAUNCH_TOKEN_VAR));
+    // SAFETY: the caller's: no other thread touches the environment now.
+    unsafe { std::env::remove_var(LAUNCH_TOKEN_VAR) };
+    token
+}
+
+/// The token a launch's `XDG_ACTIVATION_TOKEN` value stands for.
+fn launch_token(value: Option<std::ffi::OsString>) -> Option<String> {
+    value?.into_string().ok().filter(|token| !token.is_empty())
+}
+
 /// Send `request` to the shell, which asks the current window's compositor.
 #[cfg(feature = "windowing")]
 fn ask(request: MainCallbackId) {
@@ -203,4 +262,30 @@ pub(crate) fn answer(request: MainCallbackId, result: ActivationTokenResult) {
     crate::shell::rinch_runtime::run_on_main_thread(resume);
     #[cfg(not(feature = "windowing"))]
     rinch_core::queue_main_callback(Box::new(resume));
+}
+
+#[cfg(test)]
+mod launch_token_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn a_launch_token_is_the_variables_value_and_nothing_else_2817() {
+        assert_eq!(
+            launch_token(Some(OsString::from("kwin-4271"))).as_deref(),
+            Some("kwin-4271")
+        );
+        assert_eq!(launch_token(None), None);
+        assert_eq!(
+            launch_token(Some(OsString::new())),
+            None,
+            "empty is no token"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let not_utf8 = OsString::from_vec(vec![0x66, 0xff, 0x6f]);
+            assert_eq!(launch_token(Some(not_utf8)), None);
+        }
+    }
 }
