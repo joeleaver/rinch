@@ -418,10 +418,10 @@ It is a choice an app can turn off: `App::new(app).smooth_wheel_scroll(false)`
 makes every notch scroll its whole distance at once, and
 `RinchApp::set_smooth_wheel_scroll` changes it while the app runs (an embedded
 `RinchContext`: through `app_mut()`; send `PlatformEvent::MouseWheelLines` for a
-line wheel and it glides there too). rinch does not read the OS's
-reduced-motion setting on the desktop yet
-([#2209](https://github.com/joeleaver/rinch/issues/2209)); an app that reads it
-can pass the answer to `smooth_wheel_scroll`. On the web the browser scrolls,
+line wheel and it glides there too). Smooth scrolling does not follow the
+reduced-motion preference by itself. An app that wants it to can pass the
+preference to `smooth_wheel_scroll(!rinch::prefers_reduced_motion())`; the
+preference comes from the OS or `App::reduced_motion`, #2209. On the web the browser scrolls,
 with its own smoothing and its own settings, and none of this applies.
 
 ### Pointer moves are coalesced

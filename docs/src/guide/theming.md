@@ -710,6 +710,43 @@ In dark mode, semantic colors flip:
 
 For dynamic dark mode toggling (e.g., a switch in your app), use `dark_mode_fn` on WASM or re-create the theme and call `update_theme()` on desktop.
 
+## Reduced motion
+
+`@media (prefers-reduced-motion: reduce)` and `(prefers-reduced-motion:
+no-preference)` work in your stylesheets on every platform. The theme uses the
+first one (`Theme::respect_reduced_motion`, on by default) to shorten every
+transition and animation to 0.01ms, so spinners, collapses and fades stop moving
+when the user asks for less motion.
+
+On desktop the preference follows the OS setting, as Chrome does:
+
+- GNOME: Settings › Accessibility › Reduce Animation
+  (`org.gnome.desktop.interface enable-animations`).
+- KDE: the animation speed slider set to "Instant" (`AnimationDurationFactor=0`).
+- Windows: "Show animations in Windows".
+- macOS: Accessibility › Display › Reduce motion.
+
+The setting is read when the app starts and again whenever one of its windows
+gains focus, so a change made in the system settings applies when you come back
+to the app.
+
+To decide for the app instead, use `App::reduced_motion`:
+
+```rust
+App::new(app).reduced_motion(Some(true))   // always reduce
+App::new(app).reduced_motion(None)         // follow the OS (the default)
+```
+
+`rinch::set_reduced_motion` changes it while the app runs. To read it from your
+own code, use `rinch::prefers_reduced_motion()`. It is reactive: an effect or a
+`{|| …}` closure that reads it runs again when it changes.
+
+```rust
+p { {|| if rinch::prefers_reduced_motion() { "Still" } else { "Animated" }} }
+```
+
+In the browser, the browser answers the media query itself.
+
 ## Scrollbars
 
 A desktop scroll container paints an overlay thumb on each axis that is

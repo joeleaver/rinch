@@ -41,6 +41,7 @@ mod out_of_flow;
 pub mod paint;
 pub mod perf;
 pub mod query;
+pub mod reduced_motion;
 pub mod replaced;
 pub mod select;
 pub mod stacking;
@@ -55,7 +56,6 @@ pub mod text_query;
 pub mod transition;
 pub mod visibility;
 mod webkit_box;
-pub mod reduced_motion;
 
 pub use computed_style::ComputedStyle;
 pub use dom_impl::RinchDocument;

@@ -755,8 +755,9 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   wheel to the animating scroller); once it has landed there, the next notch
   chains as a direct one does.
 - **Not here**: the web (the browser scrolls, and smooths, by itself) and
-  Android (its wheels are touch pans and flings, pixels). The OS's
-  reduced-motion setting is not read (#2209); the app passes it. CSS
+  Android (its wheels are touch pans and flings, pixels). The
+  reduced-motion preference (`rinch::prefers_reduced_motion`, #2209) does not
+  turn the glide off; an app passes it to `smooth_wheel_scroll`. CSS
   `scroll-behavior` for programmatic and keyboard scrolls is not modelled.
 
 Tests: `rinch/src/app/smooth_wheel_2287_tests.rs` (the sampled curve at
