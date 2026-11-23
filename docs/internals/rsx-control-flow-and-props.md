@@ -280,15 +280,28 @@ else measured on demand and not cached; `SpanFragments::union_left/right` hold
 every fragment's extent less the white space that ends a line), grown by the
 element's padding and pushed through the host's painted transform less its own
 scroll. A split inline (#513) has no fragments and falls back to the ghost box
-(a line `text-overflow: ellipsis` cuts keeps them since #1100). Every other element: rinch-dom answers
-`paint::painted_border_box(tree, id, 1.0)` — the conversion
-`ClickContext` and the bounds signals use — from the last layout, a zero rect
+(a line `text-overflow: ellipsis` cuts keeps them since #1100).
+`paint::painted_border_box` — the conversion `ClickContext`, the desktop
+bounds signals, `scroll_into_view` and the rest of `rinch` read
+(`app::hit_testing::painted_element_box`) — answers the same union for a
+flowed inline element since #2257 (`out_of_flow::inline_element_painted_rect`;
+before, `(x, y, 0, 0)` from the ghost box, so desktop `element_*` and
+`bounds_signal()` were empty where the web's were the span's box). It has only
+`&NodeTree`, and each fragment's height is the element's **own** font's ascent
+and descent, which needs a shaped probe: so the font boxes are recorded per
+font (`NodeTree::inline_font_boxes`, keyed by family, size, weight, style and
+the font generation) for every inline element an IFC flows when its lines are
+shaped (`RinchDocument::note_inline_font_boxes`, from
+`shape_ifc_root_paint_layout`): a lookup per element, a probe per new font.
+`inline_element_rect` reads and fills the same table. Every other element:
+rinch-dom answers `paint::painted_border_box(tree, id, 1.0)` from the last layout, a zero rect
 under `display: none` or for a `display: contents` element (Chrome's answer; the
 layout of such a box is zeroed, so a sum up the chain would give its parent's
 origin), and `None` for a text node or one not connected; rinch-web answers
 `getBoundingClientRect()` for a connected element. Pins:
 `rinch-dom/tests/bounding_rect_1779_tests.rs`,
-`rinch-web/tests/bounding_rect_and_ref_1779.rs` (Chrome 155, Firefox).
+`rinch-web/tests/bounding_rect_and_ref_1779.rs` (Chrome 155, Firefox),
+`rinch-dom/tests/geometry_queries_2257_tests.rs` (the painted box, Chrome 158).
 
 ### RSX Prop Transformation Rules (IMPORTANT - Read Before Using Components)
 

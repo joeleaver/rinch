@@ -3745,9 +3745,24 @@ fn position_and_transform_in(
 /// real transformed layout uses it is exact, and it is the same approximation
 /// the browser makes.
 ///
+/// A flowed inline element (`<span>`, `<a>`), whose layout is a `0x0` ghost,
+/// answers the union of its line fragments, as `getBoundingClientRect()`
+/// does: `out_of_flow::inline_element_painted_rect` (#2257).
+///
 /// `scale` is the DPI scale factor the result is expressed in — pass `1.0` to
 /// work in layout pixels.
 pub fn painted_border_box(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Rect {
+    // A flowed inline element owns no box (its layout is a 0x0 ghost): the
+    // union of its line fragments, as `getBoundingClientRect()` answers
+    // (#2257, #1779).
+    if tree
+        .get(node_id)
+        .is_some_and(|n| n.is_flowed_inline_element())
+        && let Some((x, y, w, h)) =
+            crate::out_of_flow::inline_element_painted_rect(tree, node_id, scale)
+    {
+        return Rect::new(x, y, x + w, y + h);
+    }
     let (x, y, transform) = compute_absolute_position_and_transform(tree, node_id, scale);
     let (w, h) = tree.get(node_id).map_or((0.0, 0.0), |node| {
         (
