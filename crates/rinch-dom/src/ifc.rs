@@ -594,7 +594,7 @@ pub(crate) fn element_is_ltr(node: &Node) -> bool {
 
 /// An element's `unicode-bidi` and whether its `direction` is `ltr`, from its
 /// Stylo style; `normal` and `ltr` for a node without one (an anonymous box).
-fn unicode_bidi_of(node: &Node) -> (style::computed_values::unicode_bidi::T, bool) {
+pub(crate) fn unicode_bidi_of(node: &Node) -> (style::computed_values::unicode_bidi::T, bool) {
     use style::computed_values::unicode_bidi::T as U;
     node.stylo_element_data
         .borrow()
