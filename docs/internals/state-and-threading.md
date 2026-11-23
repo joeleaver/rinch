@@ -442,8 +442,13 @@ outside A's `tracing` subscriber. Now:
   `tests/stale_handle_wrap_2780.rs`, `--ignored`). `SignalStore::slot_of` masks
   the slot out of an id and answers `None` for an id carrying another thread's
   tag, so two threads' ids never alias: a write run on the wrong thread finds
-  nothing (the freed-signal warning) where it used to write that thread's signal
-  of the same slot. One thread holds at most 2^24 live signals (`alloc`
+  nothing where it used to write that thread's signal of the same slot. The
+  drop has a warning of its own (#2889, `warn_write_dropped`, which asks
+  `SignalStore::is_foreign`): "made on another thread", and either that the
+  thread hosts no app (where to make the signal: the main thread, a host
+  thread, a `TestApp`) or, for a host thread's signal written directly, to use
+  `send`. It used to give the freed-signal warning, naming a disposed scope
+  that never existed; a freed slot keeps that one. One thread holds at most 2^24 live signals (`alloc`
   asserts it). A thread that ends gives its tag back (`SignalStore`'s `Drop`)
   with its generation counter, and the next thread to take the tag continues
   that counter, so a stale handle to the ended thread's signal never names the
@@ -458,8 +463,9 @@ outside A's `tracing` subscriber. Now:
   through `dispatch_main_callback`'s path otherwise. Every other signal (an
   app's, a worker's own) is routed exactly as before #2778, so nothing is ever
   queued for a thread that does not drain; a write to a worker's own signal
-  still reaches the main thread's drain, which now drops it (the id's tag is
-  the worker's) instead of writing the main thread's signal of that slot. The
+  still reaches the main thread's drain (or any host thread's), which now
+  drops it (the id's tag is the worker's, the "hosts no app" warning) instead
+  of writing the main thread's signal of that slot. The
   tag reaches `queue_main_callback` through `QueueThread::route`, a
   thread-local set around the dispatcher call (`dispatch_routed`), so the
   dispatcher keeps its `fn(Box<dyn FnOnce() + Send>)` shape: every dispatcher

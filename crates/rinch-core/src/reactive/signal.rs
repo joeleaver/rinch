@@ -27,7 +27,7 @@ fn panic_off_main(called: &str, alt: &str) -> ! {
 ///
 /// Reads are strict because there is nothing to return: `T` is not `Default`, so
 /// a lenient read has no value to hand back. Writes take the other branch — see
-/// [`warn_write_to_freed`].
+/// [`warn_write_dropped`].
 #[cold]
 #[inline(never)]
 fn panic_read_freed(called: &str) -> ! {
@@ -53,19 +53,26 @@ fn panic_read_freed(called: &str) -> ! {
 /// front and hand it down. Reading it here would key every cross-thread write
 /// to one line inside this file, collapsing the per-call-site dedup into a
 /// single global warning.
+///
+/// A write to a signal **made on another thread** finds nothing here either,
+/// and gets a warning of its own (issue #2889): the usual way to reach it is a
+/// `send` to a signal of a thread that hosts no app, which `route_write`
+/// queues unrouted and a host thread's drain drops. No scope was disposed
+/// there, and `is_alive()` on the sender's thread reads the sender's store.
 #[cold]
 #[inline(never)]
-fn warn_write_to_freed(called: &str, loc: &'static Location<'static>) {
+fn warn_write_dropped(id: u32, called: &str, loc: &'static Location<'static>) {
     thread_local! {
-        /// `(file, line, column)` of call sites already warned about. `file()`
-        /// is `&'static str`, so the key borrows nothing.
-        static WARNED: RefCell<HashSet<(&'static str, u32, u32)>> =
+        /// `(foreign, file, line, column)` of call sites already warned
+        /// about. `file()` is `&'static str`, so the key borrows nothing.
+        static WARNED: RefCell<HashSet<(bool, &'static str, u32, u32)>> =
             RefCell::new(HashSet::new());
     }
 
+    let foreign = SIGNAL_STORE.with(|store| store.borrow().is_foreign(id));
     let first = WARNED.with(|w| {
         w.borrow_mut()
-            .insert((loc.file(), loc.line(), loc.column()))
+            .insert((foreign, loc.file(), loc.line(), loc.column()))
     });
     if !first {
         return;
@@ -74,20 +81,37 @@ fn warn_write_to_freed(called: &str, loc: &'static Location<'static>) {
     #[cfg(test)]
     WARN_COUNT.with(|c| c.set(c.get() + 1));
 
-    tracing::warn!(
-        "Signal::{called}() on a freed signal at {}:{}:{} — the write was dropped. \
-         The scope that owned this signal was disposed while this handle was still \
-         reachable. Check `signal.is_alive()` before writing if the write matters. \
-         (Warned once per call site.)",
-        loc.file(),
-        loc.line(),
-        loc.column(),
-    );
+    let (file, line, column) = (loc.file(), loc.line(), loc.column());
+    if !foreign {
+        tracing::warn!(
+            "Signal::{called}() on a freed signal at {file}:{line}:{column} — the write was \
+             dropped. The scope that owned this signal was disposed while this handle was \
+             still reachable. Check `signal.is_alive()` before writing if the write matters. \
+             (Warned once per call site.)",
+        );
+    } else if super::is_host_tag(super::signal_owner(id)) {
+        // A direct write from the wrong thread to a host thread's signal:
+        // `send` would have been routed there.
+        tracing::warn!(
+            "Signal::{called}() to a signal made on another thread, at {file}:{line}:{column} \
+             — the write was dropped. Only the thread that made a signal holds it. Write it \
+             from another thread with `send()` or `update_send()`, which deliver the write to \
+             that thread. (Warned once per call site.)",
+        );
+    } else {
+        tracing::warn!(
+            "Signal::{called}() to a signal made on another thread, at {file}:{line}:{column} \
+             — the write was dropped. That thread hosts no app, so nothing applies writes to \
+             its signals. A signal written with `send()` or `update_send()` must be made on \
+             the main thread or a host thread (in a test, inside a `TestApp`). (Warned once \
+             per call site.)",
+        );
+    }
 }
 
 #[cfg(test)]
 thread_local! {
-    /// Number of warnings [`warn_write_to_freed`] actually emitted, i.e. the
+    /// Number of warnings [`warn_write_dropped`] actually emitted, i.e. the
     /// number of *distinct call sites* it saw. Lets the dedup be asserted
     /// without installing a `tracing` subscriber.
     static WARN_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -405,13 +429,13 @@ impl<T: 'static> Signal<T> {
     /// for automatic cross-thread dispatch.
     #[track_caller]
     pub fn set(&self, value: T) {
-        self.set_at(value, Location::caller());
+        self.set_at(value, "set", Location::caller());
     }
 
     /// [`set`](Signal::set), with the reporting location supplied explicitly so
     /// [`send`](Signal::send) can attribute a deferred cross-thread write to the
     /// site that requested it.
-    pub(crate) fn set_at(&self, value: T, loc: &'static Location<'static>) {
+    pub(crate) fn set_at(&self, value: T, called: &str, loc: &'static Location<'static>) {
         if !super::is_main_thread() {
             panic_off_main("set", "send");
         }
@@ -423,7 +447,7 @@ impl<T: 'static> Signal<T> {
             // Nothing was borrowed above, so `value` is just an owned `T` here
             // — dropping it needs no special placement.
             drop(value);
-            warn_write_to_freed("set", loc);
+            warn_write_dropped(self.id, called, loc);
             return;
         };
         // The displaced value is dropped *after* this signal's own
@@ -452,12 +476,12 @@ impl<T: 'static> Signal<T> {
     where
         T: PartialEq,
     {
-        self.set_if_changed_at(value, Location::caller());
+        self.set_if_changed_at(value, "set_if_changed", Location::caller());
     }
 
     /// [`set_if_changed`](Signal::set_if_changed) with an explicit reporting
     /// location — see [`set_at`](Signal::set_at).
-    pub(crate) fn set_if_changed_at(&self, value: T, loc: &'static Location<'static>)
+    pub(crate) fn set_if_changed_at(&self, value: T, called: &str, loc: &'static Location<'static>)
     where
         T: PartialEq,
     {
@@ -469,7 +493,7 @@ impl<T: 'static> Signal<T> {
             SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))
         else {
             drop(value);
-            warn_write_to_freed("set_if_changed", loc);
+            warn_write_dropped(self.id, called, loc);
             return;
         };
 
@@ -517,7 +541,7 @@ impl<T: 'static> Signal<T> {
     /// for automatic cross-thread dispatch.
     #[track_caller]
     pub fn update(&self, f: impl FnOnce(&mut T)) {
-        self.update_at(f, Location::caller());
+        self.update_at(f, "update", Location::caller());
     }
 
     /// [`update`](Signal::update) with an explicit reporting location — see
@@ -527,7 +551,12 @@ impl<T: 'static> Signal<T> {
     /// exactly like [`try_with`](Signal::try_with) — no `SIGNAL_STORE` borrow
     /// is held while `f` runs, so a nested read or write of a *different*
     /// signal inside `f` is legal, in an effect or out of one.
-    pub(crate) fn update_at(&self, f: impl FnOnce(&mut T), loc: &'static Location<'static>) {
+    pub(crate) fn update_at(
+        &self,
+        f: impl FnOnce(&mut T),
+        called: &str,
+        loc: &'static Location<'static>,
+    ) {
         if !super::is_main_thread() {
             panic_off_main("update", "update_send");
         }
@@ -535,7 +564,7 @@ impl<T: 'static> Signal<T> {
             SIGNAL_STORE.with(|store| store.borrow().get_inner(self.id, self.generation))
         else {
             drop(f);
-            warn_write_to_freed("update", loc);
+            warn_write_dropped(self.id, called, loc);
             return;
         };
         {
@@ -586,11 +615,11 @@ impl<T: Send + 'static> Signal<T> {
         // Applied here when the signal is this thread's, else queued for the
         // thread that created it (issue #2778; see `route_write`).
         match super::route_write(self.id) {
-            super::WriteRoute::Here => self.set_at(value, loc),
+            super::WriteRoute::Here => self.set_at(value, "send", loc),
             super::WriteRoute::Dispatch { owner } => super::dispatch_to_main_thread_for(
                 owner,
                 Box::new(move || {
-                    signal.set_at(value, loc);
+                    signal.set_at(value, "send", loc);
                 }),
             ),
             // A worker ahead of the host (issue #1541), or a write to another
@@ -606,7 +635,7 @@ impl<T: Send + 'static> Signal<T> {
                         // would write a stranger's signal — drop it there, as the
                         // write was before #1541.
                         if owner != 0 || super::write_thread() == super::WriteThread::Main {
-                            signal.set_at(value, loc);
+                            signal.set_at(value, "send", loc);
                         }
                     }),
                 )
@@ -638,18 +667,18 @@ impl<T: Send + 'static> Signal<T> {
         let signal = *self;
         // See `send` (issues #1541, #2778).
         match super::route_write(self.id) {
-            super::WriteRoute::Here => self.update_at(f, loc),
+            super::WriteRoute::Here => self.update_at(f, "update_send", loc),
             super::WriteRoute::Dispatch { owner } => super::dispatch_to_main_thread_for(
                 owner,
                 Box::new(move || {
-                    signal.update_at(f, loc);
+                    signal.update_at(f, "update_send", loc);
                 }),
             ),
             super::WriteRoute::Queue { owner } => super::dispatch_main_callback_for(
                 owner,
                 Box::new(move || {
                     if owner != 0 || super::write_thread() == super::WriteThread::Main {
-                        signal.update_at(f, loc);
+                        signal.update_at(f, "update_send", loc);
                     }
                 }),
             ),
