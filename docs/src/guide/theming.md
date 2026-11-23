@@ -74,7 +74,13 @@ var(--rinch-color-text)        /* Primary text */
 var(--rinch-color-dimmed)      /* Secondary text */
 var(--rinch-color-border)      /* Borders */
 var(--rinch-color-placeholder) /* Input placeholders */
+var(--rinch-color-option-hover)    /* A hovered list item: neutral gray (gray-2 light, dark-5 dark) */
+var(--rinch-color-option-selected) /* The selected list item: primary tint (primary-0 light, primary at 15% dark) */
 ```
+
+`option-hover` and `option-selected` are what `Select` paints its hovered and
+selected options with; use them for any list with both states (a taskbar, a
+sidebar) and the two stay distinguishable in both schemes.
 
 ### Spacing
 
