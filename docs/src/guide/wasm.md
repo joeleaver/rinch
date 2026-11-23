@@ -539,6 +539,11 @@ dispatched at, as untrusted clicks always have, and a plain `Event("contextmenu"
 still runs a live `data-oncontextmenu` handler; both are read as having no
 position (the element's centre) and no modifier held.
 
+**Spellcheck.** Text fields are checked by the browser. The rich-text
+`Editor` is checked by rinch, in slices on the page's thread, but only with
+dictionaries the app supplies; with none it is not checked. Its context menu
+has no spelling suggestions yet. See [Spellcheck](spellcheck.md#on-the-web).
+
 ## What Doesn't (Yet)
 
 - **Custom painting** — Vello and tiny-skia don't run in the browser. The browser paints for you instead.
@@ -587,6 +592,16 @@ word, ended by whitespace, punctuation or a change of script; with it
 `漢字です|` + Ctrl+Backspace deletes `です`, as on desktop and in Chrome. The
 `rinch` facade needs no feature for this: on wasm the editor comes from
 `rinch-web`.
+
+### Spellcheck dictionaries
+
+rinch bundles no dictionary on any target. On the web the rich-text editor's
+spellchecker needs the app's own (`.aff`/`.dic`, en_US's `.dic` is 860 KB);
+an app either builds them in with `include_bytes!` or fetches them at run time
+and passes them to `rinch::spellcheck::configure`, which keeps them out of the
+`.wasm` (see [Spellcheck](spellcheck.md#on-the-web)). The checking code itself
+is behind `rinch-web`'s `spellcheck` feature (on by default): `examples/editor-web`
+is 5,375,913 bytes with it and 5,267,767 without (release, before `wasm-opt`).
 
 ## Reference
 

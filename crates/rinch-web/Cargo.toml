@@ -140,6 +140,12 @@ tracing.workspace = true
 log = "0.4"
 
 [features]
+default = ["spellcheck"]
+# rinch's spellchecker in the rich-text editor (#2862), which runs only with
+# dictionaries the app supplies. On by default; an app that never supplies
+# any turns default features off to drop the checking code (~113 KB of wasm).
+# Text fields are the browser's either way.
+spellcheck = ["rinch-editor-view/spellcheck"]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which
 # is the only thing that links a CRDT engine (yrs). Off by default, so a default web
 # build links zero CRDT code. Nothing else is required of a wasm app enabling it: yrs
