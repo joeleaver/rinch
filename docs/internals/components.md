@@ -85,6 +85,8 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 
 The `Tree` component takes its icons through data rather than a prop: `TreeNodeData::icon` (`tree.rs:56`), set with the `with_icon(TablerIcon)` builder.
 
+`List` and `ListItem` also take `icon_node: Option<SectionRenderer>` (#2207), a marker node of the app's own (pass `Some(renderer)`), which wins over `icon` on the same component. Both reach the item through one private `Marker` enum (`list.rs`), so the default-icon patch below treats a list's node exactly as its Tabler default: once per item at render and again for late items, the renderer called once per item, an item's own `icon` or `icon_node` winning, and a defaulted item (`data-list-icon`) taking a new list's marker when it moves.
+
 **`List::icon` and the two `Stepper` icons are container *defaults*, and they
 work by patching the rendered children** (#707). A parent component renders
 *after* its children — the rsx macro builds the children into a `<template>` and
