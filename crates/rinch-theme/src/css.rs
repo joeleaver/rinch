@@ -148,6 +148,10 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str(
             "  --rinch-color-option-selected: color-mix(in srgb, var(--rinch-primary-color) 15%, transparent);\n",
         );
+        // A hovered selected row (Tree, #2871): Mantine's `light-hover`.
+        css.push_str(
+            "  --rinch-color-option-selected-hover: color-mix(in srgb, var(--rinch-primary-color) 25%, transparent);\n",
+        );
         // Dark mode titlebar: dark background with primary color text/icons
         css.push_str("  --rinch-titlebar-bg: var(--rinch-color-surface);\n");
         css.push_str("  --rinch-titlebar-text: var(--rinch-primary-color);\n");
@@ -177,6 +181,7 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str("  --rinch-color-state-disabled: var(--rinch-color-gray-1);\n");
         css.push_str("  --rinch-color-option-hover: var(--rinch-color-gray-2);\n");
         css.push_str("  --rinch-color-option-selected: var(--rinch-primary-color-0);\n");
+        css.push_str("  --rinch-color-option-selected-hover: var(--rinch-primary-color-1);\n");
         // Light mode titlebar: primary color background with white text/icons
         css.push_str("  --rinch-titlebar-bg: var(--rinch-primary-color);\n");
         css.push_str("  --rinch-titlebar-text: white;\n");
