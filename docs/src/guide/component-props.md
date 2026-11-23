@@ -119,7 +119,7 @@ Empty spacing element.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `variant` | `String` | `""` | "filled", "outline", "light", "subtle", "transparent", "white", "default", "gradient" |
+| `variant` | `String` | `""` | "filled", "outline", "light", "subtle", "transparent", "white", "default", "gradient". `light` (and the hover fill of `outline`/`subtle`) paints the scheme-aware `--rinch-<color>-light` tokens (see theming.md, Variant Colors) |
 | `size` | `String` | `""` | xs, sm, md, lg, xl |
 | `color` | `String` | `""` | Theme color name |
 | `disabled` | `bool` | `false` | |
@@ -636,7 +636,7 @@ when alpha must be externally drivable.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `color` | `String` | `""` | Highlight background color |
+| `color` | `String` | `""` | Highlight background color (a palette name, its shade 2). Unset, it is `--rinch-color-mark`, which follows the scheme |
 
 ### Highlight
 
@@ -646,7 +646,7 @@ Custom Default: `ignore_case` defaults to `true`.
 |------|------|---------|-------------|
 | `text` | `String` | `""` | Full text to display |
 | `highlight` | `String` | `""` | Substring(s) to highlight |
-| `color` | `String` | `""` | Highlight color |
+| `color` | `String` | `""` | Highlight color. Unset, it is `--rinch-color-mark`, which follows the scheme |
 | `ignore_case` | `bool` | **`true`** | Case-insensitive matching |
 
 ---
