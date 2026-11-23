@@ -77,6 +77,7 @@ mod main_window;
 mod native_events;
 mod open_windows;
 mod paint;
+mod popups;
 mod wake;
 mod winit_input;
 
@@ -155,6 +156,8 @@ pub struct RinchRuntime {
     windowless_root_warned: bool,
     /// The app's bundled fonts, for every window's document.
     fonts: Vec<crate::font::AppFont>,
+    /// The popups' state beside the windows (#2552).
+    popups: popups::PopupState,
 
     /// Test builds only (#1733): the lock every test that queues or drains the
     /// process-wide main-thread and native queues holds. Dropping a runtime
@@ -390,6 +393,9 @@ struct ShellWindow {
     /// when the focused editor actually changed.
     #[cfg(feature = "a11y")]
     a11y_last: Option<(rinch_editor_core::Node, rinch_editor_core::Selection)>,
+    /// A popup whose first frame is still to come, and when the app asked
+    /// for it (#2552): `[PERF] window N first frame`.
+    popup_first_frame: Option<std::time::Instant>,
 }
 
 impl ShellWindow {
@@ -452,6 +458,7 @@ impl ShellWindow {
             a11y: None,
             #[cfg(feature = "a11y")]
             a11y_last: None,
+            popup_first_frame: None,
         }
     }
 
@@ -630,6 +637,7 @@ impl RinchRuntime {
             windowless,
             windowless_root_warned: false,
             fonts: fonts.to_vec(),
+            popups: Default::default(),
             #[cfg(test)]
             _queue_lock,
         }
@@ -637,8 +645,13 @@ impl RinchRuntime {
 
     /// Explicit shutdown: drop resources in the correct order and clear global state.
     fn shutdown(&mut self) {
-        // 0. Close DevTools and the other windows first.
+        // 0. Close DevTools and the other windows first: the main window's
+        // popups first of all, told their parent closed (#2552).
         self.close_devtools();
+        if !self.main_closed {
+            let main = self.main_handle;
+            self.close_popups_above(main);
+        }
         self.close_all_others();
 
         // 1. Clear the signal-change callback so no stale closures fire during drop.
@@ -683,6 +696,11 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
+        // Popup windows: on Wayland (#2552).
+        crate::popup::set_supported(
+            super::overlay_window::Backend::of(event_loop)
+                == super::overlay_window::Backend::Wayland,
+        );
         // Whether the compositor paces Fifo itself (`wp_fifo_v1`), before
         // any window presents (#2669).
         #[cfg(feature = "gpu-renderer")]
@@ -815,7 +833,11 @@ impl ApplicationHandler for RinchRuntime {
         }
         self.keep_prepared();
         self.about_to_wait_inner(event_loop);
+        // A popup whose anchor moved is placed again (#2552).
+        self.follow_popup_anchors();
         self.settle_closes(event_loop);
+        // Popups that waited for the next iteration are asked for again.
+        self.popups_end_of_turn();
     }
 }
 
@@ -843,6 +865,9 @@ impl RinchRuntime {
             }
             return;
         }
+        // Keys reaching any window of a menu chain go to its topmost menu
+        // (#2552).
+        let role = self.input_role(role, &event);
         // Raw motion that came before this event reaches the app first.
         self.flush_pointer_motion(event_loop);
 
@@ -945,12 +970,23 @@ impl RinchRuntime {
                 .pressed_pointers
                 .note(pointer.id, button.clone().mouse_button(), pressed);
             crate::render_surface::set_current_pointer(Some(pointer));
+            // A press outside the popups above it closes them, after it is
+            // delivered (#2552).
+            if pressed {
+                self.light_dismiss_press(role);
+            }
         }
         self.flush_pointer_move(role, event_loop);
 
         // A layer surface's move reached the compositor (#1523).
         if let WindowEvent::Moved(p) = &event {
             self.w(role).layer_moved((p.x, p.y));
+        }
+        // Where the system put a popup (#2552).
+        match &event {
+            WindowEvent::Moved(p) => self.popup_placed(role, Some((p.x, p.y))),
+            WindowEvent::SurfaceResized(_) => self.popup_placed(role, None),
+            _ => {}
         }
         // Keep the published geometry (#1546) current: each window its own.
         if matches!(
@@ -969,9 +1005,15 @@ impl RinchRuntime {
             // compositor's, for an output that went away. Show it again
             // rather than quitting (#1523).
             // Only the main window can be a layer surface.
+            // A popup the system dismissed (`popup_done`, #2552): closed with
+            // no veto, its surface is gone.
+            WindowEvent::CloseRequested if self.popup_done(role) => return,
             WindowEvent::CloseRequested
                 if role == WindowRole::Main && self.main.layer.is_some() =>
             {
+                // Its popups go first, topmost first (#2552).
+                let main = self.main_handle;
+                self.close_popups_above(main);
                 self.main
                     .layer_surface_closed(event_loop, self.native_menu.as_ref());
                 return;
@@ -1033,7 +1075,11 @@ impl RinchRuntime {
                 let painted = match role {
                     WindowRole::Main => self.paint(),
                     WindowRole::DevTools => self.paint_devtools(),
-                    WindowRole::Other(_) => self.w(role).paint_window(),
+                    WindowRole::Other(_) => {
+                        let painted = self.w(role).paint_window();
+                        self.w(role).note_popup_frame();
+                        painted
+                    }
                 };
                 if let Err(e) = painted {
                     // Not `eprintln!`, which panics on a closed stderr (#2531).
@@ -1182,7 +1228,15 @@ impl RinchRuntime {
                     None => return,
                 }
             }
+            // KWin moves the keyboard from a menu's parent to the menu: the
+            // parent did not lose it to the user (#2552).
+            WindowEvent::Focused(false) if self.in_menu_chain(role) => return,
             WindowEvent::Focused(focused) => {
+                // A parent raised for a menu's keyboard has it: the menu is
+                // made now (#2552).
+                if focused && let Some(id) = self.window_id_of(role) {
+                    self.parent_got_keyboard(id, event_loop);
+                }
                 // A window that lost focus may never be sent the release of a
                 // button held across the blur (it goes to the window that took
                 // focus): forget every press, or a hover on a surface with

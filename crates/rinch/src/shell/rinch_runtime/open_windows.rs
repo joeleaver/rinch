@@ -8,6 +8,11 @@ impl RinchRuntime {
     /// Make the window `open_window` opened as `id`, if it is still waiting
     /// (closed before it was made, it is not).
     pub(super) fn open_pending_window(&mut self, id: u64, event_loop: &dyn ActiveEventLoop) {
+        // A popup is made against its parent (#2552).
+        if window_handle::with_popup(id, |_| ()).is_some() {
+            self.open_pending_popup(id, event_loop);
+            return;
+        }
         let Some(pending) = window_handle::take_pending(id) else {
             return;
         };
@@ -175,9 +180,22 @@ impl RinchRuntime {
     /// OS window and renderer are dropped, and then its handle says it is
     /// closed. One closed before it was made only leaves the pending list.
     pub(super) fn close_other(&mut self, id: u64) {
+        // Every popup above it first, topmost first (#2552): wlroots ends
+        // the connection of a client that destroys a popup's parent first.
+        self.close_popups_above(id);
+        self.close_one_other(id);
+    }
+
+    /// [`Self::close_other`] for window `id` alone, its popups closed
+    /// already.
+    pub(super) fn close_one_other(&mut self, id: u64) {
+        let popup = window_handle::with_popup(id, |_| ()).is_some();
         match self.others.iter().position(|w| w.handle == id) {
             Some(at) => Self::close_made(self.others.remove(at)),
             None => Self::closed_unmade(id),
+        }
+        if popup {
+            self.note_popup_closed();
         }
     }
 
@@ -204,6 +222,8 @@ impl RinchRuntime {
         if self.main_closed {
             return;
         }
+        let main = self.main_handle;
+        self.close_popups_above(main);
         self.main.hide_window(self.native_menu.as_ref());
         self.main.app.dispose_document();
         self.main_closed = true;
@@ -214,6 +234,10 @@ impl RinchRuntime {
     /// Hide `role`'s window (its OS window goes; its document lives), the
     /// native menu bar with it for the main window.
     pub(super) fn hide_role(&mut self, role: WindowRole) {
+        // A hidden window's popups have nothing to hang from (#2552).
+        if let Some(id) = self.window_id_of(role) {
+            self.close_popups_above(id);
+        }
         match role {
             WindowRole::Main => self.hide_window(),
             other => self.w(other).hide_window(None),

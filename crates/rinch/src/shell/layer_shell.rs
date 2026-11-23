@@ -271,7 +271,9 @@ fn winit_layer(layer: LayerShellLayer) -> winit::platform::wayland::LayerShellLa
 }
 
 #[cfg(target_os = "linux")]
-fn winit_keyboard(k: LayerKeyboard) -> winit::platform::wayland::LayerShellKeyboardInteractivity {
+pub(crate) fn winit_keyboard(
+    k: LayerKeyboard,
+) -> winit::platform::wayland::LayerShellKeyboardInteractivity {
     use winit::platform::wayland::LayerShellKeyboardInteractivity as K;
     match k {
         LayerKeyboard::None => K::None,

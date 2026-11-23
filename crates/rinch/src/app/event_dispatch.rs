@@ -269,6 +269,15 @@ impl RinchApp {
             PlatformEvent::MouseLeft => self.mouse_in_window = false,
             _ => {}
         }
+        // A press a menu popup's grab can name (#2552).
+        #[cfg(feature = "windowing")]
+        if matches!(
+            event,
+            PlatformEvent::MouseDown { .. } | PlatformEvent::KeyDown { .. }
+        ) && self.doc.is_some()
+        {
+            crate::window_handle::note_press(self.doc_key());
+        }
         let mut actions = self.handle_event_inner(event, window_size, scale_factor);
         // A window leave owed since a press held the pointer (#2672 review):
         // forgotten when the pointer comes back, applied once nothing holds

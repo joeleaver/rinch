@@ -835,6 +835,16 @@ where
         self
     }
 
+    /// Whether the app may open popup windows (#2552, on by default): with
+    /// `false`, [`popups_supported`](crate::popups_supported) answers
+    /// `false` and [`open_popup`](crate::open_popup) `Unsupported`, so every
+    /// component and every caller that checks takes its in-window form.
+    #[cfg(feature = "windowing")]
+    pub fn popup_windows(self, on: bool) -> Self {
+        crate::popup::set_turned_off(!on);
+        self
+    }
+
     /// Set the macOS activation policy (issue #1528): whether the app has a
     /// Dock icon and a menu bar of its own.
     ///

@@ -399,6 +399,8 @@ use rinch_core::timer::virtual_time;
 mod idle_trim_perf_2852_tests;
 #[cfg(test)]
 mod perf_tests;
+#[cfg(test)]
+mod popup_tests;
 
 mod children;
 mod played_outputs;
@@ -1580,11 +1582,14 @@ impl TestApp {
     /// shell presses at the position its last move left.
     pub fn mouse_down(&mut self, x: f32, y: f32, button: MouseButton) {
         self.move_unless_there(x, y);
+        // The menus a press here closes, closed after it is delivered (#2552).
+        let closes = crate::popup::light_dismiss(self.window_id(), Some((x, y)));
         self.send(PlatformEvent::MouseDown {
             x,
             y,
             button: platform_button(button),
         });
+        self.close_popups(&closes);
     }
 
     /// Release `button` at `(x, y)`, moving there first if needed.
@@ -1731,6 +1736,11 @@ impl TestApp {
     ///
     /// Panics on a name it does not know.
     pub fn key_down(&mut self, key: &str) {
+        // While a menu popup is open, its topmost menu takes the keys (#2552).
+        if let Some(menu) = self.popup_key_target(self.window_id()) {
+            self.window_by_id(menu).key_down(key);
+            return;
+        }
         let mut actions = Vec::new();
         let size = self.physical_size();
         let outcome =
@@ -1886,7 +1896,8 @@ impl Drop for TestApp {
         self.app.dispose_document();
         // Its idle-trim timer is cleared on the clock it was armed on.
         self.presentation = None;
-        for child in std::mem::take(&mut self.children) {
+        // Newest first: a popup closes before the window it is on (#2552).
+        for child in std::mem::take(&mut self.children).into_iter().rev() {
             child.close();
         }
         let last = SINKS

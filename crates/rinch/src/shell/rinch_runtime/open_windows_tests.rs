@@ -8,6 +8,8 @@ use rinch_core::element::WindowProps;
 
 #[path = "doc_forget_tests.rs"]
 mod doc_forget;
+#[path = "popups_tests.rs"]
+mod popups;
 
 fn component(scope: &mut RenderScope) -> NodeHandle {
     scope.create_element("div")
