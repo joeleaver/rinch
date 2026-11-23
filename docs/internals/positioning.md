@@ -557,7 +557,9 @@ boxes*, so a `position: relative` box between does not stand in for it
 predicate by `Node::fixed_contained`), and the clippers it escapes are the ones
 below that ancestor (`Collector::fixed_cb_depth`, `Walk::clipper_below_fixed_cb`
 in `layer_bounds`, `PaintedState::contained_fixed`/`contains_fixed` in the
-damage clip walk). It is still a stacking context
+damage clip walk, and paint's and hit testing's lift of the clips above the
+stacking context that paints it, `paint::absolute_containing_block_above`,
+#2815). It is still a stacking context
 (`creates_stacking_context` reads the computed `position`). Pins:
 `tests/fixed_in_transform_1372_tests.rs` (layout, scroll, toggles, Chrome 151),
 `fixed_margins_2376_tests.rs`'s `t*` rows,
