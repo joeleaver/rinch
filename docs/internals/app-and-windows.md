@@ -2199,8 +2199,10 @@ switch at once.
   `window_handle::window_of_doc`: the window mounted as that document, else
   the main window, else `0`, the harness's mounted app, which is no registry
   window), checks the rules (`MenuOnTooltip`; `NoUserInput` when neither the
-  parent nor a popup below it in its chain has had a press: `note_press`,
-  called from `RinchApp::handle_event` for `MouseDown`/`KeyDown`, decision C;
+  parent nor a popup below it in its chain has had a press within
+  `popup::PRESS_RECENT` (10 s, on `rinch_core::timer::now`, the harness's
+  virtual clock there): `note_press`, called from `RinchApp::handle_event`
+  for `MouseDown`/`KeyDown`, keeps each window's newest press, decision C;
   the fork's own `NoGrabCause` still answers later as `Failed`), builds
   `WindowProps` (`popup::window_props_for`: content-sized up to `max_size`,
   never a layer surface, a tooltip's `input_region: None`), wraps the content
@@ -2236,7 +2238,9 @@ switch at once.
     `ShellWindow::create_popup_window`: `WindowType::Popup`, the parent's raw
     handle (`rwh_06_window_handle`), `shell::popup_positioner::positioner`
     (the anchor rect is the anchor's bounds × zoom, kept inside the parent
-    and rounded outward, `popup::anchor_rect`), `with_active(kind == Menu)`
+    and rounded outward, `popup::anchor_rect`; a `NodeAcross` anchor is then
+    stretched across the parent's cross axis, `popup::across`, on every
+    reposition too), `with_active(kind == Menu)`
     (the grab), the measured size × zoom. The GPU renderer when the parent
     has one (`has_gpu_renderer`), else software: the app's renderer, never a
     silent fallback (`start_gpu_renderer` warns on its own fallback). A menu's
@@ -2257,7 +2261,8 @@ switch at once.
   its `OpenWindow`, which makes a waiting popup at once: a seat with no
   keyboard never sends `enter`). `PopupState::raised` remembers what to put
   back; `restore_raised_keyboards` (from `note_popup_closed`) puts it back
-  once its chain has no menu. Never raised while a grab is held (F0: grab
+  once its chain has no menu (and after a make that failed). Never raised
+  while a grab is held (`chain::may_raise_keyboard`, pure) (F0: grab
   then raise fails on wlroots and dismisses on KWin). The check excludes the
   popup being made, whose entry exists already (a live run found it
   answering "a menu is open" for itself).
@@ -2273,8 +2278,10 @@ switch at once.
   - `input_role` first: a `KeyboardInput`, `Ime` or `ModifiersChanged`
     reaching a window of a chain with a menu goes to its topmost menu (the
     window it reached keeps the modifiers too).
-  - `Focused(false)` on a window of such a chain is dropped (KWin moves the
-    keyboard from the parent to the menu).
+  - `Focused(false)` on a window of such a chain is held (KWin moves the
+    keyboard from the parent to the menu; `hold_focus_change`) and replayed
+    through `window_event_for` at the end of the turn the chain closed in
+    (`popups_end_of_turn`), unless a `Focused(true)` came first.
   - A `PointerButton` press runs `light_dismiss_press`: `popup::light_dismiss`
     records `PressOutside { on_anchor }` (the press point against the
     anchor's bounds in the anchor's window) and the menus are `close_soon`ed,
