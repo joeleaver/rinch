@@ -9,11 +9,11 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rinch_components::navlink::NavLink;
-use rinch_components::{Breadcrumbs, BreadcrumbsItem, Pagination};
+use rinch_components::{Breadcrumbs, BreadcrumbsItem, Pagination, SectionRenderer};
 use rinch_core::dom::traits::DomDocument;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event};
-use rinch_core::{Callback, Component, ValueCallback};
+use rinch_core::{Callback, Component, Signal, ValueCallback};
 use rinch_tabler_icons::TablerIcon;
 
 mod common;
@@ -349,5 +349,368 @@ fn open_navlink_children_are_not_clipped_at_1000px() {
     );
 }
 
-#[allow(dead_code)]
-fn _uses(_: ValueCallback<u32>) {}
+// ------------------------------------------------------- the new props
+
+/// A renderer that draws `<i class="{class}">`.
+fn marker(class: &'static str) -> SectionRenderer {
+    Rc::new(move |scope: &mut RenderScope| {
+        let i = scope.create_element("i");
+        i.set_attribute("class", class);
+        i
+    })
+}
+
+#[test]
+fn a_breadcrumb_separator_can_be_an_icon_or_anything_the_app_renders() {
+    let tree = three_crumbs(Breadcrumbs {
+        separator: "|".into(),
+        separator_icon: Some(TablerIcon::ChevronRight),
+        ..Default::default()
+    });
+    let seps = tree.all("rinch-breadcrumbs__separator");
+    assert_eq!(seps.len(), 2);
+    for sep in &seps {
+        assert_eq!(glyph(sep), glyph_of(TablerIcon::ChevronRight));
+        assert_eq!(text(sep), "", "the icon replaces the text");
+    }
+
+    let tree = three_crumbs(Breadcrumbs {
+        separator_icon: Some(TablerIcon::ChevronRight),
+        separator_fn: Some(marker("my-sep")),
+        ..Default::default()
+    });
+    let seps = tree.all("rinch-breadcrumbs__separator");
+    assert_eq!(seps.len(), 2, "one call per separator");
+    for sep in &seps {
+        assert!(find_by_class(sep, "my-sep").is_some(), "the renderer wins");
+        assert!(glyph(sep).is_empty());
+    }
+}
+
+#[test]
+fn the_breadcrumb_navs_accessible_name_is_a_prop() {
+    let tree = three_crumbs(Breadcrumbs::default());
+    assert_eq!(
+        tree.root.get_attribute("aria-label").as_deref(),
+        Some("Breadcrumb")
+    );
+    let tree = three_crumbs(Breadcrumbs {
+        aria_label: "Fil d'Ariane".into(),
+        ..Default::default()
+    });
+    assert_eq!(
+        tree.root.get_attribute("aria-label").as_deref(),
+        Some("Fil d'Ariane")
+    );
+}
+
+#[test]
+fn a_breadcrumb_item_routes_by_callback() {
+    let clicks = Rc::new(Cell::new(0));
+    let sink = clicks.clone();
+    let tree = crumbs(
+        Breadcrumbs::default(),
+        vec![
+            (
+                BreadcrumbsItem {
+                    onclick: Some(Callback::new(move || sink.set(sink.get() + 1))),
+                    ..Default::default()
+                },
+                "Home",
+            ),
+            (BreadcrumbsItem::default(), "Page"),
+        ],
+    );
+    let link = tree.find("rinch-breadcrumbs__link");
+    assert_eq!(link.tag_name().as_deref(), Some("button"));
+    assert_eq!(link.get_attribute("type").as_deref(), Some("button"));
+    assert_eq!(
+        link.get_attribute("aria-current"),
+        None,
+        "an item with `onclick` is not the current page"
+    );
+    assert!(click(&link));
+    assert_eq!(clicks.get(), 1);
+    assert_eq!(text(&link), "Home");
+}
+
+#[test]
+fn a_breadcrumb_items_active_overrides_the_guess() {
+    let tree = crumbs(
+        Breadcrumbs::default(),
+        vec![
+            (
+                BreadcrumbsItem {
+                    href: "/here".into(),
+                    active: Some(true),
+                    ..Default::default()
+                },
+                "Here",
+            ),
+            (
+                BreadcrumbsItem {
+                    active: Some(false),
+                    ..Default::default()
+                },
+                "Inert",
+            ),
+        ],
+    );
+    let link = tree.find("rinch-breadcrumbs__link");
+    assert_eq!(link.tag_name().as_deref(), Some("a"));
+    assert!(has_class(&link, "rinch-breadcrumbs__item--active"));
+    assert_eq!(link.get_attribute("aria-current").as_deref(), Some("page"));
+    let items = tree.all("rinch-breadcrumbs__item");
+    let inert = items[1].children()[0].clone();
+    assert!(!has_class(&inert, "rinch-breadcrumbs__item--active"));
+    assert_eq!(inert.get_attribute("aria-current"), None);
+}
+
+#[test]
+fn breadcrumb_separators_follow_items_that_arrive_and_leave() {
+    let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+    let body = doc.borrow().body();
+    let mut scope = RenderScope::new(doc.clone(), body);
+    let a = BreadcrumbsItem::default().render(&mut scope, &[]);
+    let b = BreadcrumbsItem::default().render(&mut scope, &[]);
+    let nav = Breadcrumbs {
+        separator: "›".into(),
+        ..Default::default()
+    }
+    .render(&mut scope, &[a.clone(), b.clone()]);
+    scope.body_handle().append_child(&nav);
+    let count = |nav: &NodeHandle| {
+        let mut out = Vec::new();
+        collect_by_class(nav, "rinch-breadcrumbs__separator", &mut out);
+        out.len()
+    };
+    let has_sep = |item: &NodeHandle| find_by_class(item, "rinch-breadcrumbs__separator").is_some();
+    assert_eq!(count(&nav), 1);
+
+    // A crumb a `for` loop appends later: the old last item gains one.
+    let c = BreadcrumbsItem::default().render(&mut scope, &[]);
+    let list = find_by_class(&nav, "rinch-breadcrumbs__list").unwrap();
+    list.append_child(&c);
+    assert!(has_sep(&b), "the item that stopped being last gains a separator");
+    assert!(!has_sep(&c), "the new last item has none");
+    assert_eq!(count(&nav), 2);
+
+    // And it leaves again: the new last item loses its separator.
+    c.remove();
+    assert!(!has_sep(&b));
+    assert_eq!(count(&nav), 1);
+}
+
+#[test]
+fn pagination_labels_icons_and_dots_are_props() {
+    let tree = pagination(Pagination {
+        total: 20,
+        value: 10,
+        with_edges: true,
+        aria_label: "Seiten".into(),
+        first_label: "Erste Seite".into(),
+        previous_label: "Vorherige Seite".into(),
+        next_label: "Nächste Seite".into(),
+        last_label: "Letzte Seite".into(),
+        first_icon: Some(TablerIcon::ArrowBarToLeft),
+        previous_icon: Some(TablerIcon::ArrowLeft),
+        next_icon: Some(TablerIcon::ArrowRight),
+        last_icon: Some(TablerIcon::ArrowBarToRight),
+        dots: "…".into(),
+        ..Default::default()
+    });
+    assert_eq!(tree.root.get_attribute("aria-label").as_deref(), Some("Seiten"));
+    for (data, label, icon) in [
+        ("data-first", "Erste Seite", TablerIcon::ArrowBarToLeft),
+        ("data-prev", "Vorherige Seite", TablerIcon::ArrowLeft),
+        ("data-next", "Nächste Seite", TablerIcon::ArrowRight),
+        ("data-last", "Letzte Seite", TablerIcon::ArrowBarToRight),
+    ] {
+        let c = control(&tree, data);
+        assert_eq!(c.get_attribute("aria-label").as_deref(), Some(label));
+        assert_eq!(glyph(&c), glyph_of(icon), "{data}");
+    }
+    let dots = tree.all("rinch-pagination__dots");
+    assert_eq!(dots.len(), 2, "both gaps");
+    for d in dots {
+        assert_eq!(text(&d), "…");
+    }
+
+    // The defaults are the old glyphs and the old dots.
+    let tree = pagination(Pagination {
+        total: 20,
+        value: 10,
+        ..Default::default()
+    });
+    for d in tree.all("rinch-pagination__dots") {
+        assert_eq!(text(&d), "...");
+    }
+    assert_ne!(glyph(&control(&tree, "data-next")), glyph_of(TablerIcon::ArrowRight));
+}
+
+#[test]
+fn pagination_render_item_draws_each_pages_content_and_keeps_the_wiring() {
+    let seen: Rc<RefCell<Vec<(u32, bool)>>> = Rc::new(RefCell::new(Vec::new()));
+    let log = seen.clone();
+    let picked = Rc::new(Cell::new(0));
+    let sink = picked.clone();
+    let tree = pagination(Pagination {
+        total: 3,
+        value: 2,
+        onchange: Some(ValueCallback::new(move |n: u32| sink.set(n))),
+        render_item: Some(Rc::new(move |scope: &mut RenderScope, n: u32, active: bool| {
+            log.borrow_mut().push((n, active));
+            let b = scope.create_element("b");
+            b.set_attribute("class", "my-page");
+            let t = scope.create_text(&format!("p{n}"));
+            b.append_child(&t);
+            b
+        })),
+        ..Default::default()
+    });
+    assert_eq!(seen.borrow().as_slice(), &[(1, false), (2, true), (3, false)]);
+    let items = tree.all("rinch-pagination__item");
+    assert_eq!(items.len(), 3);
+    assert_eq!(text(&items[2]), "p3");
+    assert!(find_by_class(&items[2], "my-page").is_some());
+    assert!(click(&items[2]), "the button keeps its handler");
+    assert_eq!(picked.get(), 3);
+}
+
+#[test]
+fn the_active_page_text_colour_is_a_custom_property() {
+    let css = strip_comments(&sheet());
+    let decls = declarations_for(&css, ".rinch-pagination__item--active");
+    assert!(
+        decls
+            .iter()
+            .any(|d| d == "color: var(--rinch-pagination-active-text, white)"),
+        "{decls:?}"
+    );
+}
+
+#[test]
+fn a_controlled_navlink_follows_opened_fn_and_reports_clicks() {
+    let open = Signal::new(false);
+    let asked: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = asked.clone();
+    let tree = navlink_with_children(NavLink {
+        label: "Section".into(),
+        opened_fn: Some(Rc::new(move || open.get())),
+        on_opened_change: Some(ValueCallback::new(move |v: bool| sink.borrow_mut().push(v))),
+        ..Default::default()
+    });
+    assert!(collapsed(&tree));
+    click(&parent_control(&tree));
+    assert_eq!(asked.borrow().as_slice(), &[true], "the click asks to open");
+    assert!(collapsed(&tree), "but a controlled navlink waits for the app");
+    open.set(true);
+    assert!(!collapsed(&tree), "the getter opens it");
+    assert_eq!(
+        parent_control(&tree).get_attribute("aria-expanded").as_deref(),
+        Some("true")
+    );
+    click(&parent_control(&tree));
+    assert_eq!(asked.borrow().as_slice(), &[true, false]);
+}
+
+#[test]
+fn an_uncontrolled_navlink_reports_each_toggle() {
+    let asked: Rc<RefCell<Vec<bool>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = asked.clone();
+    let tree = navlink_with_children(NavLink {
+        label: "Section".into(),
+        opened: true,
+        on_opened_change: Some(ValueCallback::new(move |v: bool| sink.borrow_mut().push(v))),
+        ..Default::default()
+    });
+    assert!(!collapsed(&tree), "`opened` opens it");
+    click(&parent_control(&tree));
+    click(&parent_control(&tree));
+    assert_eq!(asked.borrow().as_slice(), &[false, true]);
+    assert!(!collapsed(&tree));
+}
+
+#[test]
+fn a_disabled_navlink_with_children_does_not_toggle() {
+    let tree = navlink_with_children(NavLink {
+        label: "Section".into(),
+        disabled: true,
+        ..Default::default()
+    });
+    assert!(!click(&parent_control(&tree)));
+    assert!(collapsed(&tree));
+}
+
+#[test]
+fn a_navlinks_chevron_is_an_icon_option_and_its_rotation_can_be_turned_off() {
+    let tree = navlink_with_children(NavLink {
+        label: "Section".into(),
+        chevron_icon: Some(TablerIcon::ChevronDown),
+        default_opened: true,
+        ..Default::default()
+    });
+    let right = tree.find("rinch-navlink__right");
+    assert_eq!(glyph(&right), glyph_of(TablerIcon::ChevronDown));
+    let chevron = tree.find("rinch-navlink__chevron");
+    assert!(has_class(&chevron, "rinch-navlink__chevron--opened"));
+
+    // A right section on a navlink with children turns with it by default...
+    let tree = navlink_with_children(NavLink {
+        label: "Section".into(),
+        right_section: Some(TablerIcon::Plus),
+        ..Default::default()
+    });
+    click(&parent_control(&tree));
+    assert!(
+        find_by_class(&tree.root, "rinch-navlink__chevron--opened").is_some(),
+        "the right section stands in for the chevron and turns"
+    );
+
+    // ...and not with `disable_right_section_rotation`.
+    let tree = navlink_with_children(NavLink {
+        label: "Section".into(),
+        disable_right_section_rotation: true,
+        ..Default::default()
+    });
+    click(&parent_control(&tree));
+    assert!(!collapsed(&tree), "it still opens");
+    assert!(find_by_class(&tree.root, "rinch-navlink__chevron--opened").is_none());
+}
+
+#[test]
+fn a_navlinks_label_slot_takes_a_renderer() {
+    let tree = Tree::build(|scope| {
+        NavLink {
+            label: "ignored".into(),
+            description: "desc".into(),
+            label_fn: Some(marker("my-badge")),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    let label = tree.find("rinch-navlink__label");
+    assert!(find_by_class(&label, "my-badge").is_some());
+    assert_eq!(text(&label), "", "the renderer replaces the text");
+    assert!(
+        find_by_class(&tree.find("rinch-navlink__body"), "my-badge").is_some(),
+        "beside the description, in the body"
+    );
+}
+
+#[test]
+fn the_navlink_collapse_bound_and_duration_are_custom_properties() {
+    let css = strip_comments(&sheet());
+    let decls = declarations_for(&css, ".rinch-navlink__children");
+    assert!(
+        decls
+            .iter()
+            .any(|d| d == "max-height: var(--rinch-navlink-children-max-height, none)"),
+        "{decls:?}"
+    );
+    assert!(
+        decls.iter().any(|d| d
+            == "transition: max-height var(--rinch-navlink-transition-duration, 0ms) ease"),
+        "{decls:?}"
+    );
+}
