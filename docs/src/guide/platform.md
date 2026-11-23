@@ -44,7 +44,12 @@ rinch's build; #2802), so the orientation is always applied. On the web backend
 **Colour profiles** (#2779). A file tagged with an ICC colour profile that is
 not sRGB, such as a Display P3 or Adobe RGB photograph, is converted to sRGB
 when it is decoded, as Chrome converts it (rinch draws in sRGB). The profile is
-read from a JPEG's `APP2`, a PNG's `iCCP` or a WebP's `ICCP`. Untagged and
+read from a JPEG's `APP2`, a PNG's `iCCP` or a WebP's `ICCP`. A greyscale
+file with a grey profile (a gamma or curve other than sRGB's) is converted
+through that curve too (#2807). A file with 16 bits a channel is converted at
+16 bits and rounded to 8 once, after the conversion, so a smooth wide-gamut
+gradient does not pick up steps (#2807; Chrome rounds such a file to 8 bits
+first, so rinch's result can differ from Chrome's by a unit). Untagged and
 sRGB-tagged files are not converted and cost nothing extra. A tagged file costs
 about 2.5 ns a pixel more to decode (20 ms for a 3840x2160 picture). A file
 or network load decodes on a background thread, but a `data:` URL, and every
