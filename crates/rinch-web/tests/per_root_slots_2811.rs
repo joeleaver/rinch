@@ -352,3 +352,88 @@ fn an_app_key_hears_another_roots_keys() {
     g.unmount();
     assert_eq!(heard, ["K app:q", "K app:w"]);
 }
+
+// ---------------------------------------------------------------------------
+// Clicks dispatched at the release (a draggable, a touch tap in a scroller)
+// ---------------------------------------------------------------------------
+
+fn pointer(el: &web_sys::Element, name: &str, kind: &str) {
+    let r = el.get_bounding_client_rect();
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_pointer_id(7);
+    init.set_is_primary(true);
+    init.set_pointer_type(kind);
+    init.set_button(0);
+    init.set_buttons(if name == "pointerup" { 0 } else { 1 });
+    init.set_client_x((r.x() + r.width() / 2.0) as i32);
+    init.set_client_y((r.y() + r.height() / 2.0) as i32);
+    let ev = web_sys::PointerEvent::new_with_event_init_dict(name, &init).unwrap();
+    el.dispatch_event(&ev).unwrap();
+}
+
+/// A root G whose clickable `#{id}` clears the paste interceptor from its
+/// click handler. `scroller` puts it inside a scroll container (a touch tap
+/// there clicks at the release); otherwise it is `draggable` (any press
+/// there clicks at the release). Answers G and the clickable, and a count of
+/// the handler's runs.
+fn clearing_clickable(scroller: bool) -> (Root, web_sys::Element, Rc<std::cell::Cell<u32>>) {
+    let host = host();
+    host.set_attribute("style", "position: fixed; left: 0px; top: 0px; width: 300px")
+        .unwrap();
+    let runs = Rc::new(std::cell::Cell::new(0u32));
+    let seen = runs.clone();
+    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope| {
+        let outer = scope.create_element("div");
+        let button = scope.create_element("div");
+        button.set_attribute("style", "width: 100px; height: 30px");
+        button.set_attribute("data-clear-2811", "");
+        let id = scope.register_handler(move || {
+            seen.set(seen.get() + 1);
+            events::clear_paste_interceptor();
+        });
+        button.set_attribute("data-rid", &id.0.to_string());
+        if scroller {
+            outer.set_attribute("style", "overflow: auto; height: 40px; width: 200px");
+            let tall = scope.create_element("div");
+            tall.set_attribute("style", "height: 400px");
+            tall.append_child(&button);
+            outer.append_child(&tall);
+        } else {
+            button.set_attribute("draggable", "true");
+            outer.append_child(&button);
+        }
+        outer
+    });
+    let target = host.query_selector("[data-clear-2811]").unwrap().unwrap();
+    let el = target.clone();
+    (Root { root, host, target }, el, runs)
+}
+
+fn a_release_click_in_another_root_leaves_the_interceptor(scroller: bool, kind: &str) {
+    rinch_web::__reset_activation_state();
+    let log: Log = Default::default();
+    let k = Root::mount(paste_interceptor(&log, "K"), None);
+    let (g, clickable, runs) = clearing_clickable(scroller);
+    pointer(&clickable, "pointerdown", kind);
+    assert_eq!(runs.get(), 0, "control: the click waits for the release");
+    pointer(&clickable, "pointerup", kind);
+    let ran = runs.get();
+    k.paste("one");
+    let heard = taken(&log);
+    k.unmount();
+    g.unmount();
+    assert_eq!(ran, 1, "control: G's handler ran at the release");
+    assert_eq!(heard, ["K:one"], "G's click handler's clear left K's interceptor");
+}
+
+#[wasm_bindgen_test]
+fn a_draggables_click_in_another_root_leaves_the_interceptor() {
+    a_release_click_in_another_root_leaves_the_interceptor(false, "mouse");
+}
+
+#[wasm_bindgen_test]
+fn a_touch_tap_in_another_roots_scroller_leaves_the_interceptor() {
+    a_release_click_in_another_root_leaves_the_interceptor(true, "touch");
+}
