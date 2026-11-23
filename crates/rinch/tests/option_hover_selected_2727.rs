@@ -15,6 +15,10 @@
 //!
 //! Set `RINCH_2727_PPM=<dir>` to also write each scheme's render as a PPM.
 
+// The software painter, parley and peniko come with `windowing` (the theme and
+// component crates are dev-dependencies).
+#![cfg(feature = "windowing")]
+
 use peniko::Brush;
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
