@@ -32,17 +32,20 @@ pub fn styles() -> String {
     user-select: none;
 }
 
+/* Row states paint the theme's scheme-aware option tokens, as Select does:
+   palette shades (gray-1, primary-1) are the light scheme's and showed
+   near-white rows in the dark scheme (#2871). */
 .rinch-tree__node-content:hover {
-    background-color: var(--rinch-color-gray-1);
+    background-color: var(--rinch-color-option-hover);
 }
 
 .rinch-tree__node-content--selected {
-    background-color: var(--rinch-primary-color-1);
+    background-color: var(--rinch-color-option-selected);
     color: var(--rinch-primary-color);
 }
 
 .rinch-tree__node-content--selected:hover {
-    background-color: var(--rinch-primary-color-2);
+    background-color: var(--rinch-color-option-selected-hover);
 }
 
 .rinch-tree__node-content--disabled {
