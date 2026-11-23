@@ -10,8 +10,9 @@ rinch-core.workspace = true
 rinch-theme.workspace = true
 rinch-macros.workspace = true
 rinch-tabler-icons.workspace = true
-# The Select's type-ahead reset clock; `web_time` so it is `std::time` on
-# native and `performance.now()` on wasm (a bare `Instant::now` panics there).
+# The Select's type-ahead instants, read from `rinch_core::timer::now` (#2842);
+# `web_time` so the type is `std::time`'s on native and `performance.now()`'s on
+# wasm (a bare `Instant::now` panics there).
 web-time = "1"
 
 [dev-dependencies]

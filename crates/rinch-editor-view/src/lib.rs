@@ -123,7 +123,9 @@ pub struct CaretBlink {
 /// tick on one thread — each embedded `RinchContext`, and a desktop window
 /// beside them — and each blinks its own focused editor on its own phase (the
 /// desktop runtime ticks each of its windows' documents, the DevTools panel's
-/// too). The clock uses `std::time::Instant`, so a web runtime drives blink
+/// too). The phase is read from rinch's clock, [`rinch_core::timer::now`]
+/// (#2842), so under the test harness the caret toggles exactly when
+/// `TestApp::advance_time` crosses a half-period. A web runtime drives blink
 /// with its own timer (`setInterval` → [`EditorHandle::set_caret_blink`])
 /// rather than calling this.
 ///

@@ -320,6 +320,27 @@ with it agrees with its own timers at the boundary: a grace armed as
 run. `std::time::Instant::now()` keeps reading the wall clock, so code that
 uses it cannot be tested at the boundary.
 
+rinch's own timed behaviour reads `now()` too (#2842), so the virtual clock
+drives it and nothing else does:
+
+- CSS transitions and animations: a linear 1000 ms transition is at its
+  midpoint after `advance_time(500 ms)`, and a mouse wheel's glide
+  (`wheel_lines`) moves only as the clock does.
+- Double and triple clicks: a second click 499 ms after the first is a double
+  click, one 500 ms after it a single click.
+- The `title` tooltip shows when the pointer has rested for its 500 ms delay.
+- Drag auto-scroll scrolls by its speed times the time between frames.
+- The rich-text editor's caret blink (530 ms half-periods) and its undo
+  grouping (typing less than 500 ms apart is one undo step).
+- A `<select>`'s and a `Select`'s type-ahead prefix, which expires 900 ms after
+  the last letter.
+- `poll_signal` at `Hz(n)` or `Millis(n)`: a poll is due when its interval has
+  passed on the clock (it is sampled at the next painted frame).
+
+So in a test none of these move unless the test advances the clock: two
+clicks are always a double click, a transition stays at its start, and
+`settle()` does not finish one.
+
 ```rust
 let mut app = TestApp::mount(|__scope: &mut RenderScope| {
     let seconds = Signal::new(0);
@@ -451,9 +472,9 @@ not wrap.
 - **Several apps on one thread.** Each takes the requests of its own windows
   and of the windows its component opened. A request from code outside any
   document (the test's own body) goes to the newest.
-- **Transitions and animations run on the wall clock**, as in the app;
-  `settle()` runs turns, it does not skip ahead. Only timers are on the
-  virtual clock.
+- **Transitions and animations run on the virtual clock** (see [Time](#time)):
+  `settle()` runs turns, it does not skip ahead, so a transition finishes only
+  when `advance_time` passes its end.
 - **A timer re-arming itself with no delay** never lets `advance_time` reach
   its end; it panics after 100 000 timers in one call.
 - **A worker's `run_on_main_thread` names no app.** Tests run in parallel, a

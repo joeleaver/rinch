@@ -838,7 +838,12 @@ impl RinchApp {
                                     && !self.scrollbar_thumb_beats_resize(dir, x, y)
                                 {
                                     // On a resize handle, over no content.
-                                    self.note_title_tooltip_move(None, x, y, Instant::now());
+                                    self.note_title_tooltip_move(
+                                        None,
+                                        x,
+                                        y,
+                                        rinch_core::timer::now(),
+                                    );
                                     // The arrow is not hover's cursor.
                                     self.hover_cursor = None;
                                     actions.push(AppAction::SetCursor(resize_direction_to_cursor(
@@ -984,7 +989,7 @@ impl RinchApp {
                 // take down one that no longer describes what the pointer is
                 // over. Shown or hidden at `AboutToWait`.
                 if let Some(hovered) = tooltip_hit {
-                    self.note_title_tooltip_move(hovered, x, y, Instant::now());
+                    self.note_title_tooltip_move(hovered, x, y, rinch_core::timer::now());
                 }
             }
             PlatformEvent::MouseDown {
@@ -1021,8 +1026,10 @@ impl RinchApp {
                     }
                 }
 
-                // Multi-click detection
-                let now = Instant::now();
+                // Multi-click detection, on rinch's clock (#2842): the
+                // virtual one under the test harness, so a second click
+                // `advance_time` puts 501 ms on is a single click.
+                let now = rinch_core::timer::now();
                 let elapsed = now.duration_since(self.last_click_time);
                 let (last_x, last_y) = self.last_click_pos;
                 let distance = ((x - last_x).powi(2) + (y - last_y).powi(2)).sqrt();
@@ -2548,7 +2555,7 @@ impl RinchApp {
 
                 // A drag resting in an edge band scrolls a frame's worth, and
                 // keeps the clock turning for the next one.
-                if self.tick_drag_auto_scroll(Instant::now(), vp_w, vp_h, had_running) {
+                if self.tick_drag_auto_scroll(rinch_core::timer::now(), vp_w, vp_h, had_running) {
                     actions.push(AppAction::RequestRedraw);
                 }
                 // A wheel notch gliding (#2287) moves a frame's worth; the
@@ -2611,7 +2618,7 @@ impl RinchApp {
 
                 // A pointer that has rested long enough shows its `title`
                 // (#1646); a shown tooltip follows its `title`.
-                if self.tick_title_tooltip(Instant::now(), vp_w, vp_h) {
+                if self.tick_title_tooltip(rinch_core::timer::now(), vp_w, vp_h) {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
@@ -3531,7 +3538,7 @@ impl RinchApp {
             return false;
         }
         let tooltip_up = self.title_tooltip.shown.is_some();
-        self.note_title_tooltip_move(h.target, x, y, Instant::now());
+        self.note_title_tooltip_move(h.target, x, y, rinch_core::timer::now());
         let tooltip_hidden = tooltip_up && self.title_tooltip.shown.is_none();
         (self.has_dirty_nodes() && self.resolve_and_repaint(vp_w, vp_h)) || tooltip_hidden
     }
