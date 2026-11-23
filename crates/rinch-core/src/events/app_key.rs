@@ -32,9 +32,10 @@
 //!
 //! **Whose keys.** On desktop a listener registered while a document's code
 //! runs hears that document's keys, and one registered from `main` every
-//! document's on the thread — a DevTools window's included. rinch-web marks no
-//! document, so there a listener hears every key the page's `document` sees:
-//! every island's, and keys typed into page inputs outside any rinch root.
+//! document's on the thread — a DevTools window's included. On rinch-web a
+//! listener hears every key the page's `document` sees, whichever root
+//! registered it: every island's, and keys typed into page inputs outside any
+//! rinch root (rinch-web offers the key as no document's, #2811).
 //!
 //! **Tab and repeats.** A listener that consumes Tab takes it before
 //! `trap_focus` containment, which belongs to the default stage. A held key
@@ -110,7 +111,8 @@ impl AppKeyListener {
 ///   claimed: a surface's claimed keys are its own, press and release.
 /// - **Document.** Registered while a document's code runs (its render, an
 ///   effect it owns, its event handler), a listener hears that document's keys;
-///   registered outside any — from `main` — it hears every document's.
+///   registered outside any — from `main` — it hears every document's. On
+///   rinch-web every listener hears every root's keys.
 /// - **Lifetime.** Released when the scope rendering at registration is
 ///   disposed (and never called after that), else app lifetime;
 ///   [`AppKeyListener::remove`] releases it earlier. Dropping the handle

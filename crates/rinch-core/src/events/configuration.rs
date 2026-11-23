@@ -102,10 +102,11 @@ thread_local! {
 /// reads [`current_dispatching_doc`] and falls back to the ownerless entry only
 /// when that is `None`. A configuration change has no dispatching document — it
 /// is a process-level event dispatched from the Android shell's loop body,
-/// beside `drain_lifecycle`, and the only production [`push_dispatching_doc`]s
-/// in the workspace are `RinchApp`'s event-dispatch entry point and its mount
-/// (plus effects re-entering the document they were created in, issue #295),
-/// none of which this is inside. So the key at dispatch is always `None`, only the ownerless
+/// beside `drain_lifecycle`, and the production [`push_dispatching_doc`]s
+/// in the workspace are `RinchApp`'s event-dispatch entry point and its mount,
+/// rinch-web's root build and event listeners (issue #2811), and effects
+/// re-entering the document they were created in (issue #295), none of which
+/// this is inside. So the key at dispatch is always `None`, only the ownerless
 /// entry would ever be read, and a handler registered from inside an event
 /// handler — keyed to *that* document — would never fire again. Doc-scoping
 /// here does not merely fail to help; it turns last-write-wins into
@@ -412,9 +413,9 @@ mod tests {
     /// starts listening for theme changes is entirely ordinary. Dispatching
     /// happens from the platform loop body, where **no** document is
     /// dispatching — a configuration change is a process-level event, and the
-    /// only production `push_dispatching_doc`s in the workspace are
-    /// `RinchApp`'s event entry point and its mount, neither of which the
-    /// shell's `ConfigChanged` drain is inside.
+    /// shell's `ConfigChanged` drain is inside none of the production
+    /// `push_dispatching_doc`s (`RinchApp`'s event entry point and its mount,
+    /// rinch-web's root build and listeners).
     ///
     /// A doc-keyed slot would file that registration under document 1 and then
     /// resolve the dispatch against the ownerless entry, so the handler would
