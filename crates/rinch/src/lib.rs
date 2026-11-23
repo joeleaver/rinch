@@ -500,7 +500,7 @@ pub mod prelude {
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
-        Cached, NodeHandle, RenderScope, SelectionDirection, has_render_scope,
+        Cached, NodeHandle, RenderScope, ScrollBehavior, SelectionDirection, has_render_scope,
         try_with_render_scope, with_render_scope,
     };
     // Component trait for fine-grained components

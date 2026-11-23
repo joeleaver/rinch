@@ -1286,16 +1286,62 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_scroll_top(&mut self, node: NodeId, scroll_top: f64) {
+        self.scroll_to_with(
+            node,
+            None,
+            Some(scroll_top),
+            rinch_core::dom::ScrollBehavior::Auto,
+        );
+    }
+
+    /// A scroll write on either axis (#2291). `Auto` follows the box's
+    /// computed `scroll-behavior`; a smooth write becomes a request the app
+    /// animates ([`crate::NodeTree::request_smooth_scroll`]) and leaves the
+    /// offset where it is for now, as `scrollTop` reads in a browser right
+    /// after a smooth write. An instant write replaces a pending request.
+    fn scroll_to_with(
+        &mut self,
+        node: NodeId,
+        left: Option<f64>,
+        top: Option<f64>,
+        behavior: rinch_core::dom::ScrollBehavior,
+    ) {
+        use rinch_core::dom::ScrollBehavior;
         // #723: an id that names no live node is a no-op, as on the web.
         if !self.tree.nodes.contains(node.0) {
             return;
         }
-        if let Some(n) = self.tree.nodes.get_mut(node.0) {
-            n.scroll_offset.1 = scroll_top;
+        let smooth = match behavior {
+            ScrollBehavior::Smooth => true,
+            ScrollBehavior::Instant => false,
+            ScrollBehavior::Auto => self.tree.scroll_behavior_smooth(node.0),
+        };
+        let mut wrote = false;
+        let now = self.animation_now_ms();
+        for (vertical, value) in [(false, left), (true, top)] {
+            let Some(value) = value else { continue };
+            if smooth {
+                self.tree
+                    .request_smooth_scroll(node.0, vertical, value, now);
+                continue;
+            }
+            self.tree
+                .smooth_scroll_requests
+                .retain(|r| !(r.node == node.0 && r.vertical == vertical));
+            if let Some(n) = self.tree.nodes.get_mut(node.0) {
+                if vertical {
+                    n.scroll_offset.1 = value;
+                } else {
+                    n.scroll_offset.0 = value;
+                }
+                wrote = true;
+            }
         }
-        // Paint-dirty, and the hit cache's scroll invalidation: the extents
-        // inside the scroller survive (#911).
-        self.tree.mark_scrolled(node.0);
+        if wrote {
+            // Paint-dirty, and the hit cache's scroll invalidation: the
+            // extents inside the scroller survive (#911).
+            self.tree.mark_scrolled(node.0);
+        }
     }
 
     /// Flags the node ([`crate::Node::style_isolated`]) and marks it with
@@ -2195,16 +2241,12 @@ impl DomDocument for RinchDocument {
     }
 
     fn set_scroll_left(&mut self, node: NodeId, scroll_left: f64) {
-        // #723: an id that names no live node is a no-op, as on the web.
-        if !self.tree.nodes.contains(node.0) {
-            return;
-        }
-        if let Some(n) = self.tree.nodes.get_mut(node.0) {
-            n.scroll_offset.0 = scroll_left;
-        }
-        // Paint-dirty, and the hit cache's scroll invalidation: the extents
-        // inside the scroller survive (#911).
-        self.tree.mark_scrolled(node.0);
+        self.scroll_to_with(
+            node,
+            Some(scroll_left),
+            None,
+            rinch_core::dom::ScrollBehavior::Auto,
+        );
     }
 
     /// The container's content height, from

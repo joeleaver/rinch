@@ -497,6 +497,29 @@ div {
 
 [`ScrollEvent`]: https://docs.rs/rinch/latest/rinch/prelude/struct.ScrollEvent.html
 
+**`scroll-behavior: smooth`** (issue #2291) animates a *programmatic* scroll of
+the box it is on, as a browser does: a `set_scroll_top`/`set_scroll_left`, a
+`scroll_into_view()` / `scroll_to_fraction()` (the editor's caret reveal as you
+type included) and `NodeHandle::scroll_to`. The page scroller takes it from the
+root element (`html { scroll-behavior: smooth }`), as the viewport does in a
+browser. The scroll glides on the curve Chrome uses for it — `sqrt(distance)`
+frames of 60 Hz, so 400 px in a third of a second, never longer than 1.5 s —
+with `onscroll` on every frame. Right after a smooth write `scroll_top()` still
+reads the old offset, as `scrollTop` does in a browser. A second write mid-way
+retargets the glide; a wheel, a scrollbar drag or an instant write stops it.
+
+```rust
+// `scrollTo({top: 0, behavior})`: overrides the stylesheet either way.
+list.scroll_to(None, Some(0.0), ScrollBehavior::Instant);   // jump
+list.scroll_to(None, Some(0.0), ScrollBehavior::Smooth);    // glide
+list.scroll_to(None, Some(0.0), ScrollBehavior::Auto);      // as the CSS says
+```
+
+`RinchApp::set_smooth_programmatic_scroll(false)` makes every such scroll land
+at once (the hook for the OS reduced-motion setting, #2209, which rinch does
+not read on the desktop yet). On the web the browser does all of this itself.
+Keyboard scrolling is not modelled on the desktop yet.
+
 On desktop a scroll offset is kept on the **device pixel grid** (issue #1543),
 so scrolled text moves by whole device pixels and does not re-space as it
 scrolls: at a display scale of 125% the offsets are multiples of 0.8px. The

@@ -2424,6 +2424,35 @@ impl DomDocument for WebDocument {
         }
     }
 
+    /// `element.scrollTo({left, top, behavior})`: the browser animates or
+    /// jumps, as it does for the page's own scrolls (#2291).
+    fn scroll_to_with(
+        &mut self,
+        node: NodeId,
+        left: Option<f64>,
+        top: Option<f64>,
+        behavior: rinch_core::dom::ScrollBehavior,
+    ) {
+        use rinch_core::dom::ScrollBehavior;
+        if let Some(n) = self.nodes.get(&node.0)
+            && let Ok(el) = n.clone().dyn_into::<web_sys::Element>()
+        {
+            let opts = web_sys::ScrollToOptions::new();
+            if let Some(left) = left {
+                opts.set_left(left);
+            }
+            if let Some(top) = top {
+                opts.set_top(top);
+            }
+            opts.set_behavior(match behavior {
+                ScrollBehavior::Auto => web_sys::ScrollBehavior::Auto,
+                ScrollBehavior::Smooth => web_sys::ScrollBehavior::Smooth,
+                ScrollBehavior::Instant => web_sys::ScrollBehavior::Instant,
+            });
+            el.scroll_to_with_scroll_to_options(&opts);
+        }
+    }
+
     fn scroll_height(&self, node: NodeId) -> f64 {
         self.nodes
             .get(&node.0)

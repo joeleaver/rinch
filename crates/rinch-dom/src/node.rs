@@ -3668,6 +3668,20 @@ impl IfcRootMeasures {
     }
 }
 
+/// One programmatic scroll a `scroll-behavior: smooth` box asked for
+/// ([`NodeTree::smooth_scroll_requests`], #2291).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SmoothScrollRequest {
+    pub node: RawNodeId,
+    /// The vertical offset (`scrollTop`), else the horizontal (`scrollLeft`).
+    pub vertical: bool,
+    /// The offset asked for, unclamped (the animator clamps it to the range).
+    pub target: f64,
+    /// When it was asked for, on the document's animation clock (ms): the
+    /// animation starts there, as Chrome's starts at the write.
+    pub at_ms: f64,
+}
+
 /// The node tree, stored in a slab for stable IDs.
 pub struct NodeTree {
     /// All nodes, indexed by RawNodeId.
@@ -3907,6 +3921,13 @@ pub struct NodeTree {
     /// which moves the scroller's content without a layout. With
     /// [`Self::layout_epoch`] it makes [`Self::geometry_epoch`].
     scroll_epoch: u64,
+    /// The programmatic scrolls a `scroll-behavior: smooth` box asked for
+    /// (#2291), one per (box, axis), newest wins: a `scroll_top` /
+    /// `scroll_left` write to such a box lands here instead of on its offset,
+    /// and the app animates it (`rinch::app::smooth_wheel`). A host with no
+    /// animator ([`Self::take_smooth_scroll_requests`] never called) can call
+    /// [`Self::flush_smooth_scroll_requests`] to land them at once.
+    pub smooth_scroll_requests: Vec<SmoothScrollRequest>,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -4670,6 +4691,7 @@ impl NodeTree {
             inline_font_boxes: Default::default(),
             layout_epoch: 0,
             scroll_epoch: 0,
+            smooth_scroll_requests: Vec::new(),
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
@@ -5028,6 +5050,70 @@ impl NodeTree {
     /// last position after a frame (#2766).
     pub fn geometry_epoch(&self) -> u64 {
         self.layout_epoch.wrapping_add(self.scroll_epoch)
+    }
+
+    /// Whether a programmatic scroll of `id` animates: its computed
+    /// `scroll-behavior` is `smooth` (#2291). The page scroller (`<body>`,
+    /// which stands for the viewport here) takes the root element's, as
+    /// Chrome's viewport does; `<body>`'s own value does not apply to it.
+    pub fn scroll_behavior_smooth(&self, id: RawNodeId) -> bool {
+        if id == self.body_id {
+            // `<html>`'s `computed_style` is not kept current (it has no
+            // layout box of its own to sync), so read its Stylo style, as
+            // the root font size is read.
+            return self.get_live(self.html_id).is_some_and(|html| {
+                let data = html.stylo_element_data.borrow();
+                data.as_ref()
+                    .and_then(|d| d.styles.get_primary())
+                    .is_some_and(|cv| {
+                        cv.get_box().clone_scroll_behavior()
+                            == style::properties::longhands::scroll_behavior::computed_value::T::Smooth
+                    })
+            });
+        }
+        self.nodes
+            .get(id)
+            .is_some_and(|n| n.computed_style.scroll_behavior_smooth)
+    }
+
+    /// Ask for `id`'s offset on one axis to move to `target` smoothly
+    /// (#2291), from `at_ms` on the animation clock, replacing a request not
+    /// yet taken for the same box and axis.
+    pub fn request_smooth_scroll(
+        &mut self,
+        id: RawNodeId,
+        vertical: bool,
+        target: f64,
+        at_ms: f64,
+    ) {
+        self.smooth_scroll_requests
+            .retain(|r| !(r.node == id && r.vertical == vertical));
+        self.smooth_scroll_requests.push(SmoothScrollRequest {
+            node: id,
+            vertical,
+            target,
+            at_ms,
+        });
+    }
+
+    /// The smooth scroll requests made since the last call, for the animator.
+    pub fn take_smooth_scroll_requests(&mut self) -> Vec<SmoothScrollRequest> {
+        std::mem::take(&mut self.smooth_scroll_requests)
+    }
+
+    /// Land every pending smooth scroll request at once, as an instant write
+    /// would have: for a host that animates nothing.
+    pub fn flush_smooth_scroll_requests(&mut self) {
+        for r in self.take_smooth_scroll_requests() {
+            if let Some(n) = self.nodes.get_mut(r.node) {
+                if r.vertical {
+                    n.scroll_offset.1 = r.target;
+                } else {
+                    n.scroll_offset.0 = r.target;
+                }
+                self.mark_scrolled(r.node);
+            }
+        }
     }
 
     /// `id`'s `scroll_offset` has just been written, and nothing else about
