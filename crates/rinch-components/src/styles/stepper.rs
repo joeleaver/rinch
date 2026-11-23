@@ -78,17 +78,19 @@ pub fn styles() -> String {
     display: none;
 }
 
-/* Completed step */
+/* Completed step. `--rinch-stepper-icon-text` recolours the glyph on the
+   filled icon (issue #2195). */
 .rinch-stepper__step--completed .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
-    color: white;
+    color: var(--rinch-stepper-icon-text, white);
 }
 
-/* Progress (current) step */
+/* Progress (current) step. `--rinch-stepper-ring` replaces the focus ring
+   around it (a `box-shadow` value; `none` drops it). */
 .rinch-stepper__step--progress .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
-    color: white;
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--rinch-stepper-color, var(--rinch-primary-color)) 20%, transparent);
+    color: var(--rinch-stepper-icon-text, white);
+    box-shadow: var(--rinch-stepper-ring, 0 0 0 4px color-mix(in srgb, var(--rinch-stepper-color, var(--rinch-primary-color)) 20%, transparent));
 }
 
 /* Step body */
@@ -123,8 +125,20 @@ pub fn styles() -> String {
     margin-top: 0.125rem;
 }
 
-/* Step content (optional content for each step) */
+/* Step content. Hidden inside its step; the Stepper moves the active step's
+   content into `.rinch-stepper__content`, below the steps, where it shows
+   (issue #2195, Mantine's layout). */
 .rinch-stepper__step-content {
+    display: none;
+}
+
+.rinch-stepper__content > .rinch-stepper__step-content {
+    display: block;
+    padding-top: var(--rinch-spacing-md);
+}
+
+/* A step with no children has nothing to show and takes no room. */
+.rinch-stepper__content > .rinch-stepper__step-content:empty {
     display: none;
 }
 
@@ -225,10 +239,22 @@ pub fn styles() -> String {
 .rinch-stepper--radius-lg .rinch-stepper__step-icon { border-radius: var(--rinch-radius-lg); }
 .rinch-stepper--radius-xl .rinch-stepper__step-icon { border-radius: var(--rinch-radius-xl); }
 
-/* Completed state content */
+/* Completed state content (issue #2195). The Stepper moves it into
+   `.rinch-stepper__content`, where it is hidden until `active` is past the
+   last step and the region carries `--completed`. Outside a Stepper it shows
+   as is. */
 .rinch-stepper__completed {
     padding: var(--rinch-spacing-md);
     text-align: center;
+}
+
+.rinch-stepper__steps .rinch-stepper__completed,
+.rinch-stepper__content > .rinch-stepper__completed {
+    display: none;
+}
+
+.rinch-stepper__content--completed > .rinch-stepper__completed {
+    display: block;
 }
 "#.to_string()
 }

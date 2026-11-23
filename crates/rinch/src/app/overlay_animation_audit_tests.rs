@@ -52,9 +52,10 @@
 //! `render` and never handed out, so a fixture has to go in through the handler
 //! the component registered — `dispatch_event` on the node's `data-rid` /
 //! `data-onenter`, which is the same call the click path makes. `Stepper` has no
-//! reveal at all (its `__step-content` is unconditionally `display: none` and
-//! nothing ever shows it) and derives state only on a fresh `render`, so its
-//! entry swaps the state class on the live node — see
+//! reveal to animate (a step's `__step-content` is shown by *moving* it into
+//! the stepper's content region, issue #2195, not by a class flip on a
+//! rendered node) and derives state only on a fresh `render`, so its entry
+//! swaps the state class on the live node — see
 //! [`stepper_refuses_nothing_when_a_step_changes_state`].
 
 use super::*;
@@ -709,8 +710,9 @@ fn tooltip_refuses_nothing_when_it_is_revealed() {
     );
 }
 
-/// `Stepper` has **no** reveal: `.rinch-stepper__step-content` is
-/// unconditionally `display: none` and nothing ever shows it, and the step's
+/// `Stepper` has **no** class-flip reveal: a `.rinch-stepper__step-content` is
+/// `display: none` inside its step and is shown only by being moved into the
+/// stepper's `.rinch-stepper__content` region (issue #2195), and the step's
 /// state is derived only on a fresh `render`. So there is no un-hide pass to
 /// audit, and the shape worth pinning is the opposite one — the step icon and
 /// the separator declare `transition: background-color`, and the class that
@@ -772,14 +774,16 @@ fn stepper_refuses_nothing_when_a_step_changes_state() {
     );
 
     // And the fact that makes this component different from the seven above:
-    // its step content is never revealed, in either state.
+    // no class change reveals step content. These steps have none, so even
+    // the active step's wrapper, moved into the content region, is `:empty`
+    // and hidden; with children it would show there, by a move.
     let content = nodes_with_class(&app, "rinch-stepper__step-content");
     for c in content {
         assert_eq!(
             display_of(&app, c),
             rinch_dom::computed_style::DisplayValue::None,
-            "`.rinch-stepper__step-content` is unconditionally hidden, so \
-             Stepper has no un-hide pass to get wrong"
+            "an empty `.rinch-stepper__step-content` is hidden in its step and \
+             in the content region alike"
         );
     }
 }

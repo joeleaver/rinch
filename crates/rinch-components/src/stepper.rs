@@ -2,7 +2,7 @@
 //!
 //! Step-by-step progress indicator.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -10,6 +10,8 @@ use rinch_core::Component;
 use rinch_core::ValueCallback;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+
+use crate::borderless_window::SectionRenderer;
 
 /// Stepper size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,6 +101,18 @@ impl std::str::FromStr for StepperOrientation {
 /// A step may still name its own [`state`](StepperStep::state) or
 /// [`step`](StepperStep::step), and what it names it keeps — that is the escape
 /// hatch for a stepper whose states are not a simple prefix of the list.
+///
+/// # Step content
+///
+/// The children of a [`StepperStep`] are that step's content, and the stepper
+/// shows the content of the step at [`Stepper::active`] in a
+/// `.rinch-stepper__content` region **below** the row of steps, as Mantine
+/// does (issue #2195). The other steps' content stays inside their steps,
+/// hidden. Once `active` is past the last step, the
+/// [`StepperCompleted`] block is shown there instead; before that it is hidden.
+/// Content is moved, not copied, so its effects and handlers are the ones it
+/// rendered with, and it goes back into its step when another step becomes the
+/// active one (or when the step leaves the stepper).
 #[derive(Debug, Default)]
 pub struct Stepper {
     /// Currently active step (0-indexed).
@@ -283,6 +297,10 @@ impl Component for Stepper {
             steps_container.append_child(child);
         }
 
+        // Where the active step's content is shown, below the steps (issue
+        // #2195). Created before the first pass so that pass can fill it.
+        let content_region = rinch_macros::rsx! { div { class: "rinch-stepper__content" } };
+
         let derivation = Derivation {
             active: self.active,
             allow_next_steps_select: self.allow_next_steps_select,
@@ -290,6 +308,10 @@ impl Component for Stepper {
             progress_icon: self.progress_icon,
             on_step_click: self.on_step_click.clone(),
             settler: next_settler(),
+            content: ContentRegion {
+                region: content_region.clone(),
+                shown: Rc::new(RefCell::new(Vec::new())),
+            },
         };
         settle_steps(__scope, &steps_container, &derivation);
 
@@ -341,6 +363,7 @@ impl Component for Stepper {
         );
 
         container.append_child(&steps_container);
+        container.append_child(&content_region);
 
         container
     }
@@ -374,6 +397,139 @@ struct Derivation {
     /// fixed for the life of that render, so a step carrying this value was
     /// settled under exactly these props.
     settler: Rc<str>,
+    /// The region below the steps that shows the active step's content, or the
+    /// completed block (issue #2195).
+    content: ContentRegion,
+}
+
+/// The `.rinch-stepper__content` region of one stepper render, and what it has
+/// taken in (issue #2195).
+///
+/// Content is **moved** into the region, never copied: a step's children are
+/// live nodes with effects and handlers of their own. So each node taken in
+/// remembers where it came from, and goes back there — into its step, before
+/// the separator — as soon as it is no longer the one to show. That is also
+/// what makes a step that leaves the stepper (a `for` reconcile, a move to
+/// another stepper) take its content with it.
+#[derive(Debug, Clone)]
+struct ContentRegion {
+    region: NodeHandle,
+    shown: Rc<RefCell<Vec<Shown>>>,
+}
+
+/// A step's content the [`ContentRegion`] has taken in.
+#[derive(Debug)]
+struct Shown {
+    node: NodeHandle,
+    /// The step it was taken from.
+    home: NodeHandle,
+    /// Its next sibling there (the separator), to put it back in front of.
+    before: Option<NodeHandle>,
+}
+
+impl Shown {
+    /// Put the content back into its step.
+    fn return_home(&self) {
+        match &self.before {
+            Some(before)
+                if before.parent_node().map(|p| p.node_id()) == Some(self.home.node_id()) =>
+            {
+                self.home.insert_before(&self.node, before)
+            }
+            _ => self.home.append_child(&self.node),
+        }
+    }
+}
+
+/// The `.rinch-stepper__step-content` child of a step, if it is still there.
+fn step_content(step: &NodeHandle) -> Option<NodeHandle> {
+    step.children()
+        .into_iter()
+        .find(|child| has_class(child, STEP_CONTENT_CLASS))
+}
+
+/// Every [`StepperCompleted`] block under `node` that belongs to this stepper:
+/// the walk [`collect_steps`] makes, collecting the blocks it skips.
+fn collect_completed(node: &NodeHandle) -> Vec<NodeHandle> {
+    fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
+        let class = node.get_attribute("class").unwrap_or_default();
+        let carries = |wanted: &str| class.split_whitespace().any(|c| c == wanted);
+        if carries(COMPLETED_CLASS) {
+            out.push(node.clone());
+            return;
+        }
+        if carries(STEP_CLASS) {
+            return;
+        }
+        for child in node.children() {
+            walk(&child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for child in node.children() {
+        walk(&child, &mut out);
+    }
+    out
+}
+
+/// Bring the content region into line with `active` (issue #2195).
+///
+/// Mantine's rule: the content of the step at `active`; once `active` is past
+/// the last step, the completed block.
+///
+/// **A step's content** is moved into the region while its step is the one at
+/// `active`, and back into its step as soon as it is not — another step became
+/// the active one, or the step left the stepper, which then takes its content
+/// with it. Content something else took out of the region is forgotten, not
+/// put back.
+///
+/// **A completed block** is moved into the region whatever `active` is, and
+/// shown there only by the `--completed` modifier the region carries once
+/// `active` is past the last step. Left among the steps it would be a sibling
+/// of the last one, which then stops being `:last-child` and draws a separator
+/// to nothing. A block an `if` or a `for` puts back among the steps is an
+/// arrival, so the next pass takes it too; one they remove simply goes.
+///
+/// Idempotent, as [`settle_steps`] is, and it runs at the end of every pass: a
+/// pass with nothing to change moves nothing and writes nothing.
+fn settle_content(steps_container: &NodeHandle, steps: &[NodeHandle], d: &Derivation) {
+    let region = &d.content.region;
+    let region_id = region.node_id();
+    let mut shown = d.content.shown.borrow_mut();
+
+    let target = steps.get(d.active as usize);
+    shown.retain(|s| {
+        if s.node.parent_node().map(|p| p.node_id()) != Some(region_id) {
+            return false;
+        }
+        let wanted = target.is_some_and(|t| t.node_id() == s.home.node_id());
+        if !wanted {
+            s.return_home();
+        }
+        wanted
+    });
+
+    if let Some(step) = target
+        && shown.is_empty()
+        && let Some(content) = step_content(step)
+    {
+        let before = content.next_sibling();
+        region.append_child(&content);
+        shown.push(Shown {
+            node: content,
+            home: step.clone(),
+            before,
+        });
+    }
+
+    for block in collect_completed(steps_container) {
+        region.append_child(&block);
+    }
+
+    let completed = target.is_none();
+    if has_class(region, CONTENT_COMPLETED_CLASS) != completed {
+        region.toggle_class(CONTENT_COMPLETED_CLASS);
+    }
 }
 
 thread_local! {
@@ -462,7 +618,8 @@ impl Derivation {
 /// record of what the last pass happened to draw.
 fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: &Derivation) {
     let skips = skips_settled_steps();
-    for (position, step) in collect_steps(steps_container).iter().enumerate() {
+    let steps = collect_steps(steps_container);
+    for (position, step) in steps.iter().enumerate() {
         let position = position as u32;
         let position_str = position.to_string();
 
@@ -580,6 +737,8 @@ fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: &Deriv
             step.set_attribute(SETTLED_BY_ATTR, &d.settler);
         }
     }
+
+    settle_content(steps_container, &steps, d);
 }
 
 /// Bring one step's clickability — the class, the keyboard reach, and the
@@ -1114,6 +1273,13 @@ const ICON_ALT_ATTR: &str = "data-icon-for";
 /// One step of a stepper.
 const STEP_CLASS: &str = "rinch-stepper__step";
 
+/// On the content region once `active` is past the last step: shows the
+/// completed block (issue #2195).
+const CONTENT_COMPLETED_CLASS: &str = "rinch-stepper__content--completed";
+
+/// A step's own content wrapper, which holds its children (issue #2195).
+const STEP_CONTENT_CLASS: &str = "rinch-stepper__step-content";
+
 /// A [`StepperCompleted`] block, which is **not a position** — see
 /// [`collect_steps`] for why it is skipped rather than stopped at.
 const COMPLETED_CLASS: &str = "rinch-stepper__completed";
@@ -1189,14 +1355,31 @@ fn step_icon_box(step: &NodeHandle) -> Option<NodeHandle> {
 }
 
 /// Individual step in the stepper.
-#[derive(Debug, Default)]
+///
+/// Its children are the step's content, which the parent [`Stepper`] shows
+/// below the steps while this step is the active one (issue #2195).
+#[derive(Default)]
 pub struct StepperStep {
     /// Step label text.
     pub label: String,
     /// Step description text.
     pub description: String,
+    /// Renders the label as nodes, in place of [`label`](StepperStep::label)
+    /// (issue #2195). It goes in the same `.rinch-stepper__step-label` element.
+    pub label_section: Option<SectionRenderer>,
+    /// Renders the description as nodes, in place of
+    /// [`description`](StepperStep::description) (issue #2195). It goes in the
+    /// same `.rinch-stepper__step-description` element.
+    pub description_section: Option<SectionRenderer>,
     /// Custom icon for this step.
     pub icon: Option<TablerIcon>,
+    /// Renders the step's icon as nodes — an avatar, a styled number — in place
+    /// of [`icon`](StepperStep::icon) or the step number (issue #2195).
+    ///
+    /// It fills the same slot `icon` does: drawn while the step is inactive,
+    /// and while it is in progress unless a progress icon applies; a completed
+    /// step draws its completed icon (the tick by default) instead.
+    pub icon_section: Option<SectionRenderer>,
     /// Custom completed icon.
     pub completed_icon: Option<TablerIcon>,
     /// Custom progress icon.
@@ -1240,6 +1423,29 @@ pub struct StepperStep {
     /// the number in the icon box, which is one higher). An index named here
     /// does **not** move the step: its state still derives from where it sits.
     pub step: Option<u32>,
+}
+
+impl std::fmt::Debug for StepperStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let section = |s: &Option<SectionRenderer>| s.as_ref().map(|_| "...");
+        f.debug_struct("StepperStep")
+            .field("label", &self.label)
+            .field("description", &self.description)
+            .field("label_section", &section(&self.label_section))
+            .field("description_section", &section(&self.description_section))
+            .field("icon", &self.icon)
+            .field("icon_section", &section(&self.icon_section))
+            .field("completed_icon", &self.completed_icon)
+            .field("progress_icon", &self.progress_icon)
+            .field("allow_step_click", &self.allow_step_click)
+            .field("allow_step_select", &self.allow_step_select)
+            .field("loading", &self.loading)
+            .field("loader_type", &self.loader_type)
+            .field("disabled", &self.disabled)
+            .field("state", &self.state)
+            .field("step", &self.step)
+            .finish()
+    }
 }
 
 impl Component for StepperStep {
@@ -1301,7 +1507,7 @@ impl Component for StepperStep {
             if self.progress_icon.is_some() {
                 has.push(KEY_PROGRESS);
             }
-            if self.icon.is_some() {
+            if self.icon.is_some() || self.icon_section.is_some() {
                 has.push(KEY_BASE);
             }
         }
@@ -1338,11 +1544,12 @@ impl Component for StepperStep {
                     .expect("KEY_PROGRESS implies a progress icon");
                 render_tabler_icon(__scope, icon, TablerIconStyle::Outline)
             }
-            Some(_) => match self.icon {
-                Some(custom_icon) => {
+            Some(_) => match (&self.icon_section, self.icon) {
+                (Some(render), _) => render(__scope),
+                (None, Some(custom_icon)) => {
                     render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)
                 }
-                None => rinch_core::IntoNode::into_node(step_number.to_string(), __scope),
+                (None, None) => rinch_core::IntoNode::into_node(step_number.to_string(), __scope),
             },
         };
 
@@ -1386,12 +1593,21 @@ impl Component for StepperStep {
         // Body (label + description)
         let body = rinch_macros::rsx! { div { class: "rinch-stepper__step-body" } };
 
-        if !self.label.is_empty() {
+        if let Some(render) = &self.label_section {
+            let label_span = rinch_macros::rsx! { span { class: "rinch-stepper__step-label" } };
+            label_span.append_child(&render(__scope));
+            body.append_child(&label_span);
+        } else if !self.label.is_empty() {
             let label_span = rinch_macros::rsx! { span { class: "rinch-stepper__step-label", {self.label.clone()} } };
             body.append_child(&label_span);
         }
 
-        if !self.description.is_empty() {
+        if let Some(render) = &self.description_section {
+            let desc_span =
+                rinch_macros::rsx! { span { class: "rinch-stepper__step-description" } };
+            desc_span.append_child(&render(__scope));
+            body.append_child(&desc_span);
+        } else if !self.description.is_empty() {
             let desc_span =
                 rinch_macros::rsx! { span { class: "rinch-stepper__step-description" } };
             let desc_text = rinch_core::IntoNode::into_node(self.description.clone(), __scope);
@@ -1401,7 +1617,8 @@ impl Component for StepperStep {
 
         step_el.append_child(&body);
 
-        // Content
+        // Content: hidden here, and moved into the stepper's content region
+        // below the steps while this step is the active one (issue #2195).
         let content_el = rinch_macros::rsx! { div { class: "rinch-stepper__step-content" } };
 
         for child in children {
@@ -1419,6 +1636,11 @@ impl Component for StepperStep {
 }
 
 /// Content shown for the completed state.
+///
+/// Hidden until the parent [`Stepper`]'s `active` is past its last step (`active
+/// >= ` the number of steps); then the stepper shows it in its content region
+/// below the steps, in place of a step's content — Mantine's `Stepper.Completed`
+/// (issue #2195). Outside a `Stepper` it is shown as is.
 ///
 /// **Not a position** (issue #741): the parent [`Stepper`]'s derivation skips
 /// this block, so a [`StepperStep`] placed inside it keeps the index and state

@@ -247,7 +247,7 @@ pub fn styles() -> String {
     position: absolute;
     top: 0;
     left: 0;
-    height: 36px;
+    height: var(--rinch-titlebar-height, 36px);
     display: flex;
     align-items: center;
     padding: 0 var(--rinch-spacing-xs);

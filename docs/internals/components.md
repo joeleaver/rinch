@@ -256,6 +256,24 @@ The pieces that follow from it:
   own `state` keeps none. A **removal** runs the same pass for the same
   reason, through `on_child_removed` (issue #745): a step that goes moves every
   step behind it backwards, which renumbers it and can restate it.
+- **The content region (issue #2195).** `Stepper` renders a
+  `.rinch-stepper__content` region after `.rinch-stepper__steps`, and every
+  pass ends with `settle_content`: the active step's
+  `.rinch-stepper__step-content` is **moved** into the region (its children are
+  live nodes, so never copied), remembered with its step and next sibling (the
+  separator), and moved back as soon as another step is at `active` or its step
+  is no longer in the list — so a removed step carries its content away. Content
+  something else took out of the region is forgotten. `StepperCompleted` blocks
+  are moved into the region on every pass whatever `active` is, and shown only by
+  `rinch-stepper__content--completed`, set while `active >= steps.len()`: left
+  among the steps a block would be the last step's sibling, and that step would
+  stop being `:last-child` (and draw its separator). A step content's move is
+  out of and back into its step, a boundary the stepper's late-child observers
+  decline; a completed block's move out of the steps container happens either
+  in `render`, before those observers are registered, or inside one of their
+  callbacks, where late-child dispatch is suppressed. An empty step content is `:empty` and hidden
+  in the region too. Pins: `tests/stepper_content_2195.rs`, and the real
+  stylesheet in `rinch/src/app/stepper_window_2195_tests.rs`.
 - **A `StepperCompleted` is not a position, and neither is anything inside it**
   (issue #741). The step walk skips that block: it is what a stepper shows
   *instead of* its steps once they are all done. It used to walk straight into

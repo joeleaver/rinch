@@ -1515,7 +1515,10 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
 | `description` | `String` | `""` | |
+| `label_section` | `Option<SectionRenderer>` | `None` | Renders the label as nodes, in place of `label`, inside `.rinch-stepper__step-label` (#2195) |
+| `description_section` | `Option<SectionRenderer>` | `None` | Renders the description as nodes, in place of `description`, inside `.rinch-stepper__step-description` (#2195) |
 | `icon` | `Option<TablerIcon>` | `None` | Default icon |
+| `icon_section` | `Option<SectionRenderer>` | `None` | Renders the icon as nodes (an avatar, a styled number), in place of `icon` or the step number (#2195). Same slot as `icon`: drawn while inactive, and in progress unless a progress icon applies; a completed step draws its completed icon |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `allow_step_click` | `bool` | `false` | Grants this step the clickable class regardless of its position against `active`. With `Stepper::on_step_click` set, also grants the wiring (handler, `tabindex="0"`, `data-rid`) unless `disabled` is set (#737) |
@@ -1526,10 +1529,31 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `state` | `String` | `""` | `"completed"` or `"progress"`; anything else is inactive. Leave it unset and the parent `Stepper` derives it from this step's position against `active` (#709). Set it to override that for this one step: what a step names, it keeps |
 | `step` | `Option<u32>` | `None` | Step index, 0-based. Set by the parent `Stepper` from this step's position unless named here, in which case that is the index shown — and the number in the icon box, one higher. An index named here changes the label, **not** the position the state derives from |
 
+**Step content (#2195).** A `StepperStep`'s children are its content. The
+stepper shows the content of the step at `active` in a `.rinch-stepper__content`
+region **below** the row of steps, as Mantine does; the other steps' content
+stays inside their steps, hidden. The content is moved, not copied (its effects
+and handlers are the ones it rendered with), and goes back into its step when
+another step becomes the active one or the step leaves the stepper. Restyle the
+region with `.rinch-stepper__content` and the shown content with
+`.rinch-stepper__content > .rinch-stepper__step-content` (padded
+`--rinch-spacing-md` on top; a step with no children shows nothing).
+
+The filled icons' glyph colour is `--rinch-stepper-icon-text` (default `white`)
+and the progress step's ring is `--rinch-stepper-ring` (a `box-shadow` value;
+`none` drops it).
+
 **StepperCompleted:** No props.
 
+`StepperCompleted` is shown only once `active` is past the last step (`active
+>=` the number of steps), in the content region in place of a step's content
+(Mantine's `Stepper.Completed`, #2195); before that it is hidden, so it needs no
+`if` around it. The stepper keeps it in the region either way (the region
+carries `rinch-stepper__content--completed` while it shows). Outside a
+`Stepper` it renders as is.
+
 `StepperCompleted` is **not a position** (issue #741): it is what the stepper
-shows *instead of* its steps once they are all done. The parent's step walk skips
+shows *instead of* a step's content once they are all done. The parent's step walk skips
 it, so a `StepperStep` placed **inside** it keeps the index and state it rendered
 itself with, and a whole `Stepper` nested inside it keeps its own.
 
@@ -1673,11 +1697,14 @@ see [Sortable Lists](sortable.md#styling)): `--rinch-sortable-gap`,
 
 ### BorderlessWindow
 
-Custom Default: `show_minimize`, `show_maximize`, `show_close` all default to `true`.
+Custom Default: `show_minimize`, `show_maximize`, `show_close` all default to `true`; `titlebar_height` to `36`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `title` | `String` | `""` | Window title in titlebar |
+| `title` | `String` | `""` | Window title in titlebar, plain text in `--rinch-titlebar-text` (in the inline menu row too, `.rinch-borderlesswindow__brand`; it was a fixed rainbow there before #2196) |
+| `title_section` | `Option<SectionRenderer>` | `None` | Renders the title as nodes (a logo, coloured text) in place of `title`, in the same element (#2196) |
+| `controls_layout` | `Option<WindowControlsLayout>` | `None` | Which controls go at which end, in order (#2196). `None` follows the platform (`WindowControlsLayout::platform()`): macOS close/minimize/zoom on the left; Linux the desktop's own layout (GNOME `button-layout` via `gsettings` on a GNOME-family desktop, else `gtk-decoration-layout` in `~/.config/gtk-3.0/settings.ini`, which KDE writes; GNOME's stock `appmenu:close` is a close button alone), falling back to Windows' order; minimize/maximize/close on the right elsewhere. Build one with `WindowControlsLayout::windows()` / `macos()`, by fields, or from GTK syntax: `"close,minimize,maximize:".parse().unwrap()`. `show_*` still hides a control |
+| `titlebar_height` | `u32` | **`36`** | Titlebar height in px (#2196): written as `--rinch-titlebar-height`, which sizes the titlebar, the control buttons and the inline menu row, and counted into `--rinch-window-top-inset`; a below-titlebar menu bar is placed under it. Change it here, not in CSS, or the inset does not follow |
 | `radius` | `String` | `""` | Corner radius (none, xs, sm, md, lg, xl) |
 | `show_minimize` | `bool` | **`true`** | |
 | `show_maximize` | `bool` | **`true`** | |
@@ -1739,6 +1766,6 @@ rsx! {
 | `ReactiveBool` | `Rc<dyn Fn() -> bool>` | checked_fn, active_fn, opened_fn, visible_fn |
 | `ReactiveString` | `Rc<dyn Fn() -> String>` | value_fn |
 | `ReactiveF32` | `Rc<dyn Fn() -> f32>` | Progress value_fn |
-| `SectionRenderer` | `Rc<dyn Fn(&mut RenderScope) -> NodeHandle>` | BorderlessWindow sections |
+| `SectionRenderer` | `Rc<dyn Fn(&mut RenderScope) -> NodeHandle>` | BorderlessWindow sections and `title_section`, StepperStep `*_section`, Modal `footer`, custom loaders |
 
 All callback/reactive props are auto-wrapped by the `rsx!` macro — just pass closures directly, do not wrap in `Some(...)` or `Rc::new(...)`.

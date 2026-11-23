@@ -29,9 +29,10 @@ use rinch_core::element::Callback;
 use rinch_core::reactive::Effect;
 use std::rc::Rc;
 
-/// Titlebar height in px. Must match `height`/`min-height` on
-/// `.rinch-borderlesswindow__titlebar` in `styles/borderless_window.rs`.
-const TITLEBAR_HEIGHT: u32 = 36;
+/// The default [`BorderlessWindow::titlebar_height`], in px. The stylesheet's
+/// fallback for `--rinch-titlebar-height` (`styles/borderless_window.rs`) is
+/// the same number, for a titlebar rendered without the component.
+pub const DEFAULT_TITLEBAR_HEIGHT: u32 = 36;
 
 /// Callback type for section renderers.
 pub type SectionRenderer = Rc<dyn Fn(&mut RenderScope) -> NodeHandle>;
@@ -84,6 +85,178 @@ impl std::str::FromStr for WindowRadius {
     }
 }
 
+/// One of the window control buttons a [`BorderlessWindow`] draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowControl {
+    /// Minimize (class `rinch-borderlesswindow__control--minimize`).
+    Minimize,
+    /// Maximize / zoom (class `rinch-borderlesswindow__control--maximize`).
+    Maximize,
+    /// Close (class `rinch-borderlesswindow__control--close`).
+    Close,
+}
+
+impl WindowControl {
+    /// The name GTK's `gtk-decoration-layout` and GNOME's `button-layout` use.
+    fn from_gtk(token: &str) -> Option<Self> {
+        match token.trim() {
+            "minimize" => Some(WindowControl::Minimize),
+            "maximize" => Some(WindowControl::Maximize),
+            "close" => Some(WindowControl::Close),
+            _ => None,
+        }
+    }
+}
+
+/// Which window controls go at each end of a [`BorderlessWindow`]'s titlebar,
+/// in order (issue #2196).
+///
+/// [`BorderlessWindow::controls_layout`] left unset uses
+/// [`WindowControlsLayout::platform`], each platform's own convention. Set it
+/// to place them yourself, with the constructors here or with GTK's
+/// `gtk-decoration-layout` syntax through [`FromStr`](std::str::FromStr):
+/// `"close,minimize,maximize:"` is macOS's order on the left,
+/// `":minimize,maximize,close"` Windows' order on the right.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowControlsLayout {
+    /// Controls at the left end, left to right.
+    pub left: Vec<WindowControl>,
+    /// Controls at the right end, left to right.
+    pub right: Vec<WindowControl>,
+}
+
+impl WindowControlsLayout {
+    /// Windows' layout: minimize, maximize, close, on the right. Also the
+    /// default on a Linux desktop whose layout cannot be read, and on every
+    /// other platform without a convention of its own.
+    pub fn windows() -> Self {
+        Self {
+            left: Vec::new(),
+            right: vec![
+                WindowControl::Minimize,
+                WindowControl::Maximize,
+                WindowControl::Close,
+            ],
+        }
+    }
+
+    /// macOS's layout: the traffic lights close, minimize, zoom, on the left.
+    pub fn macos() -> Self {
+        Self {
+            left: vec![
+                WindowControl::Close,
+                WindowControl::Minimize,
+                WindowControl::Maximize,
+            ],
+            right: Vec::new(),
+        }
+    }
+
+    /// Read a GTK `gtk-decoration-layout` / GNOME `button-layout` value, such
+    /// as `"appmenu:minimize,maximize,close"`: the buttons before the colon go
+    /// on the left, the ones after it on the right. Names other than
+    /// `minimize`, `maximize` and `close` (`appmenu`, `icon`, `menu`,
+    /// `spacer`) are skipped, as is surrounding quoting, so `gsettings`
+    /// output can be passed as is. A value with no colon puts everything on
+    /// the left, as GTK does.
+    pub fn from_gtk(value: &str) -> Self {
+        let value = value.trim().trim_matches(|c| c == '\'' || c == '"');
+        let (left, right) = value.split_once(':').unwrap_or((value, ""));
+        let side = |s: &str| s.split(',').filter_map(WindowControl::from_gtk).collect();
+        Self {
+            left: side(left),
+            right: side(right),
+        }
+    }
+
+    /// This platform's convention, read once per process:
+    ///
+    /// - **macOS**: [`WindowControlsLayout::macos`].
+    /// - **Linux**: the desktop's own setting — GNOME's
+    ///   `org.gnome.desktop.wm.preferences button-layout` (through `gsettings`)
+    ///   on a GNOME-family desktop, otherwise `gtk-decoration-layout` in
+    ///   `$XDG_CONFIG_HOME/gtk-3.0/settings.ini` (where KDE Plasma writes its
+    ///   KWin button order for GTK apps) — and [`WindowControlsLayout::windows`]
+    ///   when neither can be read. GNOME's stock value is `appmenu:close`, a
+    ///   close button alone, and that is what this then gives.
+    /// - **Everywhere else** (Windows included): [`WindowControlsLayout::windows`].
+    pub fn platform() -> Self {
+        static PLATFORM: std::sync::OnceLock<WindowControlsLayout> = std::sync::OnceLock::new();
+        PLATFORM.get_or_init(detect_platform_layout).clone()
+    }
+
+    /// Linux's rule, from what was read: `desktop` is `$XDG_CURRENT_DESKTOP`,
+    /// `gsettings` GNOME's `button-layout`, `settings_ini` the contents of
+    /// GTK 3's `settings.ini`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn linux(desktop: &str, gsettings: Option<&str>, settings_ini: Option<&str>) -> Self {
+        let gnome_family = desktop.split(':').any(|d| {
+            matches!(
+                d.to_ascii_lowercase().as_str(),
+                "gnome" | "unity" | "budgie" | "pantheon"
+            )
+        });
+        if gnome_family && let Some(value) = gsettings.filter(|v| !v.trim().is_empty()) {
+            return Self::from_gtk(value);
+        }
+        let ini_value = settings_ini.and_then(|ini| {
+            ini.lines().find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "gtk-decoration-layout").then(|| value.trim().to_owned())
+            })
+        });
+        match ini_value {
+            Some(value) => Self::from_gtk(&value),
+            None => Self::windows(),
+        }
+    }
+}
+
+impl std::str::FromStr for WindowControlsLayout {
+    type Err = std::convert::Infallible;
+
+    /// [`WindowControlsLayout::from_gtk`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_gtk(s))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_platform_layout() -> WindowControlsLayout {
+    WindowControlsLayout::macos()
+}
+
+#[cfg(target_os = "linux")]
+fn detect_platform_layout() -> WindowControlsLayout {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let gsettings = || {
+        let out = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
+    let settings_ini =
+        config.and_then(|dir| std::fs::read_to_string(dir.join("gtk-3.0/settings.ini")).ok());
+    let gsettings = if desktop.is_empty() {
+        None
+    } else {
+        gsettings()
+    };
+    WindowControlsLayout::linux(&desktop, gsettings.as_deref(), settings_ini.as_deref())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn detect_platform_layout() -> WindowControlsLayout {
+    WindowControlsLayout::windows()
+}
+
 /// A borderless window container with custom titlebar and window controls.
 ///
 /// This component provides a styled container for borderless/transparent windows,
@@ -97,8 +270,29 @@ impl std::str::FromStr for WindowRadius {
 /// platform functions (minimize_current_window, toggle_maximize_current_window,
 /// close_current_window) from the `rinch` crate.
 pub struct BorderlessWindow {
-    /// Window title displayed in the titlebar.
+    /// Window title displayed in the titlebar, as plain text in the titlebar's
+    /// text colour (`.rinch-borderlesswindow__title`, or
+    /// `.rinch-borderlesswindow__brand` in the inline menu row).
     pub title: String,
+    /// Renders the title as nodes, in place of [`title`](BorderlessWindow::title)
+    /// (issue #2196): a logo, styled or coloured text. It goes in the same
+    /// element the title text would.
+    pub title_section: Option<SectionRenderer>,
+    /// Which window controls go at which end of the titlebar, in order
+    /// (issue #2196). `None`, the default, follows the platform
+    /// ([`WindowControlsLayout::platform`]): the traffic lights on the left on
+    /// macOS, the desktop's own layout on Linux, minimize/maximize/close on the
+    /// right elsewhere. A control left out of the layout is not drawn, and
+    /// `show_*` still hides one that is in it.
+    pub controls_layout: Option<WindowControlsLayout>,
+    /// Titlebar height in px. Default: 36 ([`DEFAULT_TITLEBAR_HEIGHT`]).
+    ///
+    /// Written as `--rinch-titlebar-height` on the window, which sizes the
+    /// titlebar, its control buttons and the inline menu row, and counted into
+    /// `--rinch-window-top-inset`; a below-titlebar menu bar is placed under
+    /// it. Change the height here rather than in CSS, or the inset and the
+    /// menu bar do not follow.
+    pub titlebar_height: u32,
     /// Corner radius (none, xs, sm, md, lg, xl). Default: md.
     pub radius: String,
     /// Whether to show the minimize button. Default: true.
@@ -123,6 +317,9 @@ impl std::fmt::Debug for BorderlessWindow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BorderlessWindow")
             .field("title", &self.title)
+            .field("title_section", &self.title_section.as_ref().map(|_| "..."))
+            .field("controls_layout", &self.controls_layout)
+            .field("titlebar_height", &self.titlebar_height)
             .field("radius", &self.radius)
             .field("show_minimize", &self.show_minimize)
             .field("show_maximize", &self.show_maximize)
@@ -140,6 +337,9 @@ impl Default for BorderlessWindow {
     fn default() -> Self {
         Self {
             title: String::new(),
+            title_section: None,
+            controls_layout: None,
+            titlebar_height: DEFAULT_TITLEBAR_HEIGHT,
             radius: String::new(),
             show_minimize: true,
             show_maximize: true,
@@ -171,6 +371,117 @@ impl BorderlessWindow {
     }
 }
 
+/// An empty `.rinch-borderlesswindow__controls` box for one end.
+fn controls_container(__scope: &mut RenderScope, side: &str) -> NodeHandle {
+    let controls = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__controls" } };
+    controls.set_attribute(
+        "class",
+        &format!("rinch-borderlesswindow__controls rinch-borderlesswindow__controls--{side}"),
+    );
+    controls
+}
+
+impl BorderlessWindow {
+    /// The controls box for one end of the titlebar, or `None` when no control
+    /// in `which` is shown.
+    fn render_controls(
+        &self,
+        __scope: &mut RenderScope,
+        which: &[WindowControl],
+        side: &str,
+    ) -> Option<NodeHandle> {
+        let buttons: Vec<NodeHandle> = which
+            .iter()
+            .filter_map(|&control| self.render_control(__scope, control))
+            .collect();
+        if buttons.is_empty() {
+            return None;
+        }
+        let controls = controls_container(__scope, side);
+        for button in &buttons {
+            controls.append_child(button);
+        }
+        Some(controls)
+    }
+
+    /// One control button, or `None` when its `show_*` is off.
+    fn render_control(
+        &self,
+        __scope: &mut RenderScope,
+        control: WindowControl,
+    ) -> Option<NodeHandle> {
+        let (shown, modifier, label, callback) = match control {
+            WindowControl::Minimize => (
+                self.show_minimize,
+                "minimize",
+                "Minimize",
+                &self.on_minimize,
+            ),
+            WindowControl::Maximize => (
+                self.show_maximize,
+                "maximize",
+                "Maximize",
+                &self.on_maximize,
+            ),
+            WindowControl::Close => (self.show_close, "close", "Close", &self.on_close),
+        };
+        if !shown {
+            return None;
+        }
+        let btn = rinch_macros::rsx! { button {} };
+        btn.set_attribute(
+            "class",
+            &format!("rinch-borderlesswindow__control rinch-borderlesswindow__control--{modifier}"),
+        );
+        btn.set_attribute("aria-label", label);
+
+        let icon = rinch_macros::rsx! { svg {} };
+        icon.set_attribute("width", "10");
+        icon.set_attribute("height", "10");
+        icon.set_attribute("viewBox", "0 0 10 10");
+        match control {
+            // A horizontal line.
+            WindowControl::Minimize => {
+                let line = rinch_macros::rsx! { path {} };
+                line.set_attribute("d", "M0 5h10");
+                line.set_attribute("stroke", "currentColor");
+                line.set_attribute("stroke-width", "1");
+                icon.append_child(&line);
+            }
+            // A square.
+            WindowControl::Maximize => {
+                let rect = rinch_macros::rsx! { rect {} };
+                rect.set_attribute("x", "1");
+                rect.set_attribute("y", "1");
+                rect.set_attribute("width", "8");
+                rect.set_attribute("height", "8");
+                rect.set_attribute("fill", "none");
+                rect.set_attribute("stroke", "currentColor");
+                rect.set_attribute("stroke-width", "1");
+                icon.append_child(&rect);
+            }
+            // An X.
+            WindowControl::Close => {
+                let path = rinch_macros::rsx! { path {} };
+                path.set_attribute("d", "M1 1l8 8M9 1l-8 8");
+                path.set_attribute("stroke", "currentColor");
+                path.set_attribute("stroke-width", "1.5");
+                icon.append_child(&path);
+            }
+        }
+        btn.append_child(&icon);
+
+        if let Some(cb) = callback {
+            let handler_id = __scope.register_handler({
+                let cb = cb.clone();
+                move || cb.invoke()
+            });
+            btn.set_attribute("data-rid", &handler_id.0.to_string());
+        }
+        Some(btn)
+    }
+}
+
 impl Component for BorderlessWindow {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         // Build the window structure
@@ -195,13 +506,16 @@ impl Component for BorderlessWindow {
         // the real viewport — as it does in a browser and on rinch-web — so it
         // has no way to know. Custom properties inherit, so a fixed descendant
         // can opt in with `top: var(--rinch-window-top-inset, 0px)`.
-        let top_inset = TITLEBAR_HEIGHT
+        let titlebar_height = self.titlebar_height;
+        let top_inset = titlebar_height
             + if is_inline {
                 0
             } else {
                 menu_ctx.as_ref().map(|ctx| ctx.bar_height).unwrap_or(0)
             };
-        let inset_decl = format!("--rinch-window-top-inset: {top_inset}px;");
+        let inset_decl = format!(
+            "--rinch-window-top-inset: {top_inset}px; --rinch-titlebar-height: {titlebar_height}px;"
+        );
         container.set_attribute("style", &inset_decl);
         // Also publish it on `body`. Overlays are commonly rendered as a
         // root-level sibling of the window chrome rather than inside it (UI Zoo
@@ -216,6 +530,19 @@ impl Component for BorderlessWindow {
         // Create titlebar (draggable for window movement)
         let titlebar = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__titlebar" } };
         titlebar.set_attribute("data-drag-window", "true");
+
+        let layout = self
+            .controls_layout
+            .clone()
+            .unwrap_or_else(WindowControlsLayout::platform);
+        let left_controls = self.render_controls(__scope, &layout.left, "left");
+        // Always present, even empty, so the right end has a box to hold.
+        let right_controls = self
+            .render_controls(__scope, &layout.right, "right")
+            .or_else(|| Some(controls_container(__scope, "right")));
+        if !is_inline && let Some(controls) = &left_controls {
+            titlebar.append_child(controls);
+        }
 
         // Left section — only render in titlebar when NOT inline
         // (inline layout moves it to the menu layer)
@@ -247,7 +574,9 @@ impl Component for BorderlessWindow {
             // Empty spacer — title lives in the inline row
         } else {
             title_el.set_attribute("class", "rinch-borderlesswindow__title");
-            if !self.title.is_empty() {
+            if let Some(render_title) = &self.title_section {
+                title_el.append_child(&render_title(__scope));
+            } else if !self.title.is_empty() {
                 let title_text = rinch_core::IntoNode::into_node(self.title.clone(), __scope);
                 title_el.append_child(&title_text);
             }
@@ -262,113 +591,12 @@ impl Component for BorderlessWindow {
         }
         titlebar.append_child(&right);
 
-        // Window controls
-        let controls = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__controls" } };
-
-        // Minimize button
-        if self.show_minimize {
-            let min_btn = rinch_macros::rsx! { button {} };
-            min_btn.set_attribute(
-                "class",
-                "rinch-borderlesswindow__control rinch-borderlesswindow__control--minimize",
-            );
-            min_btn.set_attribute("aria-label", "Minimize");
-
-            // Create minimize icon (horizontal line)
-            let min_icon = rinch_macros::rsx! { svg {} };
-            min_icon.set_attribute("width", "10");
-            min_icon.set_attribute("height", "10");
-            min_icon.set_attribute("viewBox", "0 0 10 10");
-            let min_line = rinch_macros::rsx! { path {} };
-            min_line.set_attribute("d", "M0 5h10");
-            min_line.set_attribute("stroke", "currentColor");
-            min_line.set_attribute("stroke-width", "1");
-            min_icon.append_child(&min_line);
-            min_btn.append_child(&min_icon);
-
-            // Register click handler
-            if let Some(ref cb) = self.on_minimize {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
-                });
-                min_btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
-
-            controls.append_child(&min_btn);
+        // Window controls, at whichever ends the layout puts them (issue
+        // #2196). The right-hand ones close the titlebar row; the left-hand
+        // ones open it (or, inline, open the menu row drawn over it).
+        if let Some(controls) = &right_controls {
+            titlebar.append_child(controls);
         }
-
-        // Maximize button
-        if self.show_maximize {
-            let max_btn = rinch_macros::rsx! { button {} };
-            max_btn.set_attribute(
-                "class",
-                "rinch-borderlesswindow__control rinch-borderlesswindow__control--maximize",
-            );
-            max_btn.set_attribute("aria-label", "Maximize");
-
-            // Create maximize icon (square)
-            let max_icon = rinch_macros::rsx! { svg {} };
-            max_icon.set_attribute("width", "10");
-            max_icon.set_attribute("height", "10");
-            max_icon.set_attribute("viewBox", "0 0 10 10");
-            let max_rect = rinch_macros::rsx! { rect {} };
-            max_rect.set_attribute("x", "1");
-            max_rect.set_attribute("y", "1");
-            max_rect.set_attribute("width", "8");
-            max_rect.set_attribute("height", "8");
-            max_rect.set_attribute("fill", "none");
-            max_rect.set_attribute("stroke", "currentColor");
-            max_rect.set_attribute("stroke-width", "1");
-            max_icon.append_child(&max_rect);
-            max_btn.append_child(&max_icon);
-
-            // Register click handler
-            if let Some(ref cb) = self.on_maximize {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
-                });
-                max_btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
-
-            controls.append_child(&max_btn);
-        }
-
-        // Close button
-        if self.show_close {
-            let close_btn = rinch_macros::rsx! { button {} };
-            close_btn.set_attribute(
-                "class",
-                "rinch-borderlesswindow__control rinch-borderlesswindow__control--close",
-            );
-            close_btn.set_attribute("aria-label", "Close");
-
-            // Create close icon (X)
-            let close_icon = rinch_macros::rsx! { svg {} };
-            close_icon.set_attribute("width", "10");
-            close_icon.set_attribute("height", "10");
-            close_icon.set_attribute("viewBox", "0 0 10 10");
-            let close_path = rinch_macros::rsx! { path {} };
-            close_path.set_attribute("d", "M1 1l8 8M9 1l-8 8");
-            close_path.set_attribute("stroke", "currentColor");
-            close_path.set_attribute("stroke-width", "1.5");
-            close_icon.append_child(&close_path);
-            close_btn.append_child(&close_icon);
-
-            // Register click handler
-            if let Some(ref cb) = self.on_close {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
-                });
-                close_btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
-
-            controls.append_child(&close_btn);
-        }
-
-        titlebar.append_child(&controls);
         container.append_child(&titlebar);
 
         // Content area
@@ -405,33 +633,26 @@ impl Component for BorderlessWindow {
 
             // Items-row last, at the higher `z-index`.
             let items_row = rinch_macros::rsx! { div { class: "rinch-app-menu-bar__inline-row" } };
+            // Left-hand window controls lead the row, as they lead the
+            // titlebar outside inline mode: the row is drawn over the
+            // titlebar's left end, so that is where they can be seen.
+            if let Some(controls) = &left_controls {
+                items_row.append_child(controls);
+            }
             // Render left_section into the items-row (hamburger button)
             if let Some(ref render_left) = self.left_section {
                 let left_content = render_left(__scope);
                 items_row.append_child(&left_content);
             }
-            // Render title as branded text with multi-color gradient effect
-            if !self.title.is_empty() {
-                let brand = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__brand", {"\u{00A0}"} } };
-                // Cycle through gradient colors for each character
-                let colors = [
-                    "#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff", "#5f27cd",
-                ];
-                for (i, ch) in self.title.chars().enumerate() {
-                    if ch == ' ' {
-                        let space = rinch_core::IntoNode::into_node("\u{00A0}", __scope);
-                        brand.append_child(&space);
-                    } else {
-                        let span = rinch_macros::rsx! { span {} };
-                        span.set_attribute(
-                            "style",
-                            &format!("color: {};", colors[i % colors.len()]),
-                        );
-                        let ch_text = rinch_core::IntoNode::into_node(ch.to_string(), __scope);
-                        span.append_child(&ch_text);
-                        brand.append_child(&span);
-                    }
-                }
+            // The title, as plain text (issue #2196: it used to be a fixed
+            // six-colour rainbow in inline styles no stylesheet could
+            // override). `title_section` replaces it with the app's own nodes.
+            if let Some(render_title) = &self.title_section {
+                let brand = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__brand" } };
+                brand.append_child(&render_title(__scope));
+                items_row.append_child(&brand);
+            } else if !self.title.is_empty() {
+                let brand = rinch_macros::rsx! { div { class: "rinch-borderlesswindow__brand", {self.title.clone()} } };
                 items_row.append_child(&brand);
             }
             // Render menu items
@@ -495,9 +716,60 @@ impl Component for BorderlessWindow {
             // BelowTitlebar: menu bar as LAST child with absolute positioning
             container.set_attribute("style", &format!("{inset_decl}position: relative;"));
             let menu_bar = (ctx.renderer)(__scope);
+            // The shell placed the bar under a titlebar of the default height;
+            // put it under this one.
+            menu_bar.set_style("top", &format!("{titlebar_height}px"));
             container.append_child(&menu_bar);
         }
 
         container
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Linux's rule (issue #2196): GNOME's own setting on a GNOME-family
+    /// desktop, GTK 3's `settings.ini` otherwise, Windows' order when neither
+    /// says anything.
+    #[test]
+    fn linux_reads_the_desktops_layout() {
+        use WindowControl::*;
+        let ini = "[Settings]\ngtk-theme-name=Breeze\ngtk-decoration-layout=icon:minimize,maximize,close\n";
+        let kde_left = "[Settings]\ngtk-decoration-layout = close,maximize:\n";
+
+        // GNOME: gsettings wins over the ini file.
+        let l = WindowControlsLayout::linux("ubuntu:GNOME", Some("'close,minimize:'"), Some(ini));
+        assert_eq!((l.left, l.right), (vec![Close, Minimize], vec![]));
+        // GNOME with nothing from gsettings: the ini file.
+        let l = WindowControlsLayout::linux("GNOME", None, Some(kde_left));
+        assert_eq!((l.left, l.right), (vec![Close, Maximize], vec![]));
+        // KDE: gsettings is not KWin's setting, the ini file is.
+        let l = WindowControlsLayout::linux("KDE", Some("'appmenu:close'"), Some(kde_left));
+        assert_eq!((l.left, l.right), (vec![Close, Maximize], vec![]));
+        // Nothing readable: Windows' order on the right.
+        let l = WindowControlsLayout::linux("sway", None, Some("[Settings]\n"));
+        assert_eq!(l, WindowControlsLayout::windows());
+        let l = WindowControlsLayout::linux("", None, None);
+        assert_eq!(l, WindowControlsLayout::windows());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_puts_the_traffic_lights_on_the_left() {
+        assert_eq!(
+            WindowControlsLayout::platform(),
+            WindowControlsLayout::macos()
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_puts_the_controls_on_the_right() {
+        assert_eq!(
+            WindowControlsLayout::platform(),
+            WindowControlsLayout::windows()
+        );
     }
 }

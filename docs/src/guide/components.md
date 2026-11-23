@@ -1013,7 +1013,10 @@ The component provides:
 - Window control buttons with hover effects
 - Left/right custom sections for menu buttons or additional controls
 - Proper theming via CSS variables
-- `--rinch-window-top-inset` published for overlays (36px for the titlebar, plus
+- Window controls placed by the platform's convention (macOS on the left, the
+  desktop's own layout on Linux, the right elsewhere), or by `controls_layout`
+- A titlebar height you set with `titlebar_height` (default 36px)
+- `--rinch-window-top-inset` published for overlays (the titlebar height, plus
   the menu bar height when one sits below it)
 
 The titlebar is an in-flow element, so your content sits below it automatically.
