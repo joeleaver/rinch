@@ -145,9 +145,7 @@ impl Engine {
     fn new(languages: Option<Vec<String>>) -> Option<Self> {
         // SAFETY: COM is initialised on this thread (MTA).
         let factory: ISpellCheckerFactory =
-            unsafe { CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER) }
-                .map_err(|e| eprintln!("DEBUG2 factory failed: {e:?}"))
-                .ok()?;
+            unsafe { CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER) }.ok()?;
         // SAFETY: a live factory.
         let supported = unsafe { factory.SupportedLanguages() }
             .map(|e| strings(&e))
@@ -157,9 +155,7 @@ impl Engine {
             .into_iter()
             .filter_map(|tag| {
                 // SAFETY: a live factory; a supported tag.
-                let checker = unsafe { factory.CreateSpellChecker(&HSTRING::from(&tag)) }
-                    .map_err(|e| eprintln!("DEBUG2 CreateSpellChecker({tag}) failed: {e:?}"))
-                    .ok()?;
+                let checker = unsafe { factory.CreateSpellChecker(&HSTRING::from(&tag)) }.ok()?;
                 Some((normalize_locale(&tag)?, checker))
             })
             .collect();
@@ -409,6 +405,8 @@ mod tests {
         for i in 0..20 {
             let next = PlatformChecker::new().expect("the factory");
             assert!(!next.languages().is_empty(), "round {i}: no language");
+            // Used, then dropped as the next one starts.
+            next.check_batch(&["hello", "helo", "world"]);
         }
     }
 

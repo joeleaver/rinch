@@ -739,6 +739,13 @@ OLE drag and drop) and must not use the objects itself. Callers post a
 on nobody, so nothing deadlocks. Adding and removing a word are not waited
 for (review of #2941: the UI thread would wait behind a whole textarea's
 check); the queue is in order, so a check sent later sees the word.
+**The MTA is kept alive** (`keep_mta_alive`, `CoIncrementMTAUsage` once per
+process, never released): each checker's thread leaves the MTA when its
+checker drops, and when it was the MTA's last member a checker made just
+then (a configuration replacing the old one) failed with
+`CO_E_SERVER_STOPPING` (0x80080008, "Cannot create a WinRT object during
+host MTA shutdown"), seen on nico-top in 7 of 12 runs of the crate's tests
+once the Auto fallback made the empty checker visible.
 `WindowsSpeller::new` waits for the thread
 to create the factory (`None` if it cannot: no spellchecking service).
 
