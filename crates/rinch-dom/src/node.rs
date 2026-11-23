@@ -5277,7 +5277,7 @@ impl NodeTree {
                 (depth, id)
             })
             .collect();
-        todo.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        todo.sort_unstable_by_key(|&(depth, _)| std::cmp::Reverse(depth));
         for (_, id) in todo {
             let reach = crate::paint::measure_subtree_reach(self, id);
             if let Some(p) = self.nodes.get_mut(id).and_then(|n| n.painted.as_mut()) {
