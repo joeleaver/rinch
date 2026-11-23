@@ -41,10 +41,14 @@ impl RinchRuntime {
     }
 
     /// Send what the turn asked of `role`'s layer surface, in one commit
-    /// ([`ShellWindow::flush_layer_changes`], #2464). A size applied at once
-    /// has no `SurfaceResized` from winit, so one is handed to the window's
-    /// own path (renderer, layout, publish), as an at-once resize is.
+    /// ([`ShellWindow::flush_layer_changes`], #2464), with a content-sized
+    /// surface's size in its new configuration
+    /// ([`ShellWindow::stage_content_size_for_layer_turn`], #2829). A size
+    /// applied at once has no `SurfaceResized` from winit, so one is handed
+    /// to the window's own path (renderer, layout, publish), as an at-once
+    /// resize is.
     pub(super) fn flush_layer_turn(&mut self, role: WindowRole, event_loop: &dyn ActiveEventLoop) {
+        self.w(role).stage_content_size_for_layer_turn();
         if let Some(physical) = self.w(role).flush_layer_changes() {
             self.window_event_for(role, event_loop, WindowEvent::SurfaceResized(physical));
         }

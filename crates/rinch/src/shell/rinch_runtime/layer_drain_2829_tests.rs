@@ -321,8 +321,12 @@ fn a_staged_size_dropped_by_hiding_is_the_published_size() {
     assert_eq!(crate::windows::current_window_size(), Some((800.0, 60.0)));
 }
 
+thread_local! {
+    static ROW: std::cell::RefCell<Option<NodeHandle>> = const { std::cell::RefCell::new(None) };
+}
+
 /// 100 x 20 boxes in a wrapping row: ten in one row on a 1000-wide output,
-/// six to a row (two rows) in 650.
+/// six to a row (two rows) when the row is narrowed to 650.
 fn wrapping_boxes(scope: &mut RenderScope) -> NodeHandle {
     let row = scope.create_element("div");
     row.set_attribute("style", "display: flex; flex-wrap: wrap");
@@ -331,6 +335,7 @@ fn wrapping_boxes(scope: &mut RenderScope) -> NodeHandle {
         cell.set_attribute("style", "width: 100px; height: 20px; flex: none");
         row.append_child(&cell);
     }
+    ROW.with(|r| *r.borrow_mut() = Some(row.clone()));
     row
 }
 
@@ -350,9 +355,16 @@ fn top_left(left_margin: i32) -> LayerSurface {
 }
 
 /// Item 2: a content-sized layer surface (#2552) whose configuration
-/// changes is measured in the new configuration, and its new size goes out
-/// in the turn's one request with the layer changes — not in a request of
-/// its own after the drain (`follow_content_size`).
+/// changes in a turn is measured then, and its new size goes out in the
+/// turn's one request with the layer changes — not in a request of its own
+/// after the drain (`follow_content_size`), a second commit.
+///
+/// A unit test cannot offer the layer shell without a `TestApp` (the
+/// published window roles are the process's), so the content's largest size
+/// here does not follow the new margins: the content changes in the same
+/// turn instead, which takes the same path (`content_size_to_ask` after the
+/// configuration's new negotiation). The new margins narrowing it is checked
+/// live on a compositor (#2829's PR).
 #[test]
 fn a_content_sized_surface_asks_its_new_size_with_the_layer_changes() {
     crate::outputs::publish(
@@ -381,7 +393,13 @@ fn a_content_sized_surface_asks_its_new_size_with_the_layer_changes() {
         &NoOsLoop,
         WindowEvent::SurfaceResized(PhysicalSize::new(1000, 20)),
     );
-    // 350 px of margin on the anchored left edge: 650 px left for the row.
+    // The turn: the content narrows to 650 and the margins change.
+    ROW.with(|r| {
+        r.borrow()
+            .as_ref()
+            .unwrap()
+            .set_attribute("style", "display: flex; flex-wrap: wrap; max-width: 650px")
+    });
     runtime.run_native_events(
         vec![(
             MAIN,
@@ -394,8 +412,42 @@ fn a_content_sized_surface_asks_its_new_size_with_the_layer_changes() {
         vec![logical(600.0, 40.0)],
         "the new size, in the turn's one request"
     );
+    assert_eq!(runtime.main.take_layer_turn(), LayerTurn::Nothing);
     // Nothing left to ask after the drain.
     runtime.follow_content_size(WindowRole::Main, &NoOsLoop);
     assert_eq!(requests(&surface).len(), 1);
     crate::outputs::publish(Vec::new(), crate::outputs::OutputTracking::NotListed);
+}
+
+/// Item 2's control: a turn that changes no layer state stages nothing for
+/// a content-sized surface; its new size is `follow_content_size`'s, after
+/// the drain, as before.
+#[test]
+fn a_turn_without_layer_changes_leaves_the_content_size_to_follow() {
+    let props = WindowProps {
+        size_to_content: Some(ContentSizing::new()),
+        wayland_layer: Some(top_left(0)),
+        width: 1000,
+        height: 600,
+        ..Default::default()
+    };
+    let mut runtime = super::entry::build_runtime(wrapping_boxes, &props, None, &[]);
+    runtime.main.mount_document_before_window(1.0);
+    assert_eq!(runtime.main.start_surface_negotiation(), Some((1000, 20)));
+    let surface = go_live(&mut runtime.main, (1000, 20), 1.0);
+    runtime.window_event_for(
+        WindowRole::Main,
+        &NoOsLoop,
+        WindowEvent::SurfaceResized(PhysicalSize::new(1000, 20)),
+    );
+    ROW.with(|r| {
+        r.borrow()
+            .as_ref()
+            .unwrap()
+            .set_attribute("style", "display: flex; flex-wrap: wrap; max-width: 650px")
+    });
+    runtime.run_native_events(Vec::new(), &NoOsLoop);
+    assert!(requests(&surface).is_empty(), "nothing in the drain");
+    runtime.follow_content_size(WindowRole::Main, &NoOsLoop);
+    assert_eq!(requests(&surface), vec![logical(600.0, 40.0)]);
 }

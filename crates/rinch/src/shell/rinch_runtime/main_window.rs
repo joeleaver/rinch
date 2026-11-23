@@ -582,7 +582,9 @@ impl ShellWindow {
                 // Sent with the rest of the turn's changes (#2464).
                 self.pending_layer.extend(sets);
                 // A window sized by its content: a new negotiation in the new
-                // configuration, its size asked for with these changes.
+                // configuration, its size staged with these changes when the
+                // drain sends them (`stage_content_size_for_layer_turn`), so
+                // it goes in their one commit (#2829).
                 self.restart_content_size();
             }
         }
@@ -893,8 +895,16 @@ impl ShellWindow {
         }
         // A size the turn asked for and never sent: the next surface is made
         // at it, as a hidden window's size is (#2464).
+        // Published too, so `current_window_size()` reports it while the
+        // window is hidden (#2829), as a size set while hidden is.
         if let Some(size) = staged_size {
             self.saved_geometry.size = Some(size);
+            let logical = size.to_logical::<f64>(self.scale_factor());
+            window_geometry::publish_hidden(
+                self.facts_key,
+                None,
+                Some((logical.width, logical.height)),
+            );
         }
         // A hidden window has lost the keyboard (#1770), and the system's
         // `Focused(false)` for a window rinch drops itself never arrives. So
