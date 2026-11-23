@@ -45,17 +45,17 @@ pub fn attribute_state(value: &str) -> Option<bool> {
 ///
 /// `state(n)` is `n`'s [`attribute_state`] (`None` when it has no
 /// `spellcheck` attribute), `parent(n)` its parent.
-pub fn resolve_inherited<N: Copy>(
+pub fn resolve_inherited<N>(
     node: N,
-    parent: impl Fn(N) -> Option<N>,
-    state: impl Fn(N) -> Option<bool>,
+    parent: impl Fn(&N) -> Option<N>,
+    state: impl Fn(&N) -> Option<bool>,
 ) -> bool {
     let mut cur = Some(node);
     while let Some(n) = cur {
-        if let Some(on) = state(n) {
+        if let Some(on) = state(&n) {
             return on;
         }
-        cur = parent(n);
+        cur = parent(&n);
     }
     true
 }
@@ -671,12 +671,12 @@ mod tests {
     fn nearest_state_wins_and_default_is_on() {
         // 0 ← 1 ← 2: the chain of parents.
         let states = [Some(false), None, None];
-        let parent = |n: usize| n.checked_sub(1);
-        assert!(!resolve_inherited(2, parent, |n| states[n]));
+        let parent = |n: &usize| n.checked_sub(1);
+        assert!(!resolve_inherited(2, parent, |n| states[*n]));
         let states = [Some(false), Some(true), None];
-        assert!(resolve_inherited(2, parent, |n| states[n]));
+        assert!(resolve_inherited(2, parent, |n| states[*n]));
         let states = [None, None, None];
-        assert!(resolve_inherited(2, parent, |n| states[n]));
+        assert!(resolve_inherited(2, parent, |n| states[*n]));
     }
 
     #[test]

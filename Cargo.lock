@@ -5726,6 +5726,7 @@ dependencies = [
  "rinch-core",
  "rinch-editor-collab",
  "rinch-editor-core",
+ "rinch-spell",
  "web-time",
  "yrs",
 ]

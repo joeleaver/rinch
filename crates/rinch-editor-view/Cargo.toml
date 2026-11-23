@@ -17,6 +17,11 @@ web-time = "1"
 # only when their own `collaboration` feature is on.
 rinch-editor-collab = { workspace = true, optional = true }
 
+# The spellchecker's configuration and checking thread (#2862). Used only off
+# the web: in a browser the browser checks.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rinch-spell = { workspace = true }
+
 [features]
 # Collaborative editing (M9): wires the rinch-editor-collab adapter into EditorHandle.
 collaboration = ["dep:rinch-editor-collab"]

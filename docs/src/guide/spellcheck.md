@@ -22,6 +22,11 @@ to get it; this page is about turning it off, configuring it, and styling it.
   you type it.
 - A `<textarea>` keeps its marks when it loses focus; a single-line
   `<input>` hides them until it is focused again (as Chrome does).
+- The rich-text `Editor` is checked the same way: its first interaction (a
+  press in it, a Tab onto it, typing) checks the whole document, and each
+  edit re-checks the words it touched after the pause. Its marks map through
+  every edit, so typing elsewhere never moves or re-checks them. A read-only
+  editor is not checked.
 
 Some words are never checked, a deliberate difference from Chrome for app
 UI, where they are mostly codes and names: URLs, email addresses, words
@@ -45,8 +50,12 @@ rsx! {
 }
 ```
 
-The text components (`TextInput`, `Textarea`, `ColorInput`) take a
-`spellcheck: Option<bool>` prop; `PasswordInput` is never checked.
+The text components (`TextInput`, `Textarea`, `ColorInput`) and the `Editor`
+take a `spellcheck: Option<bool>` prop; `PasswordInput` is never checked.
+
+```rust
+rsx! { Editor { editor: notes.clone(), spellcheck: false } }
+```
 
 For the whole app:
 
@@ -109,12 +118,18 @@ set for the whole app, a section, or one field:
 | Property | Values | Default |
 |---|---|---|
 | `--rinch-spellcheck-color` | any CSS colour | Chrome's red (`#ff0000`) |
-| `--rinch-spellcheck-style` | `wavy`, `solid`, `none` | `wavy` |
+| `--rinch-spellcheck-style` | `wavy`, `solid`, `none` (the editor also takes `dotted`, `dashed`, `double`) | `wavy` |
+
+In the editor a misspelled word is a `<span data-pm-deco class="pm-spell-error">`,
+styled by the editor's stylesheet with those two properties; a rule of your own
+for `[data-pm-editor] .pm-spell-error` replaces it entirely.
 
 ## On the web
 
 In the browser, rinch leaves spellchecking to the browser: its own checker
-never runs there. The `spellcheck` attributes and props are passed through to
+never runs there. The rich-text editor on the web is not
+`contenteditable` (it takes input through a hidden field), so the browser does
+not check it, and it is not marked there. The `spellcheck` attributes and props are passed through to
 the real DOM, and `App::spellcheck(false)` puts `spellcheck="false"` on
 `<body>`, which the page's fields inherit. The browser's own dictionaries,
 rules and squiggle apply; `SpellcheckConfig`'s other settings have no effect

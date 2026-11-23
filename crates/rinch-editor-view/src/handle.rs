@@ -180,6 +180,9 @@ struct EditorCore {
     /// See [`EditorHandle::on_margin_layout`]. Called by the margin pass with no
     /// borrow held.
     on_margin_layout: Option<MarginHook>,
+    /// The spellchecker's timer and configuration listener (#2862).
+    #[cfg(not(target_family = "wasm"))]
+    spell: crate::spellcheck::Driver,
 }
 
 /// The nodes `tr` only set attributes of: for each node a `SetNodeAttrStep`
@@ -1217,6 +1220,8 @@ impl EditorHandle {
                 node_views: Rc::default(),
                 margins: Margins::default(),
                 on_margin_layout: None,
+                #[cfg(not(target_family = "wasm"))]
+                spell: Default::default(),
             })),
         }
     }
@@ -1280,6 +1285,8 @@ impl EditorHandle {
                 node_views,
                 margins: Margins::default(),
                 on_margin_layout: None,
+                #[cfg(not(target_family = "wasm"))]
+                spell: Default::default(),
             })),
         }
     }
@@ -1439,7 +1446,47 @@ impl EditorHandle {
         if doc_changed {
             self.notify_change();
         }
+        #[cfg(not(target_family = "wasm"))]
+        self.spell_after_dispatch(doc_changed, input);
         true
+    }
+
+    /// Read the editor state.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn with_state<R>(&self, f: impl FnOnce(&EditorState) -> R) -> R {
+        f(&self.core().state)
+    }
+
+    /// A weak handle.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn downgrade(&self) -> WeakHandle {
+        WeakHandle(Rc::downgrade(&self.inner))
+    }
+
+    /// The host container, once mounted.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn container_node(&self) -> Option<NodeHandle> {
+        self.core().view.as_ref().map(|v| v.container().clone())
+    }
+
+    /// Run `f` on the spellchecker's driver.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn spell_driver<R>(
+        &self,
+        f: impl FnOnce(&mut crate::spellcheck::Driver) -> R,
+    ) -> Option<R> {
+        let mut core = self.inner.try_borrow_mut().ok()?;
+        Some(f(&mut core.spell))
+    }
+
+    /// Dispatch a transaction of the handle's own (not the user's input, not
+    /// the app's `build`).
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn update_internal(
+        &self,
+        build: impl FnOnce(&EditorState) -> Option<Transaction>,
+    ) -> bool {
+        self.dispatch_inner(build, false, false)
     }
 
     /// Add `plugin` to this editor, rebuilding its state over the **current**
@@ -6908,6 +6955,7 @@ mod tests {
             editor: Some(prop.clone()),
             content: "<p>shown</p>".into(),
             read_only: true,
+            spellcheck: None,
         });
         assert!(prop.is_read_only());
         assert_eq!(
@@ -7329,6 +7377,7 @@ mod tests {
                 editor: Some(pane.clone()),
                 content: "<p>mine</p>".into(),
                 read_only: true,
+                spellcheck: None,
             }
             .render(&mut scope, &[]);
 
