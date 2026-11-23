@@ -267,8 +267,8 @@ fn offscreen_renderer() -> WgpuRenderer {
 
 /// #2552 stage 2: a closed popup's GPU renderer is a next popup's, which
 /// then builds none (Vello's renderer was most of a GPU popup's opening).
-/// Only a popup's is kept, only one that holds nothing of its document
-/// beyond its next full frame, and no more than three.
+/// Only a popup's is kept, and only one that holds nothing of its document
+/// beyond its next full frame.
 #[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore]
@@ -290,7 +290,6 @@ fn gpu_a_closed_popups_renderer_is_kept_for_the_next_2552() {
         }],
     );
     runtime.w(WindowRole::Other(menu)).renderer = Some(layered);
-    runtime.w(WindowRole::Other(bar)).renderer = Some(offscreen_renderer());
 
     runtime.close_other(sub);
     let kept = take_spare_renderer().expect("the submenu's renderer");
@@ -299,39 +298,19 @@ fn gpu_a_closed_popups_renderer_is_kept_for_the_next_2552() {
     runtime.close_other(menu);
     assert!(take_spare_renderer().is_none());
     // Nor a window's that is not a popup.
+    runtime.w(WindowRole::Other(bar)).renderer = Some(kept);
     runtime.close_other(bar);
     assert!(take_spare_renderer().is_none());
-
-    // Three are kept, the last closed given first.
-    crate::popup::set_supported(true);
-    let (_, bar) = open(&mut runtime, with_row);
-    crate::window_handle::note_press(doc_of(&runtime, bar));
-    let log: Log = Rc::default();
-    let popups: Vec<u64> = (0..4)
-        .map(|_| {
-            let (_, id) = popup(&mut runtime, "p", &log);
-            runtime.w(WindowRole::Other(id)).renderer = Some(offscreen_renderer());
-            id
-        })
-        .collect();
-    for (i, id) in popups.iter().enumerate().rev() {
-        runtime
-            .w(WindowRole::Other(*id))
-            .renderer
-            .as_mut()
-            .unwrap()
-            .surface_config
-            .width = 100 + i as u32;
-        runtime.close_other(*id);
-    }
-    let mut given = Vec::new();
-    while let Some(r) = take_spare_renderer() {
-        given.push(r.surface_config.width);
-    }
-    assert_eq!(
-        given,
-        vec![100, 101, 102],
-        "the three last closed, last first"
-    );
     crate::popup::set_supported(false);
+}
+
+/// The kept renderers (#2552): the three last kept, the last given first.
+#[test]
+fn the_spare_pool_keeps_the_last_three_last_first_2552() {
+    let mut pool = super::super::popups::SparePool::new();
+    for i in 0..4 {
+        pool.keep(i);
+    }
+    let given: Vec<i32> = std::iter::from_fn(|| pool.take()).collect();
+    assert_eq!(given, vec![3, 2, 1]);
 }

@@ -656,8 +656,44 @@ impl ShellWindow {
 
 /// How many closed popups' GPU renderers are kept: a chain three deep (a
 /// menu, a submenu and its submenu) reopens with none built.
-#[cfg(feature = "gpu-renderer")]
+#[cfg(any(test, feature = "gpu-renderer"))]
 const SPARE_RENDERERS: usize = 3;
+
+/// The last few of something closed, kept to be used again: at most
+/// [`SPARE_RENDERERS`], the oldest let go past that, the last kept given
+/// first. Never dropped with what it holds: as a thread-local it is dropped
+/// while the thread's locals are being destroyed, and a renderer dropped
+/// then touches others already gone (a panic there aborts the process), so
+/// what is left at the thread's end is let go with it.
+#[cfg(any(test, feature = "gpu-renderer"))]
+pub(super) struct SparePool<T>(Vec<T>);
+
+#[cfg(any(test, feature = "gpu-renderer"))]
+impl<T> SparePool<T> {
+    pub(super) const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub(super) fn keep(&mut self, item: T) {
+        if self.0.len() == SPARE_RENDERERS {
+            self.0.remove(0);
+        }
+        self.0.push(item);
+    }
+
+    pub(super) fn take(&mut self) -> Option<T> {
+        self.0.pop()
+    }
+}
+
+#[cfg(any(test, feature = "gpu-renderer"))]
+impl<T> Drop for SparePool<T> {
+    fn drop(&mut self) {
+        for item in self.0.drain(..) {
+            std::mem::forget(item);
+        }
+    }
+}
 
 #[cfg(feature = "gpu-renderer")]
 thread_local! {
@@ -666,8 +702,8 @@ thread_local! {
     /// own. Building Vello's renderer was most of a GPU popup's opening
     /// (about 5 ms on RADV, 55–85 ms on llvmpipe); a surface costs a
     /// fraction.
-    static SPARE_RENDERERS_KEPT: std::cell::RefCell<Vec<WgpuRenderer>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    static SPARE_RENDERERS_KEPT: std::cell::RefCell<SparePool<WgpuRenderer>> =
+        const { std::cell::RefCell::new(SparePool::new()) };
 }
 
 /// Keep `renderer`, a closing popup's, for a next popup: its surface goes
@@ -680,25 +716,19 @@ pub(super) fn keep_spare_renderer(mut renderer: WgpuRenderer) {
         return;
     }
     renderer.detach_surface();
-    SPARE_RENDERERS_KEPT.with(|s| {
-        let mut s = s.borrow_mut();
-        if s.len() == SPARE_RENDERERS {
-            s.remove(0);
-        }
-        s.push(renderer);
-    });
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().keep(renderer));
 }
 
 /// A renderer a closed popup left, if any: the last one kept.
 #[cfg(feature = "gpu-renderer")]
 pub(super) fn take_spare_renderer() -> Option<WgpuRenderer> {
-    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().pop())
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().take())
 }
 
 /// Drop the kept renderers: their device is being replaced (#1788).
 #[cfg(feature = "gpu-renderer")]
 pub(super) fn drop_spare_renderers() {
-    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().clear());
+    SPARE_RENDERERS_KEPT.with(|s| drop(std::mem::take(&mut s.borrow_mut().0)));
 }
 
 /// The logical size of the output `window` is on, as `rinch::outputs` lists
