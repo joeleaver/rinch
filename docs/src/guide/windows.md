@@ -330,9 +330,72 @@ the keyboard.
 The system has the last word. A system that prevents focus stealing may only
 mark the window as wanting attention. On Wayland an app cannot raise its own
 shown window without an xdg-activation token from the input that asked for it,
-and rinch has none to give, so the window is only marked as wanting attention
-(KDE and GNOME show that in the taskbar or as a notification); a hidden window
-is shown as a new window, which the compositor usually focuses.
+so `focus_current_window()` only marks the window as wanting attention (KDE and
+GNOME show that in the taskbar or as a notification); a hidden window is shown
+as a new window, which KWin and sway focus when it maps, while GNOME's
+focus-stealing prevention may hold it back without a token.
+
+#### Raising it on Wayland: pass the launch's token
+
+The launcher that started the second copy (a desktop's menu, a browser opening
+a link) gave it a token in `XDG_ACTIVATION_TOKEN`, tied to the click that asked.
+Take it first thing in `main`. If a copy is already running, hand the token to
+it, and it raises its window with it. If none is, this launch is the first one
+and the token is its own: give it to `App::activation_token`, which creates the
+first window with it (as GTK and Qt do with theirs), since once taken from the
+environment nothing else would use it.
+
+```rust
+use rinch::prelude::*;
+
+fn main() {
+    // First thing in main: it removes XDG_ACTIVATION_TOKEN from the
+    // environment, so programs this one starts do not inherit it.
+    // SAFETY: no other thread is running yet.
+    let token = unsafe { rinch::windows::take_launch_activation_token() };
+    if let Some(running) = my_ipc::connect_to_running_copy() {
+        running.send_open(std::env::args().nth(1), token);
+        return;
+    }
+    App::new(app).activation_token(token).run();
+}
+
+// In the running copy, when the IPC message arrives (on the UI thread or not):
+fn on_open(link: Option<String>, token: Option<String>) {
+    match token {
+        Some(token) => rinch::windows::activate_current_window_with_token(&token),
+        None => rinch::windows::focus_current_window(),
+    }
+    // ... open the link
+}
+```
+
+`activate_current_window_with_token(token)` (`WindowHandle::activate_with_token`
+for any window) does what `focus_current_window()` does, and on Wayland
+activates the window with the token: a shown window is raised and given the
+keyboard, and a hidden one is shown with the token in its new window's
+attributes (activated before the window first appears, as a first launch's
+window is). The compositor decides what
+the token is worth: one from a recent click raises the window on KWin, and on
+sway with `focus_on_window_activation focus` (sway's default marks the window
+urgent); a stale or unknown token is ignored without an error. Off Wayland the
+token is not used and the call is `focus_current_window()`. A Wayland
+layer-shell window is not activated, and a non-activating window is only
+shown or restored, token or not.
+
+**Which window.** The *current* window is the window of the document whose
+code is running. Called from anywhere else, such as the IPC thread above, or a
+timer or `main` outside any component, `activate_current_window_with_token`
+(like `focus_current_window`) acts on the main window. A multi-window app
+that wants another window raised, and a
+[windowless](#starting-with-no-window-tray-only-apps) app, which has no main
+window, call `WindowHandle::activate_with_token(&token)` on the window's
+handle instead.
+
+`take_launch_activation_token()` is `unsafe` because it changes the process's
+environment, which is undefined behaviour while another thread reads it: call
+it before anything starts a thread. It reads only `XDG_ACTIVATION_TOKEN`
+(X11's `DESKTOP_STARTUP_ID` is left alone) and answers `Some` once.
 
 ### Preparing a hidden window for its first show
 

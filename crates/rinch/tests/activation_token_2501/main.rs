@@ -24,6 +24,9 @@
 //! sway is set to `focus_on_window_activation focus` (its default marks the
 //! window urgent instead); KWin runs as it comes.
 //!
+//! `raise_2817.rs` is the other direction (#2817): a running rinch window
+//! raised with a token a second launch hands it.
+//!
 //! Needs foot and a compositor, so every test is `#[ignore]`d. Run them inside
 //! an isolated session (`scripts/isolated-session.sh`, issue #2429), never on
 //! your desktop:
@@ -41,6 +44,7 @@
 #![cfg(all(feature = "windowing", target_os = "linux"))]
 
 mod keys;
+mod raise_2817;
 mod waiter;
 
 use std::io::{BufRead, BufReader, Write as _};

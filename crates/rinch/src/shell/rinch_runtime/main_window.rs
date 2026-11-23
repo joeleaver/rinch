@@ -120,6 +120,18 @@ impl ShellWindow {
         // will most likely get (#2652).
         let initial_scale =
             (backend == Backend::Wayland).then(|| self.initial_surface_scale(first_appearance));
+        // The token the window is to be activated with (#2817), on Wayland:
+        // not for a layer surface (nothing to activate) or a non-activating
+        // window (which never takes focus).
+        let non_activating = self
+            .app
+            .window_props
+            .as_ref()
+            .is_some_and(|p| p.non_activating);
+        let activation_token = self
+            .activation_token
+            .as_deref()
+            .filter(|_| backend == Backend::Wayland && !steps.wayland_layer && !non_activating);
         overlay_window::apply_to_attributes(
             window_attrs,
             steps,
@@ -128,6 +140,7 @@ impl ShellWindow {
             x11_class.as_deref(),
             layer.as_ref(),
             initial_scale,
+            activation_token,
         )
     }
 
@@ -721,8 +734,20 @@ impl ShellWindow {
         let second = self.app.own_window_facts;
         if !second {
             self.take_stored_title(|_| true);
+            // The launch's token (`App::activation_token`, #2817), for the
+            // main window's first shown OS window.
+            if let Some(token) = crate::shell::activation_tokens::take_launch_token() {
+                self.activation_token = Some(token);
+            }
         }
         let hidden = starts_hidden(self.app.window_props.as_ref());
+        // A window made hidden is dropped at its first show, which makes the
+        // one that appears: the token waits for that one.
+        let kept_token = if hidden {
+            self.activation_token.take()
+        } else {
+            None
+        };
         self.begin_appearance(connected_monitors(event_loop), !hidden);
         // A main window sized by its content is mounted before its OS window
         // (#2552), as a second window is, at the scale its surface starts at
@@ -753,6 +778,8 @@ impl ShellWindow {
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to create window");
+        // Used by this window, or kept for the first show of a hidden one.
+        self.activation_token = kept_token;
         // A hidden start skips the post-creation steps: they would show a
         // window created hidden (`AfterCreate::Show`), and they run on the
         // window `show_window` creates instead.
@@ -986,6 +1013,8 @@ impl ShellWindow {
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to recreate window");
+        // Given in the attributes; one token is for one window.
+        self.activation_token = None;
         overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
         self.note_surface_kind(&*window, first_show);
 
@@ -1599,6 +1628,7 @@ mod hidden_start_tests {
                 None,
                 None,
                 None,
+                None,
             )
         };
         assert!(built().visible, "the macOS panel itself is created visible");
@@ -1613,6 +1643,7 @@ mod hidden_start_tests {
             WindowAttributes::default(),
             x11,
             Backend::X11,
+            None,
             None,
             None,
             None,
