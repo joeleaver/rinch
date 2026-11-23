@@ -449,6 +449,12 @@ pub enum WindowRequest {
     /// the window to the front and give it the keyboard, showing it if it was
     /// hidden.
     Focus,
+    /// [`WindowHandle::activate_with_token`](crate::WindowHandle::activate_with_token)
+    /// or
+    /// [`activate_current_window_with_token`](crate::windows::activate_current_window_with_token),
+    /// with the token: [`Focus`](Self::Focus) with an xdg-activation token,
+    /// and applied as it is.
+    ActivateWithToken(String),
     /// [`set_click_through_current_window`](crate::windows::set_click_through_current_window).
     SetClickThrough(bool),
     /// [`set_current_window_position`](crate::windows::set_current_window_position),
@@ -496,7 +502,8 @@ impl WindowRequest {
             E::MinimizeWindow => Self::Minimize,
             E::ToggleMaximizeWindow => Self::ToggleMaximize,
             E::CloseWindowControl | E::CloseWindow => Self::Close,
-            E::FocusWindow => Self::Focus,
+            E::FocusWindow(None) => Self::Focus,
+            E::FocusWindow(Some(token)) => Self::ActivateWithToken(token),
             E::SetClickThrough(on) => Self::SetClickThrough(on),
             E::SetWindowPosition(x, y) => Self::SetPosition(x, y),
             E::SetWindowSize(w, h) => Self::SetSize(w, h),
@@ -1144,8 +1151,12 @@ impl TestApp {
             }
             // A hidden window is shown by it; a non-activating one never
             // takes the keyboard.
-            WindowRequest::Focus if !self.visible => self.apply(WindowRequest::Show),
-            WindowRequest::Focus if !self.non_activating => self.set_window_focus(true),
+            WindowRequest::Focus | WindowRequest::ActivateWithToken(_) if !self.visible => {
+                self.apply(WindowRequest::Show)
+            }
+            WindowRequest::Focus | WindowRequest::ActivateWithToken(_) if !self.non_activating => {
+                self.set_window_focus(true)
+            }
             WindowRequest::Prepare(_) if !self.visible => {
                 if self.app.is_content_sized() {
                     self.restart_content_size();

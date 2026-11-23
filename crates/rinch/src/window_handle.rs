@@ -329,9 +329,18 @@ impl WindowHandle {
     /// [`non_activating`](rinch_core::element::WindowProps::non_activating).
     /// What [`focus_current_window`](crate::windows::focus_current_window)
     /// does for the current window, and with the same limits: on Wayland a
-    /// shown window is only marked as wanting attention.
+    /// shown window is only marked as wanting attention (with a token,
+    /// [`activate_with_token`](Self::activate_with_token) raises it).
     pub fn focus(self) {
-        self.send(RinchNativeEvent::FocusWindow);
+        self.send(RinchNativeEvent::FocusWindow(None));
+    }
+    /// [`focus`](Self::focus) with an xdg-activation `token`, which lets a
+    /// Wayland compositor raise the window (#2817): what
+    /// [`activate_current_window_with_token`](crate::windows::activate_current_window_with_token)
+    /// does for the current window, with the same limits. Elsewhere it is
+    /// [`focus`](Self::focus).
+    pub fn activate_with_token(self, token: &str) {
+        self.send(RinchNativeEvent::FocusWindow(Some(token.to_string())));
     }
     /// Set the window's title.
     pub fn set_title(self, title: &str) {

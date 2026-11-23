@@ -11,6 +11,7 @@ use rinch_core::element::WindowSurfaceKind;
 
 pub use crate::activation::{
     ActivationToken, ActivationTokenError, ActivationTokenResult, request_activation_token,
+    take_launch_activation_token,
 };
 
 // =============================================================================
@@ -89,8 +90,10 @@ pub fn show_current_window() {
 /// The operating system has the last word: a system that prevents focus
 /// stealing may only mark the window as wanting attention. On Wayland an app
 /// cannot raise its own window at all without an xdg-activation token from
-/// the input that asked; rinch has none to give here, so a shown window is
-/// only marked as wanting attention (the compositor may still raise it). A
+/// the input that asked; this has none to give, so a shown window is only
+/// marked as wanting attention (the compositor may still raise it). When the
+/// request comes with a token (a second launch's `XDG_ACTIVATION_TOKEN`),
+/// use [`activate_current_window_with_token`] instead. A
 /// [`WindowProps::non_activating`](rinch_core::element::WindowProps::non_activating)
 /// window is restored but never takes focus.
 ///
@@ -100,7 +103,44 @@ pub fn show_current_window() {
 /// on_link_from_outside(|link| { focus_current_window(); open(link) })
 /// ```
 pub fn focus_current_window() {
-    send_native_event(RinchNativeEvent::FocusWindow);
+    send_native_event(RinchNativeEvent::FocusWindow(None));
+}
+
+/// [`focus_current_window`] with an xdg-activation `token`, which lets a
+/// Wayland compositor raise the window and give it the keyboard (#2817).
+///
+/// For a single-instance app: its second launch takes the token it was
+/// started with ([`take_launch_activation_token`]) and hands it to the
+/// running instance over the app's own IPC, which calls this. On Wayland the
+/// shown window is activated with the token
+/// (`xdg_activation_v1.activate`), and a hidden one is shown and then
+/// activated with it. The compositor decides what the token is worth: a
+/// token tied to a recent user action (a click on a link, a launcher's
+/// entry) raises the window on KWin and on sway set to
+/// `focus_on_window_activation focus` (sway's default marks it urgent); a
+/// stale or unknown token is ignored, and nothing says so.
+///
+/// Elsewhere (X11, Windows, macOS) the token means nothing to rinch and this
+/// is [`focus_current_window`]. Everywhere it is limited as that is: a
+/// minimized window is restored, a
+/// [`non_activating`](rinch_core::element::WindowProps::non_activating) one
+/// is only restored, and a Wayland layer-shell window is not activated. On
+/// a compositor without `xdg_activation_v1` the window is marked as wanting
+/// attention, as [`focus_current_window`] marks it.
+///
+/// # Example
+///
+/// ```ignore
+/// on_second_launch(|link, token: Option<String>| {
+///     match token {
+///         Some(token) => activate_current_window_with_token(&token),
+///         None => focus_current_window(),
+///     }
+///     open(link)
+/// })
+/// ```
+pub fn activate_current_window_with_token(token: &str) {
+    send_native_event(RinchNativeEvent::FocusWindow(Some(token.to_string())));
 }
 
 /// Prepare the current window, while it is hidden, for its next show
