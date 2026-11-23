@@ -26,6 +26,27 @@ fn serialize_debug<T: std::fmt::Debug, S: serde::Serializer>(
     s.serialize_str(&format!("{v:?}"))
 }
 
+/// `-webkit-box-pack` (#2581); see [`ComputedStyle::webkit_box_pack`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WebkitBoxPack {
+    #[default]
+    Start,
+    End,
+    Center,
+    Justify,
+}
+
+/// `-webkit-box-align` (#2581); see [`ComputedStyle::webkit_box_align`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WebkitBoxAlign {
+    #[default]
+    Stretch,
+    Start,
+    End,
+    Center,
+    Baseline,
+}
+
 /// Pre-parsed CSS properties for efficient layout and paint.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComputedStyle {
@@ -112,6 +133,21 @@ pub struct ComputedStyle {
     /// `flex-grow` and `flex-shrink` are then [`Self::webkit_box_flex`].
     #[serde(skip)]
     pub webkit_box_item: Option<bool>,
+    /// `-webkit-box-pack` (#2581): where a legacy flex `-webkit-box` puts
+    /// its items on the main axis. Chrome reads it, and not
+    /// `justify-content`, there. Not inherited.
+    #[serde(skip)]
+    pub webkit_box_pack: WebkitBoxPack,
+    /// `-webkit-box-align` (#2581): how a legacy flex `-webkit-box` aligns
+    /// its items on the cross axis, in place of `align-items` and every
+    /// item's `align-self`. Not inherited.
+    #[serde(skip)]
+    pub webkit_box_align: WebkitBoxAlign,
+    /// `-webkit-box-direction: reverse` (#2581): a legacy flex
+    /// `-webkit-box` lays its items out from the main axis's end. Not
+    /// inherited.
+    #[serde(skip)]
+    pub webkit_box_reverse: bool,
     /// A table cell whose parent box is an inline (CSS 2.1 §17.2.1): CSS
     /// wraps it in an anonymous `inline-table` on the line, which rinch,
     /// with no anonymous table box, lays out as the cell itself at `display:
@@ -502,6 +538,9 @@ impl Default for ComputedStyle {
             webkit_box: false,
             webkit_box_flex: 0.0,
             webkit_box_item: None,
+            webkit_box_pack: WebkitBoxPack::Start,
+            webkit_box_align: WebkitBoxAlign::Stretch,
+            webkit_box_reverse: false,
             anonymous_inline_table: None,
             position: PositionValue::default(),
             float: taffy::Float::None,

@@ -1,7 +1,7 @@
 //! Conversion from ComputedStyle to Taffy Style.
 
-use super::ComputedStyle;
 use super::values::*;
+use super::{ComputedStyle, WebkitBoxAlign, WebkitBoxPack};
 
 impl ComputedStyle {
     /// Convert to Taffy Style using the stored `has_explicit_display` flag.
@@ -205,6 +205,11 @@ impl ComputedStyle {
     ///   (`create_anonymous_block_boxes`), which Taffy then lays out as one
     ///   item, as Chrome does; a box holding only inline content is an IFC
     ///   root and a Taffy leaf, which no `display` changes.
+    /// - It places its items by `-webkit-box-pack` (the main axis),
+    ///   `-webkit-box-align` (the cross axis) and `-webkit-box-direction:
+    ///   reverse` (from the main axis's end); Chrome 158 ignores
+    ///   `justify-content`, `align-items`, `flex-direction` and an item's
+    ///   `align-self` on it.
     /// - Its items grow and shrink by `-webkit-box-flex` alone (`0`, neither,
     ///   unless declared), and in a row an item of `auto` width is at most as
     ///   wide as the box (Chrome sizes it to fit the box: `short` and a long
@@ -212,12 +217,26 @@ impl ComputedStyle {
     pub(crate) fn legacy_box_taffy_style(&self, style: &mut taffy::Style) {
         if self.webkit_box && self.line_clamp.is_none() {
             style.display = taffy::Display::Flex;
-            style.flex_direction = if self.webkit_box_vertical {
-                taffy::FlexDirection::Column
-            } else {
-                taffy::FlexDirection::Row
+            style.flex_direction = match (self.webkit_box_vertical, self.webkit_box_reverse) {
+                (false, false) => taffy::FlexDirection::Row,
+                (false, true) => taffy::FlexDirection::RowReverse,
+                (true, false) => taffy::FlexDirection::Column,
+                (true, true) => taffy::FlexDirection::ColumnReverse,
             };
             style.flex_wrap = taffy::FlexWrap::NoWrap;
+            style.justify_content = Some(match self.webkit_box_pack {
+                WebkitBoxPack::Start => taffy::JustifyContent::FLEX_START,
+                WebkitBoxPack::End => taffy::JustifyContent::FLEX_END,
+                WebkitBoxPack::Center => taffy::JustifyContent::CENTER,
+                WebkitBoxPack::Justify => taffy::JustifyContent::SPACE_BETWEEN,
+            });
+            style.align_items = Some(match self.webkit_box_align {
+                WebkitBoxAlign::Stretch => taffy::AlignItems::STRETCH,
+                WebkitBoxAlign::Start => taffy::AlignItems::FLEX_START,
+                WebkitBoxAlign::End => taffy::AlignItems::FLEX_END,
+                WebkitBoxAlign::Center => taffy::AlignItems::CENTER,
+                WebkitBoxAlign::Baseline => taffy::AlignItems::BASELINE,
+            });
         }
         if let Some(vertical) = self.webkit_box_item {
             legacy_item_taffy_style(style, self.webkit_box_flex, vertical);
@@ -230,6 +249,7 @@ impl ComputedStyle {
 /// `flex`: an element, or an anonymous block box holding a run of inline
 /// content (`flex` 0).
 pub(crate) fn legacy_item_taffy_style(style: &mut taffy::Style, flex: f32, vertical: bool) {
+    style.align_self = None;
     style.flex_grow = flex;
     style.flex_shrink = flex;
     style.flex_basis = taffy::Dimension::auto();

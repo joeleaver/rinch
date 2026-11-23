@@ -406,6 +406,9 @@ impl ComputedStyle {
             webkit_box: false,
             webkit_box_flex: 0.0,
             webkit_box_item: None,
+            webkit_box_pack: super::WebkitBoxPack::Start,
+            webkit_box_align: super::WebkitBoxAlign::Stretch,
+            webkit_box_reverse: false,
             position: position_from_stylo(&box_style.position),
             float: match box_style.float {
                 style::computed_values::float::T::Left => taffy::Float::Left,

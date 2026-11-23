@@ -203,9 +203,16 @@ Four things about that set are worth knowing before they surprise you.
   flex row (a column under `-webkit-box-orient: vertical`) whose block
   children are items that grow and shrink only by `-webkit-box-flex`, each
   run of inline content one item, and no `text-overflow` "…" (#1703,
-  #2581). A `var()` in `-webkit-line-clamp`, `-webkit-box-orient` or
-  `-webkit-box-flex` is read (#2820), and so is one in `display` naming
-  `-webkit-box` or `-webkit-inline-box` (#2870).
+  #2581). It places them by `-webkit-box-pack` (`start`, `end`, `center`,
+  `justify`), `-webkit-box-align` (`stretch`, `start`, `end`, `center`,
+  `baseline`) and `-webkit-box-direction: reverse`; as in Chrome,
+  `justify-content`, `align-items`, `align-self` and `flex-direction` do
+  nothing there. A `min-height` or `max-height` on a block between a
+  clamp and its Nth line holds that block, and the clamp ends after it.
+  A `var()` in `-webkit-line-clamp`, `-webkit-box-orient`,
+  `-webkit-box-flex` or the three placing properties is read (#2820), and
+  so is one in `display` naming `-webkit-box` or `-webkit-inline-box`
+  (#2870).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the
