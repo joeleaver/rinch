@@ -26,7 +26,13 @@ to get it; this page is about turning it off, configuring it, and styling it.
   press in it, a Tab onto it, typing) checks the whole document, and each
   edit re-checks the words it touched after the pause. Its marks map through
   every edit, so typing elsewhere never moves or re-checks them. A read-only
-  editor is not checked.
+  editor is not checked (its marks go when it turns read-only and come back
+  when it is editable again). Inside the editor, a block whose element says
+  `spellcheck="false"` is left out, as Chrome does in an editable region;
+  to leave out code, build the editor with
+  `SpellcheckPlugin::new().skip_nodes(["code_block"]).skip_marks(["code"])`
+  in its plugin list. After changing `spellcheck` on an ancestor of an
+  editor, call `EditorHandle::refresh_spellcheck()`.
 
 Some words are never checked, a deliberate difference from Chrome for app
 UI, where they are mostly codes and names: URLs, email addresses, words

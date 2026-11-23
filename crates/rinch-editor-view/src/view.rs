@@ -2220,6 +2220,12 @@ impl RinchDomEditorView {
     /// Resolve a model [`Pos`] to its host caret address `(textblock element id,
     /// flat UTF-8 byte offset)` — the address app-side geometry (caret point,
     /// vertical movement) queries Parley with. `None` if `pos` isn't in a textblock.
+    /// A handle on host node `id` of this view's document.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn host_node(&self, id: u64) -> NodeHandle {
+        NodeHandle::new(rinch_core::dom::NodeId(id), self.doc.clone())
+    }
+
     pub(crate) fn caret_address(&self, doc: &Node, pos: Pos) -> Option<(u64, usize)> {
         self.caret_target(doc, pos)
             .map(|(dom, byte)| (dom.node_id().0, byte))

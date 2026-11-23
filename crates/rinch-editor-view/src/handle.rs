@@ -183,6 +183,10 @@ struct EditorCore {
     /// The spellchecker's timer and configuration listener (#2862).
     #[cfg(not(target_family = "wasm"))]
     spell: crate::spellcheck::Driver,
+    /// The spellchecker generation the last mutable borrow saw: a new one
+    /// with dirty words owes a check (`Owed::spell`).
+    #[cfg(not(target_family = "wasm"))]
+    spell_seen: u64,
 }
 
 /// The nodes `tr` only set attributes of: for each node a `SetNodeAttrStep`
@@ -278,6 +282,9 @@ struct Owed {
     selection: Option<(SelectionHook, Selection)>,
     caret_moved: Option<Hook<dyn Fn()>>,
     node_views: Vec<node_views::Work>,
+    /// The spellchecker has newly dirty words to check after the pause.
+    #[cfg(not(target_family = "wasm"))]
+    spell: bool,
 }
 
 /// An app callback and the component that registered it (#147/#183).
@@ -695,10 +702,26 @@ impl EditorCore {
             .as_mut()
             .map(RinchDomEditorView::take_node_view_work)
             .unwrap_or_default();
+        // Every path that changes the state ends a mutable borrow here, so a
+        // check owed by any of them (a command, an undo, a picture, a peer's
+        // edit, a dispatch) is noticed in one place.
+        #[cfg(not(target_family = "wasm"))]
+        let spell = match self
+            .state
+            .plugin_state::<crate::spellcheck::SpellState>(crate::spellcheck::SPELLCHECK_KEY)
+        {
+            Some(st) if st.generation != self.spell_seen => {
+                self.spell_seen = st.generation;
+                st.activated && !st.dirty.is_empty()
+            }
+            _ => false,
+        };
         Owed {
             selection,
             caret_moved,
             node_views,
+            #[cfg(not(target_family = "wasm"))]
+            spell,
         }
     }
 
@@ -1128,6 +1151,13 @@ impl Drop for CoreMutGuard<'_> {
                 owed.node_views,
             );
         }
+        #[cfg(not(target_family = "wasm"))]
+        if owed.spell {
+            EditorHandle {
+                inner: self.editor.clone(),
+            }
+            .spell_owed();
+        }
     }
 }
 
@@ -1222,6 +1252,8 @@ impl EditorHandle {
                 on_margin_layout: None,
                 #[cfg(not(target_family = "wasm"))]
                 spell: Default::default(),
+                #[cfg(not(target_family = "wasm"))]
+                spell_seen: 0,
             })),
         }
     }
@@ -1287,6 +1319,8 @@ impl EditorHandle {
                 on_margin_layout: None,
                 #[cfg(not(target_family = "wasm"))]
                 spell: Default::default(),
+                #[cfg(not(target_family = "wasm"))]
+                spell_seen: 0,
             })),
         }
     }
@@ -1467,6 +1501,15 @@ impl EditorHandle {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn container_node(&self) -> Option<NodeHandle> {
         self.core().view.as_ref().map(|v| v.container().clone())
+    }
+
+    /// The host element of the textblock at `pos`.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn block_host(&self, pos: usize) -> Option<NodeHandle> {
+        let core = self.core();
+        let view = core.view.as_ref()?;
+        let (id, _) = view.caret_address(&core.state.doc, Pos(pos + 1))?;
+        Some(view.host_node(id))
     }
 
     /// Run `f` on the spellchecker's driver.
@@ -2817,6 +2860,10 @@ impl EditorHandle {
             view.node_view_flags_changed();
         }
         drop(core);
+        // A read-only editor shows no spelling marks; an editable one again
+        // is checked again (#2862).
+        #[cfg(not(target_family = "wasm"))]
+        self.refresh_spellcheck();
         // No input event brought this change; a runtime that keeps per-editor
         // input state in step from its input handlers (the web's capture field)
         // hears about it here. After the borrow is released: the refresh reads

@@ -143,7 +143,8 @@ fn a_press_marks_the_words_with_red_waves() {
     assert_eq!(spans, [(0, 4), (9, 13)]);
 }
 
-/// A focus from code alone marks nothing; the first edit after it does.
+/// A focus from code alone marks nothing (the first edit after it does:
+/// `rinch-editor-view`'s `spell_after_dispatch` on the user's input).
 #[test]
 fn a_script_focus_alone_marks_nothing() {
     configure();

@@ -43,13 +43,26 @@ pub const SPELL_ERROR_CLASS: &str = "pm-spell-error";
 /// The transaction meta key the handle talks to the plugin through.
 const META: &str = "spellcheck";
 
+/// The next [`SpellState::generation`]: one counter for the process, so a
+/// generation never repeats, not even across a `load_html` (which builds a
+/// fresh state) or between two editors.
+fn fresh_generation() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// What the handle tells the plugin.
 #[derive(Debug)]
 pub(crate) enum SpellMeta {
     /// The user interacted with the editor: check all of it.
     Activate,
-    /// The configuration changed: drop every mark, check everything again.
+    /// The configuration changed, or the editor is to be checked again:
+    /// drop every mark, check everything again.
     Reset,
+    /// The editor is not to be checked now (read-only, `spellcheck` off):
+    /// drop every mark and forget what is pending.
+    Clear,
     /// A check came back: `found` are the misspelled words in `checked`, for
     /// the document at `generation`.
     Result {
@@ -68,14 +81,63 @@ pub(crate) struct SpellState {
     pub(crate) marks: Vec<(usize, usize)>,
     /// What is waiting to be checked, document ranges.
     pub(crate) dirty: Vec<(usize, usize)>,
-    /// Bumped by every document change: a result for an older one is stale.
+    /// A fresh value ([`fresh_generation`]) at every document change and
+    /// every widening of `dirty`: a result for an older one is stale.
     pub(crate) generation: u64,
+    /// The plugin's settings, for the handle building a check.
+    pub(crate) skip: Rc<Skip>,
 }
 
-/// Marks misspelled words (see the module docs). Stateless itself; its state
-/// lives in the editor state.
-#[derive(Debug, Default)]
-pub struct SpellcheckPlugin;
+/// What a [`SpellcheckPlugin`] leaves out.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Skip {
+    nodes: Vec<String>,
+    marks: Vec<String>,
+}
+
+/// Marks misspelled words (see the module docs). Its state lives in the
+/// editor state.
+///
+/// `create_editor` installs one with the defaults when the app has spellcheck
+/// configured; an editor built with [`EditorHandle::new`] and its own plugin
+/// list adds one itself (`SpellcheckPlugin::new()`), and the handle drives it
+/// the same way. Everything is checked by default, as in Chrome;
+/// [`skip_nodes`](Self::skip_nodes) and [`skip_marks`](Self::skip_marks)
+/// leave text out by node type (`code_block`) or mark (`code`), and a
+/// textblock whose host element, or an element between it and the editor's
+/// container, says `spellcheck="false"` is not checked either.
+#[derive(Debug, Default, Clone)]
+pub struct SpellcheckPlugin {
+    skip: Skip,
+}
+
+impl SpellcheckPlugin {
+    /// Everything checked.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Never check text inside nodes of these types (a textblock or any
+    /// ancestor of it), such as `"code_block"`.
+    pub fn skip_nodes<I, S>(mut self, types: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.skip.nodes = types.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Never mark text that carries one of these marks, such as `"code"`.
+    pub fn skip_marks<I, S>(mut self, marks: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.skip.marks = marks.into_iter().map(Into::into).collect();
+        self
+    }
+}
 
 impl Plugin for SpellcheckPlugin {
     fn key(&self) -> PluginKey {
@@ -83,7 +145,11 @@ impl Plugin for SpellcheckPlugin {
     }
 
     fn init_state(&self, _doc: &Node) -> Option<Rc<dyn Any>> {
-        Some(Rc::new(SpellState::default()))
+        Some(Rc::new(SpellState {
+            generation: fresh_generation(),
+            skip: Rc::new(self.skip.clone()),
+            ..SpellState::default()
+        }))
     }
 
     fn apply(
@@ -104,7 +170,7 @@ impl Plugin for SpellcheckPlugin {
         let mut st = prev.cloned().unwrap_or_default();
         let whole = (0, new_doc.content_size());
         if tr.doc_changed() {
-            st.generation += 1;
+            st.generation = fresh_generation();
             let mapping = tr.mapping();
             let changed = changed_ranges(mapping);
             st.marks = st
@@ -129,11 +195,17 @@ impl Plugin for SpellcheckPlugin {
         match meta {
             Some(SpellMeta::Activate) if !st.activated => {
                 st.activated = true;
+                st.generation = fresh_generation();
                 st.dirty = vec![whole];
+            }
+            Some(SpellMeta::Clear) => {
+                st.marks.clear();
+                st.generation = fresh_generation();
+                st.dirty.clear();
             }
             Some(SpellMeta::Reset) => {
                 st.marks.clear();
-                st.generation += 1;
+                st.generation = fresh_generation();
                 st.dirty = if st.activated {
                     vec![whole]
                 } else {
@@ -144,7 +216,7 @@ impl Plugin for SpellcheckPlugin {
                 generation,
                 checked,
                 found,
-            }) if *generation == st.generation => {
+            }) if st.activated && *generation == st.generation => {
                 st.marks
                     .retain(|&(a, b)| !checked.iter().any(|&(c, d)| a < d && b > c));
                 st.marks.extend(found.iter().copied());
@@ -243,7 +315,12 @@ pub(crate) struct BlockJob {
 
 /// The dirty words of `doc`: every textblock a dirty range reaches, with the
 /// dirty part of its text widened to white space.
-pub(crate) fn jobs(doc: &Node, dirty: &[(usize, usize)]) -> Vec<BlockJob> {
+pub(crate) fn jobs(
+    doc: &Node,
+    dirty: &[(usize, usize)],
+    skip: &Skip,
+    block_off: &dyn Fn(usize) -> bool,
+) -> Vec<BlockJob> {
     let mut blocks: Vec<(usize, Node)> = Vec::new();
     for &(a, b) in dirty {
         let (a, b) = (a.min(doc.content_size()), b.min(doc.content_size()));
@@ -251,8 +328,11 @@ pub(crate) fn jobs(doc: &Node, dirty: &[(usize, usize)]) -> Vec<BlockJob> {
             a,
             b.max(a + 1).min(doc.content_size()),
             &mut |node, pos, _| {
+                if skip.nodes.iter().any(|t| t == node.type_name()) {
+                    return false;
+                }
                 if node.is_textblock() {
-                    if !blocks.iter().any(|(p, _)| *p == pos) {
+                    if !blocks.iter().any(|(p, _)| *p == pos) && !block_off(pos) {
                         blocks.push((pos, node.clone()));
                     }
                     false
@@ -266,11 +346,17 @@ pub(crate) fn jobs(doc: &Node, dirty: &[(usize, usize)]) -> Vec<BlockJob> {
     for (pos, block) in blocks {
         let start = pos + 1;
         let mut text = String::new();
+        // Text under a skipped mark is U+FFFC, one per position, so it is
+        // never a word and the positions stay aligned.
         for i in 0..block.child_count() {
             let child = block.child(i);
+            let skipped = child
+                .marks()
+                .iter()
+                .any(|m| skip.marks.iter().any(|n| n == m.type_name()));
             match child.text() {
-                Some(t) => text.push_str(t),
-                None => (0..child.node_size()).for_each(|_| text.push('\u{FFFC}')),
+                Some(t) if !skipped => text.push_str(t),
+                _ => (0..child.node_size()).for_each(|_| text.push('\u{FFFC}')),
             }
         }
         let chars = text.chars().count();
@@ -380,29 +466,85 @@ impl EditorHandle {
         }
     }
 
-    /// After a dispatch: an edit the user made activates the checker, and any
-    /// change to an activated editor's document is checked once typing
-    /// pauses.
+    /// After a dispatch: an edit the user made (`input`) activates the
+    /// checker, which then checks all of it after the pause. Scheduling the
+    /// check of later edits is not this path's: any change that leaves words
+    /// dirty arms it on its way out of the core ([`Self::spell_owed`]), so a
+    /// command, an undo, a picture insert or a collaborator's edit is checked
+    /// too.
     pub(crate) fn spell_after_dispatch(&self, doc_changed: bool, input: bool) {
-        if !doc_changed {
+        if !doc_changed || !input {
             return;
         }
+        if self.spell_state().is_none_or(|s| s.activated) || self.spell_session().is_none() {
+            return;
+        }
+        self.spell_listen();
+        self.spell_meta(SpellMeta::Activate);
+    }
+
+    /// The core left an activated editor with newly dirty words (any path):
+    /// check them once typing pauses.
+    pub(crate) fn spell_owed(&self) {
+        if let Some(session) = self.spell_session() {
+            self.spell_arm(session.debounce_ms());
+        }
+    }
+
+    /// Arm the pause again when words are still waiting.
+    fn spell_rearm_if_dirty(&self) {
+        if self
+            .spell_state()
+            .is_some_and(|s| s.activated && !s.dirty.is_empty())
+        {
+            self.spell_owed();
+        }
+    }
+
+    /// Whether the textblock at `pos` is turned off by a `spellcheck`
+    /// attribute on its host element or an element up to the container.
+    fn spell_block_off(&self, pos: usize) -> bool {
+        let (Some(container), Some(host)) = (self.container_node(), self.block_host(pos)) else {
+            return false;
+        };
+        let mut cur = Some(host);
+        while let Some(n) = cur {
+            if n.node_id() == container.node_id() {
+                return false;
+            }
+            if let Some(on) = n
+                .get_attribute("spellcheck")
+                .and_then(|v| spell::attribute_state(&v))
+            {
+                return !on;
+            }
+            cur = n.parent_node();
+        }
+        false
+    }
+
+    /// Make the marks follow whether the editor is to be checked now: when it
+    /// is not (read-only, its `spellcheck` turned off, the app's switch off)
+    /// every mark goes; when it is again, an editor the user had interacted
+    /// with is checked again. [`set_read_only`](Self::set_read_only) and the
+    /// `Editor` component call it; an app that changes a `spellcheck`
+    /// attribute on the editor or an ancestor calls it after.
+    pub fn refresh_spellcheck(&self) {
         let Some(st) = self.spell_state() else {
             return;
         };
-        if !st.activated && !input {
-            return;
+        match self.spell_session() {
+            None => {
+                if !st.marks.is_empty() || !st.dirty.is_empty() {
+                    self.spell_meta(SpellMeta::Clear);
+                }
+            }
+            Some(session) if st.activated => {
+                self.spell_meta(SpellMeta::Reset);
+                self.spell_check(&session);
+            }
+            Some(_) => {}
         }
-        let Some(session) = self.spell_session() else {
-            return;
-        };
-        self.spell_listen();
-        if !st.activated {
-            // The first edit of an editor focused from code: check all of it,
-            // after the pause.
-            self.spell_meta(SpellMeta::Activate);
-        }
-        self.spell_arm(session.debounce_ms());
     }
 
     fn spell_meta(&self, meta: SpellMeta) {
@@ -439,7 +581,8 @@ impl EditorHandle {
         if st.dirty.is_empty() {
             return;
         }
-        let jobs = self.with_state(|s| jobs(&s.doc, &st.dirty));
+        let block_off = |pos: usize| self.spell_block_off(pos);
+        let jobs = self.with_state(|s| jobs(&s.doc, &st.dirty, &st.skip, &block_off));
         let generation = st.generation;
         let weak = self.downgrade();
         let reply = rinch_core::reactive::unowned(|| {
@@ -450,6 +593,9 @@ impl EditorHandle {
                         checked,
                         found,
                     });
+                    // A stale result was dropped and words are still dirty:
+                    // check them again after the pause.
+                    handle.spell_rearm_if_dirty();
                 }
             })
         });
@@ -632,6 +778,124 @@ mod tests {
         );
         container.set_attribute("spellcheck", "true");
         h.spell_user_focus();
+        assert_eq!(marked(&h), ["helo"]);
+    }
+
+    /// Take the pending debounce timer, answering whether there was one.
+    fn take_timer(h: &EditorHandle) -> bool {
+        match h.spell_driver(|d| d.timer.take()).flatten() {
+            Some(t) => {
+                rinch_core::timer::clear_timeout(t);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Review of #2877: a check sent for one document must not land on the
+    /// next one `load_html` puts in, however many edits that one has had.
+    /// Red before: `init_state` restarted the generation at 0, so after as
+    /// many edits as the old generation the stale marks were applied.
+    #[test]
+    fn a_result_for_a_replaced_document_is_dropped() {
+        configure();
+        let h = crate::create_editor();
+        h.load_html("<p>helo wrld</p>");
+        h.spell_meta(SpellMeta::Activate);
+        let stale = h.spell_state().unwrap().generation;
+        h.load_html("<p>the cat and the dog</p>");
+        h.spell_meta(SpellMeta::Activate);
+        for _ in 0..stale.min(64) {
+            insert(&h, 1, "a ");
+            if h.spell_state().unwrap().generation == stale {
+                break;
+            }
+        }
+        h.spell_meta(SpellMeta::Result {
+            generation: stale,
+            checked: vec![(1, 10)],
+            found: vec![(1, 5)],
+        });
+        assert!(
+            marked(&h).is_empty(),
+            "the old document's result was applied"
+        );
+    }
+
+    /// Review of #2877: every edit path arms the re-check, not only
+    /// `update`/typing. Red before: a command (Backspace, undo) left the word
+    /// dirty with no timer, so it was never checked again.
+    #[test]
+    fn a_command_and_an_undo_arm_the_recheck() {
+        let session = configure();
+        let h = crate::create_editor();
+        h.load_html("<p>the wrld</p>");
+        h.spell_meta(SpellMeta::Activate);
+        h.spell_check(&session);
+        assert_eq!(marked(&h), ["wrld"]);
+        take_timer(&h);
+        h.set_selection(rinch_editor_core::Selection::cursor(Pos(9)));
+        assert!(h.command("deleteCharBackward"));
+        assert!(marked(&h).is_empty(), "the edited word kept its mark");
+        assert!(take_timer(&h), "Backspace armed no re-check");
+        h.spell_check(&session);
+        assert_eq!(marked(&h), ["wrl"]);
+        assert!(h.command("undo"));
+        assert!(take_timer(&h), "undo armed no re-check");
+        h.spell_check(&session);
+        assert_eq!(marked(&h), ["wrld"]);
+    }
+
+    /// Review of #2877: `spellcheck="false"` on a block's host element (as
+    /// inside a contenteditable in Chrome), and the plugin's node and mark
+    /// exclusions.
+    #[test]
+    fn blocks_and_marks_can_be_left_out() {
+        let session = configure();
+        let doc = std::rc::Rc::new(std::cell::RefCell::new(
+            rinch_core::dom::mock::MockDomDocument::new(),
+        ));
+        let body = rinch_core::dom::DomDocument::body(&*doc.borrow());
+        let mut scope = rinch_core::dom::RenderScope::new(doc.clone(), body);
+        let h = crate::create_editor();
+        h.load_html("<p>helo</p><p>wrld</p>");
+        let _container = h.mount(&mut scope);
+        let second = h.with_state(|s| s.doc.child(0).node_size());
+        h.block_host(second)
+            .unwrap()
+            .set_attribute("spellcheck", "false");
+        h.spell_meta(SpellMeta::Activate);
+        h.spell_check(&session);
+        assert_eq!(marked(&h), ["helo"]);
+
+        let schema = std::rc::Rc::new(rinch_editor_core::Schema::starter_kit());
+        let mut plugins = rinch_editor_core::default_plugins();
+        plugins.push(Rc::new(
+            SpellcheckPlugin::new()
+                .skip_nodes(["code_block"])
+                .skip_marks(["code"]),
+        ));
+        let empty = crate::empty_doc(&schema);
+        let h = EditorHandle::unmounted(schema, empty, plugins);
+        h.load_html("<p>helo <code>wrld</code></p><pre><code>cta</code></pre><p>dgo</p>");
+        h.spell_meta(SpellMeta::Activate);
+        h.spell_check(&session);
+        assert_eq!(marked(&h), ["helo", "dgo"]);
+    }
+
+    /// Review of #2877: a read-only editor shows no marks, and is checked
+    /// again when it is editable again.
+    #[test]
+    fn read_only_clears_the_marks_and_editable_brings_them_back() {
+        let session = configure();
+        let h = crate::create_editor();
+        h.load_html("<p>helo</p>");
+        h.spell_meta(SpellMeta::Activate);
+        h.spell_check(&session);
+        assert_eq!(marked(&h), ["helo"]);
+        h.set_read_only(true);
+        assert!(marked(&h).is_empty(), "a read-only editor kept its marks");
+        h.set_read_only(false);
         assert_eq!(marked(&h), ["helo"]);
     }
 }
