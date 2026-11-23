@@ -134,6 +134,8 @@ mod dnd_teardown_tests;
 #[cfg(test)]
 mod drag_auto_scroll_tests;
 #[cfg(test)]
+mod draggable_user_select_2247_tests;
+#[cfg(test)]
 mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
@@ -286,6 +288,8 @@ mod html_view_tests;
 mod implicit_focus_tests;
 #[cfg(test)]
 mod inline_draggable_2233_tests;
+#[cfg(test)]
+mod inline_drop_target_2246_tests;
 // A window's input region (#2741): the desktop shell's alone.
 #[cfg(feature = "windowing")]
 pub(crate) mod input_region;

@@ -873,6 +873,19 @@ impl RinchDocument {
                 user-select: text;
             }
 
+            /* A draggable element is not selectable, as in Chrome 158
+               (measured, #2247): `<span draggable="true">` inside
+               `user-select: text` computes `none`, and so does its
+               descendants' `auto`; `draggable="TRUE"` too (an enumerated
+               attribute, ASCII case-insensitive), while `draggable=""`,
+               `"false"` and `"auto"` stay `text`. An author's `user-select`
+               on the element wins, as it does in Chrome, so this is a UA rule
+               (#2231). A selection dragged across a draggable inline in
+               selectable text leaves its text out. */
+            [draggable="true" i] {
+                user-select: none;
+            }
+
             /* `<hr>` rendered *nothing* before this (issue #674): the
                `* { border-width: 0 }` reset at the top of this sheet — which is
                here to undo Stylo's `medium` initial — applied to `<hr>` too,
