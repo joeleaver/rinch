@@ -460,6 +460,8 @@ mod surface_pointer_tests;
 #[cfg(test)]
 mod tab_order_tests;
 #[cfg(test)]
+mod inline_tab_stops_2963_tests;
+#[cfg(test)]
 mod text_action_word_tests;
 mod text_context_menu;
 #[cfg(test)]
