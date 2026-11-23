@@ -138,10 +138,11 @@ impl ShellWindow {
     /// The scale a second window's document is mounted at: the main window's
     /// (`main`), except that a window sized by its content is measured at the
     /// scale its surface will start at (#2652), so its first buffer is its
-    /// content's size there.
+    /// content's size there; with no outputs listed yet, that is the main
+    /// window's too (#2886).
     pub(super) fn mount_scale(&self, main: f64) -> f64 {
         if self.app.is_content_sized() {
-            crate::zoom::apply(self.initial_surface_scale(true))
+            crate::zoom::apply(self.initial_surface_scale_or(true, main))
         } else {
             main
         }

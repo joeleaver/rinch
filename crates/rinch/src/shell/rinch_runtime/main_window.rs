@@ -1263,6 +1263,19 @@ impl ShellWindow {
     /// above are divided by it): the document's is
     /// `crate::zoom::apply` of it.
     pub(super) fn initial_surface_scale(&self, first_appearance: bool) -> f64 {
+        self.initial_surface_scale_or(first_appearance, self.app.device_pixel_ratio)
+    }
+
+    /// [`Self::initial_surface_scale`], with `document_scale` (zoom
+    /// included) standing in for its document's scale where it would read
+    /// that: a second window's document is not mounted yet when its mount
+    /// scale is chosen, so its own scale is the unset 1.0, and the window
+    /// that opens it gives its scale instead (#2886).
+    pub(super) fn initial_surface_scale_or(
+        &self,
+        first_appearance: bool,
+        document_scale: f64,
+    ) -> f64 {
         let unzoomed = |scale: f64| scale / crate::zoom::current();
         if let Some((scale, _)) = self.prepared {
             return unzoomed(scale);
@@ -1279,11 +1292,11 @@ impl ShellWindow {
             return output.scale;
         }
         if !first_appearance {
-            return unzoomed(self.app.device_pixel_ratio);
+            return unzoomed(document_scale);
         }
         outputs
             .first()
-            .map_or(unzoomed(self.app.device_pixel_ratio), |o| o.scale)
+            .map_or(unzoomed(document_scale), |o| o.scale)
     }
 
     /// The logical size a hidden window is shown at: the size it was hidden
