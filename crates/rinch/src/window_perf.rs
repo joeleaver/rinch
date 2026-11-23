@@ -300,15 +300,62 @@ pub(crate) fn popup_opened(id: u64, kind: rinch_core::element::PopupKind, parent
     capture::note(&line);
 }
 
-/// Popup `id` presented its first frame, `after` the app asked for it:
-/// `[PERF] window 5 first frame: 12.3 ms after open_popup`, the input to
-/// first presented frame of a popup.
-pub(crate) fn popup_first_frame(id: u64, after: std::time::Duration) {
+/// When a popup was asked for and when each step of its opening ended
+/// (#2552), for its `first frame` line.
+#[derive(Debug, Clone)]
+pub(crate) struct PopupTimeline {
+    asked: std::time::Instant,
+    marks: Vec<(&'static str, std::time::Instant)>,
+}
+
+impl PopupTimeline {
+    pub(crate) fn new(asked: std::time::Instant) -> Self {
+        Self {
+            asked,
+            marks: Vec::new(),
+        }
+    }
+
+    /// The step `what` ended now.
+    pub(crate) fn mark(&mut self, what: &'static str) {
+        self.marks.push((what, std::time::Instant::now()));
+    }
+
+    /// `12.3 ms after open_popup (queued 0.1, mount 3.0, ...)`: the total
+    /// and each step's share, in the order they ended.
+    pub(crate) fn describe(&self) -> String {
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        let end = self.marks.last().map_or(self.asked, |m| m.1);
+        let mut last = self.asked;
+        let steps: Vec<String> = self
+            .marks
+            .iter()
+            .map(|&(what, at)| {
+                let step = format!("{what} {:.1}", ms(at.saturating_duration_since(last)));
+                last = at;
+                step
+            })
+            .collect();
+        format!(
+            "{:.1} ms after open_popup ({})",
+            ms(end.saturating_duration_since(self.asked)),
+            steps.join(", ")
+        )
+    }
+}
+
+/// Popup `id` presented its first frame: `[PERF] window 5 first frame: 12.3
+/// ms after open_popup (queued 0.1, mount 3.0, measure 0.2, create 4.1,
+/// renderer 0.0, size 0.3, to frame 1.2, paint 3.4)`, the input to first
+/// presented frame of a popup and where it went: `queued` until the loop
+/// made it (a keyboard wait included), `mount` its document built and laid
+/// out, `measure` its content's size, `create` the OS window (the
+/// compositor's first configure included), `renderer` its GPU renderer
+/// (`0.0` on software), `size` its first size handled, `to frame` until its
+/// first redraw, and `paint` the frame painted and presented.
+pub(crate) fn popup_first_frame(id: u64, timeline: &PopupTimeline) {
     if rinch_dom::perf::perf_env_enabled() {
-        eprintln!(
-            "[PERF] window {id} first frame: {:.1} ms after open_popup",
-            after.as_secs_f64() * 1000.0
-        );
+        eprintln!("[PERF] window {id} first frame: {}", timeline.describe());
     }
 }
 
@@ -445,6 +492,29 @@ fn opened_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A popup's `first frame` line (#2552) gives the total from
+    /// `open_popup` to the last mark, and each step as the time since the
+    /// step before, in the order they ended.
+    #[test]
+    fn a_popup_timeline_gives_the_total_and_each_step() {
+        use std::time::{Duration, Instant};
+        let asked = Instant::now();
+        let mut t = PopupTimeline::new(asked);
+        t.marks.push(("queued", asked + Duration::from_micros(100)));
+        t.marks
+            .push(("mount", asked + Duration::from_micros(3_100)));
+        t.marks
+            .push(("paint", asked + Duration::from_micros(12_320)));
+        assert_eq!(
+            t.describe(),
+            "12.3 ms after open_popup (queued 0.1, mount 3.0, paint 9.2)"
+        );
+        assert_eq!(
+            PopupTimeline::new(asked).describe(),
+            "0.0 ms after open_popup ()"
+        );
+    }
 
     #[test]
     fn the_opened_line_names_the_window() {

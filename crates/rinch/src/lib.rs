@@ -117,6 +117,8 @@ pub mod focus_registry;
 /// Built on every target (a web build accepts them in `App::fonts` and ignores
 /// them, #1769); only the desktop, Android and embed hosts register them.
 pub mod font;
+#[cfg(feature = "windowing")]
+mod font_warmup;
 /// The device configuration of the GPU render callback, shared by the desktop
 /// (`shell::desktop`) and the web (`web_gpu`) halves (#1768).
 #[cfg(surface_gpu)]
