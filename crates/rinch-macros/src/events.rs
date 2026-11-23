@@ -52,6 +52,10 @@ pub const HTML_EVENTS: &[(&str, &str)] = &[
     ("onblur", "data-onblur"),
     ("onfocusin", "data-onfocusin"),
     ("onfocusout", "data-onfocusout"),
+    // An `<img>` whose picture failed to load (issues #2202/#2203): the
+    // browser's `error` event, which does not bubble. On the desktop it fires
+    // after the layout that learnt of the failure.
+    ("onerror", "data-onerror"),
 ];
 
 /// The attribute a supported `Fn()` event is written to, or `None` for a name
