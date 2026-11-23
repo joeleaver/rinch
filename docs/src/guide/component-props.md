@@ -121,9 +121,12 @@ Empty spacing element.
 |------|------|---------|-------------|
 | `variant` | `String` | `""` | "filled", "outline", "light", "subtle", "transparent", "white", "default", "gradient". `light` (and the hover fill of `outline`/`subtle`) paints the scheme-aware `--rinch-<color>-light` tokens (see theming.md, Variant Colors) |
 | `size` | `String` | `""` | xs, sm, md, lg, xl |
-| `color` | `String` | `""` | Theme color name |
+| `color` | `String` | `""` | A theme color name, or a raw CSS colour (`#…`, `rgb(…)`, `hsl(…)`; its hover and light shades are mixed from it, #2197) |
 | `disabled` | `bool` | `false` | |
-| `loading` | `bool` | `false` | |
+| `loading` | `bool` | `false` | The label stays in place but hidden (`.rinch-button__label`, so the width holds) and the shared `Loader` is drawn over it in the button's text colour (`.rinch-button__loader`); the button stops taking clicks. Until #2197 it only added a class and showed no spinner |
+| `loader_type` | `String` | `""` | The loader drawn while `loading`: "oval", "bars", "dots". Empty uses the app's `LoaderDefaults`, then oval |
+| `loader` | `Option<SectionRenderer>` | `None` | A custom loader drawn while `loading` (`loader: Some(renderer)`) |
+| `type` | `String` | `""` | The HTML `type`: "submit", "button", "reset". Empty writes none, which HTML (and Chrome) read as `submit`; say `"button"` for a button inside a form that must not submit it |
 | `full_width` | `bool` | `false` | |
 | `radius` | `String` | `""` | Border radius override |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
@@ -137,10 +140,16 @@ Icon-only button. For text-based action buttons, use `Button` with compact styli
 | `icon` | `Option<TablerIcon>` | `None` | Tabler icon to display |
 | `variant` | `String` | `""` | Same variants as Button |
 | `size` | `String` | `""` | xs, sm, md, lg, xl |
-| `color` | `String` | `""` | Theme color name |
+| `color` | `String` | `""` | Theme color name or raw CSS colour |
 | `radius` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
-| `loading` | `bool` | `false` | |
+| `loading` | `bool` | `false` | Draws the shared `Loader` (in `.rinch-action-icon__loader`, 60% of the button, in its text colour) in place of the icon |
+| `loader_type` | `String` | `""` | The loader drawn while `loading`: "oval", "bars", "dots". Empty uses the app's `LoaderDefaults`, then oval |
+| `loader` | `Option<SectionRenderer>` | `None` | A custom loader drawn while `loading` |
+| `icon_size` | `Option<u32>` | `None` | The icon's edge length in px. Unset, it follows `size`: 12 / 14 / 18 / 22 / 28 for xs…xl |
+| `icon_style` | `TablerIconStyle` | `Outline` | The icon's style, `Outline` or `Filled` |
+| `aria_label` | `String` | `""` | The `aria-label` on the root `<button>`: an accessible name without the tooltip `title` shows. Empty writes none |
+| `type` | `String` | `""` | The HTML `type`. Empty is `"button"` — unlike `Button`, an icon button inside a form is almost never its submit button, so this keeps rinch's earlier fixed value as the default; say `"submit"` to make it one |
 | `title` | `String` | `""` | The `title` attribute on the root `<button>`: its tooltip (on desktop too, #1646) and the accessible name an icon-only button otherwise lacks. Empty writes none. A reactive value re-renders the button; `"title": {|| …}` rewrites only the attribute (#1653) |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
 
@@ -150,13 +159,22 @@ Draws a stroked X, sized by `icon_size` or by `size`. Until issue #474 it drew
 nothing at all: the glyph was an empty `<span class="rinch-icon rinch-icon--close">`
 and no stylesheet in the workspace matches that class.
 
+The glyph carries `rinch-icon rinch-icon--close`, and its size is published on it
+as `--rinch-close-button-icon-size`, which the one-class rule `.rinch-icon--close`
+spends. Until #2199 the size was an inline `width`/`height`, which no stylesheet
+could override; now an app rule such as `.rinch-close-button svg { width: 20px;
+height: 20px; }` resizes it. Children, when given, replace the glyph.
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `size` | `String` | `""` | xs, sm, md, lg, xl |
 | `radius` | `String` | `""` | |
 | `disabled` | `bool` | `false` | |
 | `icon_size` | `Option<u32>` | `None` | The X's edge length in px. Unset, it follows `size`: 12 / 14 / 16 / 20 / 24 for xs…xl |
-| `title` | `String` | `""` | The `title` attribute on the root `<button>` (its tooltip); empty writes none. The accessible name stays `aria-label="Close"`. A reactive value re-renders the button; `"title": {|| …}` rewrites only the attribute (#1653) |
+| `icon` | `Option<TablerIcon>` | `None` | A Tabler icon drawn instead of the X, at the same size |
+| `aria_label` | `String` | `""` | The button's `aria-label`. Empty is `"Close"` |
+| `type` | `String` | `""` | The HTML `type`. Empty is `"button"`, so a close button inside a form never submits it |
+| `title` | `String` | `""` | The `title` attribute on the root `<button>` (its tooltip); empty writes none. The accessible name stays `aria_label` (by default "Close"). A reactive value re-renders the button; `"title": {|| …}` rewrites only the attribute (#1653) |
 | `onclick` | `Option<Callback>` | `None` | Click handler |
 
 ---
@@ -840,6 +858,7 @@ this stepper wrote its `data-step` rather than the caller.
 | `title` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `with_close_button` | `bool` | `false` | |
+| `close_button_label` | `String` | `""` | The close button's `aria-label`. Empty is `"Close"` |
 | `icon` | `Option<TablerIcon>` | `None` | |
 | `onclose` | `Option<Callback>` | `None` | |
 
@@ -847,9 +866,24 @@ this stepper wrote its `data-step` rather than the caller.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `type` | `String` | `""` | "oval", "bars", "dots" |
+| `type` | `String` | `""` | "oval", "bars", "dots". Empty uses the app's `LoaderDefaults`, then oval |
 | `size` | `String` | `""` | |
 | `color` | `String` | `""` | |
+| `aria_label` | `String` | `""` | The loader's `aria-label` (it is `role="status"`). Empty is `"Loading"` |
+| `custom` | `Option<SectionRenderer>` | `None` | A custom loader drawn inside the sized `.rinch-loader` box (class `rinch-loader--custom`) in place of the built-in kinds; wins over `type` |
+
+`Loader` is also what a loading `Button`, `ActionIcon` and `StepperStep` draw
+(#2205), so an app sets its loader once for all of them with the
+`LoaderDefaults` context, near the root:
+
+```rust
+create_context(LoaderDefaults { r#type: "dots".into(), ..Default::default() });
+// or a custom loader everywhere:
+create_context(LoaderDefaults { custom: Some(my_spinner), ..Default::default() });
+```
+
+A loader's own `type` or `custom` (and a component's `loader_type`/`loader`)
+wins over the context.
 
 ### Progress
 
@@ -1486,7 +1520,8 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `progress_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `allow_step_click` | `bool` | `false` | Grants this step the clickable class regardless of its position against `active`. With `Stepper::on_step_click` set, also grants the wiring (handler, `tabindex="0"`, `data-rid`) unless `disabled` is set (#737) |
 | `allow_step_select` | `bool` | `false` | The same grant as `allow_step_click` — Mantine keeps both names, so rinch does too |
-| `loading` | `bool` | `false` | |
+| `loading` | `bool` | `false` | The icon box draws the shared `Loader` (in `.rinch-stepper__loader`) in place of its icon |
+| `loader_type` | `String` | `""` | The loader drawn while `loading`: "oval", "bars", "dots". Empty uses the app's `LoaderDefaults` (which can also give a custom loader), then oval |
 | `disabled` | `bool` | `false` | Never clickable, never focusable, whatever else grants it (#737) — the plain HTML `disabled` attribute, read tag-agnostically |
 | `state` | `String` | `""` | `"completed"` or `"progress"`; anything else is inactive. Leave it unset and the parent `Stepper` derives it from this step's position against `active` (#709). Set it to override that for this one step: what a step names, it keeps |
 | `step` | `Option<u32>` | `None` | Step index, 0-based. Set by the parent `Stepper` from this step's position unless named here, in which case that is the index shown — and the number in the icon box, one higher. An index named here changes the label, **not** the position the state derives from |

@@ -860,6 +860,15 @@ pub fn hue_to_rgb_hex(hue: f64) -> String {
     rgb_to_hex(rgb, false)
 }
 
+/// Whether a component's `color` prop is a raw CSS colour (`#…`, `rgb(…)`,
+/// `rgba(…)`, `hsl(…)`, `hsla(…)`) rather than a theme palette name.
+///
+/// The branch ActionIcon, Loader and others take before building
+/// `var(--rinch-color-{name}-6)` from a palette name.
+pub fn is_raw_css_color(color: &str) -> bool {
+    color.starts_with('#') || color.starts_with("rgb") || color.starts_with("hsl")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1575,13 +1584,4 @@ mod tests {
         assert!(respells("#ff000082", emitted));
         assert!(!respells("#ff000083", emitted));
     }
-}
-
-/// Whether a component's `color` prop is a raw CSS colour (`#…`, `rgb(…)`,
-/// `rgba(…)`, `hsl(…)`, `hsla(…)`) rather than a theme palette name.
-///
-/// The branch ActionIcon, Loader and others take before building
-/// `var(--rinch-color-{name}-6)` from a palette name.
-pub fn is_raw_css_color(color: &str) -> bool {
-    color.starts_with('#') || color.starts_with("rgb") || color.starts_with("hsl")
 }

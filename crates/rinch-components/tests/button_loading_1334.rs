@@ -54,7 +54,10 @@ fn a_loading_button_renders_its_label_and_a_loader() {
     let label = find_by_class(&m.root, "rinch-button__label")
         .expect("a loading button wraps its children in `.rinch-button__label`");
     assert!(
-        label.children().iter().any(|c| c.node_id() == m.child.node_id()),
+        label
+            .children()
+            .iter()
+            .any(|c| c.node_id() == m.child.node_id()),
         "the caller's children are inside the label"
     );
     let loader = find_by_class(&m.root, "rinch-button__loader")

@@ -1113,7 +1113,7 @@ on every page that loads the component CSS and +71% under a closed drawer.
 `!important` because the `animation` shorthand
 resets `animation-play-state` to `running`: without it the pause loses to any
 shorthand of equal specificity declared later (`.rinch-loader__oval`) or higher
-(`.rinch-button--loading .rinch-button__loader`). An app that really wants an
+(an app's own `.panel .spinner`). An app that really wants an
 animation to run inside a closed overlay needs an `!important` of its own. The
 `:not()` is the exact complement of the rule that makes the dropdown visible.
 A closed drawer holding a `Loader` therefore idles, and opening it resumes the

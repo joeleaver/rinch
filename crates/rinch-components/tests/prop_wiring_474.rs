@@ -276,13 +276,18 @@ fn the_close_glyph_is_sized_by_icon_size_then_by_size() {
             Some(expected),
             "the glyph must be square"
         );
+        // The size also reaches the stylesheet, as the custom property the
+        // `.rinch-icon--close` rule spends — not as an inline width/height,
+        // which no app rule could override (#2199).
         let style = glyph.get_attribute("style").unwrap_or_default();
+        assert_eq!(
+            style,
+            format!("--rinch-close-button-icon-size: {expected}px;"),
+            "the size is published as a custom property"
+        );
         assert!(
-            style.contains(&format!("width: {expected}px"))
-                && style.contains(&format!("height: {expected}px")),
-            "the size must also be an inline style — an svg sized by attributes \
-             alone is what `render_tabler_icon_with_options` does not rely on; \
-             got {style:?}"
+            sheet().contains("width: var(--rinch-close-button-icon-size, 16px);"),
+            "and a rule spends it"
         );
     }
 }
