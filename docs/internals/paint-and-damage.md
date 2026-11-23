@@ -1617,9 +1617,16 @@ background fragments (`span_box_rects`, which `inline_background_rects`
 calls with the recorded background spans): border boxes snapped to the device
 grid. A focus ring is a restyle that re-shapes nothing, so the outlined
 elements are found at paint from the lines' `child_positions` and their
-bytes from `text_ranges` (`text::inline_outline_spans`), not recorded at the
-build; an element with no text in the lines (an empty `<a>`) and a split
-inline are left out. Nothing is looked for until some inline element has
+bytes from `text_ranges` and the places of the atomic inlines under them
+(`text::inline_outline_spans`), not recorded at the build. So a link
+holding only an `<img>`, an `<svg>` or an inline-block icon is outlined
+round it, as Chrome 158 draws it: the box and the line's font box over it
+(review of #2986). Left out: an element holding neither text nor an atomic
+inline (an empty `<a>`) and a split inline.
+Known difference: a link holding an image and text is one rectangle round
+the line's content area, where Chrome's ring is stepped (the text's own
+font box beside the taller image), the fragment-height difference
+"What an inline element's fragment holds" describes. Nothing is looked for until some inline element has
 computed an outline (`NodeTree::inline_outlines`, set by the cascade, sticky).
 
 Measured in Chrome 158 (`rinch-dom/tests/inline_outline_2973_tests.rs`): a

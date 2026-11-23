@@ -144,6 +144,90 @@ const CHROME: &[(u32, &[(u32, u32)])] = &[
     (292, &[]),
 ];
 
+/// A link holding only an atomic inline, or one and text (review of #2986):
+/// an inline-block icon, an `<svg>`, an `<img>` (a white 2x2 PNG, so the
+/// outline is the only ink), and an `<img>` then `MM`.
+const ATOMIC_MARKUP: &str = concat!(
+    r##"<div style="top:0;width:200px"><a href="#a" style="outline:2px solid #000;color:transparent"><span style="display:inline-block;width:20px;height:20px"></span></a></div>"##,
+    r##"<div style="top:60px;width:200px"><a href="#b" style="outline:2px solid #000;color:transparent"><svg width="20" height="20"></svg></a></div>"##,
+    r##"<div style="top:120px;width:200px"><a href="#c" style="outline:2px solid #000;color:transparent"><img src="data:image/png;base64,PNG" width="20" height="20"></a></div>"##,
+    r##"<div style="top:180px;width:200px"><a href="#d" style="outline:2px solid #000;color:transparent"><img src="data:image/png;base64,PNG" width="20" height="20">MM</a></div>"##,
+);
+
+/// Chrome 158's dark runs for [`ATOMIC_MARKUP`]: each atomic-only link is
+/// outlined round the union of its fragment (the line's 16px font box over
+/// the 20px box) and the box itself (6..30 tall, the image standing on the
+/// baseline above the font box's top); the image and text link round the
+/// image's box and the text fragment, a stepped ring.
+#[rustfmt::skip]
+const CHROME_ATOMIC: &[(u32, &[(u32, u32)])] = &[
+    (0, &[]),
+    (4, &[(8, 31)]),
+    (6, &[(8, 9), (30, 31)]),
+    (30, &[(8, 31)]),
+    (32, &[]),
+    (64, &[(8, 31)]),
+    (66, &[(8, 9), (30, 31)]),
+    (90, &[(8, 31)]),
+    (92, &[]),
+    (124, &[(8, 31)]),
+    (126, &[(8, 9), (30, 31)]),
+    (150, &[(8, 31)]),
+    (152, &[]),
+    (184, &[(8, 31)]),
+    (186, &[(8, 9), (30, 31)]),
+    (188, &[(8, 9), (30, 60)]),
+    (190, &[(8, 9), (59, 60)]),
+    (210, &[(8, 60)]),
+    (212, &[]),
+];
+
+/// The image and text link as rinch draws it: a known difference, not
+/// Chrome's. rinch's text fragment is the line's content area, which takes
+/// in the image (6..30), where Chrome's is the font's own box (10..30), so
+/// the union is a rectangle, not Chrome's stepped ring (rows 186 to 189
+/// above). The same difference as a background's fragment height
+/// (`paint-and-damage.md`, "What an inline element's fragment holds").
+#[rustfmt::skip]
+const KNOWN_DIFFERENCE_IMG_TEXT: &[(u32, &[(u32, u32)])] = &[
+    (152, &[]),
+    (184, &[(8, 60)]),
+    (186, &[(8, 9), (59, 60)]),
+    (210, &[(8, 60)]),
+    (212, &[]),
+];
+
+/// **Mutant: an element's range from its text alone** (the atomic inlines
+/// left out) — the three atomic-only links draw nothing.
+#[test]
+fn a_link_holding_an_image_or_an_icon_is_outlined_round_it() {
+    let markup = ATOMIC_MARKUP.replace("PNG", PNG);
+    let px = paint(&mut document(&markup));
+    let rinch = changes(&px);
+    // Chrome's rows for the three atomic-only links (to row 152); the
+    // image and text link's rows from there are the known difference.
+    let chrome: Vec<(u32, Vec<(u32, u32)>)> = CHROME_ATOMIC
+        .iter()
+        .take_while(|&&(y, _)| y < 184)
+        .chain(KNOWN_DIFFERENCE_IMG_TEXT.iter().skip(1))
+        .map(|&(y, r)| (y, r.to_vec()))
+        .collect();
+    let show = |v: &[(u32, Vec<(u32, u32)>)]| {
+        v.iter()
+            .map(|(y, r)| format!("{y} {r:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        rinch == chrome,
+        "rinch:\n{}\n\nChrome 158 (and the known difference):\n{}",
+        show(&rinch),
+        show(&chrome)
+    );
+}
+
+const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII=";
+
 /// **Mutant: every fragment outlined on its own** (no grouping) — `C`, `E`
 /// and `F` draw a band between their lines. **Mutant: a group's ring
 /// without the shrink** (the outer union less the fragments grown by the

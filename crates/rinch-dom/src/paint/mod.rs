@@ -4984,6 +4984,7 @@ fn paint_layered_span(
             span_id,
             span.computed_style.font_size as f64,
             scale,
+            tree.inline_outlines,
         )
     {
         filter::paint_filtered_span(

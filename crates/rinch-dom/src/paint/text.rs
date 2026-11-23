@@ -562,8 +562,11 @@ fn paint_inline_backgrounds(
 /// focus ring is a restyle, which re-shapes nothing, so these are found at
 /// paint rather than recorded with the lines' background spans.
 ///
-/// An element with no text of its own in the lines (an empty `<a>`) and a
-/// split inline (#513, whose blocks are boxes of their own) are left out.
+/// Its bytes are those of its text and the places of its atomic inlines, so
+/// a link holding only an `<img>`, an `<svg>` or an inline-block icon is
+/// outlined round it (review of #2986). An element holding neither (an
+/// empty `<a>`) and a split inline (#513, whose blocks are boxes of their
+/// own) are left out.
 /// Called only once some inline element has had an outline
 /// ([`NodeTree::inline_outlines`]).
 pub(crate) fn inline_outline_spans<'a>(
@@ -586,25 +589,25 @@ pub(crate) fn inline_outline_spans<'a>(
     }
     let mut out = Vec::new();
     for owner in owners {
-        // Its bytes: those of every text node under it.
+        // Its bytes: those of every text node under it, and the place of
+        // every atomic inline under it (an `<img>`, an `<svg>`, an
+        // inline-block icon), whose box holds no text (review of #2986).
         let mut range: Option<(usize, usize)> = None;
+        let mut take = |a: usize, b: usize| {
+            let (x, y) = range.unwrap_or((a, b));
+            range = Some((x.min(a), y.max(b)));
+        };
         for r in &inline_layout.text_ranges {
-            let mut up = get(r.node_id).and_then(|t| t.parent);
-            let mut steps = 0;
-            while let Some(id) = up {
-                if id == owner.id {
-                    let (a, b) = range.unwrap_or((r.flat_start, r.flat_end));
-                    range = Some((a.min(r.flat_start), b.max(r.flat_end)));
-                    break;
-                }
-                steps += 1;
-                if steps > 256 {
-                    break;
-                }
-                up = get(id).and_then(|n| n.parent);
+            if is_inside(&get, r.node_id, owner.id) {
+                take(r.flat_start, r.flat_end);
             }
         }
-        let Some((start, end)) = range.filter(|(a, b)| a < b) else {
+        for b in inline_layout.layout.inline_boxes() {
+            if !crate::ifc::is_edge_box(b.id) && is_inside(&get, b.id as RawNodeId, owner.id) {
+                take(b.index, b.index);
+            }
+        }
+        let Some((start, end)) = range else {
             continue;
         };
         let cs = &owner.computed_style;
@@ -623,9 +626,29 @@ pub(crate) fn inline_outline_spans<'a>(
     out
 }
 
+/// Whether node `id` is under element `owner` (not `owner` itself).
+fn is_inside<'a>(
+    get: impl Fn(RawNodeId) -> Option<&'a Node>,
+    id: RawNodeId,
+    owner: RawNodeId,
+) -> bool {
+    let mut up = get(id).and_then(|n| n.parent);
+    for _ in 0..256 {
+        match up {
+            Some(p) if p == owner => return true,
+            Some(p) => up = get(p).and_then(|n| n.parent),
+            None => return false,
+        }
+    }
+    false
+}
+
 /// Each outline [`paint_inline_outlines`] draws, as `(owner, fragment border
 /// boxes)`, in device px relative to the IFC root's content origin, for the
-/// elements `scope` shows.
+/// elements `scope` shows. A fragment holding an atomic inline is as tall as
+/// the line's content area, so it holds the box (Chrome outlines the box and
+/// the element's own font box, review of #2986: the same where the box is
+/// alone in the element).
 fn inline_outline_fragments<'a>(
     get: impl Fn(RawNodeId) -> Option<&'a Node> + Copy,
     inline_layout: &crate::node::InlineLayout,
@@ -2524,6 +2547,7 @@ pub(crate) fn layered_span_extent<'a>(
     span: RawNodeId,
     margin: f64,
     scale: f64,
+    outlines: bool,
 ) -> Option<Rect> {
     let s = inline_layout
         .relative_spans
@@ -2549,7 +2573,7 @@ pub(crate) fn layered_span_extent<'a>(
         ink = Some(ink.map_or(r, |i| i.union(r)));
     }
     let ink = ink?;
-    let ink = match inline_ink_past_lines(get, inline_layout, scale, true) {
+    let ink = match inline_ink_past_lines(get, inline_layout, scale, outlines) {
         Some(past) => ink.union(past),
         None => ink,
     };
