@@ -512,7 +512,7 @@ pub(super) fn run_effect(id: ObserverId) {
         // with the number of memos a write *reached* rather than the effects
         // that actually re-ran.
         if inner.memo.is_none() {
-            super::count_effect_run();
+            super::count_effect_run(inner.doc);
         }
         let _depth = super::ReactiveDepthGuard::enter();
         body();

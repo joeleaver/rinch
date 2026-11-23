@@ -204,6 +204,13 @@ pub fn current_dispatching_doc() -> Option<u64> {
     doc_identity(AMBIENT.with(|a| a.doc.get()))
 }
 
+/// The raw key of the document current right now (`0` for none): what a
+/// signal write is counted against (#2798).
+#[inline]
+pub(crate) fn current_doc_raw() -> u64 {
+    AMBIENT.try_with(|a| a.doc.get()).unwrap_or(0)
+}
+
 /// Read a raw `doc_key` as a document *identity*, or `None` when there is no
 /// document yet (issue #139).
 ///

@@ -63,7 +63,7 @@ mod activation;
 #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub mod perf {
     #[cfg(feature = "windowing")]
-    pub use crate::window_perf::{WindowPerf, reset_windows, windows};
+    pub use crate::window_perf::{PassPerf, WindowPerf, pass, reset_windows, windows};
     pub use rinch_dom::perf::*;
 }
 

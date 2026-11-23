@@ -110,7 +110,11 @@ pub(crate) fn send_native_event_for(to: EventFor, event: RinchNativeEvent) {
         return;
     }
     if is_rerender {
-        crate::app::RERENDER_EVENTS_QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The sender's document's, when this thread counts it (#2798).
+        crate::app::count_doc_rerender(match to {
+            EventFor::Sender(doc) => doc,
+            EventFor::Window(_) => None,
+        });
     }
     if let Some(proxy) = GLOBAL_PROXY.get() {
         proxy.wake_up();
