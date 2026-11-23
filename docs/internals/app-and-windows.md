@@ -2162,10 +2162,11 @@ guide's "A window sized by its content" has what an app sees; here is how.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`19bfe4dad624fd3d619cde3f2ce09046bcc6a256`,
+`rinch-patch-beta4`, pinned by rev** (`debcf476b05eb00181f8dc23219fdf7d3c96ed53`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
 #2652, #2489, #2552's content sizing, #2741's input regions and #2826's
-one-commit layer turn, and #2817's activation of an existing window). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+one-commit layer turn, #2817's activation of an existing window, and #2850's split surrogate
+pairs on Windows). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -2201,7 +2202,18 @@ joeleaver/winit-fork#11) is on the branch, and a layer surface's changes and
 size request in one commit (#2826, branch `layer-one-commit-2464`, one
 commit on `70dcdc7c`: `43f05ac8`; joeleaver/winit-fork#12) is on the branch.
 An existing window's activation with a token (#2817, branch `rinch-2817`, one
-commit on `43f05ac8`: `19bfe4da`; joeleaver/winit-fork#13) is the pin:
+commit on `43f05ac8`: `19bfe4da`; joeleaver/winit-fork#13) is on the branch.
+The split surrogate pairs (#2850, branch `fix-2850-surrogates`, one commit on
+`19bfe4da`: `debcf476`; joeleaver/winit-fork#14) are the pin:
+
+- **A surrogate pair split across two presses (#2850, fork PR 14).**
+  `SendInput` with `KEYEVENTF_UNICODE` sends a character outside the BMP as
+  two `VK_PACKET` presses, one surrogate each. winit-win32's
+  `KeyEventBuilder` holds a high surrogate that ends a press's `WM_CHAR`
+  text and joins it to a low surrogate that starts the next press's
+  (`pair_split_surrogates`), so the second press reports the whole
+  character; any other press and `WM_KILLFOCUS` drop the held unit.
+  `docs/internals/focus-and-keyboard.md` has rinch's side.
 
 - **An existing window activated with a token (#2817, fork PR 13).**
   `WindowExtWayland::activate_with_token(token)` sends
