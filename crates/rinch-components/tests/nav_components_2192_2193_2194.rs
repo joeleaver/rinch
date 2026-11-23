@@ -724,25 +724,6 @@ fn a_navlinks_label_slot_takes_a_renderer() {
 }
 
 #[test]
-fn the_navlink_collapse_bound_and_duration_are_custom_properties() {
-    let css = strip_comments(&sheet());
-    let decls = declarations_for(&css, ".rinch-navlink__children");
-    assert!(
-        decls
-            .iter()
-            .any(|d| d == "max-height: var(--rinch-navlink-children-max-height, none)"),
-        "{decls:?}"
-    );
-    assert!(
-        decls
-            .iter()
-            .any(|d| d
-                == "transition: max-height var(--rinch-navlink-transition-duration, 0ms) ease"),
-        "{decls:?}"
-    );
-}
-
-#[test]
 fn collapsed_navlink_children_are_not_displayed_so_tab_skips_them() {
     let tree = navlink_with_children(NavLink {
         label: "Section".into(),
@@ -766,7 +747,11 @@ fn collapsed_navlink_children_are_not_displayed_so_tab_skips_them() {
          Accordion's panel are; clipped to height 0 they stayed in the Tab order"
     );
     click(&parent_control(&tree));
-    assert_eq!(display(&container), "", "open, the inline display is cleared");
+    assert_eq!(
+        display(&container),
+        "",
+        "open, the inline display is cleared"
+    );
     click(&parent_control(&tree));
     assert_eq!(display(&container), "none");
 }

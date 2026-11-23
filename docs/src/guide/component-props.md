@@ -1518,7 +1518,7 @@ The active page carries `aria-current="page"` (#2194). Its text colour is
 | `chevron_icon` | `Option<TablerIcon>` | `None` | The expand chevron, in place of the built-in one (points right, turns 90° open) |
 | `disable_right_section_rotation` | `bool` | `false` | Keeps the chevron or right section still when open |
 | `label_fn` | `Option<SectionRenderer>` | `None` | Escape hatch: renders the label slot (a badge, a count) in place of `label` |
-| `disabled` | `bool` | `false` | No click at all, from mouse or keyboard; an `<a>` gets `aria-disabled="true"` |
+| `disabled` | `bool` | `false` | No click at all, from mouse or keyboard; an `<a>` gets `aria-disabled="true"` and `tabindex="-1"` |
 | `children_offset` | `String` | `""` | Indentation for nested NavLinks |
 | `opened` | `bool` | `false` | Nested section starts expanded |
 | `default_opened` | `bool` | `false` | Same as `opened` |
@@ -1529,10 +1529,9 @@ The active page carries `aria-current="page"` (#2194). Its text colour is
 
 With children, a click toggles them (#2192; it used to set the first class and
 nothing more), and the control carries `aria-expanded`. Open children are as tall
-as their content and appear at once, as an open `<details>` does; a fixed
-`max-height: 1000px` used to clip a longer list. To animate the collapse, set a
-bound and a duration: `--rinch-navlink-children-max-height` (default `none`) and
-`--rinch-navlink-transition-duration` (default `0ms`).
+as their content (a fixed `max-height: 1000px` used to clip a longer list);
+closed, the container is `display: none`, as a closed `<details>` is, so Tab
+skips them. Open and close are instant.
 
 ### Stepper
 

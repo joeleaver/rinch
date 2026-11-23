@@ -135,20 +135,11 @@ pub fn styles() -> String {
 }
 
 /* NavLink children (nested links). Open, they are as tall as their content
-   and appear at once, as an open <details> does (#2192: a fixed
-   `max-height: 1000px` clipped a taller list). An app that wants the
-   collapse animated sets a bound and a duration:
-   `--rinch-navlink-children-max-height: 40rem;
-    --rinch-navlink-transition-duration: 200ms`. */
+   (#2192: a fixed `max-height: 1000px` clipped a taller list); closed, the
+   component sets `display: none` on the container, as a closed <details> is
+   not rendered, so Tab skips them. Open and close are instant. */
 .rinch-navlink__children {
     padding-left: var(--rinch-navlink-children-offset, var(--rinch-spacing-lg));
-    overflow: hidden;
-    max-height: var(--rinch-navlink-children-max-height, none);
-    transition: max-height var(--rinch-navlink-transition-duration, 0ms) ease;
-}
-
-.rinch-navlink__children--collapsed {
-    max-height: 0;
 }
 
 /* Disabled state */

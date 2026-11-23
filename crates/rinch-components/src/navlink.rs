@@ -380,6 +380,7 @@ impl Component for NavLink {
             // handler is registered, as for a disabled `<button>`.
             if self.disabled {
                 a.set_attribute("aria-disabled", "true");
+                a.set_attribute("tabindex", "-1");
             }
 
             a.append_child(&inner);
@@ -427,6 +428,7 @@ impl Component for NavLink {
                 rinch_macros::rsx! { div { class: "rinch-navlink__children" } };
             if !initial_open {
                 children_container.add_class(CHILDREN_COLLAPSED_CLASS);
+                children_container.set_style("display", "none");
             }
             link_or_button
                 .set_attribute("aria-expanded", if initial_open { "true" } else { "false" });
@@ -452,10 +454,14 @@ impl Component for NavLink {
                 let rotating = rotating.clone();
                 __scope.create_effect(move || {
                     let open = is_open();
+                    // Closed children are not displayed, as a closed
+                    // `<details>` and Accordion's panel are, so Tab skips them.
                     if open {
                         container.remove_class(CHILDREN_COLLAPSED_CLASS);
+                        container.set_style("display", "");
                     } else {
                         container.add_class(CHILDREN_COLLAPSED_CLASS);
+                        container.set_style("display", "none");
                     }
                     if let Some(glyph) = &rotating {
                         if open {
