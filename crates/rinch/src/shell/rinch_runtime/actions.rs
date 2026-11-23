@@ -495,16 +495,22 @@ impl ShellWindow {
     /// last-applied state so it only issues a `request_ime_update` on a real
     /// change. This is the single place the winit IME surface is touched; every
     /// text target (editor, `<input>`, …) feeds it through [`RinchApp::ime_state`].
-    fn sync_ime(&mut self) {
+    pub(super) fn sync_ime(&mut self) {
         use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 
         let Some(w) = &self.window else { return };
         let desired = self.app.ime_state();
 
+        // The caret's box is in CSS pixels; winit's logical units are the
+        // display's, which the app's zoom makes larger.
+        let zoom = crate::zoom::current();
         let to_area = |a: rinch_core::ElementBounds| {
             (
-                winit::dpi::LogicalPosition::new(a.x as f64, a.y as f64),
-                winit::dpi::LogicalSize::new(a.width.max(1.0) as f64, a.height.max(1.0) as f64),
+                winit::dpi::LogicalPosition::new(a.x as f64 * zoom, a.y as f64 * zoom),
+                winit::dpi::LogicalSize::new(
+                    a.width.max(1.0) as f64 * zoom,
+                    a.height.max(1.0) as f64 * zoom,
+                ),
             )
         };
 

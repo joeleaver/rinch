@@ -84,6 +84,8 @@ mod winit_input;
 mod physical_size_tests;
 #[cfg(test)]
 mod text_only_key_2848_tests;
+#[cfg(test)]
+mod zoom_tests;
 
 pub(crate) use app_identity::*;
 pub use entry::*;
@@ -427,6 +429,27 @@ impl ShellWindow {
         }
     }
 
+    /// The app's zoom changed (`rinch::window::set_zoom`): the document
+    /// takes the window's new scale (the display's times the zoom), as a
+    /// `ScaleFactorChanged` gives it, and is laid out again at the logical
+    /// size the same surface has at it, as the `SurfaceResized` that follows
+    /// a new display scale does. The surface keeps its size, so the renderer
+    /// is not reconfigured; the whole window is painted again.
+    pub(super) fn rezoom(&mut self) -> Vec<AppAction> {
+        let scale = self.scale_factor();
+        let size = self.window_size();
+        let mut actions =
+            self.app
+                .handle_event(PlatformEvent::ScaleFactorChanged(scale), size, scale);
+        let resized = self.surface_resized(winit::dpi::PhysicalSize::new(size.0, size.1), scale);
+        actions.extend(self.app.handle_event(resized, size, scale));
+        self.app.mark_scene_dirty();
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+        actions
+    }
+
     /// What a `SurfaceResized` to the physical `size` at `scale` asks of
     /// this window, and the `Resized` it becomes: the renderer and the
     /// published surface size follow the surface, the document is laid out
@@ -458,6 +481,13 @@ impl ShellWindow {
             height: logical.1,
         }
     }
+}
+
+/// What a window's move to a display at `os_scale` (winit's
+/// `ScaleFactorChanged`) hands its document: the new display's scale times
+/// the app's zoom (`rinch::window::set_zoom`), so the zoom is kept.
+fn display_scale_changed(os_scale: f64) -> PlatformEvent {
+    PlatformEvent::ScaleFactorChanged(crate::zoom::apply(os_scale))
 }
 
 /// One thread's share of `RERENDER_EVENTS_TEST_LOCK` for its test runtimes
@@ -826,7 +856,9 @@ impl RinchRuntime {
             }
             // A layer surface's move or resize (#1523) takes the pointer, as
             // a compositor move does.
-            if self.update_layer_gesture(role, (lx, ly), event_loop) {
+            // In the display's logical pixels, as the layer's place is.
+            let zoom = crate::zoom::current();
+            if self.update_layer_gesture(role, (lx * zoom, ly * zoom), event_loop) {
                 return;
             }
             let id = pointer_id_of(source);
@@ -943,7 +975,7 @@ impl RinchRuntime {
                 // needs no reconfigure here — winit follows this event with a
                 // `SurfaceResized` carrying the new physical size, handled
                 // above.
-                PlatformEvent::ScaleFactorChanged(scale_factor)
+                display_scale_changed(scale_factor)
             }
             WindowEvent::RedrawRequested => {
                 // winit delivers a window's `RedrawRequested` only once the

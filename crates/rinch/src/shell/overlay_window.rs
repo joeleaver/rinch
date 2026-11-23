@@ -591,7 +591,8 @@ pub(crate) fn set_input_region(
             }
         }
         use winit::platform::wayland::WindowExtWayland;
-        let logical = rects.map(|r| crate::app::input_region::to_pixels(r, 1.0));
+        // Surface-local logical px, the display's: CSS px times the zoom.
+        let logical = rects.map(|r| crate::app::input_region::to_pixels(r, crate::zoom::current()));
         match window.set_input_region(logical.as_deref(), commit) {
             Ok(()) => return true,
             Err(winit::error::RequestError::NotSupported(_)) => {} // not Wayland
