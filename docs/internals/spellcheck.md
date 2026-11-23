@@ -2,9 +2,9 @@
 
 Read this page when your task touches spellchecking: `crates/rinch-spell`, or
 the stages of #2862 that build on it (marking misspelled words in fields and
-the editor, the context menu's suggestions, platform backends). Stage 1, the
-engine, is all that exists so far: no UI, no DOM, nothing in `rinch` uses it
-yet and `rinch` does not re-export it.
+the editor, the context menu's suggestions, platform backends). Stage 1 is
+the engine; stage 2 marks misspelled words in text fields ("Marking text
+fields" below). `rinch` re-exports the crate as `rinch::spellcheck`.
 
 ## Shape
 
@@ -164,6 +164,132 @@ lives in the checker (`ignore`, `clear_ignored`) and is never exported.
 `tests/fixtures/en_TEST.{aff,dic}` is a 39-word dictionary written for these
 tests (two suffix rules, a `REP`), with `xx_TEST` (a second Latin
 language), `ru_TEST` (Cyrillic) and `la_TEST` (ISO 8859-1). Never assert against the host's dictionaries.
+
+## Marking text fields (stage 2)
+
+### Chrome's rule, measured
+
+Chrome 158 (`--headless=new`, a fresh profile with an `en-US` `.bdic`
+dictionary copied in and `browser.enable_spellchecking` on), probed over CDP:
+red squiggle pixels counted per element in screenshots after each step
+(2026-11-22). The probe script is not kept in the tree; the steps and
+answers:
+
+| Step | Marks |
+|---|---|
+| page load, pre-filled `<textarea>`, `<input>`, `contenteditable`, 5 s | none |
+| `textarea.focus()` from script, 2.5 s | none |
+| press in the pre-filled `<textarea>` | the whole field, within 300 ms |
+| Tab onto it | the whole field |
+| script `focus()`, then type `" qq "` at the end | the whole field, after the pause |
+| blur a `<textarea>` / a `contenteditable` | marks kept |
+| blur an `<input>` | marks hidden; pressing it again shows them |
+| type `helo` (no separator): 100 ms / 500 ms / 1 s after the last key | none / none / marked |
+| type a space after a marked word | the word stays marked |
+| `<input type=email>` | checked (rinch does not: Joe, #2862) |
+
+So: a field is checked once the **user** focuses (pointer or keyboard) or
+edits it; the whole value then, only the edited words after a ~1 s idle; the
+word being typed is marked once typing pauses even with the caret at its
+end; a single-line field hides its marks while blurred.
+
+### Which fields
+
+`rinch_spell::runtime` holds the rules both the fields and the editor use:
+`attribute_state` (HTML's enumerated states: `""`/`true` on, `false` off,
+anything else inherits), `resolve_inherited` (nearest ancestor-or-self that
+names a state, default on) and `input_type_is_checked` (no type, `text`,
+`search`, or an unknown type; never `password`/`email`/`url`/`number`/`tel`
+or the other known types). `RinchApp::field_is_spellchecked`
+(`crates/rinch/src/app/spellcheck.rs`) adds the tag (`<textarea>`,
+`<input>`) and `readonly`.
+
+### Configuration
+
+`SpellcheckConfig` (switch, `Dictionaries::System { locales, personal }` /
+`Checker(Arc<dyn SpellChecker>)` / `None`, `SkipRules`, `debounce_ms`) is held
+**per UI thread** in `rinch_spell::runtime` (`set_config`, `config`,
+`generation`, `on_config_change`). `App::try_run` / `run_android` install the
+builder's; `RinchContext::new` installs the default when the host set none;
+a thread that never had one (`RinchApp::new` in a test, `TestApp`) has no
+`session()`, so nothing is checked and host dictionaries are never read.
+`session()` answers `None` when off or when the dictionaries resolved to
+nothing (`OnceLock<Option<Arc<dyn SpellChecker>>>`, filled on the checking
+thread by the first check); every entry point in the runtime returns at that
+first line, which is what makes an app with spellcheck off, or with no text
+field touched, do zero work: no thread, no listener, no record.
+
+### The checking thread
+
+`runtime::spawn` runs jobs on one lazily started `rinch-spellcheck` thread
+(an `mpsc` queue, each job under `catch_unwind`). A field's job is
+`Session::check_ranges(text, dirty)`: `words()` over each dirty range,
+checked. The result goes back through the app's deferred-work inbox
+(`AppWorkSender`, the same route the async paste takes), so it is applied on
+the UI thread with `&mut RinchApp`. `set_inline_jobs(true)` runs jobs
+synchronously (the tests). Loading the system dictionaries happens in the
+first job, never on the UI thread.
+
+### Per field (`crates/rinch/src/app/spellcheck.rs`)
+
+`RinchApp::spelling` (`FieldSpelling`) maps a field's node id to its `text`,
+`marks`, `dirty` ranges, a `generation` and a debounce deadline. Entry
+points:
+
+- `spell_user_focus` — called after a press installs the field
+  (`click_handling.rs`), a press on its `<label>`, and a Tab onto it
+  (`handle_tab`). Not from `try_focus_input` itself, which programmatic focus
+  also reaches. The first one checks the whole value at once.
+- `spell_user_edit` — called from `handle_input_edit_command` after the
+  `oninput` rewrite is adopted, with the field's final value.
+  `runtime::text_change` finds the changed bytes; `map_through_edit` moves
+  the other marks (dropping the edited word's, but keeping a word a typed
+  space only abuts); `edit_region` widens the change to the white space
+  around it (not past inserted white space) and joins `dirty`; the deadline
+  is now + `debounce_ms`, and one `set_timeout` (armed `unowned`, re-armed
+  only for an earlier deadline) sends `spell_tick` through the inbox.
+- `spell_apply` — drops a result whose field generation or configuration
+  generation moved on (a newer edit is pending and its own check will come),
+  replaces the marks inside the checked ranges, clears `dirty`.
+- A configuration change (`on_config_change`, registered at the first
+  interaction) clears every mark and re-checks the remembered fields, or
+  keeps them unchecked while off so turning it back on marks them again.
+
+Marks reach the DOM as `rinch_dom::SpellingMarks { text, ranges }` on the
+node (`RinchDocument::set_spelling_marks`): a node field, not an attribute,
+so no style invalidation; an unchanged write does nothing; a changed one is a
+paint-dirty mark (`spelling_mark_writes` counts it). Paint
+(`paint/contenteditable.rs` `paint_input_value`) draws them only while the
+control shows exactly `text` (so an app's `value` write never shows a mark
+under the wrong letters before the next check), never on the placeholder or
+a password, only while focused for an `<input>`, and shifted past an IME
+preedit. The wave is `paint/text.rs` `paint_layout_mark`, the
+`text-decoration-style: wavy` geometry (`wavy_wave_in`, `push_wave`) over
+the control's device-px layout. Colour and line come from the inherited
+custom properties `--rinch-spellcheck-color` (default `#ff0000`) and
+`--rinch-spellcheck-style` (`wavy` / `solid` / `none`).
+
+Known limits: a field whose value the app rewrites while it is unfocused is
+re-checked at the next interaction (until then its stale marks are simply
+not drawn); a removed field's record is dropped at its next result.
+
+### The web
+
+`rinch-web` never runs the checker: the browser does. `AppExt::run` calls
+`rinch_web::apply_spellcheck`, which puts `spellcheck="false"` on `<body>`
+when the app turned it off; attributes and props pass through as written.
+
+### Tests
+
+`crates/rinch-spell/src/runtime.rs` (states, inheritance, types, edit
+mapping), `crates/rinch-dom/tests/spelling_marks_tests.rs` (the wave under
+the named words, colour/style properties, hidden on a blurred input, stale
+text not drawn), `crates/rinch/src/app/spellcheck_tests.rs` (press / Tab /
+script focus, inheritance, types, the switch, an edit re-checking only its
+word, an unconfigured app doing nothing),
+`crates/rinch-components/tests/spellcheck_prop_2862.rs`,
+`crates/rinch-web/tests/spellcheck_2862.rs` (the browser's resolved
+`HTMLElement.spellcheck`).
 
 ## What stage 2 builds on
 

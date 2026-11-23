@@ -108,6 +108,8 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`font_defaults`](App::font_defaults); `None` keeps Chrome's.
     pub(crate) font_defaults: Option<crate::font::FontDefaults>,
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
+    /// See [`spellcheck`](App::spellcheck).
+    pub(crate) spellcheck: rinch_spell::runtime::SpellcheckConfig,
     #[cfg(feature = "windowing")]
     pub(crate) renderer: crate::shell::renderer::Renderer,
     /// See [`shortcut_matching`](App::shortcut_matching).
@@ -208,6 +210,7 @@ where
             fonts: Vec::new(),
             font_defaults: None,
             menus: None,
+            spellcheck: Default::default(),
             #[cfg(feature = "windowing")]
             renderer: crate::shell::renderer::Renderer::Auto,
             #[cfg(feature = "windowing")]
@@ -438,6 +441,7 @@ where
             fonts: self.fonts,
             font_defaults: self.font_defaults,
             menus: Some(owned_menus(menus)),
+            spellcheck: self.spellcheck,
             #[cfg(feature = "windowing")]
             renderer: self.renderer,
             #[cfg(feature = "windowing")]
@@ -598,6 +602,31 @@ where
     #[cfg(feature = "windowing")]
     pub fn smooth_wheel_scroll(mut self, enabled: bool) -> Self {
         self.smooth_wheel_scroll = enabled;
+        self
+    }
+
+    /// The app's spellchecking (#2862): `false` turns it off everywhere;
+    /// a [`SpellcheckConfig`](crate::spellcheck::SpellcheckConfig) picks the
+    /// dictionaries, languages, personal dictionary, skip rules and the
+    /// pause after typing. On by default, as in Chrome: misspelled words in
+    /// a `<textarea>`, a prose `<input>` (no type, `text`, `search`) and the
+    /// rich-text editor get a red squiggle once the user has focused or
+    /// edited the field, checked against the system's Hunspell dictionaries
+    /// for the user's locale (none installed: nothing is marked). A
+    /// `spellcheck: false` attribute or component prop turns it off for one
+    /// field or a subtree. On the web the browser checks, and `false` here
+    /// sets `spellcheck="false"` on the app's root.
+    ///
+    /// ```ignore
+    /// use rinch::spellcheck::SpellcheckConfig;
+    /// App::new(app).spellcheck(false).run();
+    /// App::new(app).spellcheck(SpellcheckConfig::new().languages(["en_GB"])).run();
+    /// ```
+    ///
+    /// Change it while the app runs with
+    /// [`rinch::spellcheck::configure`](crate::spellcheck::configure).
+    pub fn spellcheck(mut self, config: impl Into<rinch_spell::runtime::SpellcheckConfig>) -> Self {
+        self.spellcheck = config.into();
         self
     }
 
@@ -822,6 +851,7 @@ where
             fonts: self.fonts,
             font_defaults: self.font_defaults,
             menus: self.menus,
+            spellcheck: self.spellcheck,
             renderer: self.renderer,
             shortcut_matching: self.shortcut_matching,
             chord_yield: self.chord_yield,
@@ -865,6 +895,7 @@ where
             theme: self.theme.unwrap_or_default(),
             menus: self.menus,
             fonts: self.fonts,
+            spellcheck: self.spellcheck,
         }
     }
 
@@ -960,6 +991,7 @@ where
             fonts,
             font_defaults,
             menus,
+            spellcheck,
             renderer,
             shortcut_matching,
             chord_yield,
@@ -981,6 +1013,10 @@ where
         // The app's text rasterization; the OS's settings it follows are read
         // when the first glyph run is painted (#2286, #2773).
         crate::text_rasterization::set_text_rasterization(text_rasterization);
+        // The app's spellcheck settings, for its text fields and editors
+        // (#2862). Installing them loads nothing: the dictionaries are read
+        // on the checking thread when the user first edits or focuses a field.
+        rinch_spell::runtime::set_config(spellcheck);
         #[cfg(feature = "gpu-renderer")]
         if let Some(mode) = gpu_antialiasing {
             crate::gpu_antialiasing::set_gpu_antialiasing(mode);
@@ -1095,6 +1131,7 @@ where
             rinch_dom::fonts::set_font_defaults(defaults);
         }
         crate::text_rasterization::set_text_rasterization(self.text_rasterization);
+        rinch_spell::runtime::set_config(self.spellcheck.clone());
         crate::setup_theme_css(&self.theme.unwrap_or_default());
         crate::shell::android_runtime::run_component(android_app, self.component, &self.fonts);
     }
@@ -1387,6 +1424,9 @@ pub struct WebParts<F> {
     /// page loads its fonts with `@font-face`); handed over so dropping them
     /// is the mount's documented choice.
     pub fonts: Vec<crate::font::AppFont>,
+    /// See [`App::spellcheck`]. The browser checks on the web: a mount turns
+    /// it off with `spellcheck="false"` on `<body>` when this is off.
+    pub spellcheck: rinch_spell::runtime::SpellcheckConfig,
 }
 
 /// Everything a terminal method needs, with every builder rule already applied.
@@ -1410,6 +1450,8 @@ pub(crate) struct Startup<F> {
     /// See [`App::font_defaults`].
     pub(crate) font_defaults: Option<crate::font::FontDefaults>,
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
+    /// See [`App::spellcheck`].
+    pub(crate) spellcheck: rinch_spell::runtime::SpellcheckConfig,
     /// The renderer the app asked for (`RINCH_RENDERER` still overrides it).
     pub(crate) renderer: crate::shell::renderer::Renderer,
     /// See [`App::shortcut_matching`].

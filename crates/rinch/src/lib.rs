@@ -324,6 +324,28 @@ pub mod time {
     pub use rinch_core::timer::{Instant, now};
 }
 
+/// Spellchecking (#2862): misspelled words in text fields and the rich-text
+/// editor get a red squiggle, on by default as in Chrome. The app's switch
+/// and settings are [`App::spellcheck`](crate::App::spellcheck) at startup
+/// and [`configure`](spellcheck::configure) / [`set_enabled`](spellcheck::set_enabled) while it runs; a `spellcheck`
+/// attribute (or component prop) turns it off for one field or a whole
+/// subtree. The engine is [`rinch_spell`], re-exported here whole. See
+/// `docs/src/guide/spellcheck.md`.
+pub mod spellcheck {
+    pub use rinch_spell::runtime::{
+        DEFAULT_DEBOUNCE_MS, Dictionaries, SpellcheckConfig, attribute_state, clear_config, config,
+        input_type_is_checked, set_enabled,
+    };
+    pub use rinch_spell::*;
+
+    /// Replace the app's spellcheck settings while it runs: every mark is
+    /// dropped and the fields and editors the user has interacted with are
+    /// checked again under the new settings. Call on the UI thread.
+    pub fn configure(config: impl Into<SpellcheckConfig>) {
+        rinch_spell::runtime::set_config(config);
+    }
+}
+
 pub mod prelude {
     //! Common imports for rinch applications.
     // The one entry point that composes every startup option (issue #493).

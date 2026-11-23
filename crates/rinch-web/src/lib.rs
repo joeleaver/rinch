@@ -655,17 +655,47 @@ pub trait AppExt {
     ///   app, sizes a browser window.
     /// - [`fonts`](rinch::App::fonts): accepted and ignored — the browser loads
     ///   fonts from the page's CSS (`@font-face`).
+    /// - [`spellcheck`](rinch::App::spellcheck): the browser checks the
+    ///   fields; `false` puts `spellcheck="false"` on `<body>` (see
+    ///   [`apply_spellcheck`]). The dictionaries and skip rules are the
+    ///   browser's.
     /// - The GPU configuration (`gpu_config`, `external_gpu`, `renderer`): does
     ///   not exist on a web build — the browser composites, and a
     ///   `RenderSurface` app owns its own canvas context.
     fn run(self);
 }
 
-/// Sets `document.title` from the builder, when it names one.
+/// Sets `document.title` from the builder, when it names one, and applies
+/// its spellcheck switch.
 #[cfg(target_arch = "wasm32")]
 fn apply_title<F>(parts: &rinch::app_builder::WebParts<F>) {
     if let (Some(title), Some(doc)) = (&parts.title, web_sys::window().and_then(|w| w.document())) {
         doc.set_title(title);
+    }
+    apply_spellcheck(&parts.spellcheck);
+}
+
+/// The app's spellcheck switch on the web (#2862): the browser checks the
+/// page's fields itself, so rinch's checker never runs here. Off, `<body>`
+/// gets `spellcheck="false"`, which every field and editable region on the
+/// page inherits (HTML's rule) unless one sets its own; on, the page is left
+/// to the browser's default (fields checked). The rest of the configuration
+/// (dictionaries, skip rules) is the browser's on the web.
+#[cfg(target_arch = "wasm32")]
+pub fn apply_spellcheck(config: &rinch::spellcheck::SpellcheckConfig) {
+    rinch::spellcheck::configure(config.clone());
+    let Some(body) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.body())
+    else {
+        return;
+    };
+    if config.enabled {
+        if body.get_attribute("spellcheck").as_deref() == Some("false") {
+            let _ = body.remove_attribute("spellcheck");
+        }
+    } else {
+        let _ = body.set_attribute("spellcheck", "false");
     }
 }
 

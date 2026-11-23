@@ -130,6 +130,11 @@ define_counters! {
     /// written by the app: only the roots whose part of a selection changed.
     ReadOnlySelectionWrites = "read_only_selection_writes",
 
+    /// Text controls whose spelling marks the spellchecker wrote
+    /// (`RinchDocument::set_spelling_marks`, #2862): one per write that
+    /// changed them. Zero in an app whose fields were never checked.
+    SpellingMarkWrites = "spelling_mark_writes",
+
     // ── Text ───────────────────────────────────────────────────────────
     /// `RinchDocument::inline_style_props` resolved a span's `font-family`
     /// through `fonts::parley_font_family` (review of #1326): a generic
