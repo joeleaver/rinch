@@ -55,6 +55,7 @@ pub mod text_query;
 pub mod transition;
 pub mod visibility;
 mod webkit_box;
+pub mod reduced_motion;
 
 pub use computed_style::ComputedStyle;
 pub use dom_impl::RinchDocument;
