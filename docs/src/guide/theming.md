@@ -84,6 +84,33 @@ selected options with, and `Tree` its hovered and selected rows (a hovered
 selected row is `option-selected-hover`); use them for any list with both states (a taskbar, a
 sidebar) and the two stay distinguishable in both schemes.
 
+```css
+var(--rinch-color-focus-ring) /* Keyboard focus ring of Checkbox, Radio, Switch (primary-2 light, primary at 50% dark) */
+var(--rinch-color-mark)       /* Mark and Highlight background (yellow-2 light, yellow-6 at 35% dark) */
+```
+
+### Variant Colors
+
+Mantine's `light` variant family, for every palette color (`--rinch-color-{name}-…`)
+and for the primary (`--rinch-primary-color-…`). The light scheme gets the palette's
+light shades; the dark scheme gets the color as a translucent tint over whatever
+surface it sits on, and lighter text on it (a `-0` shade there would be a near-white
+slab under light text).
+
+```css
+var(--rinch-color-blue-light)              /* Fill: blue-0 light, blue-6 at 15% dark */
+var(--rinch-color-blue-light-hover)        /* Hovered fill: blue-1 light, 20% dark */
+var(--rinch-color-blue-light-active)       /* Pressed fill: blue-2 light, 25% dark */
+var(--rinch-color-blue-light-color)        /* Accent text on the fill: blue-6 light, blue-4 dark */
+var(--rinch-color-blue-light-color-strong) /* Stronger accent (titles, code): blue-7 light, blue-3 dark */
+var(--rinch-color-blue-light-text)         /* Body text on the fill: blue-9 light, --rinch-color-text dark */
+var(--rinch-primary-color-light)           /* The same six for the primary; its dark tint is --rinch-primary-color */
+```
+
+The components' `light` variants paint these: Button and ActionIcon (`light` fills
+and the hover/active fills of `outline` and `subtle`), Badge, Alert, inline Code and
+the `light` Avatar. Use them for your own tinted surfaces and they follow the scheme.
+
 ### Spacing
 
 ```css

@@ -80,23 +80,23 @@ pub fn styles() -> String {
 }
 
 .rinch-button--outline:hover:not(:disabled) {
-    background-color: var(--rinch-primary-color-0);
+    background-color: var(--rinch-primary-color-light);
 }
 .rinch-button--outline:active:not(:disabled) {
-    background-color: var(--rinch-primary-color-1);
+    background-color: var(--rinch-primary-color-light-hover);
 }
 
 /* Button variants - light */
 .rinch-button--light {
-    background-color: var(--rinch-primary-color-0);
-    color: var(--rinch-primary-color-6);
+    background-color: var(--rinch-primary-color-light);
+    color: var(--rinch-primary-color-light-color);
 }
 
 .rinch-button--light:hover:not(:disabled) {
-    background-color: var(--rinch-primary-color-1);
+    background-color: var(--rinch-primary-color-light-hover);
 }
 .rinch-button--light:active:not(:disabled) {
-    background-color: var(--rinch-primary-color-2);
+    background-color: var(--rinch-primary-color-light-active);
 }
 
 /* Button variants - subtle */
@@ -106,10 +106,10 @@ pub fn styles() -> String {
 }
 
 .rinch-button--subtle:hover:not(:disabled) {
-    background-color: var(--rinch-primary-color-0);
+    background-color: var(--rinch-primary-color-light);
 }
 .rinch-button--subtle:active:not(:disabled) {
-    background-color: var(--rinch-primary-color-1);
+    background-color: var(--rinch-primary-color-light-hover);
 }
 
 /* Button variants - default */
@@ -195,7 +195,7 @@ pub fn styles() -> String {
 }
 .rinch-button--colored.rinch-button--light {
     background-color: var(--rinch-button-color-light);
-    color: var(--rinch-button-color);
+    color: var(--rinch-button-color-light-color, var(--rinch-button-color));
 }
 .rinch-button--colored.rinch-button--light:hover:not(:disabled) {
     background-color: var(--rinch-button-color-light-hover);

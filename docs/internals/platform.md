@@ -1421,6 +1421,19 @@ ThemeProvider generates CSS variables:
 - Shadows: `--rinch-shadow-{xs,sm,md,lg,xl}`
 - Typography: `--rinch-font-size-{xs,sm,md,lg,xl}`, `--rinch-font-family`
 - Semantic: `--rinch-color-body`, `--rinch-color-text`, `--rinch-color-dimmed`
+- Variant (#2879): `--rinch-color-{name}-light{,-hover,-active,-color,-color-strong,-text}`
+  and `--rinch-primary-color-light…`, written per scheme by `push_variant_tokens`
+  in `crates/rinch-theme/src/css.rs`; plus `--rinch-color-focus-ring` and
+  `--rinch-color-mark`
+
+**A component's tint should be a scheme token, not a palette shade** (#2871, #2879).
+`-0`, `-1`, `-2` and `yellow-2` are near-white in both schemes, because the palette
+does not flip; a rule that names one paints a pale slab in the dark scheme. The
+light scheme's token values are exactly the shades the rules used before, so a move
+onto them changes nothing there: `crates/rinch/tests/light_variants_dark_scheme_2879.rs`
+compares every light-scheme sample with a swatch of the old shade, and checks the
+dark scheme's fills are dark, its text reads (4.5:1) and rest, hover and active
+stay three colours.
 
 **Generic font families are repaired on Android** (`crates/rinch-dom/src/fonts.rs`,
 issue #322). fontique maps the `monospace` slot to the literal name `"monospace"`,
