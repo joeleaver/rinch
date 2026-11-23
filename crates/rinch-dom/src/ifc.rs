@@ -3672,13 +3672,21 @@ fn place_line_beside_floats(
 /// beside the float). So the line's content less the white space that hangs
 /// at its end ([`parley::layout::LineMetrics::hanging_advance`]) is compared
 /// with the room, whatever ended the line.
+///
+/// **An emergency break is not an overflow by itself** (#2378). parley ends
+/// a line `Emergency` in two cases: an inline box too wide for an empty line,
+/// which it keeps whole (its advance is past the room, and the comparison
+/// says so), and a word it broke at an opportunity `overflow-wrap: anywhere`
+/// or `break-word` gives (`word-break: break-word` included), which fits.
+/// CSS lets such a word break beside the float, and Chrome 158 breaks it
+/// there rather than moving it below; reading every `Emergency` as an
+/// overflow moved it below. `reason` is kept for the callers' shape.
 fn line_overflows_room(
-    reason: parley::layout::BreakReason,
+    _reason: parley::layout::BreakReason,
     metrics: &parley::layout::LineMetrics,
     room: f32,
 ) -> bool {
-    use parley::layout::BreakReason;
-    reason == BreakReason::Emergency || metrics.advance - metrics.hanging_advance > room + 0.01
+    metrics.advance - metrics.hanging_advance > room + 0.01
 }
 
 /// Break again a line that ends in an inline box parley placed by its
