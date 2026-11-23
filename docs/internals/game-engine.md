@@ -322,7 +322,20 @@ sets `ShellWindow::awaits_gpu`; DevTools opened then does the same. `settle_gpu_
 the retirement, when the earlier one was over). A waiting window asks for no redraws
 (`AppAction::RequestRedraw` is dropped: nothing presents, so nothing would pace them) and a debug
 screenshot of it is an error, not a software paint. `set_texture_source_on` answers whether it
-registered the texture. **External devices:**
+registered the texture. **A window prepared during the recovery** (#2824,
+`prepare_current_window`): `ShellWindow::prepare_gpu` builds its offscreen renderer through
+`start_offscreen_with`, which also tries without the startup rule there (it used to take it: an
+`Auto` app's preparation painted with software, a `Renderer::Gpu`/`gpu_config`/`external_gpu`
+app's painted nothing, and neither was prepared again when the device came back) and, when the GPU
+will not start yet, sets `awaits_gpu` and prepares nothing. The rebuild adopts it;
+`rebuild_window` for a window with no OS window (`ShellWindow::rebuild_hidden_with`) builds a
+prepared window's offscreen renderer at the size and scale it was prepared at and parks it,
+retrying with the others; at the limit it settles with nothing (its show takes the startup rule).
+The rebuild's end prepares again every hidden window holding a parked renderer, though no shown
+window published a device. Any other hidden window is settled at once, as before. Pins:
+`device_loss.rs`'s `a_window_prepared_during_the_recovery_waits_and_is_rebuilt_on_the_new_device`
+(both `Auto` and `Gpu`, the first two device requests failing) and
+`outside_a_recovery_the_preparation_takes_the_startup_rule`. **External devices:**
 `note_external_gpu_lost()` marks the published generation lost (not due: the replacement is the
 app's), so `paint_frame` stops presenting; `poll_published` no longer polls an app's device. Pins:
 `render_surface_device_loss_1788_tests.rs` (the replacement done on the test device itself: retired,

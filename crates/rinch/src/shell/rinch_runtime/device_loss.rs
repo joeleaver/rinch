@@ -257,7 +257,9 @@ impl RinchRuntime {
     /// redraws, in full; a hidden window the app prepared (#2633) is prepared
     /// again on the new device, so its show still finds a drawn frame (when
     /// no shown window made a new device, it is left to build its renderer
-    /// at its show, as an unprepared one does); any other hidden window
+    /// at its show, as an unprepared one does, unless it was prepared during
+    /// the recovery and the rebuild built it one: #2824,
+    /// [`ShellWindow::rebuild_hidden_with`]); any other hidden window
     /// builds its renderer at its next show. A window that presents with
     /// software lost nothing and does nothing. The windows' frames still out
     /// to Vello went with their renderers, so the lost-frame look
