@@ -681,3 +681,127 @@ fn a_collapsed_blocks_content_is_not_in_the_range() {
     d.resolve_layout(800.0, 600.0);
     assert_eq!(range_of(&d).1, 50.0, "the estimate alone");
 }
+
+// ── A change inside the scroller's first box keeps the walk (#2961) ───────
+//
+// The perf review of #2961: a page of paragraphs in the viewport's scroller
+// walked every box again on each layout that resized one of them
+// (`shell::relayout_beside_text`, +9%). What is inside a top box's border
+// box adds nothing to the range, so a change there keeps the walk.
+
+const ROWS: &str = r#"<div id="s" style="width:300px;height:100px;overflow:auto"><div id="t" style="position:relative;width:300px;height:400px"><div id="wide" style="height:10px;width:600px"></div><div id="a" style="width:200px;height:20px"></div><div id="b" style="width:100px;height:20px"></div><div id="gauge" style="position:absolute;left:150px;top:200px;width:100px;height:10px"></div></div></div>"#;
+
+/// A row resized and an absolute box resized, each inside the top box:
+/// the range is read from the kept walk, and is right. (A box counted in
+/// the range that moves walks again: the wide row is first, so the rows
+/// growing below it move nothing counted.)
+#[test]
+fn a_change_inside_the_top_box_keeps_the_walk() {
+    let mut d = kept_doc(ROWS);
+    let s = by_id(&d, "s");
+    let walks = |d: &RinchDocument| rinch_dom::testing::deep_overflow_walks(&d.tree);
+    assert_eq!(
+        range_of(&d),
+        (600.0, 400.0),
+        "control: the wide row is reached"
+    );
+    d.tree.consume_paint_dirty();
+    let _ = range_of(&d);
+    let gauge = by_id(&d, "gauge");
+    d.set_style(gauge, "width", "111px");
+    d.resolve_layout(800.0, 600.0);
+    let before = walks(&d);
+    assert_eq!(range_of(&d), (600.0, 400.0));
+    let _ = rinch_dom::paint::scrollbar::content_extents(&d.tree, s.0);
+    assert_eq!(
+        walks(&d),
+        before,
+        "the absolute box moved inside the top box"
+    );
+    d.tree.consume_paint_dirty();
+    let a = by_id(&d, "a");
+    d.set_style(a, "height", "60px");
+    d.resolve_layout(800.0, 600.0);
+    let before = walks(&d);
+    assert_eq!(range_of(&d), (600.0, 400.0));
+    assert_eq!(walks(&d), before, "the rows moved inside the top box");
+    // Control: a row made to reach past the top box walks again.
+    let b = by_id(&d, "b");
+    d.set_style(b, "width", "700px");
+    d.resolve_layout(800.0, 600.0);
+    let before = walks(&d);
+    assert_eq!(range_of(&d), (700.0, 400.0));
+    assert_eq!(walks(&d), before + 1, "walked again");
+}
+
+/// Kept against fresh, for the changes a kept walk now stands through or
+/// must drop on: a box moved inside, a counted box brought back inside, a
+/// box carrying a child that reaches
+/// past the top box, the top box shrunk under its content, and a child
+/// grown inside before its parent moves (the parent's record must hold the
+/// child's new extent).
+#[test]
+fn changes_inside_the_top_box_match_a_fresh_document() {
+    kept_matches_fresh(
+        "rows resized inside",
+        ROWS,
+        &[
+            |d| {
+                let a = by_id(d, "a");
+                d.set_style(a, "height", "60px");
+            },
+            |d| {
+                let g = by_id(d, "gauge");
+                d.set_style(g, "top", "300px");
+            },
+        ],
+    );
+    kept_matches_fresh(
+        "a counted row comes back inside",
+        ROWS,
+        &[|d| {
+            let w = by_id(d, "wide");
+            d.set_style(w, "width", "200px");
+        }],
+    );
+    const CARRIER: &str = r#"<div id="s" style="width:200px;height:50px;overflow:auto"><div id="t" style="width:150px;height:100px"><div id="a" style="width:100px;height:10px"><div id="g" style="width:50px;height:40px"></div></div></div></div>"#;
+    kept_matches_fresh(
+        "a parent moves its child past the top box",
+        CARRIER,
+        &[|d| {
+            let a = by_id(d, "a");
+            d.set_style(a, "margin-top", "70px");
+        }],
+    );
+    kept_matches_fresh(
+        "the top box shrinks under its content",
+        CARRIER,
+        &[|d| {
+            let t = by_id(d, "t");
+            d.set_style(t, "height", "30px");
+        }],
+    );
+    kept_matches_fresh(
+        "the top box grows",
+        CARRIER,
+        &[|d| {
+            let t = by_id(d, "t");
+            d.set_style(t, "height", "300px");
+        }],
+    );
+    const GROWS: &str = r#"<div id="s" style="width:200px;height:50px;overflow:auto"><div id="t" style="width:150px;height:200px"><div id="a" style="width:100px;height:10px"><div id="g" style="width:50px;height:10px"></div></div></div></div>"#;
+    kept_matches_fresh(
+        "a child grows inside, then its parent moves",
+        GROWS,
+        &[
+            |d| {
+                let g = by_id(d, "g");
+                d.set_style(g, "height", "150px");
+            },
+            |d| {
+                let a = by_id(d, "a");
+                d.set_style(a, "margin-top", "80px");
+            },
+        ],
+    );
+}
