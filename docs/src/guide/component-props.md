@@ -1514,7 +1514,9 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `render_item` | `Option<PaginationItemRenderer>` | `None` | Escape hatch: `Rc<dyn Fn(&mut RenderScope, u32, bool) -> NodeHandle>`, called with the page and whether it is active; draws the page button's content, the button (classes, `aria-current`, click) stays the component's. Pass it as `Some(Rc::new(...))` |
 
 The active page carries `aria-current="page"` (#2194). Its text colour is
-`--rinch-pagination-active-text` (default `white`).
+`--rinch-pagination-active-text`; unset, it is the text colour for the
+active fill (`--rinch-pagination-contrast` from `color`, else
+`--rinch-primary-color-contrast`, else `white`; #2208).
 
 ### NavLink
 

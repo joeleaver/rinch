@@ -63,9 +63,9 @@ pub use image::{ImageLoadResult, ImageLoader};
 
 // Re-export element types for convenience
 pub use element::{
-    Callback, Children, Component, Element, ForItem, HandlerId, IntoDom, IntoElement,
-    IntoEventHandler, MenuBarContext, MenuBarLayout, MenuBarRenderer, Reactive, ThemeProviderProps,
-    ValueCallback, WindowProps,
+    Callback, Children, Component, ComponentStyles, Element, ForItem, HandlerId, IntoDom,
+    IntoElement, IntoEventHandler, MenuBarContext, MenuBarLayout, MenuBarRenderer, Reactive,
+    ThemeProviderProps, ValueCallback, WindowProps,
 };
 
 // Re-export Show and For functions (fine-grained DOM-based)

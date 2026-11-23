@@ -406,31 +406,31 @@ impl RinchDocument {
         self.has_bare_focus_rules = found;
     }
 
-    /// Whether any style rule in `rules` (recursing into `@media` / `@supports`)
-    /// has a selector whose rightmost compound contains a focus pseudo-class and
-    /// no tag/class/id/attribute anchor — the shape stylo buckets into the
-    /// state-gated `rare_pseudo_classes` map.
+    /// Whether any style rule in `rules` has a selector whose rightmost
+    /// compound contains a focus pseudo-class and no tag/class/id/attribute
+    /// anchor — the shape stylo buckets into the state-gated
+    /// `rare_pseudo_classes` map. Recurses into every rule that holds rules
+    /// (`@media`, `@supports`, `@layer` blocks, `@container`, nested style
+    /// rules): a theme sheet in a cascade layer
+    /// (`ComponentStyles::Layered`, #2208) holds its `:focus-visible` ring
+    /// inside `@layer rinch-theme { … }`, which a scan of only `@media` and
+    /// `@supports` missed, so the ring never painted on desktop.
     fn rules_have_bare_focus(
         rules: &[style::stylesheets::CssRule],
         guard: &style::shared_lock::SharedRwLockReadGuard,
     ) -> bool {
         use style::stylesheets::CssRule;
-        rules.iter().any(|rule| match rule {
-            CssRule::Style(locked) => {
-                let style_rule = locked.read_with(guard);
-                style_rule
+        rules.iter().any(|rule| {
+            let own = match rule {
+                CssRule::Style(locked) => locked
+                    .read_with(guard)
                     .selectors
                     .slice()
                     .iter()
-                    .any(Self::selector_is_bare_focus)
-            }
-            CssRule::Media(media) => {
-                Self::rules_have_bare_focus(&media.rules.read_with(guard).0, guard)
-            }
-            CssRule::Supports(supports) => {
-                Self::rules_have_bare_focus(&supports.rules.read_with(guard).0, guard)
-            }
-            _ => false,
+                    .any(Self::selector_is_bare_focus),
+                _ => false,
+            };
+            own || Self::rules_have_bare_focus(rule.children(guard), guard)
         })
     }
 

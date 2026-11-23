@@ -1290,7 +1290,12 @@ fn main() {
 
 ## Component CSS Injection
 
-Component CSS is automatically injected when you use `ThemeProvider`. If you need the CSS separately:
+Component CSS is automatically injected when you use `ThemeProvider`. To put it
+in a cascade layer any app rule outranks, or to leave it out and style the
+components yourself, set `ThemeProviderProps::component_styles`
+(`ComponentStyles::Layered` / `Off`; see
+[Layering and unstyled components](theming.md#layering-and-unstyled-components)).
+If you need the CSS separately:
 
 ```rust
 use rinch::components::generate_component_css;
@@ -1306,6 +1311,44 @@ use my_components::generate_css;
 // Add to your HTML head or inject via ThemeProvider
 let custom_css = generate_css();
 ```
+
+## Replacing the built-in glyphs
+
+The close X, the chevrons and the check that the components draw themselves
+(not the ones they take as an icon prop) come from an `IconSet` you can provide
+once, near the root:
+
+```rust
+use rinch::prelude::*;
+use rinch_tabler_icons::TablerIcon;
+
+create_context(
+    IconSet::default()
+        .close(IconSet::tabler(TablerIcon::SquareX))
+        .chevron_down(IconSet::tabler(TablerIcon::CaretDown)),
+);
+```
+
+| Slot | Drawn by |
+|---|---|
+| `close` | CloseButton (with no `icon`), Alert's close button, Modal, Drawer and Notification close buttons |
+| `chevron_down` | Accordion's chevron |
+| `chevron_left`, `chevron_right` | Pagination's previous/next; `chevron_right` also Tree's expander |
+| `chevrons_left`, `chevrons_right` | Pagination's first/last |
+| `check` | Stepper's completed step (with no `completed_icon`) |
+
+A slot is any `Rc<dyn Fn(&mut RenderScope) -> NodeHandle>` (`SectionRenderer`);
+`IconSet::tabler` draws a Tabler outline icon without its inline `1em` size so
+the component's CSS sizes it. A replacement is drawn where the built-in `<svg>`
+was: the component's CSS sizes an `svg` there (Accordion's replacement also
+gets the `rinch-accordion__chevron` class the rotation targets, and CloseButton's
+and Alert's get the `width`/`height` the built-in had), so draw an `<svg>` with
+`stroke="currentColor"` to take the component's color. A slot left `None` keeps
+the built-in glyph, and a component's own icon prop still wins over the set.
+The set is read once, when a component renders (as the theme's other
+component defaults are), and the glyph closure runs untracked: providing a
+different set later changes the glyphs of components rendered after it, not
+of those already on screen.
 
 ## Custom Components with #[component]
 

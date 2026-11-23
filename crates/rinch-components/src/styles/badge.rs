@@ -47,7 +47,7 @@ pub fn styles() -> String {
 /* Badge variants - filled */
 .rinch-badge--filled {
     background-color: var(--rinch-primary-color);
-    color: white;
+    color: var(--rinch-primary-color-contrast, white);
 }
 
 /* Badge variants - light */
@@ -86,20 +86,20 @@ pub fn styles() -> String {
 }
 
 /* Badge color variants - filled */
-.rinch-badge--filled[data-color="dark"] { background-color: var(--rinch-color-dark-6); }
-.rinch-badge--filled[data-color="gray"] { background-color: var(--rinch-color-gray-6); }
-.rinch-badge--filled[data-color="red"] { background-color: var(--rinch-color-red-6); }
-.rinch-badge--filled[data-color="pink"] { background-color: var(--rinch-color-pink-6); }
-.rinch-badge--filled[data-color="grape"] { background-color: var(--rinch-color-grape-6); }
-.rinch-badge--filled[data-color="violet"] { background-color: var(--rinch-color-violet-6); }
-.rinch-badge--filled[data-color="indigo"] { background-color: var(--rinch-color-indigo-6); }
-.rinch-badge--filled[data-color="blue"] { background-color: var(--rinch-color-blue-6); }
-.rinch-badge--filled[data-color="cyan"] { background-color: var(--rinch-color-cyan-6); }
-.rinch-badge--filled[data-color="teal"] { background-color: var(--rinch-color-teal-6); }
-.rinch-badge--filled[data-color="green"] { background-color: var(--rinch-color-green-6); }
-.rinch-badge--filled[data-color="lime"] { background-color: var(--rinch-color-lime-6); color: #000; }
-.rinch-badge--filled[data-color="yellow"] { background-color: var(--rinch-color-yellow-6); color: #000; }
-.rinch-badge--filled[data-color="orange"] { background-color: var(--rinch-color-orange-6); }
+.rinch-badge--filled[data-color="dark"] { background-color: var(--rinch-color-dark-6); color: var(--rinch-color-dark-contrast, white); }
+.rinch-badge--filled[data-color="gray"] { background-color: var(--rinch-color-gray-6); color: var(--rinch-color-gray-contrast, white); }
+.rinch-badge--filled[data-color="red"] { background-color: var(--rinch-color-red-6); color: var(--rinch-color-red-contrast, white); }
+.rinch-badge--filled[data-color="pink"] { background-color: var(--rinch-color-pink-6); color: var(--rinch-color-pink-contrast, white); }
+.rinch-badge--filled[data-color="grape"] { background-color: var(--rinch-color-grape-6); color: var(--rinch-color-grape-contrast, white); }
+.rinch-badge--filled[data-color="violet"] { background-color: var(--rinch-color-violet-6); color: var(--rinch-color-violet-contrast, white); }
+.rinch-badge--filled[data-color="indigo"] { background-color: var(--rinch-color-indigo-6); color: var(--rinch-color-indigo-contrast, white); }
+.rinch-badge--filled[data-color="blue"] { background-color: var(--rinch-color-blue-6); color: var(--rinch-color-blue-contrast, white); }
+.rinch-badge--filled[data-color="cyan"] { background-color: var(--rinch-color-cyan-6); color: var(--rinch-color-cyan-contrast, white); }
+.rinch-badge--filled[data-color="teal"] { background-color: var(--rinch-color-teal-6); color: var(--rinch-color-teal-contrast, white); }
+.rinch-badge--filled[data-color="green"] { background-color: var(--rinch-color-green-6); color: var(--rinch-color-green-contrast, white); }
+.rinch-badge--filled[data-color="lime"] { background-color: var(--rinch-color-lime-6); color: var(--rinch-color-lime-contrast, black); }
+.rinch-badge--filled[data-color="yellow"] { background-color: var(--rinch-color-yellow-6); color: var(--rinch-color-yellow-contrast, black); }
+.rinch-badge--filled[data-color="orange"] { background-color: var(--rinch-color-orange-6); color: var(--rinch-color-orange-contrast, white); }
 
 /* Badge color variants - light */
 .rinch-badge--light[data-color="dark"] { background-color: var(--rinch-color-dark-light); color: var(--rinch-color-dark-light-color); }
