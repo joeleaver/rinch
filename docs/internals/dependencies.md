@@ -73,7 +73,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `<wbr>` that starts a line, where what follows does not fit, gives an empty line, as in
     Chrome 158: `<wbr>aaaa` in a 1px box is an empty line, then `aaaa`, under every
     `white-space`; two `<wbr>`s in a row give one between `aaaa` and `bbbb` under `nowrap` and
-    `pre`, not under `normal` (#2944, Parley Fork item 19;
+    `pre`, not under `normal` (#2944: Parley Fork item 19, and `ifc::chrome_break` has an
+    opportunity between two ZWSPs, where UAX #14's LB7 has none;
     `tests/wbr_empty_line_2944_tests.rs`). The builders that set the override are the IFC, a flex or grid item's text leaf,
     the paint fallback and `ComputedStyle::build_parley_layout`, so a `<textarea>`'s and an
     `<input>`'s text (`form_control::field_text_layout`, through it since #320) breaks as
@@ -1375,7 +1376,8 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `aaaa` / an empty line / `bbbb` under `nowrap` and `pre` in Chrome 158: past an overflow, a
     zero-advance atom after an opportunity stays on the line when the line's text wraps
     (`LineState::content_wrap`, the wrap mode of its last atom with an advance) and starts the
-    next line when it does not. Pinned by rinch's `tests/wbr_empty_line_2944_tests.rs` (17
+    next line when it does not (that needs an opportunity between the two ZWSPs, which rinch's
+    `ifc::chrome_break` adds). Pinned by rinch's `tests/wbr_empty_line_2944_tests.rs` (17
     boxes, Chrome 158's heights).
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
