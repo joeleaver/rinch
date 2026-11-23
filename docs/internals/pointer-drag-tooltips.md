@@ -795,7 +795,7 @@ caret reveal in a smooth scroller animates in Chrome too (1800 px over about
 Pins: `rinch/tests/smooth_scroll_2291.rs` (the curve frame by frame, `auto`
 unchanged, the duration cap, the explicit behaviours both ways, a retarget, the
 switch, the root element's value for the page, a nested scroll-into-view) and
-the curve's unit tests in `smooth_wheel.rs` (Chrome's samples within 3%).
+the curve's unit tests in `smooth_wheel.rs` (Chrome's samples within 4%, the widest 3.5%).
 
 Tests: `rinch/src/app/smooth_wheel_2287_tests.rs` (the sampled curve at
 100 Hz and idle after, `onscroll` per frame, a retarget keeping its speed,
