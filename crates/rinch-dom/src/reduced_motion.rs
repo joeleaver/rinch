@@ -192,7 +192,8 @@ fn find_ci(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
     }
-    (from..=hay.len() - needle.len()).find(|&i| hay[i..i + needle.len()].eq_ignore_ascii_case(needle))
+    (from..=hay.len() - needle.len())
+        .find(|&i| hay[i..i + needle.len()].eq_ignore_ascii_case(needle))
 }
 
 #[cfg(test)]

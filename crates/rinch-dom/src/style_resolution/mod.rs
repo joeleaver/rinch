@@ -351,9 +351,9 @@ impl RinchDocument {
         use std::borrow::Cow;
         match crate::webkit_box::rewrite(css, false) {
             Cow::Borrowed(css) => crate::reduced_motion::rewrite(css, self.reduced_motion),
-            Cow::Owned(css) => Cow::Owned(
-                crate::reduced_motion::rewrite(&css, self.reduced_motion).into_owned(),
-            ),
+            Cow::Owned(css) => {
+                Cow::Owned(crate::reduced_motion::rewrite(&css, self.reduced_motion).into_owned())
+            }
         }
     }
 

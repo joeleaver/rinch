@@ -1258,6 +1258,12 @@ impl RinchRuntime {
                 if focused && let Some(id) = self.window_id_of(role) {
                     self.parent_got_keyboard(id, event_loop);
                 }
+                // A change of the OS's reduced-motion setting is made in
+                // another window; read it again as the focus comes back
+                // (#2209).
+                if focused {
+                    crate::reduced_motion::refresh_from_os();
+                }
                 // A window that lost focus may never be sent the release of a
                 // button held across the blur (it goes to the window that took
                 // focus): forget every press, or a hover on a surface with

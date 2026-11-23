@@ -17,7 +17,9 @@ use rinch_dom::RinchDocument;
 
 fn doc_with(css: &str) -> (RinchDocument, NodeId) {
     let mut doc = RinchDocument::new();
-    doc.load_css(&format!("div {{ height: 1px }} .t {{ width: 100px }} {css}"));
+    doc.load_css(&format!(
+        "div {{ height: 1px }} .t {{ width: 100px }} {css}"
+    ));
     let body = doc.body();
     let t = doc.create_element("div");
     doc.set_attribute(t, "class", "t");
@@ -101,7 +103,11 @@ fn a_change_of_preference_restyles_every_kind_of_sheet() {
 
     doc.set_prefers_reduced_motion(true);
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(widths(&doc), vec![7.0, 8.0, 9.0], "turned on, every sheet answers it");
+    assert_eq!(
+        widths(&doc),
+        vec![7.0, 8.0, 9.0],
+        "turned on, every sheet answers it"
+    );
 
     doc.set_prefers_reduced_motion(false);
     doc.resolve_layout(800.0, 600.0);
