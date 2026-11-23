@@ -62,7 +62,7 @@ pub fn styles() -> String {
 /* Button variants - filled */
 .rinch-button--filled {
     background-color: var(--rinch-primary-color);
-    color: var(--rinch-primary-color-contrast);
+    color: var(--rinch-primary-color-contrast, white);
 }
 
 .rinch-button--filled:hover:not(:disabled) {
@@ -178,7 +178,7 @@ pub fn styles() -> String {
 /* Custom color support (via CSS custom properties) */
 .rinch-button--colored.rinch-button--filled {
     background-color: var(--rinch-button-color);
-    color: var(--rinch-button-color-contrast, var(--rinch-primary-color-contrast));
+    color: var(--rinch-button-color-contrast, var(--rinch-primary-color-contrast, white));
 }
 .rinch-button--colored.rinch-button--filled:hover:not(:disabled) {
     background-color: var(--rinch-button-color-hover);

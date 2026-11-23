@@ -44,7 +44,7 @@ pub fn styles() -> String {
 .rinch-pagination__item--active {
     background-color: var(--rinch-pagination-color, var(--rinch-primary-color));
     border-color: var(--rinch-pagination-color, var(--rinch-primary-color));
-    color: var(--rinch-pagination-contrast, var(--rinch-primary-color-contrast));
+    color: var(--rinch-pagination-contrast, var(--rinch-primary-color-contrast, white));
 }
 
 .rinch-pagination__item:disabled {

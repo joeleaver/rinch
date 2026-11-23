@@ -36,7 +36,7 @@ pub fn styles() -> String {
 /* ActionIcon variants */
 .rinch-action-icon--filled {
     background-color: var(--rinch-action-icon-color, var(--rinch-primary-color));
-    color: var(--rinch-action-icon-contrast, var(--rinch-primary-color-contrast));
+    color: var(--rinch-action-icon-contrast, var(--rinch-primary-color-contrast, white));
 }
 .rinch-action-icon--filled:hover:not(:disabled) {
     background-color: var(--rinch-primary-color-7);

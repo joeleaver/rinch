@@ -113,19 +113,19 @@ pub fn styles() -> String {
 
 /* Filled variant */
 .rinch-alert--filled {
-    color: var(--rinch-primary-color-contrast);
+    color: var(--rinch-primary-color-contrast, white);
 }
 .rinch-alert--filled .rinch-alert__title,
 .rinch-alert--filled .rinch-alert__close { color: inherit; }
 .rinch-alert--filled .rinch-alert__close:hover { background-color: rgba(255, 255, 255, 0.15); }
 
-.rinch-alert--filled.rinch-alert--blue { background-color: var(--rinch-color-blue-6); color: var(--rinch-color-blue-contrast); }
-.rinch-alert--filled.rinch-alert--green { background-color: var(--rinch-color-green-6); color: var(--rinch-color-green-contrast); }
+.rinch-alert--filled.rinch-alert--blue { background-color: var(--rinch-color-blue-6); color: var(--rinch-color-blue-contrast, white); }
+.rinch-alert--filled.rinch-alert--green { background-color: var(--rinch-color-green-6); color: var(--rinch-color-green-contrast, white); }
 .rinch-alert--filled.rinch-alert--yellow { background-color: var(--rinch-color-yellow-6); color: var(--rinch-color-yellow-9); }
 .rinch-alert--filled.rinch-alert--yellow .rinch-alert__title { color: var(--rinch-color-yellow-9); }
 .rinch-alert--filled.rinch-alert--yellow .rinch-alert__close { color: var(--rinch-color-yellow-9); }
-.rinch-alert--filled.rinch-alert--red { background-color: var(--rinch-color-red-6); color: var(--rinch-color-red-contrast); }
-.rinch-alert--filled.rinch-alert--gray { background-color: var(--rinch-color-gray-6); color: var(--rinch-color-gray-contrast); }
+.rinch-alert--filled.rinch-alert--red { background-color: var(--rinch-color-red-6); color: var(--rinch-color-red-contrast, white); }
+.rinch-alert--filled.rinch-alert--gray { background-color: var(--rinch-color-gray-6); color: var(--rinch-color-gray-contrast, white); }
 .rinch-alert--filled.rinch-alert--primary { background-color: var(--rinch-primary-color); }
 
 /* Outline variant */

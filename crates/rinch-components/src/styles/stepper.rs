@@ -81,13 +81,13 @@ pub fn styles() -> String {
 /* Completed step */
 .rinch-stepper__step--completed .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
-    color: var(--rinch-stepper-contrast, var(--rinch-primary-color-contrast));
+    color: var(--rinch-stepper-contrast, var(--rinch-primary-color-contrast, white));
 }
 
 /* Progress (current) step */
 .rinch-stepper__step--progress .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
-    color: var(--rinch-stepper-contrast, var(--rinch-primary-color-contrast));
+    color: var(--rinch-stepper-contrast, var(--rinch-primary-color-contrast, white));
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--rinch-stepper-color, var(--rinch-primary-color)) 20%, transparent);
 }
 

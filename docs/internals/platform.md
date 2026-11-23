@@ -1455,7 +1455,7 @@ midpoint (~0.2) would have flipped blue. A component with a `color` prop writes
 `color_utils::accent_vars` (Button through `style_string`'s
 `--rinch-button-color-contrast`), and its rule reads
 `var({prefix}-contrast, var(--rinch-primary-color-contrast))`. Alert's yellow
-keeps its `yellow-9` text. Pinned by `crates/rinch/tests/filled_contrast_2208.rs`
+keeps its `yellow-9` text. Each use carries a literal fallback (`var(--rinch-primary-color-contrast, white)`, `black` for Badge's yellow/lime), so a document with the component sheet and no theme paints what it painted before (the `css_hook_760`, `decorative_pseudo_773` and `overlay_animation_audit` shell tests load it that way). Pinned by `crates/rinch/tests/filled_contrast_2208.rs`
 (yellow primary reads 4.5:1 in both schemes; the default theme still paints
 white).
 
