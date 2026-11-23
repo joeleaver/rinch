@@ -3888,6 +3888,12 @@ pub struct NodeTree {
     /// current geometry (#2116): `content_extents`' memo of the one walk that
     /// reads Taffy's unrounded rects. Boxed for the reason above.
     pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
+    /// Each inline element's own font's ascent and descent, by font
+    /// (`out_of_flow::InlineFontBoxes`, #2257): filled when an IFC is
+    /// shaped, for every inline element it flows, so an inline element's
+    /// box can be measured from a shared borrow of the tree. Boxed for the
+    /// reason above.
+    pub(crate) inline_font_boxes: Box<crate::out_of_flow::InlineFontBoxes>,
     /// Moved by every layout pass (and a text-only IFC rebuild), by
     /// `out_of_flow::replace_all` and by a subtree's removal: everything that
     /// can move a box's rect, and nothing that only restyles or scrolls. What
@@ -4651,6 +4657,7 @@ impl NodeTree {
             placed_absolutes: Vec::new(),
             overflow_absolutes: Default::default(),
             exact_flow: Default::default(),
+            inline_font_boxes: Default::default(),
             layout_epoch: 0,
             scroll_epoch: 0,
             abs_static_fits: Vec::new(),

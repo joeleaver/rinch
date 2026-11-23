@@ -979,7 +979,8 @@ painted in: viewport-relative logical pixels, the frame of a click's
 element or an ancestor moves and scales it, and a scroll moves it. On the web it
 is `getBoundingClientRect()`. An inline element (`<span>`, `<a>`, `<strong>`)
 answers the box around its fragments on its lines — a wrapped one, the union of
-all of them, without the white space hung at a line's end. On desktop it is the box as of the **last layout**:
+all of them, without the white space hung at a line's end — and so do a click's
+`element_*` fields and its `bounds_signal()` on desktop, as in a browser. On desktop it is the box as of the **last layout**:
 a style the same handler just wrote shows from the next frame, where a browser
 lays out to answer. An element under `display: none` (or one that is
 `display: contents`) answers a zero rect; a text node, or an element not in the

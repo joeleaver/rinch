@@ -2213,13 +2213,17 @@ impl DomDocument for RinchDocument {
     /// the bar cannot disagree about what is content (issue #396). This used to
     /// be a second copy of that walk, without the containing-block rule (#765)
     /// and without the descent through `display: contents` wrappers.
+    ///
+    /// A box that does not scroll has no bar to agree with: it answers its
+    /// descendants' overflow too, as Chrome does
+    /// ([`crate::paint::scrollbar::scroll_extents`], #2223).
     fn scroll_height(&self, node: NodeId) -> f64 {
-        crate::paint::scrollbar::content_extents(&self.tree, node.0).1
+        crate::paint::scrollbar::scroll_extents(&self.tree, node.0).1
     }
 
     /// The container's content width; see [`Self::scroll_height`].
     fn scroll_width(&self, node: NodeId) -> f64 {
-        crate::paint::scrollbar::content_extents(&self.tree, node.0).0
+        crate::paint::scrollbar::scroll_extents(&self.tree, node.0).0
     }
 
     /// The container's own content-box height, from

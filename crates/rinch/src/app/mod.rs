@@ -12824,6 +12824,49 @@ mod transform_aware_walk_tests {
         );
     }
 
+    /// An inline element's bounds signal is the union of its line fragments,
+    /// the rect `NodeHandle::bounding_rect` and the browser answer (#2257):
+    /// it was `(x, y, 0, 0)`, from the span's `0x0` layout ghost.
+    #[test]
+    fn an_inline_elements_bounds_signal_is_its_bounding_rect() {
+        use rinch_core::reactive::{ElementBounds, Signal};
+
+        let captured: Rc<Cell<Option<Signal<ElementBounds>>>> = Rc::new(Cell::new(None));
+        let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let (captured_in, handle_in) = (captured.clone(), handle.clone());
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "width: 120px; padding: 10px 30px; font: 16px/20px sans-serif",
+            );
+            let before = scope.create_text("aaaa aaaa ");
+            let span = scope.create_element("span");
+            span.append_child(&scope.create_text("bbbb cccc dddd"));
+            root.append_child(&before);
+            root.append_child(&span);
+            captured_in.set(Some(span.bounds_signal()));
+            *handle_in.borrow_mut() = Some(span);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        let bounds = captured.get().expect("bounds signal captured at mount");
+        app.resize_layout(800, 600);
+
+        let b = bounds.get();
+        let r = handle
+            .borrow()
+            .as_ref()
+            .and_then(NodeHandle::bounding_rect)
+            .expect("a laid-out span has a rect");
+        assert!(b.width > 0.0 && b.height > 20.0, "two fragments: {b:?}");
+        assert_eq!(
+            (b.x, b.y, b.width, b.height),
+            (r.x, r.y, r.width, r.height),
+            "the bounds signal is the bounding rect"
+        );
+    }
+
     /// The latent non-transform bug in the same walk: `refresh_bounds_signals`
     /// had no `position: fixed` exception, so a fixed overlay's reported rect
     /// drifted upward as the page behind it scrolled — wrong today with no

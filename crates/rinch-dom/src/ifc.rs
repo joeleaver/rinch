@@ -6039,6 +6039,15 @@ impl RinchDocument {
         // they existed.
         let marked: Vec<RawNodeId> = inline_layout.out_of_flow.iter().map(|m| m.id).collect();
 
+        // The fonts its inline elements are set in, for measuring their boxes
+        // from a shared borrow (#2257).
+        Self::note_inline_font_boxes(
+            &self.tree,
+            &mut self.font_cx,
+            paint_layout_cx,
+            &inline_layout,
+        );
+
         self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
         self.tree.text_layout_epoch += 1;
         let stamp = self.tree.text_layout_epoch;
