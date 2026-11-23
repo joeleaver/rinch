@@ -65,7 +65,15 @@ pub struct Skeleton {
     pub circle: bool,
     /// Whether to show animation.
     pub animate: bool,
-    /// Whether content is still loading.
+    /// One sweep of the animation, as a CSS time (`"800ms"`, `"3s"`). Empty
+    /// (the default) is the stylesheet's `1.5s`. Written to
+    /// `--rinch-skeleton-duration`.
+    pub duration: String,
+    /// Whether content is still loading. When `false` the children are
+    /// rendered instead, in a `<span class="rinch-skeleton__content">` with
+    /// `display: contents`: it generates no box, so the children lay out as if
+    /// they were the parent's own (a block stays a block, and a flex or grid
+    /// parent sees each child as an item).
     pub visible: bool,
 }
 
@@ -77,6 +85,7 @@ impl Default for Skeleton {
             radius: String::new(),
             circle: false,
             animate: true,
+            duration: String::new(),
             visible: true,
         }
     }
@@ -104,9 +113,11 @@ impl Skeleton {
 
 impl Component for Skeleton {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
-        // If not visible (loaded), render children in a wrapper span
+        // If not visible (loaded), render children in a wrapper that generates
+        // no box. It was a bare inline `<span>` (#2207): block children sat in
+        // an inline box, and a flex or grid parent saw one item.
         if !self.visible {
-            let wrapper = rinch_macros::rsx! { span {} };
+            let wrapper = rinch_macros::rsx! { span { class: "rinch-skeleton__content" } };
             for child in children {
                 wrapper.append_child(child);
             }
@@ -127,6 +138,13 @@ impl Component for Skeleton {
             if self.circle {
                 styles.push(format!("width: {}", h)); // Circle needs equal width
             }
+        }
+
+        if !self.duration.trim().is_empty() {
+            styles.push(format!(
+                "--rinch-skeleton-duration: {}",
+                self.duration.trim()
+            ));
         }
 
         if !styles.is_empty() {

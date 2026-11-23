@@ -6,6 +6,8 @@ use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
+use crate::SectionRenderer;
+
 /// A blockquote component.
 ///
 /// # Example
@@ -17,16 +19,32 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 ///     }
 /// }
 /// ```
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Blockquote {
     /// Citation/source.
     pub cite: String,
+    /// A custom citation node (a link, an avatar and a name, ...), drawn in the
+    /// `<cite class="rinch-blockquote__cite">` in place of `cite`'s text. Pass
+    /// `Some(renderer)`.
+    pub cite_node: Option<SectionRenderer>,
     /// Icon to display.
     pub icon: Option<TablerIcon>,
     /// Color for the left border.
     pub color: String,
     /// Border radius.
     pub radius: String,
+}
+
+impl std::fmt::Debug for Blockquote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Blockquote")
+            .field("cite", &self.cite)
+            .field("cite_node", &self.cite_node.as_ref().map(|_| "<renderer>"))
+            .field("icon", &self.icon)
+            .field("color", &self.color)
+            .field("radius", &self.radius)
+            .finish()
+    }
 }
 
 impl Blockquote {
@@ -68,15 +86,21 @@ impl Component for Blockquote {
             container.append_child(&icon_wrapper);
         }
 
-        // Body element with children
-        let body = rinch_macros::rsx! { p { class: "rinch-blockquote__body" } };
+        // Body element with children. A `<div>`, not a `<p>`: a quote may hold
+        // paragraphs, lists or code blocks, which a `<p>` cannot (#2207).
+        let body = rinch_macros::rsx! { div { class: "rinch-blockquote__body" } };
         for child in children {
             body.append_child(child);
         }
         container.append_child(&body);
 
         // Citation element
-        if !self.cite.is_empty() {
+        if let Some(render) = &self.cite_node {
+            let cite_elem = rinch_macros::rsx! { cite { class: "rinch-blockquote__cite" } };
+            let node = render(__scope);
+            cite_elem.append_child(&node);
+            container.append_child(&cite_elem);
+        } else if !self.cite.is_empty() {
             let cite_elem = rinch_macros::rsx! { cite { class: "rinch-blockquote__cite", {self.cite.clone()} } };
             container.append_child(&cite_elem);
         }

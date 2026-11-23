@@ -6,6 +6,8 @@ use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
+use crate::SectionRenderer;
+
 /// List type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ListType {
@@ -88,7 +90,7 @@ impl std::str::FromStr for ListSize {
 ///     }
 /// }
 /// ```
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct List {
     /// List type (ordered, unordered).
     pub r#type: String,
@@ -109,8 +111,53 @@ pub struct List {
     /// An item of a *nested* `List` belongs to that list, not this one, whether
     /// the nested list sits inside a `ListItem` or directly inside this one.
     pub icon: Option<TablerIcon>,
+    /// A custom default marker node for this list's items (a coloured dot, a
+    /// filled icon, an image, ...), in place of `icon`, which it wins over.
+    /// Applied exactly as `icon` is: to every item with no marker of its own,
+    /// late items included. The renderer runs once per item. Pass
+    /// `Some(renderer)`.
+    pub icon_node: Option<SectionRenderer>,
     /// Whether to show list markers.
     pub with_padding: bool,
+}
+
+impl std::fmt::Debug for List {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("List")
+            .field("type", &self.r#type)
+            .field("size", &self.size)
+            .field("spacing", &self.spacing)
+            .field("center", &self.center)
+            .field("icon", &self.icon)
+            .field("icon_node", &self.icon_node.as_ref().map(|_| "<renderer>"))
+            .field("with_padding", &self.with_padding)
+            .finish()
+    }
+}
+
+/// A list item's marker: a Tabler glyph or the app's own node.
+#[derive(Clone)]
+enum Marker {
+    Icon(TablerIcon),
+    Node(SectionRenderer),
+}
+
+impl Marker {
+    /// `icon_node` wins over `icon`; `None` when neither is set.
+    fn from_props(icon: Option<TablerIcon>, icon_node: &Option<SectionRenderer>) -> Option<Self> {
+        match (icon_node, icon) {
+            (Some(render), _) => Some(Marker::Node(render.clone())),
+            (None, Some(icon)) => Some(Marker::Icon(icon)),
+            (None, None) => None,
+        }
+    }
+
+    fn render(&self, scope: &mut RenderScope) -> NodeHandle {
+        match self {
+            Marker::Icon(icon) => render_tabler_icon(scope, *icon, TablerIconStyle::Outline),
+            Marker::Node(render) => render(scope),
+        }
+    }
 }
 
 impl List {
@@ -175,8 +222,8 @@ impl Component for List {
             container.append_child(child);
         }
 
-        if let Some(icon) = self.icon {
-            give_items_a_default_icon(&container, icon, __scope);
+        if let Some(icon) = Marker::from_props(self.icon, &self.icon_node) {
+            give_items_a_default_icon(&container, &icon, __scope);
             // And again for every item that lands later — a `for` reconcile, a
             // `show_dom` branch, a hand-rolled `append_child` (issue #716). The
             // same function does both halves, so the two cannot drift.
@@ -189,7 +236,7 @@ impl Component for List {
                 __scope,
                 &container,
                 NOT_MINE,
-                move |inserted, scope| adopt_below(inserted, icon, scope),
+                move |inserted, scope| adopt_below(inserted, &icon, scope),
             );
         }
 
@@ -208,7 +255,7 @@ impl Component for List {
 /// that lands beneath it afterwards (issue #716). It is idempotent — an item
 /// that already carries `rinch-list__item--with-icon` is left alone — which is
 /// what lets the second caller hand it a subtree the first one already walked.
-fn give_items_a_default_icon(container: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+fn give_items_a_default_icon(container: &NodeHandle, icon: &Marker, scope: &mut RenderScope) {
     for child in container.children() {
         adopt_below(&child, icon, scope);
     }
@@ -230,7 +277,7 @@ fn give_items_a_default_icon(container: &NodeHandle, icon: TablerIcon, scope: &m
 const NOT_MINE: &[&str] = &["rinch-list__item", "rinch-list"];
 
 /// Visit one node that is **not** this list's own root, and any item beneath it.
-fn adopt_below(node: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+fn adopt_below(node: &NodeHandle, icon: &Marker, scope: &mut RenderScope) {
     let classes = node.get_attribute("class").unwrap_or_default();
     let mut tokens = classes.split_whitespace();
     if tokens.clone().any(|c| c == "rinch-list__item") {
@@ -267,7 +314,7 @@ fn adopt_below(node: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
 const DEFAULTED_ATTR: &str = "data-list-icon";
 
 /// Swap the glyph in an item's existing icon box for `icon`.
-fn replace_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+fn replace_icon(item: &NodeHandle, icon: &Marker, scope: &mut RenderScope) {
     let Some(icon_span) = item
         .children()
         .into_iter()
@@ -275,7 +322,7 @@ fn replace_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
     else {
         return;
     };
-    let glyph = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
+    let glyph = icon.render(scope);
     // Attach first, clear second, and by `discard` rather than `remove`: the old
     // glyph is gone for good, and only `discard` releases `rinch-web`'s strong
     // `web_sys::Node` (issue #719).
@@ -299,12 +346,12 @@ fn class_tokens(node: &NodeHandle) -> impl Iterator<Item = String> {
 
 /// Rebuild `item` into the icon layout, moving whatever it already holds into
 /// the content span.
-fn adopt_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
+fn adopt_icon(item: &NodeHandle, icon: &Marker, scope: &mut RenderScope) {
     let existing = item.children();
 
     let icon_span = scope.create_element("span");
     icon_span.set_attribute("class", "rinch-list__item-icon");
-    let icon_el = render_tabler_icon(scope, icon, TablerIconStyle::Outline);
+    let icon_el = icon.render(scope);
     icon_span.append_child(&icon_el);
 
     let content_span = scope.create_element("span");
@@ -321,21 +368,34 @@ fn adopt_icon(item: &NodeHandle, icon: TablerIcon, scope: &mut RenderScope) {
 }
 
 /// A list item.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ListItem {
     /// Custom icon for this item.
     pub icon: Option<TablerIcon>,
+    /// A custom marker node for this item, in place of `icon`, which it wins
+    /// over. Like `icon`, it wins over the list's default. Pass
+    /// `Some(renderer)`.
+    pub icon_node: Option<SectionRenderer>,
+}
+
+impl std::fmt::Debug for ListItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListItem")
+            .field("icon", &self.icon)
+            .field("icon_node", &self.icon_node.as_ref().map(|_| "<renderer>"))
+            .finish()
+    }
 }
 
 impl Component for ListItem {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { li { class: "rinch-list__item" } };
 
-        if let Some(icon) = self.icon {
+        if let Some(icon) = Marker::from_props(self.icon, &self.icon_node) {
             container.set_attribute("class", "rinch-list__item rinch-list__item--with-icon");
 
             let icon_span = rinch_macros::rsx! { span { class: "rinch-list__item-icon" } };
-            let icon_el = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
+            let icon_el = icon.render(__scope);
             icon_span.append_child(&icon_el);
             container.append_child(&icon_span);
 
