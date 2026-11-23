@@ -126,3 +126,42 @@ fn a_write_to_a_freed_signal_keeps_the_freed_signal_warning() {
     );
     assert!(!m.contains("another thread"), "{m}");
 }
+
+/// A direct `set` on one host thread to another host thread's signal: that
+/// thread does host an app, so the advice is `send`, not where to make it.
+#[test]
+fn a_direct_write_to_another_host_threads_signal_advises_send() {
+    let (signal_tx, signal_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let owner = std::thread::spawn(move || {
+        mark_host_thread();
+        let signal: Signal<u32> = Signal::new(0);
+        signal_tx.send(signal).unwrap();
+        done_rx.recv().unwrap();
+        signal.get()
+    });
+    let signal = signal_rx.recv().unwrap();
+    let capture = Capture::default();
+    let seen = capture.clone();
+    let messages = std::thread::spawn(move || {
+        let _log = tracing::subscriber::set_default(seen.clone());
+        mark_host_thread();
+        signal.set(5);
+        seen.messages()
+    })
+    .join()
+    .unwrap();
+    done_tx.send(()).unwrap();
+    assert_eq!(owner.join().unwrap(), 0, "the write is dropped");
+
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    let m = &messages[0];
+    assert!(
+        m.contains("Signal::set() to a signal made on another thread") && m.contains("send()"),
+        "{m}"
+    );
+    assert!(
+        !m.contains("hosts no app") && !m.contains("freed signal"),
+        "{m}"
+    );
+}

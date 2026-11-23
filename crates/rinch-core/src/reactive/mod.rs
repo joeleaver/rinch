@@ -1105,6 +1105,13 @@ impl SignalStore {
         (id & !SLOT_MASK == self.tag_bits).then_some((id & SLOT_MASK) as usize)
     }
 
+    /// Whether `id` was made on another thread: its tag is not this store's,
+    /// so no slot here can hold it (issue #2889 tells this drop from a freed
+    /// slot's).
+    pub(crate) fn is_foreign(&self, id: u32) -> bool {
+        self.slot_of(id).is_none()
+    }
+
     /// Whether this store has ever allocated a signal (slots are never
     /// removed, only emptied, so a freed signal still counts).
     fn has_allocated(&self) -> bool {
