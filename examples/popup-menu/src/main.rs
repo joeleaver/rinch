@@ -2,7 +2,7 @@
 //! surface, keyboard none) whose "Menu" button opens a tray-style menu with
 //! a submenu (and a submenu on that), and whose "?" shows a tooltip while
 //! the pointer is over it. Each is a popup window
-//! ([`open_popup`](rinch::open_popup)): it leaves the bar's surface, is
+//! ([`open_popup`]): it leaves the bar's surface, is
 //! sized by its content, and opens away from the bar's edge (above a bottom
 //! bar, below a top one), sliding along the bar to stay on the output.
 //!
