@@ -421,7 +421,7 @@ a point on the span's moved text (`text_query::layered_span_at`, its
 selection rects at its offset) answers the IFC root, as a hit on any of its
 text does, before the boxes below the span in the sequence. Pinned in
 `tests/positioned_inline_paint_2819_tests.rs` (Chrome 158 pixels, both clip
-routes) and `relative_inline_hit_2346_tests.rs`. Not Chrome's yet: a `sticky`
+routes; selection, highlight and drag-ghost twins) and `relative_inline_hit_2346_tests.rs`. Not Chrome's yet: a `sticky`
 inline, and a static inline with `opacity` (a stacking context too), are
 still drawn with the root's runs (no byte range is recorded for them); an
 absolute box **inside** a relative span is a unit of its host (#591), so it
@@ -429,8 +429,16 @@ is ordered after every positioned descendant of the span, where Chrome puts it
 at its tree position (a relative span after it inside the same span is drawn
 under it, not over); an atomic inline that is itself positioned is still drawn
 by its IFC (`drawn_by_its_ifc`'s own note); the span's `opacity` group is
-unbounded (its extent is its lines', which no box records); and the selection
-highlight is drawn with the root's paint, under the span's entry.
+unbounded (its extent is its lines', which no box records).
+**Highlights:** the root draws its read-only selection and the editor's held
+highlight boxes (#2666) under its text, and the span's entry, drawn after,
+draws them again over its own opaque background, clipped to it
+(`paint::text::layered_background_path`, the boxes replayed from
+`PAINTED_HIGHLIGHTS`), so a selection shows over a relative span's background
+as over a static one's. **Snapshots:** in a `paint_subtree` (a drag ghost) a
+span whose entry is held by a stacking context outside the snapshot (a plain
+dragged box holding it) is drawn by its IFC root, as before #2819
+(`layered_entry_is_painted`).
 A pointer on moved **text** is mapped to the character drawn under it
 (#2404): `text_query::unmoved_point` finds the innermost relative span whose
 moved fragment (its selection rects, one per line piece, moved by every

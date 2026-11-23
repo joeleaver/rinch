@@ -90,7 +90,9 @@ pub(super) fn paint_inline_layout(
 
     // The highlights of this text — over the backgrounds above, inline ones
     // included, and under every glyph, shadow and decoration below (#2666).
-    if let Some(under_text) = under_text.filter(|_| scope.shows_root()) {
+    // A span's entry passes its own, which draws the root's highlights again
+    // over the span's background (#2819).
+    if let Some(under_text) = under_text {
         under_text(painter, font_cx, layout_cx);
     }
 
@@ -465,6 +467,49 @@ fn paint_inline_backgrounds(
             );
         },
     );
+}
+
+/// The union of the opaque backgrounds that layered span `span`'s entry fills
+/// (its own, and those of the inline elements in it that it draws), in device px
+/// relative to the IFC root's content origin: where its background covers
+/// what the root drew under it (#2819). `None` when it fills none.
+pub(super) fn layered_background_path(
+    tree: &NodeTree,
+    inline_layout: &crate::node::InlineLayout,
+    scale: f64,
+    root: RawNodeId,
+    span: RawNodeId,
+) -> Option<peniko::kurbo::BezPath> {
+    let spans = LayeredSpans::of(tree, inline_layout)?;
+    let range = spans.range(span)?;
+    let scope = InlineScope::Span(&spans, root, span, range);
+    let mut path = peniko::kurbo::BezPath::new();
+    inline_background_rects(
+        |id| tree.get(id),
+        inline_layout,
+        scale,
+        scope.window(),
+        |frag| {
+            // Only an opaque fill hides what is under it; one clipped to its
+            // text (#2719) covers the glyphs alone, which are drawn over the
+            // highlight anyway.
+            let clipped_to_text = tree
+                .get(frag.span.owner)
+                .is_some_and(|o| o.computed_style.background_clip_text.last() == Some(&true));
+            if frag.span.color.components[3] >= 1.0
+                && !clipped_to_text
+                && scope.shows(tree, frag.span.owner)
+            {
+                let r = frag.rect;
+                path.move_to((r.x0, r.y0));
+                path.line_to((r.x1, r.y0));
+                path.line_to((r.x1, r.y1));
+                path.line_to((r.x0, r.y1));
+                path.close_path();
+            }
+        },
+    );
+    (!path.elements().is_empty()).then_some(path)
 }
 
 /// An inline element's border widths, `[top, right, bottom, left]` in CSS
@@ -1986,7 +2031,11 @@ impl LayeredSpans {
             .relative_spans
             .iter()
             .chain(&inline_layout.relative_spans_resting)
-            .filter(|s| tree.get_live(s.owner).is_some_and(paints_in_own_entry))
+            .filter(|s| {
+                tree.get_live(s.owner).is_some_and(|n| {
+                    paints_in_own_entry(n) && super::layered_entry_is_painted(tree, n)
+                })
+            })
             .map(|s| (s.owner, s.start, s.end))
             .collect();
         spans.sort_unstable();

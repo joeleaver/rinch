@@ -4224,7 +4224,7 @@ pub fn paint_subtree(
     };
     let offset_x = -(node.layout.x as f64 * scale);
     let offset_y = -(node.layout.y as f64 * scale);
-    let _snapshot = SnapshotPaintScope::enter();
+    let _snapshot = SnapshotPaintScope::enter(root_node_id);
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
@@ -4280,6 +4280,7 @@ pub fn paint_document(
 ) {
     // Nothing is held over from a paint that did not finish (#2666).
     HELD_HIGHLIGHTS.with(|h| h.borrow_mut().clear());
+    PAINTED_HIGHLIGHTS.with(|h| h.borrow_mut().clear());
     // The window, in the physical pixels paint works in, plus the margin the
     // cull tests against. Nothing outside the second is emitted; see
     // [`intersects_dirty_region`] and [`INK_MARGIN_CSS_PX`].
@@ -4358,6 +4359,8 @@ thread_local! {
     /// would judge are not the ones it lands on: clips meeting on a whole pixel
     /// here can share one there. A ghost keeps the true sequence.
     static SNAPSHOT_PAINT: Cell<bool> = const { Cell::new(false) };
+    /// The root of the [`paint_subtree`] being painted, if any.
+    static SNAPSHOT_ROOT: Cell<Option<RawNodeId>> = const { Cell::new(None) };
 }
 
 /// Whether paint skips `node` and its whole subtree as `visibility: hidden`
@@ -4392,8 +4395,10 @@ fn bars_deferred(node_id: RawNodeId) -> bool {
 struct SnapshotPaintScope;
 
 impl SnapshotPaintScope {
-    fn enter() -> Self {
+    fn enter(root: RawNodeId) -> Self {
         SNAPSHOT_PAINT.set(true);
+        SNAPSHOT_ROOT.set(Some(root));
+        PAINTED_HIGHLIGHTS.with(|h| h.borrow_mut().clear());
         Self
     }
 }
@@ -4401,7 +4406,33 @@ impl SnapshotPaintScope {
 impl Drop for SnapshotPaintScope {
     fn drop(&mut self) {
         SNAPSHOT_PAINT.set(false);
+        SNAPSHOT_ROOT.set(None);
     }
+}
+
+/// Whether the entry of `span`, a relative inline element, is painted by
+/// the paint under way (#2819): always in a document paint; in a
+/// [`paint_subtree`] only when the stacking context whose sequence holds it
+/// is the snapshot's root or inside it. A drag ghost of a plain box holding
+/// such a span has no sequence to draw it, so its IFC root draws it.
+pub(super) fn layered_entry_is_painted(tree: &NodeTree, span: &Node) -> bool {
+    let Some(snapshot) = SNAPSHOT_ROOT.get() else {
+        return true;
+    };
+    let mut cur = span.parent;
+    while let Some(id) = cur {
+        let Some(n) = tree.get_live(id) else {
+            return true;
+        };
+        if id == snapshot {
+            return id == tree.body_id || n.creates_stacking_context();
+        }
+        if id == tree.body_id || n.creates_stacking_context() {
+            return true;
+        }
+        cur = n.parent;
+    }
+    true
 }
 
 /// Pushes a sequence's deferred scrollers and takes them back off on drop.
@@ -4918,6 +4949,52 @@ fn paint_layered_span(
             &PaintShape::from(layer_bounds::UNBOUNDED),
         )
     });
+    let root_hidden = matches!(
+        root.computed_style.visibility,
+        VisibilityValue::Hidden | VisibilityValue::Collapse
+    );
+    // The root drew its highlights (the read-only selection, the editor's
+    // held boxes) before this entry, so the span's background now covers
+    // them: drawn again over it, clipped to it, and under the span's text,
+    // as Chrome draws a selection over a relative span's background.
+    let mut under_text = |painter: &mut dyn Painter,
+                          font_cx: &mut parley::FontContext,
+                          layout_cx: &mut parley::LayoutContext<Brush>| {
+        let Some(path) = layered_background_path(tree, inline_layout, scale, root.id, span_id)
+        else {
+            return;
+        };
+        let replay: Vec<HeldHighlight> = PAINTED_HIGHLIGHTS.with(|h| {
+            h.borrow()
+                .iter()
+                .filter(|e| e.owner == root.id)
+                .copied()
+                .collect()
+        });
+        let selected = !root_hidden && !read_only_selection(root).is_empty();
+        if replay.is_empty() && !selected {
+            return;
+        }
+        let clip_transform = transform * Affine::translate((content_x, content_y));
+        painter.push_clip(Fill::NonZero, clip_transform, &PaintShape::BezPath(path));
+        if selected {
+            paint_text_selection_highlight(root, painter, scale, content_x, content_y, transform);
+        }
+        for e in replay {
+            paint_node(
+                tree,
+                e.overlay,
+                painter,
+                e.scale,
+                e.offset_x,
+                e.offset_y,
+                font_cx,
+                layout_cx,
+                e.transform,
+            );
+        }
+        painter.pop_layer();
+    };
     paint_inline_layout(
         tree,
         painter,
@@ -4930,11 +5007,8 @@ fn paint_layered_span(
         root.computed_style.text_shadow.as_slice(),
         transform,
         root,
-        matches!(
-            root.computed_style.visibility,
-            VisibilityValue::Hidden | VisibilityValue::Collapse
-        ),
-        None,
+        root_hidden,
+        Some(&mut under_text),
         Some(span_id),
     );
     if span.creates_stacking_context() {
@@ -4968,6 +5042,10 @@ thread_local! {
     /// The highlights held by the sequences being painted, in the order they
     /// were met. Almost always empty: one entry per editor selection rect.
     static HELD_HIGHLIGHTS: RefCell<Vec<HeldHighlight>> = const { RefCell::new(Vec::new()) };
+    /// The highlights painted this frame, kept so that a relative inline
+    /// element's entry, painted after its IFC root, draws them again over its
+    /// own background (#2819). Cleared with [`HELD_HIGHLIGHTS`].
+    static PAINTED_HIGHLIGHTS: RefCell<Vec<HeldHighlight>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Hold `child`, an entry of `root`'s sequence, for its highlight owner to
@@ -5034,6 +5112,9 @@ fn paint_held(
         });
         taken
     });
+    if !taken.is_empty() {
+        PAINTED_HIGHLIGHTS.with(|p| p.borrow_mut().extend_from_slice(&taken));
+    }
     for e in taken {
         paint_node(
             tree,

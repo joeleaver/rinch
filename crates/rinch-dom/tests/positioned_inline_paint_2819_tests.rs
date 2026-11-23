@@ -466,3 +466,105 @@ fn the_hud_fill_layer_covers_the_inner_half_of_the_stroke() {
         "static fill: {blue} blue, {red} red; Chrome draws 0 and 10310"
     );
 }
+
+/// The pixel at `pt` (scale 1) of `inner` in container `c`, with the span
+/// styled `span`, and of its twin with a `static` span: a highlight is drawn
+/// over a relative span's background exactly as over a static one's.
+fn relative_and_static(
+    c: &str,
+    inner: impl Fn(&str) -> String,
+    setup: impl Fn(&mut RinchDocument),
+    pt: (u32, u32),
+) -> ([u8; 3], [u8; 3]) {
+    let mut out = [[0; 3]; 2];
+    for (k, span) in [REL, "background: rgb(0, 0, 255);"].into_iter().enumerate() {
+        let mut doc = document(c, &inner(span));
+        setup(&mut doc);
+        doc.resolve_layout(VW, VH + k as f32);
+        out[k] = at(&paint(&mut doc, 1.0), pt, 1.0);
+    }
+    (out[0], out[1])
+}
+
+/// **A read-only text selection is drawn over the relative span's
+/// background** (review of #2819): the IFC root draws its selection under
+/// its text, and the span's entry, drawn after it, draws it again over its
+/// own background, clipped to it. Chrome draws a selection over a relative
+/// span's background as over a static one's.
+///
+/// Kills: the span's entry covering the root's selection (pure blue, the
+/// first version of #2819).
+#[test]
+fn a_text_selection_is_drawn_over_a_relative_spans_background() {
+    let (rel, stat) = relative_and_static(
+        C,
+        |span| {
+            format!(
+                r#"<p data-text-sel="true" data-text-sel-start="0" data-text-sel-end="8" style="margin: 0">xx<span style="{span}">MMMM</span>xx</p>"#
+            )
+        },
+        |_| {},
+        (70, 70),
+    );
+    assert_ne!(stat, BLUE, "positive control: the static span is selected");
+    assert_near(rel, stat, "the relative span, selected");
+}
+
+/// **The editor's highlight** (a box with a highlight owner, #2666) is drawn
+/// over the relative span's background as over a static one's.
+///
+/// Kills: the span's entry covering the held highlight the root drew.
+#[test]
+fn an_owned_highlight_is_drawn_over_a_relative_spans_background() {
+    let (rel, stat) = relative_and_static(
+        &format!("{C} z-index: 0;"),
+        |span| {
+            format!(
+                r#"<p id="para" style="margin: 0">xx<span style="{span}">MMMM</span>xx</p><div id="wash" style="position: absolute; left: 0; top: 0; width: 400px; height: 100px; background: rgba(255, 0, 0, 0.5); z-index: -1"></div>"#
+            )
+        },
+        |doc| {
+            let wash = doc.query_selector("#wash").unwrap();
+            let para = doc.query_selector("#para").unwrap();
+            doc.set_highlight_owner(wash, Some(para));
+        },
+        (70, 70),
+    );
+    assert_ne!(
+        stat, BLUE,
+        "positive control: the static span is highlighted"
+    );
+    assert_near(rel, stat, "the relative span, highlighted");
+}
+
+/// **A drag ghost** (`paint_subtree`) of a plain box holding a relative span
+/// draws the span: the box is no stacking context, so no sequence of the
+/// snapshot holds the span's entry, and its IFC root draws it.
+///
+/// Kills: the root leaving the span out in a snapshot (white, the first
+/// version of #2819).
+#[test]
+fn a_drag_ghost_of_a_plain_box_draws_its_relative_span() {
+    for span in [REL, "background: rgb(0, 0, 255);"] {
+        let mut doc = document(
+            "width: 400px; font: 40px/100px ProbeFace;",
+            &format!(r#"<div id="ghost">xx<span style="{span}">MMMM</span>xx</div>"#),
+        );
+        let ghost = doc.query_selector("#ghost").unwrap();
+        let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+        let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_subtree(
+            &doc.tree,
+            &mut painter,
+            ghost.0,
+            1.0,
+            &mut doc.font_cx,
+            &mut layout_cx,
+        );
+        assert_near(
+            at(&painter, (70, 70), 1.0),
+            BLUE,
+            &format!("ghost, span {span}"),
+        );
+    }
+}
