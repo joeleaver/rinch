@@ -15,8 +15,21 @@ impl RinchRuntime {
         if self.draining_native_events {
             return;
         }
-        self.draining_native_events = true;
         let events = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        self.run_native_events(events, event_loop);
+    }
+
+    /// One turn of native events, `events` in the order queued: each handled
+    /// ([`Self::handle_native_event`]), then what the turn asked of each
+    /// layer surface sent in one commit ([`Self::flush_layer_turn`]). The
+    /// half of [`Self::drain_native_events`] past the shared queue, so a test
+    /// runs a turn of its own events.
+    pub(super) fn run_native_events(
+        &mut self,
+        events: Vec<(EventFor, RinchNativeEvent)>,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
+        self.draining_native_events = true;
         for (to, event) in events {
             self.handle_native_event(to, event, event_loop);
         }
@@ -156,7 +169,7 @@ impl RinchRuntime {
             RinchNativeEvent::DebugCommand => {
                 // Debug commands may need the renderer (screenshots), so
                 // we handle them here in the shell instead of delegating.
-                if self.handle_debug_commands_with_renderer() {
+                if self.handle_debug_commands_with_renderer(event_loop) {
                     event_loop.exit();
                 }
                 return;
