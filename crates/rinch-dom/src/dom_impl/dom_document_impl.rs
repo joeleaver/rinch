@@ -614,6 +614,13 @@ impl DomDocument for RinchDocument {
         // Past the no-op return: an identical write moves nothing, and must
         // not leave the next pointer move with a cold hit cache.
         self.tree.hit_cache.invalidate();
+        // New text can change the first strong letter a `dir=auto` element
+        // above takes its direction from (#2272).
+        if self.tree.nodes[n].is_element() {
+            self.note_dir_auto_content(n);
+        } else if let Some(parent) = self.tree.nodes[n].parent {
+            self.note_dir_auto_content(parent);
+        }
 
         // Invalidate IFC if this node belongs to one
         self.invalidate_ifc_for_node(n);
