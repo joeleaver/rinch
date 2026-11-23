@@ -176,11 +176,14 @@ impl TestWindow<'_> {
     /// Press `button` at `(x, y)`, moving there first if needed.
     pub fn mouse_down(&mut self, x: f32, y: f32, button: MouseButton) {
         if self.move_unless_there(x, y) {
+            // The menus above this window a press here closes (#2552).
+            let closes = crate::popup::light_dismiss(self.id, Some((x, y)));
             self.send(PlatformEvent::MouseDown {
                 x,
                 y,
                 button: platform_button(button),
             });
+            self.app.close_popups(&closes);
         }
     }
 
@@ -213,6 +216,12 @@ impl TestWindow<'_> {
     /// Press the key `key` names (see [`TestApp::key_down`]), with this
     /// window's held modifiers.
     pub fn key_down(&mut self, key: &str) {
+        // While a menu popup of its chain is open, its topmost menu takes
+        // the keys (#2552).
+        if let Some(menu) = self.app.popup_key_target(self.id) {
+            self.app.window_by_id(menu).key_down(key);
+            return;
+        }
         let close = self.child_mut().key_down(key);
         self.after_input(close);
     }

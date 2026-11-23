@@ -207,6 +207,38 @@ pub(crate) fn closed(id: u64) {
     }
 }
 
+/// Popup `id` opened (#2552): under `RINCH_PERF`, after its `opened` line,
+/// `[PERF] window 5 popup: kind=menu parent=2`, so a popup's frames can be
+/// told apart and its chain read.
+pub(crate) fn popup_opened(id: u64, kind: rinch_core::element::PopupKind, parent: u64) {
+    let line = popup_line(id, kind, parent);
+    if rinch_dom::perf::perf_env_enabled() {
+        eprintln!("{line}");
+    }
+    #[cfg(test)]
+    capture::note(&line);
+}
+
+/// Popup `id` presented its first frame, `after` the app asked for it:
+/// `[PERF] window 5 first frame: 12.3 ms after open_popup`, the input to
+/// first presented frame of a popup.
+pub(crate) fn popup_first_frame(id: u64, after: std::time::Duration) {
+    if rinch_dom::perf::perf_env_enabled() {
+        eprintln!(
+            "[PERF] window {id} first frame: {:.1} ms after open_popup",
+            after.as_secs_f64() * 1000.0
+        );
+    }
+}
+
+fn popup_line(id: u64, kind: rinch_core::element::PopupKind, parent: u64) -> String {
+    let kind = match kind {
+        rinch_core::element::PopupKind::Menu => "menu",
+        rinch_core::element::PopupKind::Tooltip => "tooltip",
+    };
+    format!("[PERF] window {id} popup: kind={kind} parent={parent}")
+}
+
 /// `app`'s window gave its software buffers back to the idle trim (#2843):
 /// under `RINCH_PERF`, `[PERF] window 3 trimmed`, labelled as its frames are
 /// (`[PERF] trimmed` for the main window).

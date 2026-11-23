@@ -32,6 +32,8 @@ pub(crate) mod layer_shell;
 pub mod memory_profile;
 #[cfg(feature = "windowing")]
 pub(crate) mod os_file_drag;
+#[cfg(feature = "windowing")]
+pub(crate) mod popup_positioner;
 // The connected monitors, for placing windows and for `rinch::outputs` (#2414).
 #[cfg(feature = "windowing")]
 pub(crate) mod outputs;

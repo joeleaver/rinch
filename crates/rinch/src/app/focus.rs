@@ -849,6 +849,12 @@ impl RinchApp {
     #[cfg(feature = "windowing")]
     pub(crate) fn key_owner(&self) -> crate::menu::KeyOwner {
         use crate::menu::KeyOwner;
+        // A menu popup is open (#2552): the app's menu shortcuts are held,
+        // as a native menu holds them.
+        #[cfg(feature = "windowing")]
+        if crate::popup::chain::menu_open(&crate::window_handle::popups()) {
+            return KeyOwner::AllKeys;
+        }
         let tag_and_type = |id: u64| -> (Option<String>, Option<String>) {
             self.doc.as_ref().map_or((None, None), |doc| {
                 let d = doc.borrow();

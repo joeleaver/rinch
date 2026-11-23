@@ -428,6 +428,9 @@ pub enum WindowSurfaceKind {
 }
 
 pub use crate::content_sizing::ContentSizing;
+pub use crate::popup_placement::{
+    Adjust, Align, Dismissal, Placement, PopupKind, PopupPlaced, Side,
+};
 
 /// Properties for the Window component.
 #[derive(Clone)]

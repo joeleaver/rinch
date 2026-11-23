@@ -36,6 +36,7 @@ pub mod html_entities;
 pub mod image;
 pub mod main_thread;
 pub mod match_dom;
+pub mod popup_placement;
 pub mod reactive;
 pub mod reconcile;
 pub mod show;

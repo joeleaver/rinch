@@ -54,7 +54,7 @@ impl Child {
     /// refused.
     pub(super) fn open(id: u64, app: &TestApp) -> Option<Self> {
         let connected = super::played_outputs::connected();
-        let window = ChildWindow::open(id, &app.fonts, app.scale, connected.as_deref())?;
+        let mut window = ChildWindow::open(id, &app.fonts, app.scale, connected.as_deref())?;
         let props = window
             .app()
             .window_props
@@ -69,9 +69,15 @@ impl Child {
         };
         crate::shell::layer_shell::publish_surface_kind(window.facts_key(), kind);
         let scale = window.app().device_pixel_ratio;
+        // A popup is made at its content's size (#2552), as the shell makes it.
+        let popup = crate::window_handle::with_popup(id, |p| (p.props.kind, p.parent));
+        if let Some((kind, parent)) = popup {
+            crate::window_perf::popup_opened(id, kind, parent);
+        }
+        let popup_size = popup.and_then(|_| window.app_mut().content_size());
         let mut child = Self {
             window,
-            size: (props.width.max(1), props.height.max(1)),
+            size: popup_size.unwrap_or((props.width.max(1), props.height.max(1))),
             props,
             kind,
             scale,
@@ -345,10 +351,64 @@ impl TestApp {
             .position(|c| Some(c.id()) == id || (doc.is_some() && Some(c.doc()) == doc))
     }
 
-    /// Close the child at `at`, as the shell does.
+    /// Close the child at `at`, as the shell does: every popup above it
+    /// first, topmost first, each told it closed with its parent (#2552).
     pub(super) fn close_child(&mut self, at: usize) {
-        let child = self.children.remove(at);
-        child.close();
+        let id = self.children[at].id();
+        let links = crate::window_handle::popups();
+        for above in crate::popup::chain::close_order(id, &links) {
+            crate::window_handle::note_dismissal(
+                above,
+                rinch_core::element::Dismissal::ParentClosed,
+            );
+            if let Some(i) = self.child_index(above) {
+                self.children.remove(i).close();
+            }
+        }
+        if let Some(at) = self.child_index(id) {
+            self.children.remove(at).close();
+        }
+    }
+
+    /// The id the window registry gives this app's own window: `0`, a
+    /// document that is no registry window.
+    pub(super) fn window_id(&self) -> u64 {
+        crate::window_handle::window_of_doc(self.app.doc_key())
+    }
+
+    /// Close the open popups `ids` (and what is above each), as the shell
+    /// closes the menus a press dismissed at the end of the handler.
+    pub(super) fn close_popups(&mut self, ids: &[u64]) {
+        for &id in ids {
+            if let Some(at) = self.child_index(id) {
+                self.close_child(at);
+            }
+        }
+        if !ids.is_empty() {
+            self.after_child_input();
+        }
+    }
+
+    /// The topmost menu popup a key reaching window `id` goes to, when it is
+    /// open here and is not `id`.
+    pub(super) fn popup_key_target(&self, id: u64) -> Option<u64> {
+        let target = crate::popup::chain::key_target(id, &crate::window_handle::popups())?;
+        (target != id && self.child_index(target).is_some()).then_some(target)
+    }
+
+    /// The system dismisses the popup `handle` (Wayland's `popup_done`): it
+    /// closes with what is above it, and its `on_dismissed` is told
+    /// [`Dismissal::System`](rinch_core::element::Dismissal::System).
+    ///
+    /// Panics when it is not an open popup.
+    pub fn dismiss_popup_by_system(&mut self, handle: WindowHandle) {
+        assert!(handle.is_popup(), "window {} is not a popup", handle.id());
+        let at = self
+            .child_index(handle.id())
+            .unwrap_or_else(|| panic!("popup {} is not open", handle.id()));
+        crate::window_handle::note_dismissal(handle.id(), rinch_core::element::Dismissal::System);
+        self.close_child(at);
+        self.after_child_input();
     }
 }
 
