@@ -273,6 +273,11 @@ pub struct ComputedStyle {
     /// alike, so only an explicit `luminance` differs). Empty for `none`, and
     /// for a list with nothing rinch can paint.
     pub mask_image: Vec<BackgroundLayer>,
+    /// `clip-path` is not `none`. rinch does not paint a clip path; this is
+    /// read only where its presence changes which clips apply to a box: an
+    /// absolute box below such an element does not escape the clips above
+    /// it (Chrome 158, #2815's review; `paint::LiftedClips::lift_absolute`).
+    pub clip_path: bool,
     /// `background-clip: text` (and `-webkit-background-clip: text`, #2719),
     /// per layer as written, first listed first, a shorter list repeating:
     /// a `true` entry paints that layer only inside the glyphs of the
@@ -575,6 +580,7 @@ impl Default for ComputedStyle {
             background_blend_mode: BlendModeValue::Normal,
             background_layers: Vec::new(),
             mask_image: Vec::new(),
+            clip_path: false,
             background_clip_text: Vec::new(),
             color: None,
 

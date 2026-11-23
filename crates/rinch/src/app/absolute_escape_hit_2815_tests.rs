@@ -57,6 +57,14 @@ fn an_absolute_box_is_tapped_outside_the_clips_it_escapes() {
     for styles in [
         &[CB, CLIPPER, CONTEXT, ABSOLUTE][..],
         &[CLIPPER, CONTEXT, ABSOLUTE][..],
+        // A `clip-path` element above the clipper does not keep it on.
+        &[
+            CB,
+            "clip-path: inset(0); width: 300px; height: 300px",
+            CLIPPER,
+            CONTEXT,
+            ABSOLUTE,
+        ][..],
         &[
             CB,
             "opacity: 0.5; overflow: hidden; width: 100px; height: 100px",
@@ -75,8 +83,9 @@ fn an_absolute_box_is_tapped_outside_the_clips_it_escapes() {
     }
 }
 
-/// The containing block's own clip, and a clipper above the containing
-/// block, still clip the box's taps, as they clip its paint.
+/// The containing block's own clip, a clipper above the containing block,
+/// and a clipper above a `clip-path` element on the way, still clip the
+/// box's taps, as they clip its paint.
 ///
 /// Kills: an escape that clears every clip, as a fixed box's does.
 #[test]
@@ -92,6 +101,22 @@ fn the_clips_of_the_containing_block_and_above_still_apply() {
             "position: relative; overflow: hidden; width: 100px; height: 100px",
             "width: 300px; height: 300px",
             CONTEXT,
+            ABSOLUTE,
+        ][..],
+        // A `clip-path` element between the clipper and the box keeps the
+        // clipper's clip on (Chrome 158), whether it is an ancestor of the
+        // context or the context itself.
+        &[
+            CB,
+            CLIPPER,
+            "clip-path: inset(0); width: 150px; height: 150px",
+            CONTEXT,
+            ABSOLUTE,
+        ][..],
+        &[
+            CB,
+            CLIPPER,
+            "opacity: 0.5; width: 50px; height: 50px; clip-path: inset(-100px)",
             ABSOLUTE,
         ][..],
     ] {

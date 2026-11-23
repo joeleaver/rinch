@@ -379,3 +379,104 @@ fn what_paints_after_the_absolute_box_is_clipped_again() {
         "the later box past the clip"
     );
 }
+
+/// **An element with a `clip-path` between the clipper and the box keeps
+/// the clipper's clip on** (Chrome 158): `containing block > clipper >
+/// clip-path > context > absolute`, and the context carrying the
+/// `clip-path` itself (an `inset(-100px)` that cuts nothing near the box),
+/// draw nothing past the clipper. rinch paints no clip path, so these are
+/// the clipper's clip alone.
+///
+/// Kills: a lift that does not stop at a `clip-path` element (the box is
+/// drawn out to 225).
+#[test]
+fn a_clip_path_between_the_clipper_and_the_box_keeps_the_clipper() {
+    for styles in [
+        &[
+            CB,
+            CLIPPER,
+            "clip-path: inset(0); width: 150px; height: 150px",
+            CONTEXT,
+            ABSOLUTE,
+        ][..],
+        &[
+            CB,
+            CLIPPER,
+            "opacity: 0.5; width: 50px; height: 50px; background-color: rgb(0, 0, 200); \
+             clip-path: inset(-100px)",
+            ABSOLUTE,
+        ][..],
+    ] {
+        let (mut doc, _) = chain(styles);
+        let p = paint(&mut doc, 1.0);
+        assert_near(
+            over_white(&p, IN, 1.0),
+            FADED_GREEN,
+            &format!("positive control, {styles:?}"),
+        );
+        assert_eq!(
+            over_white(&p, (120, 120), 1.0),
+            WHITE,
+            "past the clipper, {styles:?}"
+        );
+        assert_eq!(over_white(&p, OUT, 1.0), WHITE, "far past it, {styles:?}");
+    }
+}
+
+/// …and with the `clip-path` element **above** the clipper the box escapes
+/// the clipper (Chrome 158; the clip path, `inset(0)` on a 300x300 box,
+/// cuts nothing the probes reach).
+#[test]
+fn a_clip_path_above_the_clipper_does_not_keep_it() {
+    let (mut doc, _) = chain(&[
+        CB,
+        "clip-path: inset(0); width: 300px; height: 300px",
+        CLIPPER,
+        CONTEXT,
+        ABSOLUTE,
+    ]);
+    let p = paint(&mut doc, 1.0);
+    assert_near(
+        over_white(&p, (120, 120), 1.0),
+        FADED_GREEN,
+        "past the clipper",
+    );
+    assert_near(over_white(&p, OUT, 1.0), FADED_GREEN, "far past it");
+}
+
+/// **A masked element between the clipper and the box keeps the clipper's
+/// clip on** (Chrome 158), and one above it does not. The mask's border-box
+/// clip is on the paint stack with no owner, and the lift stops there: the
+/// clipper below it is not lifted although it is escapable.
+///
+/// Kills: the lift walking on past a clip that is not escapable (`break`
+/// turned into `continue`: the clipper is lifted, the box drawn at
+/// `(120, 120)`).
+#[test]
+fn a_mask_between_the_clipper_and_the_box_keeps_the_clipper() {
+    let (mut doc, _) = chain(&[
+        CB,
+        CLIPPER,
+        "mask-image: linear-gradient(#000, #000); width: 150px; height: 150px",
+        CONTEXT,
+        ABSOLUTE,
+    ]);
+    let p = paint(&mut doc, 1.0);
+    assert_near(over_white(&p, IN, 1.0), FADED_GREEN, "positive control");
+    assert_eq!(over_white(&p, (120, 120), 1.0), WHITE, "past the clipper");
+
+    let (mut doc, _) = chain(&[
+        CB,
+        "mask-image: linear-gradient(#000, #000); width: 300px; height: 300px",
+        CLIPPER,
+        CONTEXT,
+        ABSOLUTE,
+    ]);
+    let p = paint(&mut doc, 1.0);
+    assert_near(
+        over_white(&p, (120, 120), 1.0),
+        FADED_GREEN,
+        "a mask above the clipper: past the clipper",
+    );
+    assert_near(over_white(&p, OUT, 1.0), FADED_GREEN, "far past it");
+}

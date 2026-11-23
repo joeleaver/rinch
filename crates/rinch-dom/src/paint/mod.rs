@@ -2059,6 +2059,13 @@ fn is_strict_descendant(tree: &NodeTree, node: RawNodeId, ancestor: RawNodeId) -
 /// `absolute` (#1372) and is asked of its fixed containing block. With no
 /// containing block at all (the initial one, #204) the body stands in: its
 /// clip, and every clip above it, stay on.
+///
+/// An element with a `clip-path` between the box and its containing block
+/// stands in for the block (Chrome 158, #2815's review): the clips above it
+/// still apply to the box, so only its descendants' are escaped, and a
+/// `clip-path` at `root` or inside it means nothing is lifted. (rinch paints
+/// no clip path itself.) A `mask-image` needs no rule here: its border-box
+/// clip is on the paint stack untagged, and the lift stops at it.
 fn absolute_containing_block_above(
     tree: &NodeTree,
     root: RawNodeId,
@@ -2069,11 +2076,12 @@ fn absolute_containing_block_above(
     }
     let contained_fixed = child.is_contained_fixed();
     let contains = |n: &Node| {
-        if contained_fixed {
-            n.establishes_fixed_containing_block()
-        } else {
-            n.establishes_abs_containing_block()
-        }
+        (n.computed_style.clip_path && n.computed_style.display != DisplayValue::Contents)
+            || if contained_fixed {
+                n.establishes_fixed_containing_block()
+            } else {
+                n.establishes_abs_containing_block()
+            }
     };
     let mut passed_root = false;
     let mut at = child.parent;

@@ -540,7 +540,18 @@ correct, and each has a fixture in
   cache) sinks its group under the escapable clips on the popping route, as
   for a fixed box. A fixed box contained by a transformed ancestor reads
   `absolute` and is asked of its fixed containing block. With no containing
-  block (#204) the body stands in. **Not lifted:** an absolute stacking
+  block (#204) the body stands in. **An element with a `clip-path` between
+  the box and its containing block stands in for the block** (Chrome 158,
+  #2875's review): with one between the clipper and the box the clipper
+  still clips, with one above the clipper the box escapes it, and a
+  `clip-path` on the collecting root or inside it lifts nothing
+  (`ComputedStyle::clip_path`, read for this alone: rinch paints no clip
+  path). A `mask-image` needs no rule: its border-box clip is untagged and
+  takes the fixed floor, so the lift never reaches below it (Chrome agrees:
+  a mask between keeps the clipper, one above does not). Owned clips are
+  pushed in tree-depth order and a mask takes the floor, so the run the
+  lift takes is never interrupted by a clip it keeps; its `break` and a
+  `continue` there are the same today. **Not lifted:** an absolute stacking
   context holding a fixed box that draws, on the software painter — its
   in-place lift raises the fixed floor to the top of the stack, which would
   keep the clips above the absolute's containing block on around that fixed
