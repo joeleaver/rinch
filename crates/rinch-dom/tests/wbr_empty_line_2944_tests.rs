@@ -69,9 +69,7 @@ const CASES: &[(&str, &str, &str, f32)] = &[
 fn page() -> RinchDocument {
     let markup: String = CASES
         .iter()
-        .map(|(id, ws, m, _)| {
-            format!("<div id={id} style='width:1px;white-space:{ws}'>{m}</div>")
-        })
+        .map(|(id, ws, m, _)| format!("<div id={id} style='width:1px;white-space:{ws}'>{m}</div>"))
         .collect();
     html(&markup)
 }
