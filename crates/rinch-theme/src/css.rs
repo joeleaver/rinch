@@ -137,13 +137,17 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str("  --rinch-color-default-hover: var(--rinch-color-dark-4);\n");
         css.push_str("  --rinch-color-filled: var(--rinch-color-dark-6);\n");
         css.push_str("  --rinch-color-filled-hover: var(--rinch-color-dark-5);\n");
-        // Component-state tokens (used by Select/DropdownMenu/etc).
-        // In dark mode the primary-color-0 shade is near-white, so we substitute
-        // neutral dark shades; selected items still get the primary text color
-        // applied separately for an accent cue.
+        // Component-state tokens (used by Select and apps' own lists). As in
+        // Mantine, a hovered option is a neutral shade (the same as a hovered
+        // menu item, `--rinch-color-default`) and the selected one a light tint
+        // of the primary colour (Mantine's `light` variant: in the dark scheme
+        // primary-color-0 is near-white, so it is the primary at 15% instead).
+        // Hover, selected and `default-hover` are three different colours (#2727).
         css.push_str("  --rinch-color-state-disabled: var(--rinch-color-dark-6);\n");
         css.push_str("  --rinch-color-option-hover: var(--rinch-color-dark-5);\n");
-        css.push_str("  --rinch-color-option-selected: var(--rinch-color-dark-4);\n");
+        css.push_str(
+            "  --rinch-color-option-selected: color-mix(in srgb, var(--rinch-primary-color) 15%, transparent);\n",
+        );
         // Dark mode titlebar: dark background with primary color text/icons
         css.push_str("  --rinch-titlebar-bg: var(--rinch-color-surface);\n");
         css.push_str("  --rinch-titlebar-text: var(--rinch-primary-color);\n");
@@ -167,10 +171,11 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str("  --rinch-color-default-hover: var(--rinch-color-gray-3);\n");
         css.push_str("  --rinch-color-filled: var(--rinch-color-gray-1);\n");
         css.push_str("  --rinch-color-filled-hover: var(--rinch-color-gray-2);\n");
-        // Component-state tokens (used by Select/DropdownMenu/etc).
-        // Light mode keeps the Mantine-style light-primary tint for hover/selected.
+        // Component-state tokens: a hovered option is a neutral gray (as a
+        // hovered menu item, `--rinch-color-default`), the selected one keeps
+        // the Mantine light-primary tint. They used to share it (#2727).
         css.push_str("  --rinch-color-state-disabled: var(--rinch-color-gray-1);\n");
-        css.push_str("  --rinch-color-option-hover: var(--rinch-primary-color-0);\n");
+        css.push_str("  --rinch-color-option-hover: var(--rinch-color-gray-2);\n");
         css.push_str("  --rinch-color-option-selected: var(--rinch-primary-color-0);\n");
         // Light mode titlebar: primary color background with white text/icons
         css.push_str("  --rinch-titlebar-bg: var(--rinch-primary-color);\n");
