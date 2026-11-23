@@ -2239,6 +2239,9 @@ impl RinchApp {
         // click handler, a menu, a timer — is adopted here (issue #238); a
         // string compare when nothing was written.
         self.adopt_focused_input_value_from_dom();
+        // Fields that left the document, or stopped (or started again) being
+        // spellchecked (#2862); nothing when no field was ever checked.
+        self.spell_frame();
 
         // A programmatic `selected`/`value` write made while a native
         // `<select>`'s popup is open moves the highlight to match (issue
@@ -4399,6 +4402,7 @@ impl RinchApp {
             // The edited words are checked once typing pauses (#2862).
             if let Some(node) = edited_node
                 && self.focused_input_node_id == edited_node
+                && rinch_spell::runtime::is_active()
             {
                 let value = self.focused_input_value.clone();
                 self.spell_user_edit(node, &value);

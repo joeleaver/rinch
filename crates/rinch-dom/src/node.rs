@@ -675,6 +675,10 @@ pub struct SpellingMarks {
     pub text: String,
     /// The misspelled words, sorted byte ranges of `text`.
     pub ranges: Vec<std::ops::Range<usize>>,
+    /// Show them on a single-line `<input>` that does not have the keyboard
+    /// too. `false` is Chrome's behaviour (hidden until it is focused again);
+    /// a `<textarea>` always shows them.
+    pub show_when_blurred: bool,
 }
 
 /// A **wavy underline** span within an IFC — the spellcheck squiggle.

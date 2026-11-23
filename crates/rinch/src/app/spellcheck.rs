@@ -48,6 +48,9 @@ struct Field {
     generation: u64,
     /// When the debounce after the last edit runs out.
     due: Option<rinch_core::timer::Instant>,
+    /// The field is not to be checked now (`spellcheck` turned off on it or
+    /// an ancestor, or `readonly`): it shows no marks until it is again.
+    off: bool,
 }
 
 impl FieldSpelling {
@@ -60,7 +63,19 @@ impl FieldSpelling {
             marks: Vec::new(),
             generation: self.generations,
             due: None,
+            off: false,
         }
+    }
+
+    /// Whether any field is waiting for its debounce (tests).
+    #[cfg(test)]
+    pub(crate) fn any_due(&self) -> bool {
+        self.fields.values().any(|f| f.due.is_some())
+    }
+
+    /// Whether no field is remembered (the per-frame pass costs nothing).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.fields.is_empty()
     }
 
     /// Forget everything and stop listening (the app is going away).
@@ -147,13 +162,19 @@ impl RinchApp {
     /// touched are checked once typing pauses. A field the user had not
     /// interacted with yet (one focused by script) is checked whole then.
     pub(crate) fn spell_user_edit(&mut self, node_id: u64, value: &str) {
-        let Some(session) = spell::session() else {
-            return;
-        };
         if !self.field_is_spellchecked(node_id) {
             return;
         }
         self.spell_listen();
+        self.spell_text_changed(node_id, value);
+    }
+
+    /// `node_id`'s value is now `value`: move its marks, put the changed words
+    /// on its dirty list and arm the debounce.
+    fn spell_text_changed(&mut self, node_id: u64, value: &str) {
+        let Some(session) = spell::session() else {
+            return;
+        };
         if !self.spelling.fields.contains_key(&node_id) {
             let field = self.spelling.fresh(value.to_owned());
             self.spelling.fields.insert(node_id, field);
@@ -241,10 +262,17 @@ impl RinchApp {
             .filter(|(_, f)| f.due.is_some_and(|d| d <= now))
             .map(|(&id, _)| id)
             .collect();
-        if let Some(session) = spell::session() {
-            for id in due {
-                self.spell_send(id, &session);
+        let Some(session) = spell::session() else {
+            // Nothing to check with (turned off, or no dictionary found once
+            // it loaded): nothing is due any more. Re-arming for a deadline
+            // already past would be a 0 ms timer for ever (review of #2876).
+            for field in self.spelling.fields.values_mut() {
+                field.due = None;
             }
+            return;
+        };
+        for id in due {
+            self.spell_send(id, &session);
         }
         if let Some(next) = self.spelling.fields.values().filter_map(|f| f.due).min() {
             self.spell_arm(next);
@@ -312,6 +340,7 @@ impl RinchApp {
         let marks = rinch_dom::SpellingMarks {
             text: field.text.clone(),
             ranges: field.marks.clone(),
+            show_when_blurred: spell::config().is_some_and(|c| !c.hide_input_marks_on_blur),
         };
         if let Some(doc) = &self.doc {
             doc.borrow_mut().set_spelling_marks(node_id, Some(marks));
@@ -356,6 +385,84 @@ impl RinchApp {
                 && self.field_is_spellchecked(id)
             {
                 self.spell_send(id, session);
+            }
+        }
+    }
+
+    /// Once per frame, while any field is remembered: forget fields that left
+    /// the document; drop the marks of a field that stopped being checked
+    /// (`spellcheck="false"` or `readonly` set on it or an ancestor) and check
+    /// it again when it is checked again, as Chrome does. With
+    /// [`require_interaction`](rinch_spell::runtime::SpellcheckConfig::require_interaction)
+    /// off, it also starts every checked field in the document, and checks a
+    /// value the app wrote after the debounce.
+    pub(crate) fn spell_frame(&mut self) {
+        let session = spell::session();
+        let eager = session.as_ref().is_some_and(|s| !s.require_interaction());
+        if self.spelling.is_empty() && !eager {
+            return;
+        }
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        let ids: Vec<u64> = self.spelling.fields.keys().copied().collect();
+        for id in ids {
+            let gone = {
+                let d = doc.borrow();
+                !rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(id))
+            };
+            if gone {
+                self.spelling.fields.remove(&id);
+                continue;
+            }
+            let on = session.is_some() && self.field_is_spellchecked(id);
+            let Some(field) = self.spelling.fields.get_mut(&id) else {
+                continue;
+            };
+            if !on && !field.off {
+                field.off = true;
+                field.marks.clear();
+                field.dirty.clear();
+                field.due = None;
+                doc.borrow_mut().set_spelling_marks(id, None);
+            } else if on && field.off {
+                let value = self.field_value(id).unwrap_or_default();
+                let field = self.spelling.fresh(value);
+                self.spelling.fields.insert(id, field);
+                if let Some(session) = &session {
+                    self.spell_send(id, session);
+                }
+            } else if on && eager {
+                let value = self.field_value(id).unwrap_or_default();
+                if self
+                    .spelling
+                    .fields
+                    .get(&id)
+                    .is_some_and(|f| f.text != value)
+                {
+                    self.spell_text_changed(id, &value);
+                }
+            }
+        }
+        if eager {
+            let candidates: Vec<u64> = {
+                let d = doc.borrow();
+                d.tree
+                    .nodes
+                    .iter()
+                    .filter(|(id, n)| {
+                        matches!(n.tag(), Some("input" | "textarea"))
+                            && !self.spelling.fields.contains_key(id)
+                            && rinch_core::dom::DomDocument::is_connected(
+                                &*d,
+                                rinch_core::dom::NodeId(*id),
+                            )
+                    })
+                    .map(|(id, _)| id)
+                    .collect()
+            };
+            for id in candidates {
+                self.spell_user_focus(id);
             }
         }
     }

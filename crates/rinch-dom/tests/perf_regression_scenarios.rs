@@ -5023,6 +5023,7 @@ fn a_spelling_mark_write_repaints_one_control() {
         Some(rinch_dom::SpellingMarks {
             text: "helo wrld".to_string(),
             ranges: vec![0..4, 5..9],
+            show_when_blurred: false,
         })
     };
     doc.set_spelling_marks(fields[1].0, marks());

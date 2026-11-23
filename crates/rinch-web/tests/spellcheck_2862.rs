@@ -82,8 +82,8 @@ fn the_app_switch_and_the_prop_reach_the_browser() {
         "`spellcheck: Some(true)` lost to the app's off"
     );
 
-    // Turned back on: the page is the browser's again.
-    rinch_web::apply_spellcheck(&true.into());
+    // Turned back on while the app runs: the page is the browser's again.
+    rinch::spellcheck::set_enabled(true);
     assert!(
         document()
             .body()

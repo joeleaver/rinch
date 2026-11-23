@@ -438,8 +438,8 @@ pub(super) fn paint_input_value(
     // focus, a `<textarea>`'s stay).
     if !is_placeholder
         && !is_password
-        && (is_textarea || is_focused)
         && let Some(marks) = node.spelling.as_deref()
+        && (is_textarea || is_focused || marks.show_when_blurred)
         && marks.text == value
     {
         paint_spelling_marks(

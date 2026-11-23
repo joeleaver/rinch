@@ -22,6 +22,13 @@ to get it; this page is about turning it off, configuring it, and styling it.
   you type it.
 - A `<textarea>` keeps its marks when it loses focus; a single-line
   `<input>` hides them until it is focused again (as Chrome does).
+- Setting `readonly` or `spellcheck="false"` on a checked field (or an
+  ancestor) drops its marks at the next frame; setting it back checks it
+  again. A field removed from the page is forgotten.
+- Both Chrome rules above are the app's to change:
+  `SpellcheckConfig::require_interaction(false)` checks every field as soon
+  as it is laid out (and a value the app writes after the pause), and
+  `hide_input_marks_on_blur(false)` keeps an `<input>`'s marks while blurred.
 
 Some words are never checked, a deliberate difference from Chrome for app
 UI, where they are mostly codes and names: URLs, email addresses, words
@@ -118,7 +125,8 @@ never runs there. The `spellcheck` attributes and props are passed through to
 the real DOM, and `App::spellcheck(false)` puts `spellcheck="false"` on
 `<body>`, which the page's fields inherit. The browser's own dictionaries,
 rules and squiggle apply; `SpellcheckConfig`'s other settings have no effect
-on the web.
+on the web. `rinch::spellcheck::configure` and `set_enabled` while the app
+runs keep `<body>`'s attribute in step.
 
 ## Testing
 
