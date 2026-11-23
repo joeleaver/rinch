@@ -741,3 +741,58 @@ fn the_navlink_collapse_bound_and_duration_are_custom_properties() {
         "{decls:?}"
     );
 }
+
+#[test]
+fn collapsed_navlink_children_are_not_displayed_so_tab_skips_them() {
+    let tree = navlink_with_children(NavLink {
+        label: "Section".into(),
+        ..Default::default()
+    });
+    let container = tree.find("rinch-navlink__children");
+    // The inline `display`, read from the `style` attribute the mock writes.
+    let display = |c: &NodeHandle| {
+        c.get_attribute("style")
+            .unwrap_or_default()
+            .split(';')
+            .filter_map(|d| d.split_once(':'))
+            .find(|(k, _)| k.trim() == "display")
+            .map(|(_, v)| v.trim().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        display(&container),
+        "none",
+        "closed children must be `display: none`, as a closed <details> and \
+         Accordion's panel are; clipped to height 0 they stayed in the Tab order"
+    );
+    click(&parent_control(&tree));
+    assert_eq!(display(&container), "", "open, the inline display is cleared");
+    click(&parent_control(&tree));
+    assert_eq!(display(&container), "none");
+}
+
+#[test]
+fn a_disabled_navlink_anchor_is_out_of_the_tab_order() {
+    let tree = Tree::build(|scope| {
+        NavLink {
+            label: "Off".into(),
+            href: "/off".into(),
+            disabled: true,
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    assert_eq!(
+        parent_control(&tree).get_attribute("tabindex").as_deref(),
+        Some("-1")
+    );
+    let tree = Tree::build(|scope| {
+        NavLink {
+            label: "On".into(),
+            href: "/on".into(),
+            ..Default::default()
+        }
+        .render(scope, &[])
+    });
+    assert_eq!(parent_control(&tree).get_attribute("tabindex"), None);
+}
