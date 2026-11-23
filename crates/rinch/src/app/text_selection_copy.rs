@@ -754,6 +754,7 @@ fn path_to(tree: &rinch_dom::NodeTree, id: u64) -> Vec<u64> {
 /// before what it holds).
 pub(crate) fn node_before(tree: &rinch_dom::NodeTree, a: u64, b: u64) -> bool {
     let (pa, pb) = (path_to(tree, a), path_to(tree, b));
+    work((pa.len() + pb.len()) as u64);
     let common = pa.iter().zip(&pb).take_while(|(x, y)| x == y).count();
     match (pa.get(common), pb.get(common)) {
         (None, Some(_)) => true,
@@ -763,7 +764,11 @@ pub(crate) fn node_before(tree: &rinch_dom::NodeTree, a: u64, b: u64) -> bool {
                 .checked_sub(1)
                 .and_then(|i| tree.get(pa[i]))
                 .map_or(&[][..], |p| &p.children[..]);
-            let at = |c: u64| siblings.iter().position(|&s| s == c);
+            let at = |c: u64| {
+                let i = siblings.iter().position(|&s| s == c);
+                work(i.map_or(siblings.len(), |i| i + 1) as u64);
+                i
+            };
             at(x) < at(y)
         }
     }

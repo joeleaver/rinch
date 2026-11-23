@@ -154,7 +154,8 @@ fn a_shift_click_after_a_double_or_triple_click_extends_by_its_unit() {
     // after a double click by words; extending backward, the selection
     // runs from the clicked unit's start to the end of the first one (its
     // trailing break included), and a later Shift+click extends from the
-    // first unit again. A drag's selection keeps its anchor (the control).
+    // first unit again. A drag's selection keeps its anchor (the control),
+    // and Select All goes back to extending by characters (review of #2949).
     after_gestures_as_chrome(&[
         (
             "triple, shift before",
@@ -179,6 +180,12 @@ fn a_shift_click_after_a_double_or_triple_click_extends_by_its_unit() {
             "<p style=\"margin:0\"><span id=\"s\">zero</span></p><p style=\"margin:0\"><span id=\"t\">text</span></p><p style=\"margin:0\"><span id=\"u\">three</span></p><p style=\"margin:0\">last</p>",
             "click:t:0.5:3;shift:s:0.5;shift:u:0.5",
             "text\n\nthree\n\n",
+        ),
+        (
+            "triple, Select All, shift",
+            "<p style=\"margin:0\"><span id=\"s\">zero one</span></p><p style=\"margin:0\"><span id=\"t\">text</span></p><p style=\"margin:0\"><span id=\"u\">three four</span></p>",
+            "click:t:0.5:3;all;shift:u:0.5",
+            "zero one\n\ntext\n\nthree",
         ),
         (
             "double, shift after",
@@ -261,6 +268,18 @@ fn a_double_click_takes_the_boxes_its_word_touches() {
             "<p style=\"margin:0\"><span id=\"t\">word</span><table style=\"display:inline-table\"><tr><td>cell</td></tr></table> tail</p>",
             "click:t:0.5:2",
             "word",
+        ),
+        (
+            "button after",
+            "<p style=\"margin:0\"><span id=\"t\">word</span><button>OK</button> tail</p>",
+            "click:t:0.5:2",
+            "word",
+        ),
+        (
+            "button before",
+            "<p style=\"margin:0\"><button>OK</button><span id=\"t\">word</span> tail</p>",
+            "click:t:0.5:2",
+            "OKword",
         ),
         (
             "then shift",
@@ -432,4 +451,59 @@ fn a_boxs_after_side_is_its_left_on_a_right_to_left_line() {
         "left to right, the right half is after"
     );
     assert!(!side_across(ltr, 0.2));
+}
+
+/// The steps (`text_selection_copy::WORK`) one paint of a selection takes,
+/// from the start of a paragraph holding `boxes` inline-blocks into the
+/// next block.
+fn paint_work(boxes: usize) -> (u64, std::time::Duration) {
+    let mut html = String::from("<div id=\"a\">start ");
+    for i in 0..boxes {
+        html.push_str(&format!(
+            "<span style=\"display:inline-block\">c{i}</span> "
+        ));
+    }
+    html.push_str("</div><div id=\"b\">next</div>");
+    let html: &'static str = Box::leak(html.into_boxed_str());
+    let mut app = mount(html, SEL);
+    let (a, b) = (node(&app, "a"), node(&app, "b"));
+    let mut sel = TextSelection::at(a, 0);
+    sel.focus_node = b;
+    sel.focus_offset = 4;
+    app.text_selection = Some(sel);
+    // The roots cache is built on the first paint; the second is a move's.
+    app.paint_text_selection();
+    let work = || super::text_selection_copy::WORK.with(|w| w.get());
+    let before = work();
+    if let Some(s) = &mut app.text_selection {
+        s.focus_offset = 3;
+    }
+    let t = std::time::Instant::now();
+    app.paint_text_selection();
+    let took = t.elapsed();
+    let w = work() - before;
+    assert_eq!(highlighted(&app, "b"), Some((0, 3)));
+    (w, took)
+}
+
+#[test]
+fn a_paint_is_linear_in_the_boxes_of_an_end_root() {
+    // Review of #2949: each inline-block in an end's paragraph looked up
+    // where it stands with a walk of the paragraph's text, comparing paths
+    // and sibling positions, so 800 boxes took 2 s a paint in debug. Four
+    // times the boxes must be about four times the work.
+    let (small, big) = (paint_work(100).0, paint_work(400).0);
+    assert!(
+        big <= 5 * small,
+        "{small} steps for 100 boxes, {big} for 400"
+    );
+}
+
+#[test]
+#[ignore = "timing probe for the review of #2949"]
+fn probe_paint_time_2949() {
+    for n in [200, 400, 800] {
+        let (w, took) = paint_work(n);
+        eprintln!("{n} boxes: {took:?} a paint, {w} steps");
+    }
 }

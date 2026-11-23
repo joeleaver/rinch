@@ -81,7 +81,7 @@ impl TextSelection {
     /// holding an end is covered when the selection reaches past where it
     /// stands (#2245), as the copy takes it.
     pub(crate) fn runs(&mut self, tree: &rinch_dom::NodeTree) -> Vec<(u64, usize, usize)> {
-        use super::text_selection_copy::{before, box_offset, holds, node_before, root_node};
+        use super::text_selection_copy::root_node;
         let (a, f, ao, fo) = (
             self.ifc_node_id,
             self.focus_node,
@@ -94,30 +94,51 @@ impl TextSelection {
             let (lo, hi) = order(ao.min(len(a)), fo.min(len(a)));
             return vec![(a, lo, hi)];
         }
-        let ((first, start, s_side), (last, end, e_side)) =
-            if before(tree, (f, fo.min(len(f))), (a, ao.min(len(a)))) {
-                ((f, fo, f_side), (a, ao, a_side))
-            } else {
-                ((a, ao, a_side), (f, fo, f_side))
-            };
         let cache = self.cache(tree);
-        let (Some(&i0), Some(&i1)) = (cache.index.get(&first), cache.index.get(&last)) else {
+        let (Some(&ia), Some(&if_)) = (cache.index.get(&a), cache.index.get(&f)) else {
             return vec![(a, ao, ao)];
         };
+        // Where each node in a root's lines stands in its text, one pass per
+        // root asked about (a paragraph of many inline-blocks is walked once,
+        // not once per box: review of #2949).
+        let mut lines = Lines::default();
+        // Whether root `inner` stands in root `outer`'s lines, and where.
+        let mut stands = |outer: u64, inner: u64| -> Option<usize> {
+            if outer == inner {
+                return None;
+            }
+            lines.of(tree, outer).get(&root_node(tree, inner)).copied()
+        };
+        // The ends in order where they stand (as `text_selection_copy::before`).
+        let (ao_, fo_) = (ao.min(len(a)), fo.min(len(f)));
+        let f_first = match (stands(f, a), stands(a, f)) {
+            // The anchor's root stands in the focus's lines: the focus is
+            // first when it is at or before where that root stands.
+            (Some(at), _) => fo_ <= at,
+            // The focus's root stands in the anchor's: before the anchor.
+            (None, Some(at)) => at < ao_,
+            (None, None) => if_ < ia,
+        };
+        let ((first, start, s_side), (last, end, e_side)) = if f_first {
+            ((f, fo, f_side), (a, ao, a_side))
+        } else {
+            ((a, ao, a_side), (f, fo, f_side))
+        };
+        let (i0, i1) = if f_first { (if_, ia) } else { (ia, if_) };
         // The roots that need a look at where they stand: those holding an
         // end, and those in the lines of a root holding an end (a root's
         // nested roots follow it in root order). Every other root between
         // the two ends in root order is covered whole.
         let mut looked: Vec<usize> = Vec::new();
-        for end_root in [first, last] {
+        for (end_root, i) in [(first, i0), (last, i1)] {
             looked.extend(
                 outer_roots(tree, end_root)
                     .into_iter()
                     .filter_map(|r| cache.index.get(&r).copied()),
             );
-            let i = cache.index[&end_root];
             looked.extend(
-                (i + 1..cache.roots.len()).take_while(|&k| holds(tree, end_root, cache.roots[k])),
+                (i + 1..cache.roots.len())
+                    .take_while(|&k| stands(end_root, cache.roots[k]).is_some()),
             );
         }
         let checked: std::collections::HashSet<usize> = looked.iter().copied().collect();
@@ -125,59 +146,56 @@ impl TextSelection {
         picked.extend((i0.min(i1)..=i0.max(i1)).filter(|k| !checked.contains(k)));
         picked.sort_unstable();
         picked.dedup();
-        // Whether the box holding root `r` (in `outer`'s lines) is a float
-        // or positioned box, which an end takes only when it says so.
-        let float_box = |outer: u64, r: u64| floats_in(tree, outer, r);
         let mut out = Vec::new();
         for k in picked {
+            super::text_selection_copy::work(1);
             let r = cache.roots[k];
             let has = cache.content[k];
             if !(has || r == a || r == f) {
                 continue;
             }
             let (lo, hi) = if checked.contains(&k) || r == first || r == last {
+                // Where the root holding an end stands in `r`, when `r`
+                // holds it, and where `r` stands in an end's root.
+                let (holds_first, holds_last) = (stands(r, first), stands(r, last));
                 let after_start = r == first
-                    || holds(tree, r, first)
-                    || if holds(tree, first, r) {
-                        let at = box_offset(tree, first, r);
-                        let takes = if float_box(first, r) {
-                            s_side.takes_floats
-                        } else {
-                            !s_side.after_inline
-                        };
-                        at > start || (at == start && takes)
-                    } else {
-                        node_before(tree, root_node(tree, first), root_node(tree, r))
+                    || holds_first.is_some()
+                    || match stands(first, r) {
+                        Some(at) => {
+                            let takes = if floats_in(tree, first, r) {
+                                s_side.takes_floats
+                            } else {
+                                !s_side.after_inline
+                            };
+                            at > start || (at == start && takes)
+                        }
+                        None => i0 < k,
                     };
                 let before_end = r == last
-                    || holds(tree, r, last)
-                    || if holds(tree, last, r) {
-                        let at = box_offset(tree, last, r);
-                        let takes = if float_box(last, r) {
-                            e_side.takes_floats
-                        } else {
-                            e_side.after_inline
-                        };
-                        at < end || (at == end && takes)
-                    } else {
-                        node_before(tree, root_node(tree, r), root_node(tree, last))
+                    || holds_last.is_some()
+                    || match stands(last, r) {
+                        Some(at) => {
+                            let takes = if floats_in(tree, last, r) {
+                                e_side.takes_floats
+                            } else {
+                                e_side.after_inline
+                            };
+                            at < end || (at == end && takes)
+                        }
+                        None => k < i1,
                     };
                 if !(after_start && before_end) {
                     continue;
                 }
                 let lo = if r == first {
                     start
-                } else if holds(tree, r, first) {
-                    box_offset(tree, r, first)
                 } else {
-                    0
+                    holds_first.unwrap_or(0)
                 };
                 let hi = if r == last {
                     end
-                } else if holds(tree, r, last) {
-                    box_offset(tree, r, last)
                 } else {
-                    len(r)
+                    holds_last.unwrap_or_else(|| len(r))
                 };
                 (lo.min(len(r)), hi.min(len(r)))
             } else {
@@ -196,6 +214,58 @@ impl TextSelection {
             (self.ifc_node_id, self.anchor_offset),
         )
     }
+}
+
+/// Where each node in a root's lines stands in the root's text (after the
+/// last of its text before the node, as `text_selection_copy::box_offset`
+/// has it), worked out once per root in one walk of its lines.
+#[derive(Default)]
+struct Lines {
+    of: HashMap<u64, HashMap<u64, usize>>,
+}
+
+impl Lines {
+    fn of(&mut self, tree: &rinch_dom::NodeTree, root: u64) -> &HashMap<u64, usize> {
+        self.of
+            .entry(root)
+            .or_insert_with(|| line_offsets(tree, root))
+    }
+}
+
+/// Every node in root `root`'s lines (its children's subtrees, an
+/// anonymous box's run members'), each with where it stands in the root's
+/// text. Empty for a text leaf, which holds nothing.
+fn line_offsets(tree: &rinch_dom::NodeTree, root: u64) -> HashMap<u64, usize> {
+    let mut out = HashMap::new();
+    let Some(n) = tree.get(root) else {
+        return out;
+    };
+    let Some(layout) = n.text_layout.as_ref() else {
+        return out;
+    };
+    let mut ends: HashMap<u64, usize> = HashMap::new();
+    for r in &layout.text_ranges {
+        super::text_selection_copy::work(1);
+        let e = ends.entry(r.node_id).or_insert(r.flat_end);
+        *e = (*e).max(r.flat_end);
+    }
+    let mut stack: Vec<u64> = if n.is_anonymous_block_box {
+        n.run_members.iter().rev().copied().collect()
+    } else {
+        n.children.iter().rev().copied().collect()
+    };
+    let mut at = 0;
+    while let Some(id) = stack.pop() {
+        super::text_selection_copy::work(1);
+        out.insert(id, at);
+        if let Some(&e) = ends.get(&id) {
+            at = at.max(e);
+        }
+        if let Some(c) = tree.get(id) {
+            stack.extend(c.children.iter().rev().copied());
+        }
+    }
+    out
 }
 
 /// The roots whose lines hold root `id` (the paragraph an `inline-block`
@@ -504,12 +574,17 @@ fn word_unit(tree: &rinch_dom::NodeTree, root: u64, offset: usize) -> (Selection
 }
 
 /// The root inside box `b` a word touching it runs into, with the drawn
-/// part of its text: the box's last root (`first`: its first). `None` for
-/// a picture, an inline table, or a box with no text drawn.
+/// part of its text: the box's last root (`first`: its first, for a box
+/// after the word). `None` for a picture, an inline table, a button after
+/// the word, or a box with no text drawn.
 fn word_box_root(tree: &rinch_dom::NodeTree, b: u64, first: bool) -> Option<(u64, usize, usize)> {
     let n = tree.get(b)?;
+    // A button after a word ends it; one before it does not (Chrome 158:
+    // `word<button>OK</button>` selects "word", `<button>OK</button>word`
+    // "OKword").
     if matches!(n.tag(), Some("img" | "iframe"))
         || n.computed_style.table_part == rinch_dom::computed_style::TablePart::Table
+        || (first && n.tag() == Some("button"))
     {
         return None;
     }
@@ -920,6 +995,8 @@ impl RinchApp {
             sel.focus_node = last;
             sel.focus_offset = end;
             sel.dragged = true;
+            // A Shift+click after it extends by characters again (Chrome 158).
+            sel.unit = None;
             // Its ends are outside the paragraphs: every box is in.
             sel.anchor_side = EndSide {
                 after_inline: false,
