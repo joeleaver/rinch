@@ -1939,7 +1939,7 @@ pub(crate) fn inline_ink_past_lines<'a>(
     }
 
     if !inline_layout.background_spans.is_empty() {
-        inline_background_rects(&get, inline_layout, scale, None, |frag| add(frag.rect));
+        inline_background_rects(get, inline_layout, scale, None, |frag| add(frag.rect));
     }
 
     for span in &inline_layout.decoration_spans {
