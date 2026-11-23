@@ -312,8 +312,12 @@ loop's sixth timed wake) tries each with `ShellWindow::try_start_gpu_renderer` (
 without `on_gpu_failure`) at 0, 100, 300, 700 ms … (doubling, at most 1 s apart) until 5 s
 (`GPU_REBUILD_LIMIT`), then once more by the startup rule (`start_gpu_renderer`: panic or software
 fallback). A waiting window paints nothing (`awaits_gpu` in the redraw arm). The listeners hear
-the device only once the rebuild is over, and `redraw_lost_frame` runs then (a prepared hidden
-window is prepared again only when a device was published; else its show builds). A second loss
+the device only once the rebuild is over, and `redraw_lost_frame` runs then for every lost-frame
+window still open (#2891: a window closed during the rebuild is skipped, through
+`RinchRuntime::open_w`; `w` panicked on it). A hidden window prepared on the GPU is in the rebuild
+too (#2891), so it is prepared again on the renderer the rebuild built it, or, when the GPU did
+not come back in time, by the startup rule at the rebuild's end; a window shown during the rebuild
+that already has its renderer is settled rather than built a second one. A second loss
 during a rebuild folds the earlier rebuild's windows into the new one. **A window shown or made during the recovery** (`device_loss::gpu_recovering`: under 5 s since
 the retirement, `note_retired`): `ShellWindow::start_gpu_renderer` goes through
 `start_renderer_with`, which tries without the startup rule and, if the GPU will not start yet,
@@ -329,13 +333,17 @@ registered the texture. **A window prepared during the recovery** (#2824,
 app's painted nothing, and neither was prepared again when the device came back) and, when the GPU
 will not start yet, sets `awaits_gpu` and prepares nothing. The rebuild adopts it;
 `rebuild_window` for a window with no OS window (`ShellWindow::rebuild_hidden_with`) builds a
-prepared window's offscreen renderer at the size and scale it was prepared at and parks it,
-retrying with the others; at the limit it settles with nothing (its show takes the startup rule).
-The rebuild's end prepares again every hidden window holding a parked renderer, though no shown
-window published a device. Any other hidden window is settled at once, as before. Pins:
+prepared window's offscreen renderer at the size and scale it was prepared at, with the renderer
+choice it was prepared with (`ShellWindow::prepared_with`), and parks it, retrying with the
+others; at the limit it settles with nothing. The rebuild's end prepares every hidden prepared
+window again (`redraw_lost_frame`), on that parked renderer though no shown window published a
+device, else by the startup rule. Any other hidden window is settled at once, as before. Pins:
 `device_loss.rs`'s `a_window_prepared_during_the_recovery_waits_and_is_rebuilt_on_the_new_device`
 (both `Auto` and `Gpu`, the first two device requests failing) and
-`outside_a_recovery_the_preparation_takes_the_startup_rule`. **External devices:**
+`outside_a_recovery_the_preparation_takes_the_startup_rule`, `a_window_closed_during_the_rebuild_is_skipped`,
+and on test-gpu
+`gpu_device_loss_a_prepared_hidden_window_is_prepared_again_on_its_rebuilt_renderer_2891`
+(every window hidden, so only the parked renderer can carry the preparation). **External devices:**
 `note_external_gpu_lost()` marks the published generation lost (not due: the replacement is the
 app's), so `paint_frame` stops presenting; `poll_published` no longer polls an app's device. Pins:
 `render_surface_device_loss_1788_tests.rs` (the replacement done on the test device itself: retired,
