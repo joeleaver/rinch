@@ -986,6 +986,15 @@ after a trim. Both flags are one-shot flags on `Presenter`
 window (a stand-in surface that keeps its contents, on the virtual clock),
 so `testing/idle_trim_perf_2852_tests.rs` pins the lines through
 `window_perf::capture`, a test-only thread-local copy of what is printed.
+Whether a window will trim (#2917) is printed by `window_perf::idle_trim`
+where `paint_software_at` makes the window's `SoftbufferRenderer` (its first
+present, and again after a hide drops it), from
+`SoftbufferRenderer::idle_period`: the `Presenter`'s period, already `None`
+for a surface that does not keep its contents, so the line is the policy the
+trim actually follows rather than `WindowProps::idle_trim`'s. It is not on the
+`opened` line because that is printed at `register_perf`, before the OS
+window, its surface kind and its renderer exist (and the main window has no
+`opened` line). A GPU window makes no `SoftbufferRenderer` and prints none.
 **Reactive counters per document** (#2798). `rinch_core::reactive` keeps the
 thread's totals (`reactive_counters`, which `batch` also reads to tell whether
 it wrote) and, in the doc-keyed registry `DOC_COUNTERS`, each counted
