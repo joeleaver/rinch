@@ -471,7 +471,7 @@ fn word_unit(tree: &rinch_dom::NodeTree, root: u64, offset: usize) -> (Selection
         takes_floats: true,
     };
     // The box touching the word at its start: the last of those there.
-    if let Some(&(b, _)) = boxes.iter().filter(|&&(_, at)| at == s).last()
+    if let Some(&(b, _)) = boxes.iter().rfind(|&&(_, at)| at == s)
         && let Some((r, lo, hi)) = word_box_root(tree, b, false)
     {
         let t = root_text(tree, r).unwrap_or_default();

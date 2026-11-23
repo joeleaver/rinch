@@ -1036,8 +1036,9 @@ pub(crate) struct EndSide {
     /// A start after them leaves them out, an end after them takes them.
     pub(crate) after_inline: bool,
     /// Whether the floats and positioned boxes at its offset are in the
-    /// selection. A float is on no line, so only an end outside the
-    /// paragraph takes it: Select All's, not a press, drag or triple click.
+    /// selection. A float is on no line, so a press or drag never takes
+    /// one: Select All's ends do, and a double click's word running on
+    /// into one (#2259).
     pub(crate) takes_floats: bool,
 }
 
