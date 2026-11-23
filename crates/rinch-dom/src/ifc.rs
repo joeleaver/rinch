@@ -4965,8 +4965,17 @@ static CHROME_ASCII_PAIRS: parley::AsciiLineBreakTable<5> = {
 ///   Blink decides before its table (`ShouldBreakAfter`); UAX #14 LB25 has
 ///   none there at all.
 /// - Any other pair of printable ASCII characters: [`CHROME_ASCII_PAIRS`].
+/// - Between two zero width spaces, always (#2944): each is a `<wbr>`
+///   ([`WBR_TEXT`]), and Chrome 158 has an opportunity at every `<wbr>`, so
+///   `aaaa<wbr><wbr>bbbb` in a 1px `nowrap` box is `aaaa` / an empty line /
+///   `bbbb`. UAX #14 has none there (LB7, `× ZW`). Typed ZWSPs get it too;
+///   it changes nothing visible for them where text wraps, and where it
+///   does not, no ZWSP of their own is an opportunity.
 fn chrome_break(before_before: Option<char>, before: char, after: char) -> Option<bool> {
     if space_run_break(before, after) {
+        return Some(true);
+    }
+    if before == '\u{200b}' && after == '\u{200b}' {
         return Some(true);
     }
     if before == '-' && after.is_ascii_digit() {
@@ -14828,6 +14837,15 @@ mod chrome_break_tests {
         assert_eq!(chrome_break(None, '-', '1'), Some(false));
         assert_eq!(chrome_break_at("-1", 1), Some(false));
         assert_eq!(chrome_break_at("x", 0), None);
+    }
+
+    /// Two `<wbr>`s in a row are two opportunities (#2944), which UAX #14's
+    /// `× ZW` (LB7) leaves one of.
+    #[test]
+    fn two_zero_width_spaces_have_an_opportunity_between_them() {
+        assert_eq!(chrome_break(Some('a'), '\u{200b}', '\u{200b}'), Some(true));
+        assert_eq!(chrome_break_at("a\u{200b}\u{200b}b", 4), Some(true));
+        assert_eq!(chrome_break(Some('a'), 'a', '\u{200b}'), None);
     }
 }
 
