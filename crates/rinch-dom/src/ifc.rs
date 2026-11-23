@@ -79,11 +79,31 @@ pub(crate) fn wavy_underline_color(cs: &crate::computed_style::ComputedStyle) ->
         .unwrap_or(peniko::Color::BLACK)
 }
 
+/// Whether a `position: static` inline element is a stacking context (#2869):
+/// a `filter`, an `opacity` below 1 or a `mask-image` (a `transform` does not
+/// apply to it, #1080, and a `z-index` does nothing). Its IFC records its
+/// byte range with the relative ones (`InlineLayout::relative_spans_resting`,
+/// at a zero offset), and its own entry of the stacking sequence paints it
+/// (`paint::paints_in_own_entry`).
+pub(crate) fn is_static_inline_layer(cs: &crate::computed_style::ComputedStyle) -> bool {
+    cs.position == crate::computed_style::PositionValue::Static
+        && (cs.opacity < 1.0 || cs.has_filter() || !cs.mask_image.is_empty())
+}
+
 /// Whether an inline element has a background to draw: a colour that is not
-/// fully transparent. The one test [`inline_background_span`] makes, asked
-/// on its own by the transition and animation ticks (#679).
+/// fully transparent, or an image layer (a gradient, a `url()`, #2884). The
+/// one test [`inline_background_span`] makes, asked on its own by the
+/// transition and animation ticks (#679).
 pub(crate) fn has_inline_background(cs: &crate::computed_style::ComputedStyle) -> bool {
-    cs.background_color().is_some_and(|c| c.components[3] > 0.0)
+    cs.background_color().is_some_and(|c| c.components[3] > 0.0) || has_inline_image(cs)
+}
+
+/// Whether an inline element's background has an image layer (#2884): paint
+/// draws its fragments through the block background painter then, the layer
+/// laid out over the fragments side by side (`box-decoration-break: slice`).
+pub(crate) fn has_inline_image(cs: &crate::computed_style::ComputedStyle) -> bool {
+    use crate::computed_style::BackgroundValue as B;
+    !matches!(cs.background, B::None | B::Color(_))
 }
 
 /// The bit an **edge box**'s parley id carries (#1426).
@@ -670,10 +690,14 @@ pub(crate) fn inline_background_span(
     end: usize,
 ) -> Option<crate::node::InlineBackgroundSpan> {
     let cs = &owner.computed_style;
+    // An image layer's colour is the one under it (`background_underlay`),
+    // which paint draws with the layers; the span's own is transparent.
     let color = cs
         .background_color()
-        .filter(|_| has_inline_background(cs))
-        .or_else(|| has_inline_border(cs).then_some(peniko::Color::TRANSPARENT))?;
+        .filter(|c| c.components[3] > 0.0)
+        .or_else(|| {
+            (has_inline_image(cs) || has_inline_border(cs)).then_some(peniko::Color::TRANSPARENT)
+        })?;
     Some(crate::node::InlineBackgroundSpan {
         owner: owner.id,
         start,
@@ -6259,7 +6283,15 @@ impl RinchDocument {
             let Some(owner) = nodes.get(span.owner) else {
                 return false;
             };
-            (span.dx, span.dy) = relative_inset_offset(&owner.computed_style, width, height, ltr);
+            // A static stacking-context span (#2869) is kept for its range
+            // and moves nothing: its insets do not apply.
+            (span.dx, span.dy) = if owner.computed_style.position
+                == crate::computed_style::PositionValue::Relative
+            {
+                relative_inset_offset(&owner.computed_style, width, height, ltr)
+            } else {
+                (0.0, 0.0)
+            };
             true
         });
         // In the order they were met, which nothing reads but a comparison.
@@ -13420,7 +13452,12 @@ impl RinchDocument {
         // Recorded with no offset: the offset is resolved against the
         // containing block once the root's box is known
         // (`resolve_relative_spans`), and a span left at zero is dropped then.
-        if owner.computed_style.position == crate::computed_style::PositionValue::Relative {
+        // #2869: so does a static one that is a stacking context (a
+        // `filter`, an `opacity`, a mask), whose range its own entry paints
+        // (`paint::paints_in_own_entry`); its offset resolves to zero.
+        if owner.computed_style.position == crate::computed_style::PositionValue::Relative
+            || is_static_inline_layer(&owner.computed_style)
+        {
             relative_spans.push(crate::node::InlineRelativeSpan {
                 owner: owner.id,
                 start,
@@ -13767,7 +13804,8 @@ impl RinchDocument {
 
                     // Record background span start position
                     let bg_start = *flat_pos;
-                    let has_bg = child_computed.background_color().is_some();
+                    let has_bg = child_computed.background_color().is_some()
+                        || has_inline_image(child_computed);
                     // #724: whether this element needs its own vertical-align
                     // span over the stretch it owns.
                     let has_valign = child_computed.vertical_align != VerticalAlignValue::Baseline;
@@ -13891,7 +13929,14 @@ impl RinchDocument {
                     // #1425/#2346: a relative element moves what it holds.
                     let is_relative =
                         child_computed.position == crate::computed_style::PositionValue::Relative;
-                    if has_bg || has_valign || is_relative || has_inline_border(child_computed) {
+                    // #2869: a static one that is a stacking context has its
+                    // range painted by its own entry.
+                    if has_bg
+                        || has_valign
+                        || is_relative
+                        || is_static_inline_layer(child_computed)
+                        || has_inline_border(child_computed)
+                    {
                         Self::push_inline_spans(
                             nodes,
                             child,

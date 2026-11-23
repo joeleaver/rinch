@@ -1217,17 +1217,25 @@ impl RinchDocument {
     /// Those of `nodes` that are `display: inline` elements with no
     /// background to draw — the ones a tick could give one
     /// ([`Self::settle_ticked_text`]).
+    ///
+    /// And those that are not a stacking context (#2869,
+    /// `ifc::is_static_inline_layer`): an `opacity` tick can make one, whose
+    /// range the layout records only when it is built. Each comes with what
+    /// it lacked: `(id, no background, no layer)`.
     fn inlines_without_background<'a>(
         &self,
         nodes: impl Iterator<Item = &'a RawNodeId>,
-    ) -> Vec<RawNodeId> {
+    ) -> Vec<(RawNodeId, bool, bool)> {
         nodes
             .copied()
-            .filter(|&id| {
-                self.tree.nodes.get(id).is_some_and(|n| {
-                    n.computed_style.display == crate::computed_style::DisplayValue::Inline
-                        && !crate::ifc::has_inline_background(&n.computed_style)
-                })
+            .filter_map(|id| {
+                let n = self.tree.nodes.get(id)?;
+                if n.computed_style.display != crate::computed_style::DisplayValue::Inline {
+                    return None;
+                }
+                let bare = !crate::ifc::has_inline_background(&n.computed_style);
+                let flat = !crate::ifc::is_static_inline_layer(&n.computed_style);
+                (bare || flat).then_some((id, bare, flat))
             })
             .collect()
     }
@@ -1252,14 +1260,17 @@ impl RinchDocument {
     ///   their own brushes.
     ///
     /// Neither sets `layout_dirty`: a rebuilt paint layout moves no box.
-    fn settle_ticked_text(&mut self, colour_done: Vec<RawNodeId>, bare_inlines: Vec<RawNodeId>) {
-        for id in bare_inlines {
-            if self
-                .tree
-                .nodes
-                .get(id)
-                .is_some_and(|n| crate::ifc::has_inline_background(&n.computed_style))
-            {
+    fn settle_ticked_text(
+        &mut self,
+        colour_done: Vec<RawNodeId>,
+        bare_inlines: Vec<(RawNodeId, bool, bool)>,
+    ) {
+        for (id, bare, flat) in bare_inlines {
+            if self.tree.nodes.get(id).is_some_and(|n| {
+                let cs = &n.computed_style;
+                (bare && crate::ifc::has_inline_background(cs))
+                    || (flat && crate::ifc::is_static_inline_layer(cs))
+            }) {
                 self.invalidate_ifc_for_node(id);
             }
         }

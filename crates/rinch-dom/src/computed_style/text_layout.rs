@@ -317,12 +317,15 @@ impl ComputedStyle {
 
     /// Whether a `display: inline` element's `position` is the same (#1425,
     /// #2346): a relative one records an `InlineRelativeSpan` with the
-    /// IFC's lines, so a change of it rebuilds them. Its four insets are not
+    /// IFC's lines, so a change of it rebuilds them; as does a static one
+    /// that is a stacking context (#2869, `ifc::is_static_inline_layer`), so
+    /// whether it is one is compared too. Its four insets are not
     /// compared here: the offset they resolve to is a post-layout move that
     /// sizes nothing and breaks no line, so a change of one alone keeps the
     /// lines and moves the span ([`Self::same_relative_insets`], #2412).
     fn same_relative_offset_inputs(&self, other: &ComputedStyle) -> bool {
         self.position == other.position
+            && crate::ifc::is_static_inline_layer(self) == crate::ifc::is_static_inline_layer(other)
     }
 
     /// Whether the four insets a `position: relative` inline element's
@@ -369,6 +372,7 @@ impl ComputedStyle {
     /// box model: `push_inline_spans` reads exactly these for the background it pushes.
     fn same_inline_background_inputs(&self, other: &ComputedStyle) -> bool {
         self.background_color() == other.background_color()
+            && crate::ifc::has_inline_image(self) == crate::ifc::has_inline_image(other)
             && self.padding_left.to_px() == other.padding_left.to_px()
             && self.padding_right.to_px() == other.padding_right.to_px()
             && self.padding_top.to_px() == other.padding_top.to_px()
