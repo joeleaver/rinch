@@ -20,8 +20,9 @@
 //! documents that each had a focused editor restored each other's caret to
 //! solid on every tick and neither blinked (issue #1149, the #134 rule).
 
+use rinch_core::timer::Instant;
 use std::cell::RefCell;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Caret blink half-period (solid for this long, then hidden for this long).
 /// 530 ms is the long-standing platform default (Win32 `GetCaretBlinkTime`).
@@ -59,7 +60,7 @@ fn with_clock<R>(doc_key: u64, f: impl FnOnce(Option<&mut Clock>) -> R) -> R {
 pub(crate) fn reset(doc_key: u64) {
     with_clock(doc_key, |c| {
         if let Some(c) = c {
-            c.anchor = Some(Instant::now());
+            c.anchor = Some(rinch_core::timer::now());
         }
     });
 }
@@ -79,7 +80,7 @@ pub(crate) fn set_target(doc_key: u64, target: Option<u64>) {
             c.push(Clock {
                 doc_key,
                 target,
-                anchor: Some(Instant::now()),
+                anchor: Some(rinch_core::timer::now()),
             });
         }
     });
@@ -98,7 +99,7 @@ pub(crate) fn forget(doc_key: u64, container_id: u64) {
 /// anchors the phase to "now" if it has none yet. A document with no blink
 /// target is at the start of a phase.
 pub(crate) fn tick(doc_key: u64) -> (bool, Duration) {
-    let now = Instant::now();
+    let now = rinch_core::timer::now();
     let anchor = with_clock(doc_key, |c| match c {
         Some(c) => *c.anchor.get_or_insert(now),
         None => now,
@@ -190,6 +191,41 @@ mod tests {
         );
         forget(101, 7);
         assert_eq!(target(101), None);
+    }
+
+    /// #2842: the phase is on rinch's clock, so under the harness's virtual
+    /// clock the caret toggles exactly at the half-period, however long the
+    /// host takes: solid 529 ms after the anchor, hidden at 530.
+    #[test]
+    fn the_phase_follows_the_virtual_clock_2842() {
+        use rinch_core::timer::virtual_time;
+        struct Uninstall;
+        impl Drop for Uninstall {
+            fn drop(&mut self) {
+                virtual_time::uninstall();
+            }
+        }
+        virtual_time::install();
+        let _clock = Uninstall;
+        const DOC: u64 = 2842;
+        set_target(DOC, Some(7));
+        assert_eq!(tick(DOC), (true, BLINK_INTERVAL), "solid at the anchor");
+        virtual_time::advance_to(Duration::from_millis(529));
+        assert_eq!(tick(DOC), (true, Duration::from_millis(1)), "529 ms: solid");
+        virtual_time::advance_to(Duration::from_millis(530));
+        assert_eq!(tick(DOC), (false, BLINK_INTERVAL), "530 ms: hidden");
+        virtual_time::advance_to(Duration::from_millis(1060));
+        assert_eq!(tick(DOC), (true, BLINK_INTERVAL), "1060 ms: solid again");
+        // A caret move re-anchors at the clock's time, not the wall's.
+        virtual_time::advance_to(Duration::from_millis(1300));
+        reset(DOC);
+        virtual_time::advance_to(Duration::from_millis(1829));
+        assert_eq!(
+            tick(DOC),
+            (true, Duration::from_millis(1)),
+            "529 ms after the reset"
+        );
+        set_target(DOC, None);
     }
 
     #[test]

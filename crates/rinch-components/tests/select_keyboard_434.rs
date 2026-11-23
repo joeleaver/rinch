@@ -475,3 +475,39 @@ fn unmounting_while_open_releases_the_stack_entries() {
         "both released by the unmount itself"
     );
 }
+
+/// #2842: the type-ahead prefix expires on rinch's clock, so the test
+/// harness's virtual clock decides it with no sleep: a letter 900 ms after the
+/// last one extends the prefix ("b", "l" → Blueberry), one 901 ms after it
+/// starts a new one ("c" → Cherry, where "blc" would match nothing).
+#[test]
+fn the_typeahead_prefix_expires_on_the_virtual_clock_2842() {
+    use rinch_core::timer::virtual_time;
+    use std::time::Duration;
+    struct Uninstall;
+    impl Drop for Uninstall {
+        fn drop(&mut self) {
+            virtual_time::uninstall();
+        }
+    }
+    virtual_time::install();
+    let _clock = Uninstall;
+    let m = Mounted::new("");
+    m.open();
+    assert!(m.press("b"));
+    assert_eq!(m.highlighted(), Some(1), "b → Banana");
+    virtual_time::advance_to(Duration::from_millis(900));
+    assert!(m.press("l"));
+    assert_eq!(
+        m.highlighted(),
+        Some(3),
+        "900 ms on, the prefix is live: bl → Blueberry"
+    );
+    virtual_time::advance_to(Duration::from_millis(900 + 901));
+    assert!(m.press("c"));
+    assert_eq!(
+        m.highlighted(),
+        Some(2),
+        "901 ms on, the prefix expired: c → Cherry"
+    );
+}

@@ -70,9 +70,10 @@
 //! - It drives one window. Menus a key reaches are matched (as the shell does
 //!   before the app sees a key), but the native menu bar, the tray, other
 //!   windows and the OS (clipboard aside) are not there.
-//! - Transitions and animations advance with the wall clock, as in the app.
-//!   [`TestApp::settle`] runs further turns; it does not skip ahead. Timers
-//!   are the exception: see [Time](#time).
+//! - Nothing advances with real time. Timers, transitions and animations,
+//!   multi-click and tooltip timing are on the virtual clock (see
+//!   [Time](#time)); [`TestApp::settle`] runs further turns, it does not skip
+//!   ahead.
 //! - A closure a worker thread queues with
 //!   [`run_on_main_thread`](crate::run_on_main_thread) (or
 //!   `rinch_core::dispatch_main_callback`) names no app, and is run by
@@ -346,6 +347,15 @@
 //! [`crate::time::now`] reads the same clock (the instant it started at plus
 //! [`TestApp::elapsed`]), so code that judges elapsed time with it agrees with
 //! its timers to the millisecond; `std::time::Instant::now()` does not.
+//!
+//! rinch's own timed behaviour reads it too (#2842): CSS transitions and
+//! animations (and a wheel notch's glide), double and triple clicks (500 ms),
+//! the `title` tooltip's delay (500 ms), drag auto-scroll's speed, the
+//! editor's caret blink and undo grouping, `<select>` and `Select` type-ahead
+//! (900 ms) and timed `poll_signal`s. None of them move unless the test
+//! advances the clock: two clicks with no `advance_time` between them are a
+//! double click, and a transition stays at its start until the clock passes
+//! it.
 //!
 //! The clock is the thread's, so tests on other threads keep their own. Two
 //! `TestApp`s alive at once on one thread share one clock: the second starts
@@ -1634,7 +1644,9 @@ impl TestApp {
 
     /// A mouse wheel's notches at `(x, y)`, DOM sign as in [`Self::wheel`]:
     /// the scroll glides, as one from a real wheel does (unless the app
-    /// turned smooth wheel scrolling off).
+    /// turned smooth wheel scrolling off). The glide runs on the virtual
+    /// clock, so [`Self::advance_time`] carries it to its end (see
+    /// [Time](self#time)).
     pub fn wheel_lines(&mut self, x: f32, y: f32, lines_x: f64, lines_y: f64) {
         self.move_unless_there(x, y);
         self.send(PlatformEvent::MouseWheelLines {

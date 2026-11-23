@@ -114,6 +114,37 @@ fn the_window_closes_at_500_ms() {
     assert_eq!(html(&handle), "<p>x</p>", "`abc` was one step");
 }
 
+/// #2842: with no fixture clock the history reads rinch's clock, which the
+/// test harness's virtual clock drives (`rinch::testing::TestApp::advance_time`
+/// moves it): keystrokes 499 ms apart on it are one step, 500 ms apart two,
+/// with no sleep and whatever the host's load.
+#[test]
+fn the_window_follows_the_virtual_clock_2842() {
+    use rinch_core::timer::virtual_time;
+    struct Uninstall;
+    impl Drop for Uninstall {
+        fn drop(&mut self) {
+            virtual_time::uninstall();
+        }
+    }
+    virtual_time::install();
+    let _clock = Uninstall;
+    let ms = Duration::from_millis;
+    let handle = editor("<p>x</p>", 2);
+    virtual_time::advance_to(ms(1_000));
+    assert!(handle.insert_text("a"));
+    virtual_time::advance_to(ms(1_499));
+    assert!(handle.insert_text("b")); // 499 ms after `a`: merged
+    virtual_time::advance_to(ms(1_999));
+    assert!(handle.insert_text("c")); // 500 ms after `b`: a new step
+    assert_eq!(html(&handle), "<p>xabc</p>");
+
+    assert!(handle.command("undo"));
+    assert_eq!(html(&handle), "<p>xab</p>", "undo takes back only `c`");
+    assert!(handle.command("undo"));
+    assert_eq!(html(&handle), "<p>x</p>", "`ab` was one step");
+}
+
 /// Typing in quick succession is still one step (the stamps are milliseconds,
 /// not a finer unit), and a command's typing (Backspace) merges with it.
 #[test]

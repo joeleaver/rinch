@@ -9,20 +9,22 @@
 //! ([`stamp`]); before #940 nothing did, every time was `0`, and the window was
 //! always open — a paragraph typed over a minute was one undo step.
 //!
-//! The clock is monotonic milliseconds since this thread first asked
-//! (`web_time::Instant`: `std::time` on native, `performance.now()` in a
-//! browser). An editor and its history live on one thread, so the per-thread
-//! origin is never compared across threads.
+//! The clock is monotonic milliseconds since this thread first asked, read
+//! from rinch's clock, [`rinch_core::timer::now`] (#2842): `std::time` on
+//! native, `performance.now()` in a browser, and the virtual clock under the
+//! test harness (`rinch::testing::TestApp`), so a test's `advance_time` opens
+//! and closes the merge window exactly. An editor and its history live on one
+//! thread, so the per-thread origin is never compared across threads.
 //!
 //! [`EditorHandle`]: crate::EditorHandle
 
 use std::cell::Cell;
 
+use rinch_core::timer::Instant;
 use rinch_editor_core::Transaction;
-use web_time::Instant;
 
 thread_local! {
-    static ORIGIN: Instant = Instant::now();
+    static ORIGIN: Instant = rinch_core::timer::now();
     static OVERRIDE: Cell<Option<fn() -> u64>> = const { Cell::new(None) };
 }
 
@@ -41,7 +43,13 @@ pub(crate) fn now_ms() -> u64 {
     if let Some(clock) = OVERRIDE.with(Cell::get) {
         return clock();
     }
-    ORIGIN.with(|origin| origin.elapsed().as_millis() as u64)
+    // Saturating: a virtual clock installed after the origin was taken may
+    // read an instant before it.
+    ORIGIN.with(|origin| {
+        rinch_core::timer::now()
+            .saturating_duration_since(*origin)
+            .as_millis() as u64
+    })
 }
 
 /// Stamp `tr` with the history clock unless its builder set a time itself

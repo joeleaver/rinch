@@ -1532,7 +1532,7 @@ impl RinchApp {
             owned_theme_css: None,
             #[cfg(feature = "theme")]
             owned_theme_generation: 0,
-            last_click_time: Instant::now(),
+            last_click_time: rinch_core::timer::now(),
             last_click_pos: (0.0, 0.0),
             click_count: 0,
             hit_test_font_cx: rinch_dom::fonts::new_font_context(),

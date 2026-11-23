@@ -264,6 +264,27 @@ a harness. The clock is thread-local and installs nest, so two `TestApp`s on
 one thread share one; another thread (with or without a harness) has its own.
 Pins: `timer::tests::now_*`, `rinch/tests/testing_harness.rs` `*_2839`.
 
+### UI timing on `now()` (#2842)
+
+Every rinch behaviour that judges elapsed time reads `now()`, so under
+`TestApp` the virtual clock decides it: transitions and animations
+(`RinchDocument::animation_now_ms`, mapped onto epoch ms, see
+`reactive-rendering.md`), multi-click (`event_dispatch.rs`, with
+`last_click_time` initialised from it), the `title` tooltip's move and tick,
+`tick_drag_auto_scroll`, `<select>` type-ahead (`select_widget.rs`) and the
+`Select` component's (`rinch-components/src/select.rs`), the editor's caret
+blink anchor and tick (`rinch-editor-view/src/blink.rs`) and history clock
+(`clock.rs`, whose thread origin is taken from `now()` and read saturating),
+`poll_signal`'s `Hz`/`Millis` due times (`reactive/poll.rs`; still drained
+only by a painted frame), and the graph canvas's wheel gesture when no test
+clock is set. In an app `now()` is `Instant::now()`, so the shell's
+`WaitUntil` deadlines (`title_tooltip_deadline`, blink) are unchanged. Kept on
+the wall clock on purpose: touch and long-press timing (shell, Android), WM
+and OS drag waits, host wake scheduling, and perf timings. Pins:
+`rinch/tests/ui_clock_2842.rs`, `blink::tests::the_phase_follows_the_virtual_clock_2842`,
+`rinch-editor-view/tests/history_time_940.rs`, `rinch-components/tests/select_keyboard_434.rs`,
+`canvas::wheel_tests::the_gesture_clock_follows_the_virtual_clock_2842`.
+
 ### A cleared timer wakes nothing (#2832)
 
 `clear_timeout` (and so `clear_interval`, and dropping a `sleep`) drops the
