@@ -32,16 +32,22 @@ fn sheet(dark: bool, primary: ColorName, mode: ComponentStyles) -> String {
 
 /// Without app CSS, the layered sheets paint what the unlayered ones paint:
 /// fill and text of every filled component, both schemes, a dark and a light
-/// primary.
+/// primary. A real `<button>` is among them: the theme's base
+/// `button { color: inherit }` must sit in a layer too, or it outranks every
+/// layered component colour.
 #[test]
 fn layered_paints_like_unlayered() {
+    let button = Probe {
+        tag: "button",
+        ..probe("<button> filled", "rinch-button rinch-button--filled")
+    };
     let mut wrong = Vec::new();
     for dark in [false, true] {
         for primary in [ColorName::Blue, ColorName::Yellow] {
             let plain = sheet(dark, primary, ComponentStyles::Unlayered);
             let layered = sheet(dark, primary, ComponentStyles::Layered);
             assert!(layered.starts_with("@layer rinch-theme, rinch-components;"));
-            for p in PRIMARY_FILLED {
+            for p in PRIMARY_FILLED.iter().chain([&button]) {
                 let a = paint(&[&plain], p, None, None, "var(--rinch-primary-color)");
                 let b = paint(&[&layered], p, None, None, "var(--rinch-primary-color)");
                 if (a.text, a.fill, a.reference) != (b.text, b.fill, b.reference) {

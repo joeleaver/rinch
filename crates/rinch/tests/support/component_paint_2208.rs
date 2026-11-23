@@ -115,7 +115,7 @@ pub const PRIMARY_FILLED: &[Probe] = &[
 pub struct Painted {
     /// The probe's text colour.
     pub text: [u8; 3],
-    /// The probe's fill, at its lower right.
+    /// The probe's fill, right of the swatch (a round probe's corner is not fill).
     pub fill: [u8; 3],
     /// The reference swatch.
     pub reference: [u8; 3],
@@ -143,17 +143,20 @@ pub fn paint(
          .probe.probe {{ position: absolute; left: 10px; top: 10px; width: 60px;
                         height: 30px; padding: 0; margin: 0; display: block;
                         box-sizing: border-box; transform: none; min-height: 0;
-                        min-width: 0; font-size: 0; opacity: 1; }}
+                        min-width: 0; font-size: 0; opacity: 1; transition: none; }}
          .sw.sw {{ position: absolute; left: 4px; top: 4px; width: 10px; height: 10px;
                   padding: 0; margin: 0; display: block; font-size: 0;
                   background-color: currentColor; }}
+         .wrap.wrap {{ display: block; position: static; }}
          .ref {{ position: absolute; left: 100px; top: 10px; width: 20px;
                  height: 20px; background-color: {reference}; }}"
     ));
     let mut parent = doc.body();
     for class in p.wrap {
         let div = doc.create_element("div");
-        doc.set_attribute(div, "class", class);
+        // Plain blocks, so the probe is placed against the page (an empty
+        // inline-flex wrapper would sit on the line's baseline).
+        doc.set_attribute(div, "class", &format!("{class} wrap"));
         doc.append_child(parent, div);
         parent = div;
     }
@@ -192,7 +195,7 @@ pub fn paint(
     };
     Painted {
         text: pixel(19, 19),
-        fill: pixel(60, 35),
+        fill: pixel(45, 30),
         reference: pixel(110, 20),
         page: pixel(150, 60),
     }

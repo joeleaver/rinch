@@ -38,6 +38,7 @@ Omit `.theme(...)` to get the default theme (blue primary, light mode, small rad
 | `font_family` | `Option<String>` | System fonts | Primary font stack |
 | `font_family_monospace` | `Option<String>` | System mono | Monospace font stack |
 | `dark_mode` | `bool` | `false` | Dark mode |
+| `component_styles` | `ComponentStyles` | `Unlayered` | How the component sheet joins the cascade: `Unlayered`, `Layered` or `Off` ([Layering and unstyled components](#layering-and-unstyled-components)) |
 
 ## CSS Variables
 
@@ -110,6 +111,36 @@ var(--rinch-primary-color-light)           /* The same six for the primary; its 
 The components' `light` variants paint these: Button and ActionIcon (`light` fills
 and the hover/active fills of `outline` and `subtle`), Badge, Alert, inline Code and
 the `light` Avatar. Use them for your own tinted surfaces and they follow the scheme.
+
+### Contrast Colors
+
+The text color that reads on a color's filled shade, for every palette color
+(from its shade 6) and for the primary (from the primary shade). It is the same
+in both schemes, because the filled shades do not flip.
+
+```css
+var(--rinch-color-blue-contrast)    /* Text on a filled blue-6: white */
+var(--rinch-color-yellow-contrast)  /* Text on a filled yellow-6: black */
+var(--rinch-primary-color-contrast) /* Text on the filled primary */
+```
+
+The theme picks white, or black when white would read below about 2.1:1 (the
+color's relative luminance is above 0.45, `rinch_theme::contrast_text`). With
+the default palette that keeps white text on every color but yellow and lime,
+which is what the components painted before; a pale primary (`primary_shade: 2`)
+or a light palette of your own gets black text. The filled components paint it:
+filled Button, ActionIcon, Badge and Avatar, Pagination's active page, Tabs'
+active pill, Stepper's completed and current step, NavLink's active link,
+Checkbox's check and filled Alert. A component's own `color` prop carries its
+color's contrast with it (`white`/`black` computed from a raw `#…`/`rgb(…)`
+color, white for any other raw color).
+
+Set it in your own stylesheet to choose the color yourself; the theme sheet
+comes before the app's, so your `:root` wins:
+
+```css
+:root { --rinch-primary-color-contrast: #1a1b1e; }
+```
 
 ### Spacing
 
@@ -693,6 +724,36 @@ let css = rinch_theme::generate_theme_css(&theme);
 ```
 
 Or ignore the theme system entirely and write your own CSS variables, your own classes, your own inline styles. Rinch components read from `--rinch-*` variables. If those variables exist, components use them. If they don't, components fall back to hardcoded defaults. You're never locked in.
+
+### Layering and unstyled components
+
+By default the theme and component sheets are ordinary author CSS ahead of the
+app's own: an app rule replaces a component rule only when it is at least as
+specific, and some active states take three classes to beat
+(`.rinch-tabs--pills > .rinch-tabs__list > .rinch-tabs__tab--active`).
+`component_styles` changes that:
+
+```rust
+let theme = ThemeProviderProps {
+    component_styles: ComponentStyles::Layered,
+    ..Default::default()
+};
+```
+
+| `ComponentStyles` | What the components get |
+|---|---|
+| `Unlayered` (default) | The theme sheet, then the component sheet, unlayered, as rinch always did |
+| `Layered` | The theme sheet in `@layer rinch-theme` and the component sheet in `@layer rinch-components` (declared in that order). **Any** unlayered app rule outranks them whatever its specificity, the way author CSS outranks a browser's built-in look of its controls: `button { background: … }` restyles a `Button`. With no app CSS it paints what `Unlayered` paints. |
+| `Off` | No component sheet: the components render their markup and `rinch-*` classes unstyled, for an app that styles them itself. The theme sheet (variables and base styles) stays. |
+
+Under `Layered` a generic app rule now reaches the components too (`* { margin: 0 }`
+or `div { display: flex }` restyles them), so it suits an app that writes its
+CSS knowing that. The other side of cascade layers: a layered `!important` (the
+overlays' visibility rules in Modal, Drawer and Notification) outranks an
+unlayered app `!important`. An app can put its own CSS in layers after these
+(`@layer rinch-theme, rinch-components, app;`). The setting takes effect with
+the `components` feature; `rinch_components::compose_theme_and_component_css`
+builds the same string for a document you load yourself.
 
 ## Dark Mode
 

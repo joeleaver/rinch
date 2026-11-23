@@ -1444,6 +1444,35 @@ compares every light-scheme sample with a swatch of the old shade, and checks th
 dark scheme's fills are dark, its text reads (4.5:1) and rest, hover and active
 stay three colours.
 
+**Text on a filled colour is a contrast token, not `white`** (#2208).
+`generate_css_variables` writes `--rinch-color-{name}-contrast` (from shade 6)
+and `--rinch-primary-color-contrast` (from the primary shade), each
+`rinch_theme::contrast_text` of the hex: black above relative luminance 0.45,
+else white. The threshold was picked so the default palette keeps today's
+text (white everywhere but yellow and lime, Badge's old `#000`); Chrome's own
+midpoint (~0.2) would have flipped blue. A component with a `color` prop writes
+`{prefix}-color` and `{prefix}-contrast` inline through
+`color_utils::accent_vars` (Button through `style_string`'s
+`--rinch-button-color-contrast`), and its rule reads
+`var({prefix}-contrast, var(--rinch-primary-color-contrast))`. Alert's yellow
+keeps its `yellow-9` text. Pinned by `crates/rinch/tests/filled_contrast_2208.rs`
+(yellow primary reads 4.5:1 in both schemes; the default theme still paints
+white).
+
+**The component sheet can be layered or left out** (#2208).
+`ThemeProviderProps::component_styles` (`rinch_core::ComponentStyles`) reaches
+`generate_theme_css_string`, which hands the theme CSS to
+`rinch_components::compose_theme_and_component_css`: `Unlayered` concatenates
+(the default, unchanged), `Layered` wraps the theme in `@layer rinch-theme` and
+the components in `@layer rinch-components` after a `@layer rinch-theme,
+rinch-components;` statement, `Off` returns the theme alone. Stylo 0.22's servo
+build parses and cascades `@layer` (see `crates/rinch-dom/tests/style_sheet_order_2694_tests.rs`).
+The base styles must be layered with the components: their unlayered
+`button, input, select, textarea { color: inherit }` would otherwise outrank
+every layered component colour. Pinned by `crates/rinch/tests/component_layers_2208.rs`
+(layered paints like unlayered; a `button` rule outranks only the layered sheet;
+`Off` has no fill).
+
 **Generic font families are repaired on Android** (`crates/rinch-dom/src/fonts.rs`,
 issue #322). fontique maps the `monospace` slot to the literal name `"monospace"`,
 which `/system/fonts` is not indexed under, so the slot is empty and `<code>`,
