@@ -1132,3 +1132,50 @@ fallback for a drag over no text) is not drawn to them.
   tab.
 - The walk runs only on copy; a drag's move reads `runs` and the roots
   cache, never the walk.
+
+## Keyboard scrolling (#2977)
+
+`app/keyboard_scroll.rs`. `handle_unclaimed_key_fallback` asks
+`keyboard_scroll` first, so after the registered widget's `on_key`, the
+element key handlers and the app-wide listeners, and only when no text field
+holds the keyboard (`live_focused_input_handler`), the focus is not a
+`<select>` (its arrows are its own) and, for Space, the focused node does not
+activate (`focused_node_activates`: its own `data-rid`, a button / link / form
+control / `<summary>` / `<option>`, or an ARIA widget role; Chrome scrolls a
+focused `tabindex` box that is none of these). The rich-text editor's keys
+never get here. A key that scrolls asks for a redraw and is consumed; one that
+finds nothing to scroll falls through to the text keys as before.
+
+- **Bindings** (`key_scroll`): Standard: bare arrows (vertical and
+  horizontal), Page Up / Page Down (Shift allowed), Home / End (Ctrl
+  allowed), Space / Shift+Space. macOS: the same, plus Cmd+Up / Cmd+Down to
+  the edges and Option+Up / Option+Down by a page. Shift+arrows are left to
+  the read-only selection (#2953).
+- **Which scroller** (`keyboard_scroller`): from the focused node, else
+  `keyboard_scroll_anchor` (the node the last press of any button landed on,
+  recorded at the top of `handle_event` before any intercept), else
+  `<body>`: the nearest box that overflows on the axis, is not
+  `scroll_locked_out`, and can still move that way. "Can move" reads the
+  running animation's target (`SmoothWheelState::heading_to`) when one
+  runs, so a key pressed while a scroll is headed for the end goes to the
+  scroller around it. The walk stops at a `position: fixed` box.
+- **Amounts**: an arrow 40 px (`kPixelsPerLineStep`), a page 0.875 of the
+  scroller's client height (`kMinFractionToStepWhenPaging`), Home / End the
+  range's ends.
+- **Motion**: with the smooth switch on (`set_smooth_wheel_scroll`, the one
+  user-scroll switch), `animate_by` / `animate_to` with `CurveKind::Keyboard`:
+  150 ms whatever the distance, `ease-in-out`, a repeat adding to the target.
+  Off, one `scroll_vertically_by` / `scroll_horizontally_by` write and its
+  `onscroll`. A `lock_scroll` taken mid-scroll stops it (a user scroll, as a
+  wheel glide).
+
+Measured in Chrome 158 (headless; a focused 200x300 `tabindex` scroller at
+5000 px; `Input.dispatchKeyEvent` over CDP; `scrollTop` every rAF): ArrowDown
+40 px, PageDown and Space 262 px, End 24 700 px, each landing about 150 ms
+after the key on `ease-in-out` (0.8% RMS of the distance over the four runs).
+Not modelled: Chrome's keyboard scroll from a focused `<input>` (Page Up /
+Page Down in a single-line field scroll the page there; here the field keeps
+every key), and the editor's own Page Up / Page Down (#2020), which still
+jumps (its caret placement reads the scrolled offset at once). Pins:
+`rinch/tests/keyboard_scroll_2977.rs`.
+
