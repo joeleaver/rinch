@@ -307,10 +307,18 @@ async fn tab_in_an_editor_inside_a_trap_moves_within_the_trap() {
     open.set(true);
     press_editor("h3");
     tab(false);
-    assert_eq!(active_desc(), "after", "Tab goes on to the trap's next stop");
+    assert_eq!(
+        active_desc(),
+        "after",
+        "Tab goes on to the trap's next stop"
+    );
     press_editor("h3");
     tab(true);
-    assert_eq!(active_desc(), "before", "Shift+Tab goes back to the previous one");
+    assert_eq!(
+        active_desc(),
+        "before",
+        "Shift+Tab goes back to the previous one"
+    );
     open.set(false);
     root.unmount();
     purge();
