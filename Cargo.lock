@@ -2045,7 +2045,7 @@ dependencies = [
 [[package]]
 name = "fontique"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=3930dffd2283c1e7a7db37dcda5738b2e20f1c19#3930dffd2283c1e7a7db37dcda5738b2e20f1c19"
+source = "git+https://github.com/joeleaver/parley-fork?rev=399a8b8e66b6ec581118f91179d1833dc7e8fbc6#399a8b8e66b6ec581118f91179d1833dc7e8fbc6"
 dependencies = [
  "hashbrown 0.17.1",
  "libc",
@@ -4474,7 +4474,7 @@ dependencies = [
 [[package]]
 name = "parlance"
 version = "0.1.1"
-source = "git+https://github.com/joeleaver/parley-fork?rev=3930dffd2283c1e7a7db37dcda5738b2e20f1c19#3930dffd2283c1e7a7db37dcda5738b2e20f1c19"
+source = "git+https://github.com/joeleaver/parley-fork?rev=399a8b8e66b6ec581118f91179d1833dc7e8fbc6#399a8b8e66b6ec581118f91179d1833dc7e8fbc6"
 dependencies = [
  "bytemuck",
 ]
@@ -4482,7 +4482,7 @@ dependencies = [
 [[package]]
 name = "parley"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=3930dffd2283c1e7a7db37dcda5738b2e20f1c19#3930dffd2283c1e7a7db37dcda5738b2e20f1c19"
+source = "git+https://github.com/joeleaver/parley-fork?rev=399a8b8e66b6ec581118f91179d1833dc7e8fbc6#399a8b8e66b6ec581118f91179d1833dc7e8fbc6"
 dependencies = [
  "fontique",
  "hashbrown 0.17.1",
@@ -4495,7 +4495,7 @@ dependencies = [
 [[package]]
 name = "parley_data"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=3930dffd2283c1e7a7db37dcda5738b2e20f1c19#3930dffd2283c1e7a7db37dcda5738b2e20f1c19"
+source = "git+https://github.com/joeleaver/parley-fork?rev=399a8b8e66b6ec581118f91179d1833dc7e8fbc6#399a8b8e66b6ec581118f91179d1833dc7e8fbc6"
 dependencies = [
  "icu_collections",
  "icu_properties",
@@ -4504,12 +4504,12 @@ dependencies = [
 [[package]]
 name = "parley_emoji"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=3930dffd2283c1e7a7db37dcda5738b2e20f1c19#3930dffd2283c1e7a7db37dcda5738b2e20f1c19"
+source = "git+https://github.com/joeleaver/parley-fork?rev=399a8b8e66b6ec581118f91179d1833dc7e8fbc6#399a8b8e66b6ec581118f91179d1833dc7e8fbc6"
 
 [[package]]
 name = "parley_engine"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=3930dffd2283c1e7a7db37dcda5738b2e20f1c19#3930dffd2283c1e7a7db37dcda5738b2e20f1c19"
+source = "git+https://github.com/joeleaver/parley-fork?rev=399a8b8e66b6ec581118f91179d1833dc7e8fbc6#399a8b8e66b6ec581118f91179d1833dc7e8fbc6"
 dependencies = [
  "fontique",
  "harfrust",

@@ -1017,7 +1017,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`3930dffd2283c1e7a7db37dcda5738b2e20f1c19`, branch `rinch-patch`, with fork PRs joeleaver/parley-fork#6 and #8
+(`399a8b8e66b6ec581118f91179d1833dc7e8fbc6`, branch `fix-2962`, fork PR joeleaver/parley-fork#17 (item 21, open against `rinch-patch`), on branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
 (items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17), #15 (item 18) and #16 (items 19 and 20) merged): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
@@ -1383,11 +1383,8 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `plaintext`) in `build_parley_layout` (a `<textarea>`, select labels, image placeholders), a
     flex or grid text leaf (`TextMeasure::base_direction`) and the paint fallback; a tooltip takes
     its first strong character's (review of #2969: an `ltr` textarea's Hebrew-led second line had
-    gone right to left). An explicit direction still makes the text one
-    paragraph with every embedding running across a separator, as before; Chrome resolves each
-    paragraph on its own there too (reopening the bidi controls after a forced break), so in a
-    `dir=rtl` block a neutral that starts a paragraph after a Latin one (`abc<br><img>abc`) takes
-    the Latin's direction here and the paragraph's in Chrome (known difference, #2962). Pinned by
+    gone right to left). An explicit direction's paragraphs are split too since item 21.
+    Pinned by
     the fork's `test_plaintext_paragraphs.rs` and `auto_resolves_each_paragraph_on_its_own`, and
     `crates/rinch-dom/tests/plaintext_paragraphs_2940_tests.rs` (Chrome 158).
 
@@ -1406,6 +1403,21 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     0). Where the levels agree nothing changes. Mid-line bidi boundaries are as they were. Pinned
     by the fork's `test_line_edge_caret.rs` and
     `crates/rinch-dom/tests/line_edge_caret_2950_tests.rs` (Chrome 158).
+
+21. **An explicit direction's paragraphs are resolved on their own, the controls open across a
+    separator reopened** (`399a8b8e`, `parley_engine/src/bidi.rs`; #2962; fork PR
+    joeleaver/parley-fork#17, stacked on #16). UAX #9 P1 and X8 whatever the base direction: each
+    paragraph is resolved at the block's level, so a neutral that starts one takes the block's
+    direction, not the strong text's before the break (Chrome 158: `<div dir=rtl>abc<br><img>abc`
+    puts the image at the right, where it was left of the second `abc`). Before, item 19 split
+    paragraphs only under `Auto`, and an explicit direction made the block one paragraph. The
+    explicit controls open at a separator (an inline element's `unicode-bidi`, a block's
+    override; nested by X6a and X7) are reopened at the next paragraph's start, as Blink reopens
+    an element's bidi context after a forced break, so they still run across a `<br>`; that
+    applies under `Auto` too. Pinned by the fork's `an_explicit_directions_paragraphs_are_resolved_on_their_own`
+    and `an_embedding_runs_across_a_separator`, and
+    `crates/rinch-dom/tests/explicit_direction_paragraphs_2962_tests.rs` (Chrome 158, the
+    reopened embedding, isolate and override among them).
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has
