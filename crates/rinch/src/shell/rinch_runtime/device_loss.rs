@@ -111,6 +111,21 @@ impl GpuRebuild {
     pub(super) fn run(
         &mut self,
         now: Instant,
+        try_window: impl FnMut(WindowRole, bool) -> bool,
+    ) -> bool {
+        self.run_shown_first(now, &[], try_window)
+    }
+
+    /// [`Self::run`], with the windows in `shown` (the ones on screen) tried
+    /// before the others (#2896): a shown window publishes the device it
+    /// makes, and a hidden window built after it shares that device, where
+    /// one built first would make a private device its show then refuses.
+    /// So a hidden window is not tried at all while a shown one is still
+    /// waiting (before the limit), lest the GPU come back between the two.
+    pub(super) fn run_shown_first(
+        &mut self,
+        now: Instant,
+        shown: &[WindowRole],
         mut try_window: impl FnMut(WindowRole, bool) -> bool,
     ) -> bool {
         if now < self.next {
@@ -118,7 +133,18 @@ impl GpuRebuild {
         }
         let deadline = self.started + GPU_REBUILD_LIMIT;
         let last = now >= deadline;
-        self.pending.retain(|&role| !try_window(role, last));
+        // Stable: shown windows first, each group in its own order.
+        self.pending.sort_by_key(|role| !shown.contains(role));
+        let mut shown_waits = false;
+        self.pending.retain(|&role| {
+            let on_screen = shown.contains(&role);
+            if !on_screen && shown_waits && !last {
+                return true;
+            }
+            let settled = try_window(role, last);
+            shown_waits |= on_screen && !settled;
+            !settled
+        });
         if !self.pending.is_empty() {
             self.next = (now + self.delay).min(deadline);
             self.delay = (self.delay * 2).min(GPU_REBUILD_MAX_DELAY);
@@ -273,7 +299,13 @@ impl RinchRuntime {
         let Some(mut rebuild) = self.gpu_rebuild.take() else {
             return;
         };
-        if !rebuild.run(now, |role, last| self.rebuild_window(role, last)) {
+        let shown: Vec<WindowRole> = rebuild
+            .pending
+            .iter()
+            .copied()
+            .filter(|&role| self.open_w(role).is_some_and(|w| w.window.is_some()))
+            .collect();
+        if !rebuild.run_shown_first(now, &shown, |role, last| self.rebuild_window(role, last)) {
             self.gpu_rebuild = Some(rebuild);
             return;
         }
@@ -719,5 +751,44 @@ mod tests {
         assert!(rt.gpu_rebuild.is_none(), "rebuilt");
         assert!(rt.main.parked_renderer.is_some(), "on the GPU, parked");
         assert_eq!(prepared_frames(&rt), before + 1, "prepared again");
+    }
+
+    /// #2896: a hidden prepared window is rebuilt only after the shown ones
+    /// (whatever their order of roles), so it shares the device a shown
+    /// window publishes; while a shown window still waits for the GPU, the
+    /// hidden one is not tried, and at the limit both are.
+    #[test]
+    fn hidden_windows_are_rebuilt_after_the_shown_ones() {
+        let t0 = Instant::now();
+        let shown = WindowRole::Other(7);
+        let hidden = WindowRole::Main;
+        let mut rebuild = GpuRebuild::new(vec![hidden, shown], vec![hidden, shown], t0);
+        let mut tries = Vec::new();
+        // The first try: the GPU is not back for the shown window.
+        assert!(!rebuild.run_shown_first(t0, &[shown], |role, last| {
+            tries.push((role, last));
+            false
+        }));
+        assert_eq!(tries, [(shown, false)], "the hidden one is not tried");
+        assert!(rebuild.awaits(hidden) && rebuild.awaits(shown));
+        // The second: back; the shown window publishes, then the hidden one.
+        tries.clear();
+        let at = rebuild.next();
+        assert!(rebuild.run_shown_first(at, &[shown], |role, last| {
+            tries.push((role, last));
+            true
+        }));
+        assert_eq!(tries, [(shown, false), (hidden, false)]);
+
+        // At the limit every window is tried, by the startup rule.
+        let mut rebuild = GpuRebuild::new(vec![hidden, shown], Vec::new(), t0);
+        tries.clear();
+        assert!(
+            rebuild.run_shown_first(t0 + GPU_REBUILD_LIMIT, &[shown], |role, last| {
+                tries.push((role, last));
+                role == hidden || last
+            })
+        );
+        assert_eq!(tries, [(shown, true), (hidden, true)]);
     }
 }

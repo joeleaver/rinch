@@ -317,7 +317,10 @@ window still open (#2891: a window closed during the rebuild is skipped, through
 `RinchRuntime::open_w`; `w` panicked on it). A hidden window prepared on the GPU is in the rebuild
 too (#2891), so it is prepared again on the renderer the rebuild built it, or, when the GPU did
 not come back in time, by the startup rule at the rebuild's end; a window shown during the rebuild
-that already has its renderer is settled rather than built a second one. A second loss
+that already has its renderer is settled rather than built a second one. The shown windows are
+tried first (`GpuRebuild::run_shown_first`, #2896), and a hidden one is not tried while a shown
+one still waits: built first, a hidden window's `try_new_offscreen` finds no device published and
+makes a private one, which its show then refuses once a shown window has published another. A second loss
 during a rebuild folds the earlier rebuild's windows into the new one. **A window shown or made during the recovery** (`device_loss::gpu_recovering`: under 5 s since
 the retirement, `note_retired`): `ShellWindow::start_gpu_renderer` goes through
 `start_renderer_with`, which tries without the startup rule and, if the GPU will not start yet,
