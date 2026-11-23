@@ -10,9 +10,11 @@
 //! The nearest box, from the focused node (else the node the last press
 //! landed on, else the page), that overflows on the key's axis, is not locked
 //! out by a `lock_scroll` and can still move that way — so a list at its end
-//! hands the key to the scroller around it, as the wheel does. The walk stops
-//! at a `position: fixed` box: nothing outside it moves it. The page is
-//! `<body>`.
+//! hands the key to the scroller around it, as the wheel does. At a
+//! `position: fixed` box the walk goes straight to the page (no scroller between
+//! the box and the viewport moves it, but Chrome hands the key to the viewport,
+//! as rinch's wheel does), so a press in a fixed header then Page Down scrolls
+//! the page. The page is `<body>`.
 //!
 //! # How far (measured in Chrome 158, a focused 300 px scroller)
 //!
@@ -111,11 +113,13 @@ fn scrollbar_axis(axis: WheelAxis) -> ScrollbarAxis {
 }
 
 impl RinchApp {
-    /// Whether Space on the focused node activates it rather than scrolling:
-    /// it is a node Space activates in Chrome (a button, a link, a form
-    /// control, `<summary>`, or an ARIA widget role), or it carries its own
-    /// click handler (`data-rid`), which rinch activates. A focused box that
-    /// is none of these (a `tabindex` scroller, a card) scrolls.
+    /// Whether Space on the focused node activates it rather than scrolling,
+    /// as Chrome 158 answers: a `<button>`, a form control (`<input>`,
+    /// `<select>`, `<textarea>`), `<summary>` and `<option>` take Space; a link,
+    /// `role="button"` or any other focused box does not (Space scrolls the page
+    /// there, and no click fires, even with a click handler on an ancestor). A
+    /// node with its own click handler (`data-rid`) is rinch's activation target
+    /// and takes it too.
     pub(super) fn focused_node_activates(&self) -> bool {
         let super::FocusTarget::Node(id) = self.focus_target else {
             return false;
@@ -125,34 +129,11 @@ impl RinchApp {
         let Some(node) = d.tree.get(id) else {
             return false;
         };
-        if node.attributes.contains_key("data-rid") {
-            return true;
-        }
-        let tag = node.tag().unwrap_or("");
-        if matches!(
-            tag,
-            "button" | "input" | "select" | "textarea" | "summary" | "option"
-        ) || (tag == "a" && node.attributes.contains_key("href"))
-        {
-            return true;
-        }
-        node.attributes.get("role").is_some_and(|r| {
-            matches!(
-                r.to_ascii_lowercase().as_str(),
-                "button"
-                    | "link"
-                    | "checkbox"
-                    | "radio"
-                    | "switch"
-                    | "menuitem"
-                    | "menuitemcheckbox"
-                    | "menuitemradio"
-                    | "tab"
-                    | "option"
-                    | "treeitem"
-                    | "gridcell"
+        node.attributes.contains_key("data-rid")
+            || matches!(
+                node.tag().unwrap_or(""),
+                "button" | "input" | "select" | "textarea" | "summary" | "option"
             )
-        })
     }
 
     /// Scroll for an unclaimed `key`, as Chrome's default action does.
@@ -284,8 +265,9 @@ impl RinchApp {
             if usable(id) {
                 return Some(id);
             }
+            // A fixed box hands the key to the page, as Chrome's does.
             if node.box_position() == rinch_dom::computed_style::PositionValue::Fixed {
-                return None;
+                break;
             }
             current = node.parent;
         }

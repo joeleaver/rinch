@@ -1140,9 +1140,11 @@ fallback for a drag over no text) is not drawn to them.
 element key handlers and the app-wide listeners, and only when no text field
 holds the keyboard (`live_focused_input_handler`), the focus is not a
 `<select>` (its arrows are its own) and, for Space, the focused node does not
-activate (`focused_node_activates`: its own `data-rid`, a button / link / form
-control / `<summary>` / `<option>`, or an ARIA widget role; Chrome scrolls a
-focused `tabindex` box that is none of these). The rich-text editor's keys
+activate (`focused_node_activates`: its own `data-rid`, or a `<button>`,
+`<input>`, `<select>`, `<textarea>`, `<summary>` or `<option>`; measured in
+Chrome 158, Space on a focused link, `role="button"` box, plain `tabindex` box
+or box inside an element with a click handler scrolls the page and fires no
+click, so an ancestor's `data-rid` does not count; review of #2987). The rich-text editor's keys
 never get here. A key that scrolls asks for a redraw and is consumed; one that
 finds nothing to scroll falls through to the text keys as before.
 
@@ -1158,7 +1160,9 @@ finds nothing to scroll falls through to the text keys as before.
   `scroll_locked_out`, and can still move that way. "Can move" reads the
   running animation's target (`SmoothWheelState::heading_to`) when one
   runs, so a key pressed while a scroll is headed for the end goes to the
-  scroller around it. The walk stops at a `position: fixed` box.
+  scroller around it. At a `position: fixed` box the walk goes straight to `<body>`, as Chrome
+  hands a fixed header's key to the viewport and rinch's wheel walk does
+  (review of #2987: it used to stop there, so nothing scrolled).
 - **Amounts**: an arrow 40 px (`kPixelsPerLineStep`), a page 0.875 of the
   scroller's client height (`kMinFractionToStepWhenPaging`), Home / End the
   range's ends.

@@ -217,3 +217,76 @@ fn the_smooth_switch_makes_it_instant() {
     assert_eq!(top(&t), START + 40.0);
     assert!(!t.app().wheel_scroll_animating());
 }
+
+/// Turns until nothing animates, at most `max`.
+fn run(t: &mut TestApp, max: usize) {
+    for _ in 0..max {
+        t.advance_time(FRAME);
+        if !t.app().wheel_scroll_animating() {
+            break;
+        }
+    }
+}
+
+/// A 5000 px page with a fixed header `#hdr`, a link `#link` and a button
+/// `#button` (with a click handler that counts).
+fn page_with_header(clicks: std::rc::Rc<std::cell::Cell<u32>>) -> TestApp {
+    let mut t = TestApp::mount(move |__scope: &mut RenderScope| {
+        let c = clicks.clone();
+        rsx! {
+            div {
+                div { id: "hdr", style: "position: fixed; top: 0px; left: 0px; width: 400px; height: 40px", "header" }
+                div { style: "padding-top: 60px",
+                    a { id: "link", href: "#x", "link" }
+                    button { id: "button", onclick: move || c.set(c.get() + 1), "button" }
+                }
+                div { style: "height: 5000px" }
+            }
+        }
+    });
+    t.settle();
+    t
+}
+
+/// A press in a fixed header, then Page Down: the page scrolls, as in Chrome
+/// (the walk used to stop at the fixed box and scroll nothing). Review of
+/// #2987.
+#[test]
+fn a_fixed_box_hands_the_key_to_the_page() {
+    let mut t = page_with_header(Default::default());
+    let body = t.query("body").unwrap();
+    let (x, y) = t.center("#hdr");
+    t.click(x, y);
+    t.press_key("PageDown");
+    run(&mut t, 40);
+    let paged = body.scroll_top();
+    assert!(paged > 300.0, "the page: {paged}");
+    t.press_key("ArrowUp");
+    run(&mut t, 40);
+    assert_eq!(body.scroll_top(), paged - 40.0, "an arrow too");
+}
+
+/// Space on a focused link scrolls the page and follows nothing, as in Chrome
+/// 158; on a focused button it activates the button and scrolls nothing.
+#[test]
+fn space_scrolls_from_a_link_and_activates_a_button() {
+    let clicks: std::rc::Rc<std::cell::Cell<u32>> = Default::default();
+    let mut t = page_with_header(clicks.clone());
+    let body = t.query("body").unwrap();
+    t.focus("#link");
+    t.press_key(" ");
+    run(&mut t, 40);
+    assert!(
+        body.scroll_top() > 300.0,
+        "Space on a link: {}",
+        body.scroll_top()
+    );
+
+    let mut t = page_with_header(clicks.clone());
+    let body = t.query("body").unwrap();
+    t.focus("#button");
+    t.press_key(" ");
+    run(&mut t, 40);
+    assert_eq!(body.scroll_top(), 0.0, "Space on a button scrolls nothing");
+    assert_eq!(clicks.get(), 1, "Space on a button activates it");
+}

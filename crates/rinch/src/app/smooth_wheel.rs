@@ -68,7 +68,7 @@
 //! Smooth programmatic scrolling is on whatever the wheel switch says: the
 //! page asked for it. [`RinchApp::set_smooth_programmatic_scroll`] turns it
 //! off (the hook for the OS reduced-motion setting, #2209): requests then
-//! land at once.
+//! land on the next frame.
 //!
 //! # What ends one early
 //!
@@ -148,7 +148,7 @@ pub(crate) struct WheelAnimation {
 pub(crate) struct SmoothWheelState {
     pub(crate) enabled: bool,
     /// Whether a `scroll-behavior: smooth` programmatic scroll animates
-    /// (#2291); off, it lands at once.
+    /// (#2291); off, it lands on the next frame.
     pub(crate) programmatic: bool,
     pub(crate) running: Vec<WheelAnimation>,
     /// Set while a [`PlatformEvent::MouseWheelLines`](rinch_platform::PlatformEvent::MouseWheelLines)
@@ -487,8 +487,9 @@ impl RinchApp {
     }
 
     /// Turn `scroll-behavior: smooth` for programmatic scrolls on (the
-    /// default) or off (#2291). Off, a smooth scroll write lands at once, as
-    /// `auto` does, and one running ends at its target on the next frame:
+    /// default) or off (#2291). Off, a smooth scroll write lands on the next frame with no
+    /// glide (an `auto` write lands in the write itself), and one running ends at its target
+    /// on the next frame:
     /// the switch for the OS's reduced-motion setting (#2209).
     pub fn set_smooth_programmatic_scroll(&mut self, enabled: bool) {
         self.smooth_wheel.programmatic = enabled;
@@ -611,6 +612,10 @@ impl SmoothWheelState {
             .iter_mut()
             .find(|a| a.node == id && a.axis == axis && a.written == offset);
         if let Some(anim) = running {
+            // Already headed there: nothing to retarget, as `animate_by` answers.
+            if anim.curve.target() == target {
+                return;
+            }
             anim.curve.set_kind(kind);
             anim.curve.update_target(now, target);
             return;

@@ -320,6 +320,7 @@ mod key_event_data_tests;
 mod key_repeat_tests;
 #[cfg(test)]
 mod key_up_redraw_486_tests;
+mod keyboard_scroll;
 #[cfg(test)]
 mod label_activation_866_tests;
 #[cfg(test)]
@@ -381,7 +382,6 @@ mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
 // Uses `perf_expect` (software shell) and names the pointer (desktop).
-mod keyboard_scroll;
 #[cfg(all(test, software_shell, feature = "windowing"))]
 mod rehover_2766_tests;
 #[cfg(all(test, feature = "windowing"))]
