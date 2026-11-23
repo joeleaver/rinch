@@ -81,6 +81,8 @@ mod wake;
 mod winit_input;
 
 #[cfg(test)]
+mod layer_drain_2829_tests;
+#[cfg(test)]
 mod physical_size_tests;
 #[cfg(test)]
 mod text_only_key_2848_tests;

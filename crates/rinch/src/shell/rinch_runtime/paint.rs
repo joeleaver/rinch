@@ -6,9 +6,10 @@ impl RinchRuntime {
     /// Paint the current scene to the window.
     pub(super) fn paint(&mut self) -> Result<(), String> {
         // A paint inside the drain (a debug screenshot) presents a frame,
-        // which commits; the layer changes and size staged so far are not on
-        // the surface yet (nothing is sent before the drain ends), so that
-        // commit carries none of them and they keep their one commit (#2464).
+        // which commits; the screenshot sent the layer changes and size
+        // staged so far first, in their one commit (`ready_for_screenshot`,
+        // #2829), so it is painted at the size asked for before it, and
+        // that commit is not split by this one (#2464).
         // Update inspect highlight rect from DevTools store before painting
         self.update_inspect_highlight();
 
