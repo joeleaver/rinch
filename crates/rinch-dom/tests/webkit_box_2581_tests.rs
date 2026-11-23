@@ -72,7 +72,7 @@ fn assert_rect(d: &RinchDocument, name: &str, want: (f32, f32, f32, f32)) {
     ]
     .iter()
     .all(|(g, w)| (g - w).abs() <= TOL);
-    assert!(ok, "#{name}: got {got:?}, Chrome 155 {want:?}");
+    assert!(ok, "#{name}: got {got:?}, Chrome {want:?}");
 }
 
 /// The "…" marks of an IFC root's lines: `(line, x)`.
@@ -349,4 +349,160 @@ fn white_space_between_the_blocks_counts_no_line_issue_2581() {
     assert_mark(&d, "e2", 0, 27.88);
     assert_rect(&d, "f", (0.0, 96.0, 200.0, 48.0));
     assert!(marks(&d, "f2").is_empty());
+}
+
+// The rest are Chrome 158's numbers on the same markup (the issue's comment
+// after #2635). `.wp` boxes are 237px wide; an `<i>` is a 20px-tall block.
+const WP: &str = ".wp { display: -webkit-box; width: 237px; } i { display: block; height: 20px; }";
+
+/// A `max-height` or `min-height` on a box between the clamp and its last
+/// line holds that box, and the clamp ends after it: a 30px wrapper around
+/// the clamped paragraph makes the clamp box 54 (24 + 30, rinch had 72), a
+/// `min-height: 90px` one 114, and what follows the wrapper flows on below
+/// it.
+#[test]
+fn a_min_or_max_height_in_the_clamp_chain_holds_issue_2581() {
+    const TWELVE: &str = "one two three four five six seven eight nine ten eleven twelve";
+    let three = "display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3";
+    let d = page(
+        "",
+        &format!(
+            "<div id=m class=c style=\"{three}\"><p>p1</p>\
+             <div id=mw style=\"max-height: 30px\"><p id=m2>{TWELVE}</p></div>\
+             <p id=m3>after</p></div>\
+             <div id=n class=c style=\"{three}\"><p>p1</p>\
+             <div id=nw style=\"min-height: 90px\"><p>{TWELVE}</p></div><p>after</p></div>\
+             <div id=q class=c style=\"{three}\"><p>p1</p>\
+             <div id=qw style=\"max-height: 30px; padding: 5px 0\"><p>{TWELVE}</p></div>\
+             <p id=q3>after</p></div>\
+             <div id=r class=c style=\"{three}\"><p>p1</p>\
+             <div id=rw style=\"max-height: 30px; padding: 5px 0; box-sizing: border-box\">\
+             <p>{TWELVE}</p></div><p>after</p></div>"
+        ),
+    );
+    assert_rect(&d, "m", (0.0, 0.0, 200.0, 54.0));
+    assert_rect(&d, "mw", (0.0, 24.0, 200.0, 30.0));
+    assert_rect(&d, "m3", (0.0, 54.0, 200.0, 24.0));
+    assert_rect(&d, "n", (0.0, 54.0, 200.0, 114.0));
+    assert_rect(&d, "nw", (0.0, 78.0, 200.0, 90.0));
+    // With padding, the bound is the content box's (40 tall) unless
+    // `box-sizing: border-box` (30).
+    assert_rect(&d, "q", (0.0, 168.0, 200.0, 64.0));
+    assert_rect(&d, "qw", (0.0, 192.0, 200.0, 40.0));
+    assert_rect(&d, "q3", (0.0, 232.0, 200.0, 24.0));
+    assert_rect(&d, "r", (0.0, 232.0, 200.0, 54.0));
+    assert_rect(&d, "rw", (0.0, 256.0, 200.0, 30.0));
+}
+
+/// `-webkit-box-pack` places the items on the main axis: `center` (43 and
+/// 61 in 237: 66.5 and 109.5), `end`, `justify` (the middle one at 99.5),
+/// and `center` around an item wider than the box (300: at -31.5,
+/// overflowing both sides). `justify-content` does nothing on a legacy box.
+/// rinch's flex items are on whole pixels, so its halves are 67, 110, 100
+/// and -31.
+#[test]
+fn box_pack_places_the_items_issue_2581() {
+    let d = page(
+        WP,
+        "<div class=wp style=\"-webkit-box-pack: center\"><i id=c1 style=\"width: 43px\"></i>\
+         <i id=c2 style=\"width: 61px\"></i></div>\
+         <div class=wp style=\"-webkit-box-pack: end\"><i id=e1 style=\"width: 43px\"></i>\
+         <i id=e2 style=\"width: 61px\"></i></div>\
+         <div class=wp style=\"-webkit-box-pack: justify\"><i id=j1 style=\"width: 43px\"></i>\
+         <i id=j2 style=\"width: 61px\"></i><i id=j3 style=\"width: 20px\"></i></div>\
+         <div class=wp style=\"-webkit-box-pack: center\"><i id=o1 style=\"width: 300px\"></i></div>\
+         <div class=wp style=\"justify-content: flex-end\"><i id=f1 style=\"width: 43px\"></i></div>",
+    );
+    assert_rect(&d, "c1", (67.0, 0.0, 43.0, 20.0));
+    assert_rect(&d, "c2", (110.0, 0.0, 61.0, 20.0));
+    assert_rect(&d, "e1", (133.0, 20.0, 43.0, 20.0));
+    assert_rect(&d, "e2", (176.0, 20.0, 61.0, 20.0));
+    assert_rect(&d, "j1", (0.0, 40.0, 43.0, 20.0));
+    assert_rect(&d, "j2", (100.0, 40.0, 61.0, 20.0));
+    assert_rect(&d, "j3", (217.0, 40.0, 20.0, 20.0));
+    assert_rect(&d, "o1", (-31.0, 60.0, 300.0, 20.0));
+    assert_rect(&d, "f1", (0.0, 80.0, 43.0, 20.0));
+}
+
+/// `-webkit-box-align` aligns the items on the cross axis of a 70px row,
+/// in place of `align-items` and each item's `align-self`, which do
+/// nothing: `stretch` (the initial value) makes an auto-height item 70 tall
+/// whatever `align-items` or `align-self` says; `end` puts a 20px item at
+/// 50 though it says `align-self: flex-start`; `start` and `baseline` leave
+/// an auto-height item 0 tall; `center` puts a 20px item at 25.
+#[test]
+fn box_align_aligns_the_items_issue_2581() {
+    let d = page(
+        ".wp { display: -webkit-box; width: 237px; height: 70px; } i { display: block; }",
+        "<div class=wp style=\"align-items: center\"><i id=x1 style=\"width: 43px\"></i></div>\
+         <div class=wp><i id=x2 style=\"width: 43px; align-self: center\"></i></div>\
+         <div class=wp style=\"-webkit-box-align: end\">\
+         <i id=x3 style=\"width: 43px; height: 20px; align-self: flex-start\"></i></div>\
+         <div class=wp style=\"-webkit-box-align: start\"><i id=x4 style=\"width: 43px\"></i></div>\
+         <div class=wp style=\"-webkit-box-align: baseline\"><i id=x5 style=\"width: 43px\"></i></div>\
+         <div class=wp style=\"-webkit-box-align: center\">\
+         <i id=x6 style=\"width: 43px; height: 20px; align-self: flex-end\"></i></div>",
+    );
+    assert_rect(&d, "x1", (0.0, 0.0, 43.0, 70.0));
+    assert_rect(&d, "x2", (0.0, 70.0, 43.0, 70.0));
+    assert_rect(&d, "x3", (0.0, 190.0, 43.0, 20.0));
+    assert_rect(&d, "x4", (0.0, 210.0, 43.0, 0.0));
+    assert_rect(&d, "x5", (0.0, 280.0, 43.0, 0.0));
+    assert_rect(&d, "x6", (0.0, 375.0, 43.0, 20.0));
+}
+
+/// `-webkit-box-direction: reverse` lays the items out from the main axis's
+/// end (the first at 194, the second before it at 133), `pack: start` at
+/// that end and `pack: end` at the other; a vertical one from the bottom of
+/// its 100px. In a column, `pack` is vertical (`center`: 40 down) and
+/// `align` horizontal (`center`: 97). `flex-direction` does nothing.
+#[test]
+fn box_direction_and_a_column_issue_2581() {
+    let d = page(
+        WP,
+        "<div class=wp style=\"-webkit-box-direction: reverse\"><i id=r1 style=\"width: 43px\"></i>\
+         <i id=r2 style=\"width: 61px\"></i></div>\
+         <div class=wp style=\"-webkit-box-direction: reverse; -webkit-box-pack: start\">\
+         <i id=s1 style=\"width: 43px\"></i></div>\
+         <div class=wp style=\"-webkit-box-direction: reverse; -webkit-box-pack: end\">\
+         <i id=t1 style=\"width: 43px\"></i></div>\
+         <div class=wp style=\"-webkit-box-direction: reverse; -webkit-box-orient: vertical; \
+         height: 100px\"><i id=v1 style=\"width: 43px\"></i><i id=v2 style=\"width: 61px\"></i></div>\
+         <div class=wp style=\"-webkit-box-orient: vertical; -webkit-box-pack: center; \
+         height: 100px\"><i id=p1 style=\"width: 43px\"></i></div>\
+         <div class=wp style=\"-webkit-box-orient: vertical; -webkit-box-align: center\">\
+         <i id=a1 style=\"width: 43px\"></i></div>\
+         <div class=wp style=\"flex-direction: row-reverse\"><i id=f1 style=\"width: 43px\"></i></div>",
+    );
+    assert_rect(&d, "r1", (194.0, 0.0, 43.0, 20.0));
+    assert_rect(&d, "r2", (133.0, 0.0, 61.0, 20.0));
+    assert_rect(&d, "s1", (194.0, 20.0, 43.0, 20.0));
+    assert_rect(&d, "t1", (0.0, 40.0, 43.0, 20.0));
+    assert_rect(&d, "v1", (0.0, 140.0, 43.0, 20.0));
+    assert_rect(&d, "v2", (0.0, 120.0, 61.0, 20.0));
+    assert_rect(&d, "p1", (0.0, 200.0, 43.0, 20.0));
+    assert_rect(&d, "a1", (97.0, 260.0, 43.0, 20.0));
+    assert_rect(&d, "f1", (0.0, 280.0, 43.0, 20.0));
+}
+
+/// The three go through the cascade as Chrome's do: an invalid value is
+/// dropped (the `center` before it stands), a `var()` is substituted,
+/// `inherit` takes the parent's, and none is inherited otherwise.
+#[test]
+fn box_pack_through_the_cascade_issue_2581() {
+    let d = page(
+        WP,
+        "<div class=wp style=\"-webkit-box-pack: center; -webkit-box-pack: bogus\">\
+         <i id=b1 style=\"width: 43px\"></i></div>\
+         <div class=wp style=\"--p: end; -webkit-box-pack: var(--p)\">\
+         <i id=v1 style=\"width: 43px\"></i></div>\
+         <div style=\"-webkit-box-pack: end\"><div class=wp style=\"-webkit-box-pack: inherit\">\
+         <i id=h1 style=\"width: 43px\"></i></div></div>\
+         <div style=\"-webkit-box-pack: end\"><div class=wp><i id=n1 style=\"width: 43px\"></i>\
+         </div></div>",
+    );
+    assert_rect(&d, "b1", (97.0, 0.0, 43.0, 20.0));
+    assert_rect(&d, "v1", (194.0, 20.0, 43.0, 20.0));
+    assert_rect(&d, "h1", (194.0, 40.0, 43.0, 20.0));
+    assert_rect(&d, "n1", (0.0, 60.0, 43.0, 20.0));
 }

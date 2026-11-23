@@ -206,6 +206,23 @@ listeners once — so any number can coexist without interfering. Dropping a
 `RootHandle` keeps the root mounted; only `unmount()` tears it down. See
 `examples/islands-web` for a runnable demo.
 
+**Each island is its own document**, as each desktop window is. What an
+island's code installs in a per-document slot — `set_keyboard_interceptor`,
+`set_paste_interceptor`, `set_selection_callback`,
+`set_selection_sync_callback` — serves that island's events only (a key or a
+paste whose target is inside it), and a clear from one island leaves another's.
+"An island's code" is its build, its effects, and the handlers its presses,
+clicks, keys, input, focus changes, pastes and file drops run. The handlers the
+rest of a pointer gesture runs (moves, the release itself, the cancel), and
+wheel and scroll handlers, are no island's, since a gesture may cross islands:
+what they install is the fallback. A slot set from the page's script outside
+any island is that fallback too. An island is served the newer of its own entry
+and the fallback, so a fallback set after the island's own install takes over
+for it as well. A key that lands on no island (nothing focused, with two
+islands mounted) reaches only the fallback. `on_app_key`
+listeners stay page-wide: each hears every island's keys, whichever island
+registered it.
+
 ## A page with no rinch root
 
 Every `mount*` also installs rinch's runtime for the page: the timer backend

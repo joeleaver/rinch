@@ -47,11 +47,19 @@ const LAYER_STATE: &[&str] = &[
 /// The requests (`interface.request`, in order) the probe sent between its
 /// markers for `command`.
 fn requests_during(overlay: bool, command: &str) -> Vec<String> {
-    let mut probe = Probe::start(if overlay {
-        &[("PROBE_OVERLAY", "1")]
-    } else {
-        &[]
-    });
+    requests_with(
+        if overlay {
+            &[("PROBE_OVERLAY", "1")]
+        } else {
+            &[]
+        },
+        command,
+    )
+}
+
+/// [`requests_during`] for a probe started with `env`.
+fn requests_with(env: &[(&str, &str)], command: &str) -> Vec<String> {
+    let mut probe = Probe::start(env);
     probe.mapped();
     let requests = probe
         .run(command)
@@ -169,4 +177,25 @@ fn an_overlay_resized_then_positioned_is_one_commit() {
 #[ignore = "needs a Wayland compositor with wlr-layer-shell; see module docs"]
 fn an_overlay_positioned_then_resized_is_one_commit() {
     assert_one_commit(true, "position-then-size", &["set_size", "set_margin"]);
+}
+
+/// #2829: a panel sized by its content (#2552) given a new margin, which
+/// narrows its content, takes its new size in the same commit as the
+/// margin: the drain stages the content's size with the layer changes,
+/// where `follow_content_size` used to ask it after them, a second commit.
+#[test]
+#[ignore = "needs a Wayland compositor with wlr-layer-shell; see module docs"]
+fn a_content_sized_panel_given_a_margin_is_one_commit() {
+    let requests = requests_with(&[("PROBE_CONTENT", "1")], "content-margin");
+    let (commits, sent) = layer_commits(&requests);
+    for w in ["set_margin", "set_size"] {
+        assert!(
+            sent.iter().any(|s| s == w),
+            "content-margin: no {w} in {requests:?}"
+        );
+    }
+    assert_eq!(
+        commits, 1,
+        "content-margin: layer state went out in {commits} commits: {requests:?}"
+    );
 }

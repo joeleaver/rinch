@@ -24,6 +24,11 @@
 //! list under `windows`. Desktop only: an embedded `RinchContext` keeps its
 //! document's counters itself, and the web has none.
 //!
+//! A window's frames carry its own document's reactive work (#2798); the
+//! work of no document is on the frames of the thread's only window, or,
+//! with several, on one `[PERF] pass N` line per event-loop turn that had
+//! some ([`end_pass`], read back by [`pass`]).
+//!
 //! A software window whose buffers the idle trim releases (#2843) prints
 //! `[PERF] window 3 trimmed`, and the first present after it that allocates
 //! them again `[PERF] window 3 untrimmed`, before that frame's own line
@@ -111,8 +116,73 @@ pub fn windows() -> Vec<WindowPerf> {
     })
 }
 
-/// Zero every open window's counters, as `perf_stats { reset: true }` does.
+/// The work no window's frames carry, pass by pass (#2798): what ran under no
+/// document while the thread has several. A window's frame carries its own
+/// document's reactive work (its effects' runs, the signal writes made under
+/// it, the `ReRender`s it queued); a write from `main`, a worker's queued
+/// closure or a timer armed outside any document is nobody's, and is counted
+/// here once, so the window lines and the pass lines together count every
+/// unit of work exactly once. With one window, that window's frames carry
+/// it, as they always have, and no pass is counted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PassPerf {
+    /// Passes that had such work, since the last reset.
+    pub passes: u64,
+    /// The last of them.
+    pub last_pass: FrameStats,
+    /// All of them, since the last reset.
+    pub total: FrameStats,
+}
+
+thread_local! {
+    static PASS: std::cell::Cell<PassPerf> = std::cell::Cell::new(PassPerf::default());
+}
+
+/// The passes' counters (see [`PassPerf`]).
+pub fn pass() -> PassPerf {
+    PASS.with(|p| p.get())
+}
+
+/// End one pass of the event loop (the shell, at the end of each turn): the
+/// work under no document since the last pass, when the thread has several
+/// documents and there was some. Counted in [`pass`] and, under
+/// `RINCH_PERF`, printed as `[PERF] pass N: …`, numbered in its own
+/// sequence. `None`, and nothing printed, otherwise: a single window's
+/// frames took that work themselves.
+pub(crate) fn end_pass() -> Option<FrameStats> {
+    if rinch_core::reactive::counted_doc_count() <= 1 {
+        return None;
+    }
+    let taken = crate::app::take_unattributed_perf();
+    if taken.iter().all(|&(_, n)| n == 0) {
+        return None;
+    }
+    let counters = rinch_dom::perf::PerfCounters::default();
+    for (counter, n) in taken {
+        counters.add(counter, n);
+    }
+    let frame = counters.frame();
+    let n = PASS.with(|p| {
+        let mut pass = p.get();
+        pass.passes += 1;
+        pass.last_pass = frame;
+        pass.total.accumulate(&frame);
+        p.set(pass);
+        pass.passes
+    });
+    if rinch_dom::perf::perf_env_enabled() {
+        eprintln!("[PERF] pass {n}: {}", frame.summary_line());
+    }
+    Some(frame)
+}
+
+/// Zero every open window's counters, and the passes', as
+/// `perf_stats { reset: true }` does.
 pub fn reset_windows() {
+    PASS.with(|p| p.set(PassPerf::default()));
+    if rinch_core::reactive::counted_doc_count() > 1 {
+        let _ = crate::app::take_unattributed_perf();
+    }
     let docs: Vec<Rc<RefCell<RinchDocument>>> =
         WINDOWS.with(|w| w.borrow().iter().filter_map(|e| e.doc.upgrade()).collect());
     for doc in docs {
@@ -120,6 +190,17 @@ pub fn reset_windows() {
             d.tree.perf.reset();
         }
     }
+}
+
+/// [`pass`] as the `perf_stats` debug command reports it.
+#[cfg(feature = "debug")]
+pub(crate) fn pass_json() -> serde_json::Value {
+    let p = pass();
+    serde_json::json!({
+        "passes": p.passes,
+        "last_pass": p.last_pass.to_json(),
+        "total": p.total.to_json(),
+    })
 }
 
 /// [`windows`] as the `perf_stats` debug command reports it.
@@ -205,6 +286,38 @@ pub(crate) fn closed(id: u64) {
     if was && rinch_dom::perf::perf_env_enabled() {
         eprintln!("[PERF] window {id} closed");
     }
+}
+
+/// Popup `id` opened (#2552): under `RINCH_PERF`, after its `opened` line,
+/// `[PERF] window 5 popup: kind=menu parent=2`, so a popup's frames can be
+/// told apart and its chain read.
+pub(crate) fn popup_opened(id: u64, kind: rinch_core::element::PopupKind, parent: u64) {
+    let line = popup_line(id, kind, parent);
+    if rinch_dom::perf::perf_env_enabled() {
+        eprintln!("{line}");
+    }
+    #[cfg(test)]
+    capture::note(&line);
+}
+
+/// Popup `id` presented its first frame, `after` the app asked for it:
+/// `[PERF] window 5 first frame: 12.3 ms after open_popup`, the input to
+/// first presented frame of a popup.
+pub(crate) fn popup_first_frame(id: u64, after: std::time::Duration) {
+    if rinch_dom::perf::perf_env_enabled() {
+        eprintln!(
+            "[PERF] window {id} first frame: {:.1} ms after open_popup",
+            after.as_secs_f64() * 1000.0
+        );
+    }
+}
+
+fn popup_line(id: u64, kind: rinch_core::element::PopupKind, parent: u64) -> String {
+    let kind = match kind {
+        rinch_core::element::PopupKind::Menu => "menu",
+        rinch_core::element::PopupKind::Tooltip => "tooltip",
+    };
+    format!("[PERF] window {id} popup: kind={kind} parent={parent}")
 }
 
 /// `app`'s window gave its software buffers back to the idle trim (#2843):

@@ -76,11 +76,40 @@ var(--rinch-color-border)      /* Borders */
 var(--rinch-color-placeholder) /* Input placeholders */
 var(--rinch-color-option-hover)    /* A hovered list item: neutral gray (gray-2 light, dark-5 dark) */
 var(--rinch-color-option-selected) /* The selected list item: primary tint (primary-0 light, primary at 15% dark) */
+var(--rinch-color-option-selected-hover) /* The selected item under the pointer (primary-1 light, primary at 25% dark) */
 ```
 
 `option-hover` and `option-selected` are what `Select` paints its hovered and
-selected options with; use them for any list with both states (a taskbar, a
+selected options with, and `Tree` its hovered and selected rows (a hovered
+selected row is `option-selected-hover`); use them for any list with both states (a taskbar, a
 sidebar) and the two stay distinguishable in both schemes.
+
+```css
+var(--rinch-color-focus-ring) /* Keyboard focus ring of Checkbox, Radio, Switch (primary-2 light, primary at 50% dark) */
+var(--rinch-color-mark)       /* Mark and Highlight background (yellow-2 light, yellow-6 at 35% dark) */
+```
+
+### Variant Colors
+
+Mantine's `light` variant family, for every palette color (`--rinch-color-{name}-…`)
+and for the primary (`--rinch-primary-color-…`). The light scheme gets the palette's
+light shades; the dark scheme gets the color as a translucent tint over whatever
+surface it sits on, and lighter text on it (a `-0` shade there would be a near-white
+slab under light text).
+
+```css
+var(--rinch-color-blue-light)              /* Fill: blue-0 light, blue-6 at 15% dark */
+var(--rinch-color-blue-light-hover)        /* Hovered fill: blue-1 light, 20% dark */
+var(--rinch-color-blue-light-active)       /* Pressed fill: blue-2 light, 25% dark */
+var(--rinch-color-blue-light-color)        /* Accent text on the fill: blue-6 light, blue-4 dark */
+var(--rinch-color-blue-light-color-strong) /* Stronger accent (titles, code): blue-7 light, blue-3 dark */
+var(--rinch-color-blue-light-text)         /* Body text on the fill: blue-9 light, --rinch-color-text dark */
+var(--rinch-primary-color-light)           /* The same six for the primary; its dark tint is --rinch-primary-color */
+```
+
+The components' `light` variants paint these: Button and ActionIcon (`light` fills
+and the hover/active fills of `outline` and `subtle`), Badge, Alert, inline Code and
+the `light` Avatar. Use them for your own tinted surfaces and they follow the scheme.
 
 ### Spacing
 
@@ -201,9 +230,16 @@ Four things about that set are worth knowing before they surprise you.
   flex row (a column under `-webkit-box-orient: vertical`) whose block
   children are items that grow and shrink only by `-webkit-box-flex`, each
   run of inline content one item, and no `text-overflow` "…" (#1703,
-  #2581). A `var()` in `-webkit-line-clamp`, `-webkit-box-orient` or
-  `-webkit-box-flex` is read (#2820); one in `display` naming
-  `-webkit-box` is not.
+  #2581). It places them by `-webkit-box-pack` (`start`, `end`, `center`,
+  `justify`), `-webkit-box-align` (`stretch`, `start`, `end`, `center`,
+  `baseline`) and `-webkit-box-direction: reverse`; as in Chrome,
+  `justify-content`, `align-items`, `align-self` and `flex-direction` do
+  nothing there. A `min-height` or `max-height` on a block between a
+  clamp and its Nth line holds that block, and the clamp ends after it.
+  A `var()` in `-webkit-line-clamp`, `-webkit-box-orient`,
+  `-webkit-box-flex` or the three placing properties is read (#2820), and
+  so is one in `display` naming `-webkit-box` or `-webkit-inline-box`
+  (#2870).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the

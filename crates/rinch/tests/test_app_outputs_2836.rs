@@ -98,8 +98,9 @@ const READERS: [&str; 6] = [
 
 /// Every reader of the outputs runs again on each kind of change as the
 /// shell's publication runs it, once per change; an equal list runs none.
-/// The counts are today's: `output(id)` runs on any output's change
-/// (#2837), so `output(1)` runs when only output 2 changed.
+/// A reader of `output(id)` runs only when that output's own record changes,
+/// appears or goes (#2837): `output(1)` does not run when only output 2
+/// changed, and neither runs when a third is added.
 #[test]
 fn readers_run_again_on_each_change() {
     let runs: Rc<[Cell<u32>; 6]> = Rc::default();
@@ -147,34 +148,51 @@ fn readers_run_again_on_each_change() {
     let taken = || -> [u32; 6] { std::array::from_fn(|i| runs[i].replace(0)) };
     assert_eq!(taken(), [1; 6], "each reader's first run, at the mount");
 
-    let dp1 = out(1, "DP-1", 1.0);
+    let mut dp1 = out(1, "DP-1", 1.0);
     let mut dp2 = out(2, "DP-2", 1.0);
+    let dp3 = out(3, "DP-3", 1.0);
     let mut steps: Vec<(&str, Vec<Output>, [u32; 6])> = vec![
-        ("first list", vec![dp1.clone()], [1, 1, 1, 1, 1, 1]),
+        // Output 2 is still None: its reader does not run.
+        ("first list", vec![dp1.clone()], [1, 1, 1, 0, 1, 1]),
         (
             "output 2 added",
             vec![dp1.clone(), dp2.clone()],
-            [1, 1, 1, 1, 0, 1],
+            [1, 1, 0, 1, 0, 1],
         ),
     ];
     dp2.name = Some("HDMI-A-1".to_owned());
     steps.push((
         "output 2 renamed",
         vec![dp1.clone(), dp2.clone()],
-        [1, 0, 1, 1, 0, 1],
+        [1, 0, 0, 1, 0, 1],
     ));
     dp2.scale = 2.0;
     steps.push((
         "output 2 rescaled",
         vec![dp1.clone(), dp2.clone()],
-        [1, 0, 1, 1, 0, 1],
+        [1, 0, 0, 1, 0, 1],
+    ));
+    dp1.scale = 1.5;
+    steps.push((
+        "output 1 rescaled",
+        vec![dp1.clone(), dp2.clone()],
+        [1, 0, 1, 0, 0, 1],
     ));
     steps.push((
         "the same list again",
         vec![dp1.clone(), dp2.clone()],
         [0; 6],
     ));
-    steps.push(("output 2 removed", vec![dp1.clone()], [1, 1, 1, 1, 0, 1]));
+    steps.push((
+        "output 3 added",
+        vec![dp1.clone(), dp2.clone(), dp3.clone()],
+        [1, 1, 0, 0, 0, 1],
+    ));
+    steps.push((
+        "output 2 removed",
+        vec![dp1.clone(), dp3.clone()],
+        [1, 1, 0, 1, 0, 1],
+    ));
     for (step, list, expected) in steps {
         app.set_outputs(list);
         let got = taken();

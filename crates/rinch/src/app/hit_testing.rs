@@ -15,7 +15,7 @@ use rinch_dom::stacking::{
 /// transformed subtree is hit where it is *painted* (#199).
 pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<u64> {
     tree.perf.bump(rinch_dom::perf::Counter::HitTests);
-    hit_test_node(&PlainHit, tree, tree.body_id, 0.0, 0.0, x, y, x, y, false)
+    hit_test_node(&PlainHit, tree, tree.body_id, 0.0, 0.0, x, y, x, y, None)
 }
 
 /// What a walk of [`hit_test_node`] looks for. The plain hit test is one;
@@ -316,13 +316,15 @@ fn descend(
 /// paint places with zeroed offsets and the body's transform however deep the
 /// stacking context that owns them (#545).
 ///
-/// `clipped` says the probe point is outside a clip on the way here that a
-/// `position: fixed` descendant escapes (#549): a clip between this node and
-/// the nearest ancestor that contains fixed descendants
-/// ([`rinch_dom::paint::contains_fixed_descendants`]), or the viewport. Paint
-/// lifts exactly those clips around a fixed entry, so the walk goes on looking
-/// for one — through stacking contexts that hold one, and nowhere else — and
-/// hits nothing else on the way.
+/// `clipped` names the outermost clip on the way here that the probe point
+/// is outside of, by its clipping box: one that a `position: fixed`
+/// descendant escapes (#549) — a clip between this node and the nearest
+/// ancestor that contains fixed descendants
+/// ([`rinch_dom::paint::contains_fixed_descendants`]), or the viewport — or
+/// that an absolute descendant whose containing block is above it does
+/// (#2815). Paint lifts exactly those clips around such an entry, so the walk
+/// goes on looking for one — through stacking contexts that hold one, and
+/// nowhere else — and hits nothing else on the way.
 #[allow(clippy::too_many_arguments)]
 fn hit_test_node<P: Probe>(
     probe: &P,
@@ -334,7 +336,7 @@ fn hit_test_node<P: Probe>(
     y: f32,
     vx: f32,
     vy: f32,
-    clipped: bool,
+    clipped: Option<u64>,
 ) -> Option<u64> {
     tree.perf.bump(P::VISITS);
     let node = tree.get_live(node_id)?;
@@ -354,7 +356,7 @@ fn hit_test_node<P: Probe>(
     // A box that contains its fixed descendants keeps every clip above it
     // around them, as paint does (#549): a probe already clipped away from it
     // reaches nothing under it.
-    if clipped && rinch_dom::paint::contains_fixed_descendants(node) {
+    if clipped.is_some() && rinch_dom::paint::contains_fixed_descendants(node) {
         return None;
     }
 
@@ -402,7 +404,7 @@ fn hit_test_node<P: Probe>(
     // has already been tried before this node (#1727).
     if let Some(search) = probe.bars()
         && !hidden
-        && !clipped
+        && clipped.is_none()
         && (node.scrolls_y() || node.scrolls_x())
         && !search.deferred.borrow().contains(&node_id)
         && let Some(axis) = bar_under(tree, node, node_id, x - nx, y - ny)
@@ -502,7 +504,7 @@ fn hit_test_node<P: Probe>(
                     {
                         next_bar -= 1;
                         if check_children
-                            && !clipped
+                            && clipped.is_none()
                             && let Some(axis) = deferred_bar_under(tree, &order, bar, x, y)
                         {
                             return search.found(bar.node_id, axis);
@@ -520,6 +522,69 @@ fn hit_test_node<P: Probe>(
                     continue;
                 };
                 if in_relative_split_inline(tree, child) != lifted {
+                    continue;
+                }
+                // A `position: relative` inline element is painted here, in
+                // its place among the positioned boxes (#2819), so its text is
+                // tapped here too: the hit is its IFC root's, as for any text
+                // in its lines, and the target is found from there. It has no
+                // box, so nothing below would find it.
+                if rinch_dom::paint::paints_in_own_entry(child) {
+                    let inside = check_children
+                        && clipped.is_none()
+                        && order
+                            .clips_for(entry)
+                            .iter()
+                            .all(|c| c.contains(x as f64, y as f64));
+                    let over = inside
+                        .then(|| {
+                            rinch_dom::text_query::layered_span_at(
+                                tree,
+                                child,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                            )
+                        })
+                        .flatten();
+                    // Its atomic inlines first, drawn over its text; placed
+                    // from the root's scrolled origin, as the root's own walk
+                    // places them. Wherever the point is, not only over its
+                    // text: an inline-block beside the span's text is off
+                    // that text, and only this entry draws it (#2869).
+                    if inside {
+                        for id in rinch_dom::text_query::layered_span_boxes(tree, child)
+                            .into_iter()
+                            .rev()
+                        {
+                            if let Some(hit) = hit_test_node(
+                                probe,
+                                tree,
+                                id,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                                vx,
+                                vy,
+                                None,
+                            ) {
+                                return Some(hit);
+                            }
+                        }
+                    }
+                    if over == Some(true)
+                        && !hides_own_hit(tree, child)
+                        && !matches!(
+                            child.computed_style.pointer_events,
+                            rinch_dom::computed_style::PointerEventsValue::None
+                        )
+                        && let Some(root) = child.ifc_root
+                        && probe.accepts(tree, root)
+                    {
+                        return Some(root);
+                    }
                     continue;
                 }
                 // A box entered as an ordinary node — in flow, or positioned
@@ -554,11 +619,16 @@ fn hit_test_node<P: Probe>(
                 // The clips are in this root's own space, which is the space
                 // `x`/`y` are in here, and at scale 1.0 because that is what
                 // this walk asked `stacking_paint_order` for.
-                let inside_clips = check_children
-                    && order
+                let chain_out = if check_children {
+                    order
                         .clips_for(entry)
                         .iter()
-                        .all(|c| c.contains(x as f64, y as f64));
+                        .find(|c| !c.contains(x as f64, y as f64))
+                        .map(|c| c.owner)
+                } else {
+                    None
+                };
+                let inside_clips = check_children && chain_out.is_none();
                 // A `position: fixed` entry escapes all of those, and every
                 // clip `clipped` stands for: its containing block is the
                 // viewport, and paint lifts each of them around it
@@ -570,16 +640,34 @@ fn hit_test_node<P: Probe>(
                 // (`box_position` reads `absolute`, #1372) is clipped by it.
                 // Asked only of an entry clipped away: the common probe is
                 // inside every clip and pays nothing for it.
-                let child_clipped = (clipped || !inside_clips)
-                    && child.box_position() != rinch_dom::computed_style::PositionValue::Fixed;
-                // Clipped away, the entry can still hold a fixed box that is
-                // not: only a stacking context can (one that is not hoists
-                // its fixed descendants into this sequence), and only one with
-                // such a box under it — a cached bit, so a probe outside a
-                // scroller full of stacking-context rows walks none of them.
-                if child_clipped
+                //
+                // An absolute entry whose containing block is above this root
+                // escapes the clips of that block's descendants (#2815), so it
+                // is entered unclipped when the outermost clip the probe is
+                // outside of is one of them: this root's own, or a link of the
+                // chain, or one above (`clipped`), outermost first.
+                let child_clipped = if (inside_clips && clipped.is_none())
+                    || child.box_position() == rinch_dom::computed_style::PositionValue::Fixed
+                {
+                    None
+                } else {
+                    clipped
+                        .or((!check_children).then_some(node_id))
+                        .or(chain_out)
+                        .filter(|&c| {
+                            !rinch_dom::paint::absolute_escapes_clip(tree, node_id, child, c)
+                        })
+                };
+                // Clipped away, the entry can still hold a fixed or absolute
+                // box that is not: only a stacking context can (one that is
+                // not hoists such descendants into this sequence), and only
+                // one with such a box under it — a cached bit, so a probe
+                // outside a scroller full of stacking-context rows walks none
+                // of them.
+                if child_clipped.is_some()
                     && !(entry.kind == rinch_dom::stacking::PaintKind::StackingContext
-                        && rinch_dom::paint::holds_escaping_fixed(tree, entry.node_id))
+                        && (rinch_dom::paint::holds_escaping_fixed(tree, entry.node_id)
+                            || rinch_dom::paint::holds_escaping_absolute(tree, entry.node_id)))
                 {
                     continue;
                 }
@@ -598,7 +686,7 @@ fn hit_test_node<P: Probe>(
                     return Some(hit);
                 }
             }
-        } else if check_children && !clipped {
+        } else if check_children && clipped.is_none() {
             // Not a stacking-context root — test only the children that were
             // not hoisted to an ancestor's sequence, in reverse tree order.
             // Nothing here can be a fixed box: one creates a stacking context
@@ -625,7 +713,7 @@ fn hit_test_node<P: Probe>(
                     continue;
                 }
                 if let Some(hit) =
-                    hit_test_node(probe, tree, child_id, nx - sx, ny - sy, x, y, vx, vy, false)
+                    hit_test_node(probe, tree, child_id, nx - sx, ny - sy, x, y, vx, vy, None)
                 {
                     return Some(hit);
                 }
@@ -639,7 +727,7 @@ fn hit_test_node<P: Probe>(
         && !clip_x
         && !clip_y
         && inline_box_outside(tree, node, x - nx, y - ny);
-    if clipped
+    if clipped.is_some()
         || !(point_in_bounds || in_inline_box)
         || (hidden && !visible_text_at(tree, node, x - nx, y - ny))
     {
@@ -1479,7 +1567,7 @@ pub(crate) fn find_scroll_container_at_point(
     y: f32,
 ) -> Option<u64> {
     let probe = ScrollerSearch(ScrollbarAxis::Vertical);
-    hit_test_node(&probe, tree, tree.body_id, 0.0, 0.0, x, y, x, y, false)
+    hit_test_node(&probe, tree, tree.body_id, 0.0, 0.0, x, y, x, y, None)
 }
 
 /// Find a horizontal scroll container at (x, y) by geometric search.
@@ -1491,7 +1579,7 @@ pub(crate) fn find_horizontal_scroll_container_at_point(
     y: f32,
 ) -> Option<u64> {
     let probe = ScrollerSearch(ScrollbarAxis::Horizontal);
-    hit_test_node(&probe, tree, tree.body_id, 0.0, 0.0, x, y, x, y, false)
+    hit_test_node(&probe, tree, tree.body_id, 0.0, 0.0, x, y, x, y, None)
 }
 
 /// The width of the invisible strip along a container's edge that counts as
@@ -1573,7 +1661,7 @@ pub(crate) fn find_scrollbar_hit(
     y: f32,
 ) -> Option<ScrollbarHit> {
     let search = BarSearch::default();
-    hit_test_node(&search, tree, tree.body_id, 0.0, 0.0, x, y, x, y, false);
+    hit_test_node(&search, tree, tree.body_id, 0.0, 0.0, x, y, x, y, None);
     let (node_id, axis) = search.found.get()?;
     // The track the walk found the strip of, as paint computes it (#400).
     let bars = rinch_dom::paint::scrollbar::scrollbars(tree, node_id, 1.0);
@@ -1615,6 +1703,10 @@ mod inline_box_hit_2647_tests;
 #[cfg(test)]
 #[path = "fixed_escape_hit_549_tests.rs"]
 mod fixed_escape_hit_549_tests;
+
+#[cfg(test)]
+#[path = "absolute_escape_hit_2815_tests.rs"]
+mod absolute_escape_hit_2815_tests;
 
 #[cfg(test)]
 mod tests {

@@ -373,21 +373,41 @@ set_current_window_size(700.0, 200.0);
 
 These functions are available in the prelude and work from onclick handlers.
 
-**Focus** (#2310). `focus_current_window()` and `WindowHandle::focus()` send
-`RinchNativeEvent::FocusWindow`, handled in
+**Focus** (#2310, #2817). `focus_current_window()` and `WindowHandle::focus()` send
+`RinchNativeEvent::FocusWindow(None)`; `activate_current_window_with_token(t)`
+and `WindowHandle::activate_with_token(t)` send `FocusWindow(Some(t))`. Handled in
 `shell/rinch_runtime/native_events.rs`: a window with no OS window (hidden)
 gets the app's `ShowWindow`, as `show_current_window` does; a shown one is
-`set_minimized(false)`, then, unless `non_activating`, `focus_window()` — except
+`set_minimized(false)`, then, unless `non_activating`, the step `raise_step`
+picks (pure, unit-tested there): `focus_window()` off Wayland, token or not;
 on Wayland, where winit's `focus_window` is empty (raising takes an
-xdg-activation token from the input that asked, and the running copy has
-none), so a toplevel gets `request_user_attention(Informational)`, which
-activates a token for its own surface with no serial: the compositor shows it
-as urgency or, by its own policy, raises it. A layer surface gets nothing. Raising a
-running window on Wayland properly needs the token the second launch was
-started with (`XDG_ACTIVATION_TOKEN`) handed over and `xdg_activation_v1.activate`d
-on the window's surface, which winit offers only at window creation.
-`TestApp` models it: a `Focus` request shows a hidden window and focuses any
-window but a non-activating one.
+xdg-activation token from the input that asked), a toplevel with a token is
+activated with it (the winit fork's `WindowExtWayland::activate_with_token`,
+`xdg_activation_v1.activate(token, surface)`), and one without gets
+`request_user_attention(Informational)`, which activates a token for its own
+surface with no serial: the compositor shows it as urgency or, by its own
+policy, raises it. A layer surface gets nothing either way. A token that
+cannot be sent (no `xdg_activation_v1`) falls back to the attention request.
+A hidden window shown by a request with a token gets it in its new window's
+attributes: the handler stores it in `ShellWindow::activation_token` before
+the show, and `main_window_attributes` hands it to `apply_to_attributes`,
+which sets winit's `WindowAttributesWayland::with_activation_token`; winit
+then activates the new surface before its initial commit (not after
+`create_window`, which has already made that commit). It is left out off
+Wayland, for a layer surface and for a non-activating window, and cleared
+once a shown window is made (or the show made none). The same field carries
+a first launch's own token: `App::activation_token(Option<String>)` stores it
+(`shell::activation_tokens::set_launch_token`, a process global, as
+`gpu_init_threads` stores its count), and the main window's `create_window`
+takes it into the field; a main window that starts hidden keeps it for the
+window its first show makes. The token is the second
+launch's `XDG_ACTIVATION_TOKEN`, which `take_launch_activation_token()`
+(`activation.rs`) reads and removes from the environment (an `unsafe fn`,
+since `std::env::remove_var` is unsound with another thread reading the
+environment). `TestApp` models it: a `Focus` or `ActivateWithToken` request
+shows a hidden window and focuses any window but a non-activating one. Live,
+on sway and KWin: `tests/activation_token_2501/raise_2817.rs` (below, "Activation
+Tokens").
 
 **Hide / show keeps the geometry** (#1546, `shell/window_geometry.rs`).
 `hide_window` still destroys the OS window (Wayland has no invisible toplevel;
@@ -647,7 +667,9 @@ then `115200` for a 240x120 window at scale 2, glyphs rasterized at both).
 first appearance the first output listed (`crate::outputs`, fractional from
 the mode over the `xdg_output` size) and on a later show the scale the
 document has (the one it was last on screen at); with no outputs listed, the
-document's. `create_window` already read `window.scale_factor()` into the
+document's, except that a second window's mount scale (`mount_scale`, chosen
+before its document is mounted, whose own scale is still the unset 1.0) uses
+the main window's (`initial_surface_scale_or`, #2886). `create_window` already read `window.scale_factor()` into the
 document; `show_window` now hands the document a `ScaleFactorChanged` when the
 new window's scale differs from it, because the fork sends none when the
 compositor's scale equals the one the window started at (a hidden window whose
@@ -738,17 +760,51 @@ document (#2789), from its mount to its close:
   - the web: `rinch_web::RootHandle::unmount`, after the root's scope is
     disposed and its tree removed. A `mount()` root never ends, so its
     document is never swept. The unmount disposes the root's scope under
-    `push_disposing_doc(doc_key)`, the one place the web marks a document, so
-    what a cleanup registers as the root goes (an app key, an interceptor, a
-    selection callback) is the document's and the sweep takes it. Everywhere
-    else the web marks no document: an ambient registration a root's
-    ordinary code makes is no document's and goes with its owner scope, as
-    before; entries made with the document's key (dismiss handlers, parked
-    focus and text-selection requests, focus targets) are swept. On the web a
-    document-scoped slot is page-wide, since nothing marks a document outside
-    an unmount's disposal, so a clear from any root clears it for every root;
-    the marked disposal does not change that. Not the intended behaviour:
-    #2811 is where slots become per root.
+    `push_disposing_doc(doc_key)`, so what a cleanup registers as the root
+    goes (an app key, an interceptor, a selection callback) is the
+    document's and the sweep takes it, with what the root's code registered
+    while it lived and the entries made with the document's key (dismiss
+    handlers, parked focus and text-selection requests, focus targets).
+
+  **A web root's code runs as its document's** (#2811), as a desktop
+  window's does. `mount_tree` pushes the document around the build, so
+  every effect, memo, timer and parked callback the build makes records it
+  and re-enters it. The delegated listeners push the document of the root an
+  event belongs to (`rinch_web::mark_event_root`, `root_doc_of`): the deepest
+  mounted root whose host (an island's element, a whole-page root's
+  `#rinch-body`) contains the target; for a target in no root, the root
+  being built during a build (`BUILDING_DOC`: it is not in `MOUNTED_ROOTS`
+  until its build ends), else the whole-page root if there is one, else the
+  only root when one is mounted, else none (nothing is pushed, so a listener run synchronously inside a
+  root's code stays that root's). An event on the editor's capture textarea,
+  which lives in the page's `<body>`, is the focused editor's root's
+  (`editor_input::capture_target_doc`). Marked: `pointerdown` around its
+  handler dispatch, `click`, `auxclick`, `contextmenu`, `keydown` (after the
+  Escape drag cancel), `keyup`, `input`, `change`, the focus attribute
+  handlers, `paste`, file `drop`, and the editor's `keydown`, `mousedown`,
+  `click`, `auxclick`, `contextmenu`, `drop` and capture-textarea listeners.
+  The click a release dispatches (a quick press on a `draggable`, a
+  touch/pen tap inside a scroller) is marked as the clicked element's root's
+  around that dispatch alone.
+  Not marked: the rest of the pointer stream after the press (`pointermove`, `pointerup`,
+  `pointercancel`, `pointerout`, the editor's `mousemove`/`mouseup`), wheel
+  and scroll: a gesture may cross into another root, and a `Drag` armed in
+  the press records its root, so a move marked as another root's would be
+  refused as foreign (#139). App keys are dispatched under document `0`
+  (none) inside the marked `keydown`/`keyup`: `on_app_key` is the page's on
+  the web, every root's keys reaching every listener.
+
+  So a document-scoped slot (the keyboard and paste interceptors, the
+  selection and selection-sync callbacks) is per root: each root's install
+  serves its own events, and a root's clear takes its own entry (or the
+  ownerless fallback it is served, #478) and leaves another root's. The
+  fallback is filled by code no root runs: the page's own script before or
+  outside a mount, a listener whose event belongs to no root, and the
+  handlers the unmarked listeners above run (a `data-onpointerup`, a wheel
+  or scroll handler). With two islands, a key on the page's `<body>` (nothing focused) is
+  no root's, so it is served the fallback only, not either island's own
+  interceptor. Pins: `rinch-web/tests/per_root_slots_2811.rs`,
+  `rinch-web/tests/doc_forget_2797.rs`.
 
   The registries swept: `focus_registry` `TARGETS`, `CLAIMED`, `FREED`;
   `events` `LISTENERS` (app keys), `STACK` (dismiss), `CHANGES` (display
@@ -756,7 +812,17 @@ document (#2789), from its mount to its close:
   `PENDING_RELEASES` and `PENDING_TEXT_SELECTIONS`; the four
   document-scoped slots (`KEYBOARD_INTERCEPTOR`, `PASTE_INTERCEPTOR`,
   `SELECTION_CALLBACK`, `SELECTION_SYNC_CALLBACK`, through
-  `DocScopedSlotMap`'s `ForgetDoc`); the editor's virtualization `WINDOWS`.
+  `DocScopedSlotMap`'s `ForgetDoc`); the editor's virtualization `WINDOWS`;
+  in `rinch-editor-view`, the registry's `EDITORS`, `DRAG`, `LINK_HOVER`,
+  `IMAGE_HOVER` and `OVERLAY_PASSES_OWED`, the stylesheet guard `INJECTED`
+  and the blink `CLOCKS`; in `rinch-components`, `dropdown_menu_sub`'s `SUBS`
+  and sortable's `LISTS`, `GHOST_WRAPPERS` and `PENDING_FOCUS` (one slot, its
+  own `ForgetDoc`). An entry whose document is otherwise read from a node
+  (`SUBS`, `LISTS`) stores the key when it is made: once the document is gone
+  a node's `doc_key()` reads 0, and the sweep runs after the disposal has
+  dropped it. Pins: `doc_forget_tests.rs` (every kind, many windows, the
+  editor view's lookups) and `sortable_2154_tests.rs`
+  (`a_dropped_apps_preview_wrapper_and_focus_request_are_forgotten`).
   `rinch_core::doc_entries(doc)` (hidden) counts a document's entries in
   each, by name (its static's path, such as
   `rinch_core::events::app_key::LISTENERS`), for the tests that pin the
@@ -819,6 +885,59 @@ answer null and hide a block). Pins: `window::tests`,
 (Chrome 155, Firefox). The browser's `resize` and resolution listeners have
 no fixture (a test cannot resize the page or change its scale).
 
+### Zoom (`rinch::window::set_zoom`)
+
+`src/zoom.rs`. The zoom is a thread-local `Cell<f64>` on the UI thread (plus a
+lazily made unowned `Signal` for the reactive `zoom()`), so test threads never
+see each other's. `crate::zoom::apply(os_scale)` is the one place the display's
+scale and the zoom are combined; the shell reads the document's scale through
+it everywhere a winit scale becomes a document's:
+
+- `WinitWindow::scale_factor()` (the `PlatformWindow` impl) answers
+  `apply(winit)`; `WinitWindow::os_scale_factor()` is winit's own, for winit's
+  logical units. `ShellWindow::scale_factor()` with no window answers
+  `apply(1.0)`, its fallback `window_size()` being the requested size.
+- winit's `ScaleFactorChanged` becomes `display_scale_changed(os)`, which
+  applies the zoom, so a display change keeps it.
+- Raw `dyn Window::scale_factor()` reads that feed a document (window
+  creation in `main_window.rs`, `show_window`'s re-creation, DevTools'
+  creation) wrap it in `apply`; `likely_scale` applies it to an output's
+  scale. `initial_surface_scale` stays the display's (winit's Wayland
+  initial scale): it divides the document scales it returns by the zoom, and
+  its document-side callers (`mount_scale`, `start_at_surface_scale`, the
+  content-sized main mount) apply it again.
+- Document (CSS) px handed to winit's logical units are multiplied by the
+  zoom: the IME cursor area (`sync_ime`), a content-sized window's request
+  (`follow_content_size`), the Wayland input region (`set_input_region`; X11
+  gets the zoomed scale and makes device px), a layer surface's move or
+  resize gesture (the pointer, and the surface's size from
+  `os_scale_factor`), and a content-sized window's creation size
+  (`with_content_size`, its first buffer at the content's size).
+- Display logical px read as CSS px are divided by it: a content-sized
+  window's largest size (`ShellWindow::content_max`, so a zoomed window asks
+  for no more of the output), a hidden window's saved or requested size
+  (`hidden_size`, what `prepare_hidden` lays out at), and the debug
+  screenshot's no-window size (`logical_size`).
+- A layer surface's `Moved` (`layer_moved`) is read at
+  `ShellWindow::os_scale_factor()` (1x with no window): the fork sends its
+  margins times the display's scale only.
+- `set_zoom` sends `RinchNativeEvent::ApplyZoom` while a loop runs;
+  `apply_zoom` calls `ShellWindow::rezoom` on every open window: a
+  `ScaleFactorChanged` at the new scale, then the `Resized` the same surface
+  is at that scale (`surface_resized`), and a full repaint. The renderer is
+  not reconfigured (the surface keeps its size). A hidden window takes it from
+  its new surface at `show_window`.
+- Not applied: rinch-web (the browser's own zoom is the page's), Android and
+  `RinchContext` (the host owns the scale). `TestApp` does not apply it
+  either; its `scale_factor` is the document's scale.
+
+Pins: `zoom::tests` (clamping, reactivity) and
+`shell/rinch_runtime/zoom_tests.rs` (the viewport shrinks by the zoom, a
+pointer at zoom 1.5 hits what is drawn under it, a display change keeps it;
+with a fake winit window (`FakeOsWindow`): `WinitWindow::scale_factor`, a
+layer surface's `Moved` and gesture start; and the content-sized creation
+size and cap, `hidden_size` and the screenshot fallback).
+
 ### Outputs (`rinch::outputs`, #2414)
 
 Public API: `crates/rinch/src/outputs.rs` — `Output` (name, logical
@@ -840,7 +959,13 @@ its item changes by `PartialEq` (`for_each_dom_typed_with_key_source`'s
 opened another at every move or rescale (deskrinch's wallpaper). Iterating ids
 keeps the row, so its window lives until the id leaves the list. `output_ids()`
 is a `Memo` over the list (made with the signals, `unowned`), so a move or
-rescale wakes none of its readers. **On an unplug the row's readers of
+rescale wakes none of its readers. `output(id)` reads a memo too, one per id
+(#2837): `outputs.rs`'s `BY_ID`, made `unowned` on the first read of that id
+and kept for the thread's life (a reader holds the memo it read, so one made
+again would never wake it; one nobody reads is only marked stale at a change).
+Its value is that output's record or `None`, so a reader runs again only when
+its own output changes, appears or goes, not when another output moves or
+comes; #2836's `readers_run_again_on_each_change` table pins the counts. **On an unplug the row's readers of
 `output(id)` run once with `None` before the row goes**: the list write wakes
 both the content's effect and the `ids` memo's `for`, and the content's effect
 runs first. Pinned by
@@ -1197,6 +1322,29 @@ request; a drag source's `onclick`, which comes on the release, asks and is
 not refused; a move handler is refused; an unmounted component is never
 called). Live, on a compositor:
 `tests/activation_token_2501/`.
+
+**Using a token given to the app** (#2817) is the other direction: a
+single-instance app's second launch takes the token it was started with
+(`take_launch_activation_token`) and hands it to the running copy, which
+calls `activate_current_window_with_token` (see "Focus" above for the
+shell's side). The protocol answers nothing to an `activate`, so there is no
+callback and no error: a token the compositor does not trust changes
+nothing. Live: `tests/activation_token_2501/raise_2817.rs`, a module of the
+2501 test binary (its sway, keyboard, waiter and probe): the probe
+(`examples/activation_token_probe.rs`, with `PROBE_ACTIVATE_FILE`) is mapped
+first, the waiter maps over it and takes the keyboard, Enter is pressed into
+the waiter, which asks for a token naming that press, and the token goes to
+a second run of the probe as `XDG_ACTIVATION_TOKEN` (`PROBE_RELAY_TO`), which
+takes it, checks the variable is gone, and writes it to the file the first
+probe watches. The first probe then activates its window with it and gets
+the keyboard back. Two controls: `focus_current_window()` (no token, what an
+app could do before) and a token the waiter made for itself with no input
+serial both leave the keyboard with the waiter. A window *made* with a token
+(a first launch's, or a hidden window shown by a request with one) cannot show
+a difference in focus there, since KWin and sway focus a new window when it
+maps; its two tests read the probe's `WAYLAND_DEBUG=client` log instead and
+check that `xdg_activation_v1.activate` names the new surface before that
+surface's first commit.
 
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
@@ -1596,27 +1744,42 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   as one `layer_shell::LayerTurn`, one request to the fork and so one
   commit: `request_surface_size` for a size alone,
   `set_layer_shell_changes_and_size` (joeleaver/winit-fork#12) for changes
-  with or without a size. A size applied at once comes back from it and is
+  with or without a size. A content-sized surface's size in a changed
+  configuration is staged then too (#2829, "Windows sized by their
+  content"). A size applied at once comes back from it and is
   handed to the window's resize path as a `SurfaceResized`, as an at-once
   resize is; a held one comes as winit's own `SurfaceResized`. Nothing is
-  sent before the drain ends, so a paint inside the drain (a debug
-  screenshot) commits none of it, and `paint`/`paint_window` no longer
-  flush (they used to, when a staged `set_size` was already on the surface
-  and a frame's commit would have split it from the changes). Before, the order of the
+  sent before the drain ends but for a debug screenshot taken inside it:
+  `ready_for_screenshot` sends what the turn staged so far first (one
+  commit), so a `SetWindowSize` before it in the same drain is the size it
+  is painted at (#2829), and the drain's end sends what later events stage.
+  `paint`/`paint_window` do not flush (they used to, when a staged
+  `set_size` was already on the surface and a frame's commit would have
+  split it from the changes). Before, the order of the
   calls decided the commits: size then layer was one (the size waited for
   the layer change's commit), layer then size two (the layer change
   committed at once, the size with the next frame), and a position was
   already two (`set_layer_shell_anchor`, then `set_layer_shell_margins`,
   each a commit). `hide_window` drops what is staged: the props and the
   saved geometry already hold it for the surface `show_window` makes, and a
-  staged size is put in the saved geometry. A
+  staged size is put in the saved geometry and published
+  (`publish_hidden`), so `current_window_size()` reports it while the window
+  is hidden (#2829). A
   move gesture still places the surface at once (`place_layer`), since it
   is not a native event. Pinned live (`#[ignore]`d) by
   `crates/rinch/tests/layer_one_commit_2464.rs`, which counts the commits
   that carry layer state in `WAYLAND_DEBUG=client` output, in both orders,
   for a panel and an overlay, and by `main_window::layer_commit_2464_tests`,
   which pin without a compositor that a turn's changes and size, in either
-  order, are taken as one `LayerTurn` (one request) and nothing is left.
+  order, are taken as one `LayerTurn` (one request) and nothing is left,
+  and `rinch_runtime::layer_drain_2829_tests`, which run the drain
+  (`RinchRuntime::run_native_events`, the half of `drain_native_events`
+  past the shared queue) on a live layer surface with a stand-in OS window
+  that applies each size request at once: a turn's sizes are one request
+  at the drain's end, its at-once size reaches the resize path, a
+  screenshot in the drain is at the size asked before it, a content-sized
+  surface's size goes with the layer changes, and a hidden staged size is
+  published.
   No CI job runs the live tests (they need a compositor with
   wlr-layer-shell): run them under `scripts/isolated-session.sh --kwin`
   after any change to this path or any move of the winit pin.
@@ -1991,7 +2154,8 @@ guide's "A window sized by its content" has what an app sees; here is how.
   gives it the real scale and size.
 - **At the scale it starts at** (#2652): a content-sized `open_window`
   window is mounted at its `initial_surface_scale(true)`
-  (`ShellWindow::mount_scale`; every other `open_window` window still at the
+  (`ShellWindow::mount_scale`, with the main window's scale where no outputs
+  are listed yet, #2886; every other `open_window` window still at the
   main window's scale), a content-sized main window too, and before each new
   surface `start_at_surface_scale` gives the document that surface's
   starting scale, so the content is measured at it and #2652's scale sync
@@ -2038,7 +2202,11 @@ guide's "A window sized by its content" has what an app sees; here is how.
   so R0's limit rule applies.
 - **A change of the layer configuration** (`set_current_window_layer`'s
   `Apply` path) calls `restart_content_size`: a new negotiation at the new
-  largest size, asked for at the turn's end. **A change of the outputs**
+  largest size. Its size is staged with the configuration's changes when
+  the drain sends them (`ShellWindow::stage_content_size_for_layer_turn`,
+  from `flush_layer_turn`, #2829), so the new configuration and its size are
+  one commit; asked by `follow_content_size` after the drain, as it was, the
+  size was a commit of its own after the changes'. **A change of the outputs**
   (`monitors_changed`) calls `follow_outputs`, which starts one only when
   this window's own largest size changed (its output, that output's size, or
   its margins), so a change of another output leaves a limited dimension
@@ -2057,13 +2225,150 @@ guide's "A window sized by its content" has what an app sees; here is how.
   and R0's own (`app/content_size_*tests.rs`, including the fill axis and
   the restart).
 
+### Popup windows (`popup.rs`, `shell/rinch_runtime/popups.rs`, #2552 stage 1)
+
+The guide's "Popup windows" has what an app sees. Wayland only in stage 1:
+`popup::set_supported` is set in `can_create_surfaces` from
+`Backend::Wayland`; everywhere else `open_popup` answers `Unsupported`
+(decision F). Under `rinch::testing`, `popups_supported` follows
+`testing::captures()`. `App::popup_windows(false)` sets a thread-local off
+switch at once.
+
+- **Types.** `Placement`/`Side`/`Align`, `Adjust` (a `u8` newtype, bit for
+  bit `WindowConstraintAdjustment`), `PopupKind`, `PopupPlaced`, `Dismissal`
+  are data in `rinch-core/src/popup_placement.rs`, re-exported from
+  `rinch_core::element`. `PopupProps`, `PopupAnchor` and `PopupError` are in
+  `rinch::popup`, because `PopupAnchor::Rect` names a `WindowHandle`.
+- **Registry.** `open_popup` resolves the parent (a node's document through
+  `window_handle::window_of_doc`: the window mounted as that document, else
+  the main window, else `0`, the harness's mounted app, which is no registry
+  window), checks the rules (`MenuOnTooltip`; `NoUserInput` when neither the
+  parent nor a popup below it in its chain has had a press within
+  `popup::PRESS_RECENT` (10 s, on `rinch_core::timer::now`, the harness's
+  virtual clock there): `note_press`, called from `RinchApp::handle_event`
+  for `MouseDown`/`KeyDown`, keeps each window's newest press, decision C;
+  the fork's own `NoGrabCause` still answers later as `Failed`), builds
+  `WindowProps` (`popup::window_props_for`: content-sized up to `max_size`,
+  never a layer surface, a tooltip's `input_region: None`), wraps the content
+  to push a `push_dismiss_handler_within` entry at its root (Escape →
+  `dismiss(id, Escape)`), and opens it through `window_handle::open` with a
+  `PopupEntry` on the registry entry: parent, props, the placement signal (in
+  the entry's scope), the recorded `Dismissal`, `asked_at`, the anchor rect
+  last sent. `note_closed` calls `on_dismissed` when a cause was recorded,
+  even when the owner's going is what closed it after (a `ParentClosed`
+  popup's owner is usually disposed with its parent). The first cause wins
+  (`note_dismissal`).
+- **The chain** is the parent relation (`popup::chain`, pure, over
+  `(id, parent, kind)` links): `close_order` is every popup above a window,
+  newest first (a popup always opens after its parent, so that is each one
+  before the one it is on); `key_target` is the newest menu of the window's
+  chain; `press_closes` is every menu not below-or-equal to the pressed
+  window. Ownership plays no part: a popup owned by the main window but
+  anchored in a menu is above the menu.
+- **Made** (`open_pending_window` → `open_pending_popup` → `make_popup`):
+  - Decision E: menus in the way (`press_closes(parent)`) close at once,
+    told `Replaced`; a popup closed in this loop iteration
+    (`PopupState::closed_this_turn`) defers a new one to the next
+    (`popups_end_of_turn`, at the end of `about_to_wait`, re-sends its
+    `OpenWindow`): winit has no close-and-reopen in one iteration (#4834).
+  - An `OpenWindow` for a popup no longer pending (made, closed, the keyboard
+    wait's late one) does nothing.
+  - `max_size: None` becomes the parent output's logical size
+    (`output_size_of`: `rinch::outputs` by `native_id`, else winit's mode).
+  - The app is `new_other_window`'s (content-sized by the props), with the
+    parent's own theme CSS when it has one, mounted at the parent document's
+    `device_pixel_ratio` (fractional scales included), measured
+    (`start_surface_negotiation`; 0×0 is refused), then
+    `ShellWindow::create_popup_window`: `WindowType::Popup`, the parent's raw
+    handle (`rwh_06_window_handle`), `shell::popup_positioner::positioner`
+    (the anchor rect is the anchor's bounds × zoom, kept inside the parent
+    and rounded outward, `popup::anchor_rect`; a `NodeAcross` anchor is then
+    stretched across the parent's cross axis, `popup::across`, on every
+    reposition too), `with_active(kind == Menu)`
+    (the grab), the measured size × zoom. The GPU renderer when the parent
+    has one (`has_gpu_renderer`), else software: the app's renderer, never a
+    silent fallback (`start_gpu_renderer` warns on its own fallback). A menu's
+    document is sent `WindowFocus(true)` (keys are forwarded to it on
+    wlroots, where it never gets `Focused`). A tooltip's empty input region
+    goes with its first frame (`send_input_region(false)`).
+  - `[PERF] window N popup: kind=… parent=…` after the `opened` line
+    (`window_perf::popup_opened`; the harness prints it too) and
+    `[PERF] window N first frame: … ms after open_popup` after its first
+    paint (`ShellWindow::popup_first_frame`).
+- **`keyboard_via_parent`** (`raise_parent_keyboard`): only for the first
+  menu of a chain from a layer surface without the keyboard
+  (`app.window_focused` false) whose interactivity is not `exclusive`: the
+  interactivity is set `exclusive` (`set_layer_shell_keyboard_interactivity`,
+  committed by the fork), the pending popup waits in
+  `PopupState::awaiting_keyboard` until the parent's `Focused(true)`
+  (`parent_got_keyboard`), at most `KEYBOARD_WAIT_MS` (300; a timer re-sends
+  its `OpenWindow`, which makes a waiting popup at once: a seat with no
+  keyboard never sends `enter`). `PopupState::raised` remembers what to put
+  back; `restore_raised_keyboards` (from `note_popup_closed`) puts it back
+  once its chain has no menu (and after a make that failed). Never raised
+  while a grab is held (`chain::may_raise_keyboard`, pure) (F0: grab
+  then raise fails on wlroots and dismisses on KWin). The check excludes the
+  popup being made, whose entry exists already (a live run found it
+  answering "a menu is open" for itself).
+- **Closed** (`close_other` → `close_popups_above`, then `close_one_other`):
+  every popup above the window closes first, newest first, each told
+  `ParentClosed` unless it has a cause. Also before a hide (`hide_role`),
+  before the main window's close (`close_main`), before a main layer
+  surface the compositor closed is made again (`CloseRequested` on `Main`
+  with a layer), and at shutdown for the main window's popups. A popup's
+  `CloseRequested` is `popup_done`: `Dismissal::System`, `close_soon`, no
+  veto. The harness's `close_child` does the same.
+- **Input** (`window_event_for`):
+  - `input_role` first: a `KeyboardInput`, `Ime` or `ModifiersChanged`
+    reaching a window of a chain with a menu goes to its topmost menu (the
+    window it reached keeps the modifiers too).
+  - `Focused(false)` on a window of such a chain is held (KWin moves the
+    keyboard from the parent to the menu; `hold_focus_change`) and replayed
+    through `window_event_for` at the end of the turn the chain closed in
+    (`popups_end_of_turn`), unless a `Focused(true)` came first.
+  - A `PointerButton` press runs `light_dismiss_press`: `popup::light_dismiss`
+    records `PressOutside { on_anchor }` (the press point against the
+    anchor's bounds in the anchor's window) and the menus are `close_soon`ed,
+    so they close at the end of the handler, after the press is delivered
+    (and after the press's `onclick`, which rinch runs on the press).
+  - `focus.rs::key_owner` answers `AllKeys` while any menu is open, which
+    holds the menu chords.
+- **Placement**: `Moved` and `SurfaceResized` on a popup update its
+  `PopupPlaced` (`popup_placed`, `popup::placed_from`: only the side's axis is
+  judged for a flip, with half a pixel of slack); `follow_popup_anchors`
+  (each `about_to_wait`) re-places a popup whose anchor rect changed
+  (`request_popup_reposition`). A content change goes through
+  `follow_content_size` → `request_surface_size`, which the fork turns into a
+  reposition; its answer is the `SurfaceResized` grant.
+- **Live** (examples/popup-menu, `POPUP_SCRIPT=1`): on headless sway (1.11)
+  with a virtual pointer and keyboard (zwlr_virtual_pointer_v1,
+  zwp_virtual_keyboard_v1) at scale 1 and 1.5: a menu above a bottom bar
+  with a 4 px gap, a submenu to its right, Escape (forwarded from the bar)
+  closing only the submenu, a press on the button closing the menu with
+  `on_anchor: true`, reopening, the output disabled with a menu and submenu
+  open closing the submenu then the menu (`ParentClosed`) with no protocol
+  error, `keyboard_via_parent` raising and restoring. On KWin (6.6, virtual,
+  no pointer input) only tooltips: placed, flipped at both edges
+  (`POPUP_TIP_FLIP=1`), closed with the bar.
+- **Not in stage 1:** the rsx `Popup { … }` element (a follow-up), portals
+  into the content box (decision D: what a component appends to `<body>`
+  stays outside the measured box), any component default (decision A),
+  X11/Windows/macOS. `[data-rinch-content-box]` stays an internal marker.
+- **Tests:** `popup_tests.rs` (chain order, key target, press closes, anchor
+  rect, flip reading), `shell/popup_positioner.rs` (placement and adjust
+  mapping), `shell/rinch_runtime/popups_tests.rs` (a bar, menu and submenu
+  through the runtime without an event loop: the bar closing, keys, a press,
+  `popup_done`, a replaced chain waiting a turn), `testing/popup_tests.rs`
+  (the harness: every dismissal cause, sizes, perf line).
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`43f05ac88f226a08302a08654cb2e56d8d550237`,
+`rinch-patch-beta4`, pinned by rev** (`debcf476b05eb00181f8dc23219fdf7d3c96ed53`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
 #2652, #2489, #2552's content sizing, #2741's input regions and #2826's
-one-commit layer turn). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+one-commit layer turn, #2817's activation of an existing window, and #2850's split surrogate
+pairs on Windows). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -2097,7 +2402,29 @@ joeleaver/winit-fork#10) are on the branch, and a surface's input region
 (#2741, branch `input-region-2741`, one commit on `9610ebc4`: `70dcdc7c`;
 joeleaver/winit-fork#11) is on the branch, and a layer surface's changes and
 size request in one commit (#2826, branch `layer-one-commit-2464`, one
-commit on `70dcdc7c`: `43f05ac8`; joeleaver/winit-fork#12) is the pin:
+commit on `70dcdc7c`: `43f05ac8`; joeleaver/winit-fork#12) is on the branch.
+An existing window's activation with a token (#2817, branch `rinch-2817`, one
+commit on `43f05ac8`: `19bfe4da`; joeleaver/winit-fork#13) is on the branch.
+The split surrogate pairs (#2850, branch `fix-2850-surrogates`, one commit on
+`19bfe4da`: `debcf476`; joeleaver/winit-fork#14) are the pin:
+
+- **A surrogate pair split across two presses (#2850, fork PR 14).**
+  `SendInput` with `KEYEVENTF_UNICODE` sends a character outside the BMP as
+  two `VK_PACKET` presses, one surrogate each. winit-win32's
+  `KeyEventBuilder` holds a high surrogate that ends a press's `WM_CHAR`
+  text and joins it to a low surrogate that starts the next press's
+  (`pair_split_surrogates`), so the second press reports the whole
+  character; any other press and `WM_KILLFOCUS` drop the held unit.
+  `docs/internals/focus-and-keyboard.md` has rinch's side.
+
+- **An existing window activated with a token (#2817, fork PR 13).**
+  `WindowExtWayland::activate_with_token(token)` sends
+  `xdg_activation_v1.activate(token, surface)` for the window's surface,
+  which upstream does only at creation (`with_activation_token`). `Ok` says
+  only that the request went out: the protocol answers nothing. A popup, X11
+  and a compositor without `xdg_activation_v1` get `NotSupported`. Works for
+  an xdg-toplevel and a layer surface (rinch sends none for a layer surface).
+  rinch's `activate_current_window_with_token` uses it.
 
 - **Layer changes and a size in one commit (#2826, fork PR 12).**
   `WindowExtWayland::set_layer_shell_changes_and_size(changes, size)` makes

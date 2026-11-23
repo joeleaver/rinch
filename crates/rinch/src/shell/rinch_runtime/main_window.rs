@@ -120,6 +120,18 @@ impl ShellWindow {
         // will most likely get (#2652).
         let initial_scale =
             (backend == Backend::Wayland).then(|| self.initial_surface_scale(first_appearance));
+        // The token the window is to be activated with (#2817), on Wayland:
+        // not for a layer surface (nothing to activate) or a non-activating
+        // window (which never takes focus).
+        let non_activating = self
+            .app
+            .window_props
+            .as_ref()
+            .is_some_and(|p| p.non_activating);
+        let activation_token = self
+            .activation_token
+            .as_deref()
+            .filter(|_| backend == Backend::Wayland && !steps.wayland_layer && !non_activating);
         overlay_window::apply_to_attributes(
             window_attrs,
             steps,
@@ -128,6 +140,7 @@ impl ShellWindow {
             x11_class.as_deref(),
             layer.as_ref(),
             initial_scale,
+            activation_token,
         )
     }
 
@@ -400,7 +413,9 @@ impl ShellWindow {
             tracing::debug!("window drag/resize refused: no button is down");
             return true;
         }
-        let scale = w.scale_factor();
+        // A layer surface's place and size are in the display's logical
+        // pixels, without the app's zoom.
+        let scale = w.os_scale_factor();
         let size = w.raw().surface_size().to_logical::<f64>(scale);
         let size = (size.width, size.height);
         let position = match self.layer.as_ref().and_then(|l| l.position) {
@@ -420,9 +435,12 @@ impl ShellWindow {
                 p
             }
         };
+        // The pointer is in CSS pixels; the gesture in the display's.
         let (cx, cy) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
+        let zoom = crate::zoom::current();
+        let cursor = (cx as f64 * zoom, cy as f64 * zoom);
         if let Some(layer) = self.layer.as_mut() {
-            layer.gesture = Some(Gesture::start(kind, (cx as f64, cy as f64), position, size));
+            layer.gesture = Some(Gesture::start(kind, cursor, position, size));
         }
         true
     }
@@ -442,7 +460,10 @@ impl RinchRuntime {
         };
         if let Some(new_size) = resize {
             let current = self.w(role).window.as_ref().map(|w| {
-                let s = w.raw().surface_size().to_logical::<f64>(w.scale_factor());
+                let s = w
+                    .raw()
+                    .surface_size()
+                    .to_logical::<f64>(w.os_scale_factor());
                 (s.width, s.height)
             });
             if current != Some(new_size) {
@@ -468,7 +489,7 @@ impl ShellWindow {
     /// where the compositor has the surface ([`LayerState`]). `None` when no
     /// gesture runs; `Some(Some(size))` for a resize, which the caller asks
     /// the window for.
-    fn follow_layer_gesture(&mut self, local: (f64, f64)) -> Option<Option<(f64, f64)>> {
+    pub(super) fn follow_layer_gesture(&mut self, local: (f64, f64)) -> Option<Option<(f64, f64)>> {
         let layer = self.layer.as_ref()?;
         let kind = layer.gesture?.kind;
         let (new_position, new_size) = layer.follow(local)?;
@@ -489,7 +510,9 @@ impl ShellWindow {
     /// processed the move to `physical`, and pointer positions after this
     /// are over the surface there.
     pub(super) fn layer_moved(&mut self, physical: (i32, i32)) {
-        let scale = self.scale_factor();
+        // The fork sends the margins times the display's scale, without the
+        // app's zoom: the gesture works in the display's logical px.
+        let scale = self.os_scale_factor();
         if let Some(layer) = self.layer.as_mut() {
             layer.moved(crate::shell::layer_shell::moved_origin(physical, scale));
         }
@@ -582,7 +605,9 @@ impl ShellWindow {
                 // Sent with the rest of the turn's changes (#2464).
                 self.pending_layer.extend(sets);
                 // A window sized by its content: a new negotiation in the new
-                // configuration, its size asked for with these changes.
+                // configuration, its size staged with these changes when the
+                // drain sends them (`stage_content_size_for_layer_turn`), so
+                // it goes in their one commit (#2829).
                 self.restart_content_size();
             }
         }
@@ -711,15 +736,27 @@ impl ShellWindow {
         let second = self.app.own_window_facts;
         if !second {
             self.take_stored_title(|_| true);
+            // The launch's token (`App::activation_token`, #2817), for the
+            // main window's first shown OS window.
+            if let Some(token) = crate::shell::activation_tokens::take_launch_token() {
+                self.activation_token = Some(token);
+            }
         }
         let hidden = starts_hidden(self.app.window_props.as_ref());
+        // A window made hidden is dropped at its first show, which makes the
+        // one that appears: the token waits for that one.
+        let kept_token = if hidden {
+            self.activation_token.take()
+        } else {
+            None
+        };
         self.begin_appearance(connected_monitors(event_loop), !hidden);
         // A main window sized by its content is mounted before its OS window
         // (#2552), as a second window is, at the scale its surface starts at
         // (#2652), so it is made at its content's size there. Every other
         // main window is mounted after it (#211).
         if !second && self.app.is_content_sized() && self.app.doc.is_none() {
-            let scale = self.initial_surface_scale(true);
+            let scale = crate::zoom::apply(self.initial_surface_scale(true));
             self.mount_document_before_window(scale);
         }
         let backend = Backend::of(event_loop);
@@ -730,6 +767,7 @@ impl ShellWindow {
             with_content_size(
                 self.main_window_attributes(steps, backend, true, true),
                 content_size,
+                crate::zoom::current(),
             ),
             hidden,
         );
@@ -742,6 +780,8 @@ impl ShellWindow {
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to create window");
+        // Used by this window, or kept for the first show of a hidden one.
+        self.activation_token = kept_token;
         // A hidden start skips the post-creation steps: they would show a
         // window created hidden (`AfterCreate::Show`), and they run on the
         // window `show_window` creates instead.
@@ -750,7 +790,8 @@ impl ShellWindow {
         }
 
         let size = window.surface_size();
-        let scale = window.scale_factor();
+        // The document's scale: the display's times the app's zoom.
+        let scale = crate::zoom::apply(window.scale_factor());
 
         // Create the GPU renderer when the choice wants one and it starts; the
         // software renderer is created lazily by the first software paint. A
@@ -893,8 +934,19 @@ impl ShellWindow {
         }
         // A size the turn asked for and never sent: the next surface is made
         // at it, as a hidden window's size is (#2464).
+        // Published too, so `current_window_size()` reports it while the
+        // window is hidden (#2829), as a size set while hidden is.
         if let Some(size) = staged_size {
             self.saved_geometry.size = Some(size);
+            // In the display's logical pixels, as the window's own readings
+            // (`WindowReading`) and a size set while hidden are published:
+            // the OS scale, not the zoomed one (#2861).
+            let logical = size.to_logical::<f64>(self.os_scale_factor());
+            window_geometry::publish_hidden(
+                self.facts_key,
+                None,
+                Some((logical.width, logical.height)),
+            );
         }
         // A hidden window has lost the keyboard (#1770), and the system's
         // `Focused(false)` for a window rinch drops itself never arrives. So
@@ -963,6 +1015,7 @@ impl ShellWindow {
         let window_attrs = with_content_size(
             self.main_window_attributes(steps, backend, false, first_show),
             content_size,
+            crate::zoom::current(),
         );
         self.maximize_wait = window_geometry::MaximizeWait::after_create(
             &window_attrs,
@@ -973,6 +1026,8 @@ impl ShellWindow {
         let window = event_loop
             .create_window(window_attrs)
             .expect("Failed to recreate window");
+        // Given in the attributes; one token is for one window.
+        self.activation_token = None;
         overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
         self.note_surface_kind(&*window, first_show);
 
@@ -1008,7 +1063,7 @@ impl ShellWindow {
         // The new surface's own size (`window_physical_size`) goes out with
         // the scale, in one batch, or alone at the same scale; a `Resized`
         // that follows publishes the same value and wakes nothing.
-        let scale = window.scale_factor();
+        let scale = crate::zoom::apply(window.scale_factor());
         let size = window.surface_size();
         self.app
             .set_surface_size((size.width.max(1), size.height.max(1)));
@@ -1083,6 +1138,10 @@ impl ShellWindow {
     ) {
         if self.window.is_some() || self.app.doc.is_none() {
             return;
+        }
+        #[cfg(feature = "gpu-renderer")]
+        {
+            self.prepared_with = choice;
         }
         // Glyphs are rasterized, and Stylo snaps borders, at the scale the
         // frame is painted at: at the wrong one the show does it all again.
@@ -1175,7 +1234,9 @@ impl ShellWindow {
         }
         let (name, id) = self.requested_output();
         let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
-        likely_output_scale(&outputs, id, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
+        likely_output_scale(&outputs, id, name.as_deref())
+            .map(crate::zoom::apply)
+            .unwrap_or(self.app.device_pixel_ratio)
     }
 
     /// The output the window asks for, by name and by id: the name
@@ -1201,9 +1262,27 @@ impl ShellWindow {
     /// scale it had when last on screen; with no outputs listed, the scale
     /// its document has. The first frame is painted at it, so when it is the
     /// compositor's that frame is the only one.
+    ///
+    /// The display's scale, without the app's zoom (the document's scales
+    /// above are divided by it): the document's is
+    /// `crate::zoom::apply` of it.
     pub(super) fn initial_surface_scale(&self, first_appearance: bool) -> f64 {
+        self.initial_surface_scale_or(first_appearance, self.app.device_pixel_ratio)
+    }
+
+    /// [`Self::initial_surface_scale`], with `document_scale` (zoom
+    /// included) standing in for its document's scale where it would read
+    /// that: a second window's document is not mounted yet when its mount
+    /// scale is chosen, so its own scale is the unset 1.0, and the window
+    /// that opens it gives its scale instead (#2886).
+    pub(super) fn initial_surface_scale_or(
+        &self,
+        first_appearance: bool,
+        document_scale: f64,
+    ) -> f64 {
+        let unzoomed = |scale: f64| scale / crate::zoom::current();
         if let Some((scale, _)) = self.prepared {
-            return scale;
+            return unzoomed(scale);
         }
         let (name, id) = self.requested_output();
         let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
@@ -1217,25 +1296,37 @@ impl ShellWindow {
             return output.scale;
         }
         if !first_appearance {
-            return self.app.device_pixel_ratio;
+            return unzoomed(document_scale);
         }
         outputs
             .first()
-            .map_or(self.app.device_pixel_ratio, |o| o.scale)
+            .map_or(unzoomed(document_scale), |o| o.scale)
     }
 
     /// The logical size a hidden window is shown at: the size it was hidden
     /// at or the app set while hidden (`saved_geometry`), unless it comes
     /// back maximized; else the size its document was last laid out at;
     /// else the size its props asked for.
+    ///
+    /// In the document's CSS px at `scale` (the display's times the app's
+    /// zoom): the saved size and the props' are the display's logical px,
+    /// which the zoom lays out smaller.
     pub(super) fn hidden_size(&self, scale: f64) -> (u32, u32) {
+        let zoom = crate::zoom::current();
+        let css = |width: f64, height: f64| {
+            (
+                ((width / zoom).round() as u32).max(1),
+                ((height / zoom).round() as u32).max(1),
+            )
+        };
         if !self.saved_geometry.maximized
             && let Some(size) = self.saved_geometry.size
         {
-            let size: LogicalSize<f64> = size.to_logical(scale);
-            return (size.width.round() as u32, size.height.round() as u32);
+            let size: LogicalSize<f64> = size.to_logical(scale / zoom);
+            return css(size.width, size.height);
         }
-        self.laid_out_size().unwrap_or((self.width, self.height))
+        self.laid_out_size()
+            .unwrap_or_else(|| css(self.width as f64, self.height as f64))
     }
 
     /// The logical size the document was last laid out at, if it has been.
@@ -1260,8 +1351,7 @@ impl ShellWindow {
         scale: f64,
         size: (u32, u32),
     ) -> bool {
-        use super::desktop::GpuStartError;
-        use super::renderer::{OnGpuFailure, on_gpu_failure, tries_gpu};
+        use super::renderer::tries_gpu;
         let configured = super::desktop::gpu_init_installed();
         if !tries_gpu(choice, configured) {
             return false;
@@ -1272,17 +1362,18 @@ impl ShellWindow {
         );
         let mut renderer = match self.parked_renderer.take() {
             Some(renderer) => renderer,
-            None => match WgpuRenderer::try_new_offscreen(physical.0, physical.1, choice) {
-                Ok(renderer) => {
+            None => match self.start_offscreen_with(
+                std::time::Instant::now(),
+                choice,
+                configured,
+                |_| WgpuRenderer::try_new_offscreen(physical.0, physical.1, choice),
+            ) {
+                OffscreenStart::Built(renderer) => {
                     self.note_renderer_built(true);
                     renderer
                 }
-                Err(GpuStartError::DeclinedCpuAdapter(_)) => return false,
-                Err(e) => {
-                    tracing::warn!("rinch: the GPU renderer could not be prepared ({e})");
-                    // Where the show would panic, it says so then.
-                    return on_gpu_failure(choice, configured) == OnGpuFailure::Panic;
-                }
+                OffscreenStart::Software => return false,
+                OffscreenStart::Nothing | OffscreenStart::Waits => return true,
             },
         };
         renderer.size_detached(physical.0, physical.1);
@@ -1293,6 +1384,45 @@ impl ShellWindow {
             tracing::warn!("rinch: preparing the hidden window failed: {e}");
         }
         true
+    }
+
+    /// The renderer [`Self::prepare_gpu`] builds for a hidden window with no
+    /// renderer parked, made by `build`, and what the preparation does when
+    /// the GPU will not start: within a device loss's recovery (#2824, as
+    /// [`Self::start_renderer_with`] for a show), the window waits for the
+    /// rebuild ([`Self::awaits_gpu`]), which builds its renderer on the new
+    /// device and prepares it again; otherwise the startup rule decides: it
+    /// prepares with software where the show would fall back to it, and
+    /// prepares nothing where the show would panic (the show says so then).
+    #[cfg(feature = "gpu-renderer")]
+    pub(super) fn start_offscreen_with<R>(
+        &mut self,
+        now: std::time::Instant,
+        choice: super::renderer::Renderer,
+        configured: bool,
+        build: impl FnOnce(&mut Self) -> Result<R, super::desktop::GpuStartError>,
+    ) -> OffscreenStart<R> {
+        use super::desktop::GpuStartError;
+        use super::renderer::{OnGpuFailure, on_gpu_failure};
+        match build(self) {
+            Ok(renderer) => OffscreenStart::Built(renderer),
+            Err(GpuStartError::DeclinedCpuAdapter(_)) => OffscreenStart::Software,
+            Err(e) if super::device_loss::gpu_recovering(now) => {
+                tracing::info!(
+                    "rinch: no GPU renderer yet after the device loss ({e}); the prepared window \
+                     waits for the device"
+                );
+                self.awaits_gpu = true;
+                OffscreenStart::Waits
+            }
+            Err(e) => {
+                tracing::warn!("rinch: the GPU renderer could not be prepared ({e})");
+                match on_gpu_failure(choice, configured) {
+                    OnGpuFailure::FallBack => OffscreenStart::Software,
+                    OnGpuFailure::Panic => OffscreenStart::Nothing,
+                }
+            }
+        }
     }
 
     /// The GPU renderer for `window` ([`start_gpu_renderer`]): the one kept
@@ -1488,10 +1618,18 @@ fn starts_hidden(props: Option<&rinch_core::element::WindowProps>) -> bool {
 }
 
 /// `attrs` made at a content-sized window's content size, when it has one
-/// (#2552).
-fn with_content_size(attrs: WindowAttributes, size: Option<(u32, u32)>) -> WindowAttributes {
+/// (#2552). The content's size is in CSS px; winit's logical size is the
+/// display's, which the app's `zoom` makes larger (as `follow_content_size`
+/// asks), so the first buffer is the content's size at the zoomed scale.
+pub(super) fn with_content_size(
+    attrs: WindowAttributes,
+    size: Option<(u32, u32)>,
+    zoom: f64,
+) -> WindowAttributes {
     match size {
-        Some((width, height)) => attrs.with_surface_size(LogicalSize::new(width, height)),
+        Some((width, height)) => {
+            attrs.with_surface_size(LogicalSize::new(width as f64 * zoom, height as f64 * zoom))
+        }
         None => attrs,
     }
 }
@@ -1559,6 +1697,7 @@ mod hidden_start_tests {
                 None,
                 None,
                 None,
+                None,
             )
         };
         assert!(built().visible, "the macOS panel itself is created visible");
@@ -1573,6 +1712,7 @@ mod hidden_start_tests {
             WindowAttributes::default(),
             x11,
             Backend::X11,
+            None,
             None,
             None,
             None,
@@ -1600,6 +1740,22 @@ mod hidden_start_tests {
 }
 
 // ── Renderer choice ──────────────────────────────────────────────────────────
+
+/// What a hidden window's preparation does for a GPU renderer it has none of
+/// ([`ShellWindow::start_offscreen_with`]).
+#[cfg(feature = "gpu-renderer")]
+#[derive(Debug, PartialEq)]
+pub(super) enum OffscreenStart<R> {
+    /// The renderer, built: the frame is prepared with it.
+    Built(R),
+    /// Prepare with the software renderer.
+    Software,
+    /// Prepare nothing: the show would panic, and says so then.
+    Nothing,
+    /// Prepare nothing yet: within a device loss's recovery the window waits
+    /// for the rebuild, which prepares it on the new device (#2824).
+    Waits,
+}
 
 /// How soon the loop looks again for Vello's counters of a frame the GPU has
 /// not finished (#2071): half a 60 Hz frame. A window that overflowed is drawn

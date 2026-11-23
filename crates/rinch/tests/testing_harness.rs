@@ -626,6 +626,61 @@ fn focus_current_window_shows_a_hidden_window_and_focuses_it_2310() {
     assert!(!app.is_window_focused(), "but never takes the keyboard");
 }
 
+/// `activate_current_window_with_token` (#2817) is a focus request that
+/// carries the token to the shell, and is applied as one: a hidden window is
+/// shown and focused, a shown one takes the keyboard back, a non-activating
+/// one never does. `WindowHandle::activate_with_token` names its window.
+#[test]
+fn activate_with_token_is_a_focus_request_with_the_token_2817() {
+    let mut app = TestApp::builder(|__scope: &mut RenderScope| rsx! { div {} })
+        .window_props(WindowProps {
+            visible: false,
+            ..WindowProps::default()
+        })
+        .mount();
+    rinch::windows::activate_current_window_with_token("sway-launch-17");
+    app.settle();
+    assert_eq!(
+        app.take_window_requests(),
+        [WindowRequest::ActivateWithToken("sway-launch-17".into())]
+    );
+    assert!(app.is_visible(), "a hidden window is shown");
+    assert!(app.is_window_focused());
+
+    app.window_focus(false);
+    rinch::windows::activate_current_window_with_token("kwin-9");
+    app.settle();
+    assert!(
+        app.is_window_focused(),
+        "a shown window takes the keyboard back"
+    );
+    // Without a token it is the plain focus request it always was.
+    rinch::windows::focus_current_window();
+    app.settle();
+    assert_eq!(
+        app.take_window_requests(),
+        [
+            WindowRequest::ActivateWithToken("kwin-9".into()),
+            WindowRequest::Focus
+        ]
+    );
+    drop(app);
+
+    let mut app = TestApp::builder(|__scope: &mut RenderScope| rsx! { div {} })
+        .window_props(WindowProps {
+            non_activating: true,
+            ..WindowProps::default()
+        })
+        .mount();
+    app.window_focus(false);
+    rinch::windows::activate_current_window_with_token("t");
+    app.settle();
+    assert!(
+        !app.is_window_focused(),
+        "a non-activating window never takes the keyboard"
+    );
+}
+
 /// #2742 part 1: a window sized by its content takes the content's size, and
 /// follows it when the content grows.
 #[test]

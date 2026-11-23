@@ -2170,6 +2170,7 @@ fn install_file_drop(browser_doc: &web_sys::Document) {
             .data_transfer()
             .map(|dt| dropped_files(&dt))
             .unwrap_or_default();
+        let _root = crate::mark_event_root(&event);
         dispatch_dropped_files(&event, files);
     }) as Box<dyn FnMut(_)>);
     browser_doc
@@ -3487,6 +3488,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                         });
                     });
                 } else {
+                    // The press's handlers are its root's code (#2811), and
+                    // so is the `Drag` one arms; the pointer stream after it
+                    // (move, up, cancel) is not marked, since a gesture may
+                    // cross into another root.
+                    let _root = crate::mark_event_root(event);
                     // A touch or pen `pointerdown` grants no user activation
                     // (its `pointerup` does): a handler that needs it — the
                     // file picker (#1771) — is told which pointer to wait for.
@@ -3692,6 +3698,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                         element_from_point(state.start_x, state.start_y)
                     };
                     if let Some(target) = target {
+                        // The click is the pressed root's code (#2811); the
+                        // rest of the release is no root's.
+                        let _root = crate::root_doc_of(Some(target.as_ref()))
+                            .map(rinch_core::push_dispatching_doc);
                         dispatch_click_at(&target, &browser_doc_for_up, event);
                     }
                 }
@@ -3714,7 +3724,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             }
         });
         if let Some(target) = deferred {
-            dispatch_click_at(&target, &browser_doc_for_up, event);
+            {
+                // The tap's click is its root's code (#2811); the drag end
+                // below is no root's, so a drag the handler armed ends.
+                let _root =
+                    crate::root_doc_of(Some(target.as_ref())).map(rinch_core::push_dispatching_doc);
+                dispatch_click_at(&target, &browser_doc_for_up, event);
+            }
             // A `Drag` the handler armed has already seen its release: end it
             // here, at the release, rather than leave it following a finger
             // that has lifted. A control that drags wants `touch-action: none`,
@@ -3771,6 +3787,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // here: it would cancel link navigation, the label→control toggle and
     // native form submit for keyboard users only.
     let click_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // This root's code (#2811): see `crate::mark_event_root`.
+        let _root = crate::mark_event_root(&event);
         // Deliberately NOT narrowed to `MouseEvent` (issue #811): a plain
         // `Event("click")` from page script or automation activates a
         // `data-rid` element, as an untrusted click always has here (#240).
@@ -3863,6 +3881,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // around it as a click with `MouseButton::Middle` and the link in
     // `click_link`, so the app decides (and can tell it from a plain click).
     let auxclick_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // This root's code (#2811): see `crate::mark_event_root`.
+        let _root = crate::mark_event_root(&event);
         let Some(mouse) = event.dyn_ref::<web_sys::MouseEvent>() else {
             return;
         };
@@ -3955,6 +3975,11 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             return;
         }
 
+        // The key is the root's whose element it targets (#2811): its
+        // handlers run as that root's code, and the interceptor, key entries
+        // and dismiss stack it reaches are that root's.
+        let _root = crate::mark_event_root(event);
+
         // 0.5. The focused element's own `onkeydown`, then its ancestors',
         //      before the interceptor and the dismiss stack (issue #1678) —
         //      desktop's order. A consumed key is the browser's
@@ -4041,11 +4066,12 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         //    `<body>` and bubbles here). Not a key the rich-text editor holds
         //    (the ones it acts on never get here; the rest are not offered,
         //    as on desktop), nor one an input method is composing with.
-        if !event.is_composing()
-            && event.key() != "Process"
-            && !key_target_is_editor(event)
-            && events::dispatch_app_key(&key_data)
-        {
+        //    They hear the page's keys, every root's (see `on_app_key`), so
+        //    they are offered the key as no root's (#2811).
+        if !event.is_composing() && event.key() != "Process" && !key_target_is_editor(event) && {
+            let _page = rinch_core::push_dispatching_doc(0);
+            events::dispatch_app_key(&key_data)
+        } {
             event.prevent_default();
             event.stop_propagation();
             return;
@@ -4147,11 +4173,15 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             .with_kind(events::KeyEventKind::Up);
         // The element's own `onkeyup` first (issue #1678); a consuming one
         // stops its ancestors, and the interceptor hears the release anyway,
-        // as on desktop.
-        offer_element_key(event, "data-onkeyup", &key_data);
-        events::dispatch_keyboard_event(&key_data);
+        // as on desktop. Both as the target's root's code, like the press
+        // (#2811).
+        {
+            let _root = crate::mark_event_root(event);
+            offer_element_key(event, "data-onkeyup", &key_data);
+            events::dispatch_keyboard_event(&key_data);
+        }
         // Every release reaches the app-wide listeners, but one whose press a
-        // focused surface claimed (#1784).
+        // focused surface claimed (#1784). As no root's: they hear the page.
         events::dispatch_app_key(&key_data);
 
         if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
@@ -4179,6 +4209,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // Input delegation: find [data-oninput] on the target or ancestors.
     let browser_doc2 = browser_doc.clone();
     let input_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // This root's code (#2811): see `crate::mark_event_root`.
+        let _root = crate::mark_event_root(&event);
         if let Some(target) = event.target()
             && let Some(value) = form_control_value(&target)
         {
@@ -4293,6 +4325,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         ("focusout", "data-onfocusout", true),
     ] {
         add_capture(&browser_doc, name, move |event: web_sys::FocusEvent| {
+            let _root = crate::mark_event_root(&event);
             dispatch_focus_attr(&event, attr, bubbles);
         });
     }
@@ -4323,6 +4356,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // skipped.
     let browser_doc_change = browser_doc.clone();
     let change_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // This root's code (#2811): see `crate::mark_event_root`.
+        let _root = crate::mark_event_root(&event);
         if let Some(target) = event.target()
             && let Some(value) = form_control_value(&target)
             && let Ok(el) = target.clone().dyn_into::<web_sys::Element>()
@@ -4357,6 +4392,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // [`set_suppress_native_context_menu`] is on and the target is not in an
     // editing context (issue #812), dispatch only when one was found.
     let contextmenu_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // This root's code (#2811): see `crate::mark_event_root`.
+        let _root = crate::mark_event_root(&event);
         // Like `click`, not narrowed (issue #811): a `contextmenu` that is no
         // `MouseEvent` still runs a live handler, at the element's centre with
         // nothing held, rather than reading `undefined` positions.
@@ -4431,6 +4468,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // editor's hidden capture textarea having already claimed it (`editor_input.rs`),
     // and it reads `clipboardData` itself.
     let paste_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // This root's code (#2811): see `crate::mark_event_root`.
+        let _root = crate::mark_event_root(&event);
         // A `paste` that is no `ClipboardEvent` is not a paste, even with a
         // `clipboardData` hung on it by page script (issue #811): the typed
         // parameter this took was an unchecked cast, which read that property

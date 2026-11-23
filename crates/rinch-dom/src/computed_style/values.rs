@@ -1393,6 +1393,10 @@ pub struct TextPaintValue {
     /// element's `color`.
     #[serde(serialize_with = "color_serde::serialize")]
     pub stroke_color: Option<peniko::Color>,
+    /// `-webkit-text-stroke-color` is `currentcolor` (#2870): a child that
+    /// inherits it through a declaration invalid at computed-value time
+    /// resolves it against its own `color`, not this element's.
+    pub stroke_currentcolor: bool,
     /// `paint-order` puts `stroke` before `fill` (`stroke`, `stroke fill`,
     /// `markers stroke`, …): the outline is drawn under the glyphs.
     pub stroke_first: bool,
@@ -1404,6 +1408,7 @@ impl TextPaintValue {
         fill: None,
         stroke_width: 0.0,
         stroke_color: None,
+        stroke_currentcolor: false,
         stroke_first: false,
     };
 

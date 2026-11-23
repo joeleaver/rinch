@@ -86,12 +86,18 @@
 //! an absolute that `out_of_flow.rs` resolved against the viewport must not then
 //! be clipped by the unpositioned scroller it was written inside.
 //!
-//! **Known gap.** The root's own bracket is applied unconditionally, so an
-//! absolute hoisted to a root that clips but establishes no containing block —
-//! `opacity: 0.9; overflow: hidden` on a static box, and nothing positioned
-//! between — is clipped by it where CSS would not. Layout places such a box
-//! against its real containing block (#386); this is the paint half of that
-//! shape, and needs the clip moved off the bracket to fix.
+//! **A containing block above the root** (#2815). The chain says nothing
+//! about the clips *above* the collecting root: the root's own bracket, and
+//! the chains of the stacking contexts it was hoisted through, which paint
+//! has open around the whole sequence. An absolute whose containing block is
+//! above the root escapes those that belong to the block's descendants — an
+//! `opacity: 0.9; overflow: hidden` root that is no containing block, or a
+//! plain clipper between the block and the root. Paint lifts them around the
+//! entry (`paint::LiftedClips::lift_absolute`), telling them apart by the
+//! clipping box each [`ClipRect::owner`] names, and hit testing lets such an
+//! entry clear the outermost one a probe is outside of
+//! (`paint::absolute_escapes_clip`). Before #2815 the root's bracket and
+//! those chains clipped it, where Chrome does not.
 //!
 //! # Clip groups
 //!
@@ -256,6 +262,11 @@ pub struct ClipRect {
     /// Its (padding-box, i.e. border-inset) `border-radius`, already resolved
     /// and scaled. All-zero for a square clip.
     pub radii: BorderRadii,
+    /// The clipping box. Paint tags the clip it pushes for this link with it,
+    /// so that an absolute entry whose containing block is above the
+    /// collecting root can tell which open clips are its containing block's
+    /// descendants', and escape exactly those (#2815).
+    pub owner: RawNodeId,
 }
 
 impl ClipRect {
@@ -991,7 +1002,11 @@ impl<const BARS: bool> Collector<'_, BARS> {
 
         let pushed = match clip_shape(child, self.scale, cx, cy) {
             Some((rect, radii)) => {
-                self.live.push(ClipRect { rect, radii });
+                self.live.push(ClipRect {
+                    rect,
+                    radii,
+                    owner: child.id,
+                });
                 true
             }
             None => false,
@@ -1060,6 +1075,7 @@ mod clip_group_tests {
         ClipRect {
             rect: Rect::new(x0, 7.0, x1, 311.0),
             radii: BorderRadii::ZERO,
+            owner: 0,
         }
     }
 
@@ -1260,6 +1276,7 @@ mod shared_clip_prefix_tests {
         ClipRect {
             rect: Rect::new(x0, y0, x1, y1),
             radii: BorderRadii::ZERO,
+            owner: 0,
         }
     }
 

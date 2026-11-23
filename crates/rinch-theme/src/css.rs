@@ -148,6 +148,19 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str(
             "  --rinch-color-option-selected: color-mix(in srgb, var(--rinch-primary-color) 15%, transparent);\n",
         );
+        // A hovered selected row (Tree, #2871): Mantine's `light-hover`.
+        css.push_str(
+            "  --rinch-color-option-selected-hover: color-mix(in srgb, var(--rinch-primary-color) 25%, transparent);\n",
+        );
+        // A keyboard focus ring (Checkbox, Radio, Switch) and the Mark /
+        // Highlight background (#2879): primary-2 and yellow-2 are near-white
+        // here, so they are translucent tints instead.
+        css.push_str(
+            "  --rinch-color-focus-ring: color-mix(in srgb, var(--rinch-primary-color) 50%, transparent);\n",
+        );
+        css.push_str(
+            "  --rinch-color-mark: color-mix(in srgb, var(--rinch-color-yellow-6) 35%, transparent);\n",
+        );
         // Dark mode titlebar: dark background with primary color text/icons
         css.push_str("  --rinch-titlebar-bg: var(--rinch-color-surface);\n");
         css.push_str("  --rinch-titlebar-text: var(--rinch-primary-color);\n");
@@ -177,6 +190,9 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str("  --rinch-color-state-disabled: var(--rinch-color-gray-1);\n");
         css.push_str("  --rinch-color-option-hover: var(--rinch-color-gray-2);\n");
         css.push_str("  --rinch-color-option-selected: var(--rinch-primary-color-0);\n");
+        css.push_str("  --rinch-color-option-selected-hover: var(--rinch-primary-color-1);\n");
+        css.push_str("  --rinch-color-focus-ring: var(--rinch-primary-color-2);\n");
+        css.push_str("  --rinch-color-mark: var(--rinch-color-yellow-2);\n");
         // Light mode titlebar: primary color background with white text/icons
         css.push_str("  --rinch-titlebar-bg: var(--rinch-primary-color);\n");
         css.push_str("  --rinch-titlebar-text: white;\n");
@@ -184,6 +200,28 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         css.push_str("  --rinch-titlebar-hover: rgba(255, 255, 255, 0.2);\n");
         css.push_str("  --rinch-titlebar-active: rgba(255, 255, 255, 0.3);\n");
     }
+
+    // Variant tokens (#2879), Mantine's `light` variant family, for every
+    // palette colour and the primary. Light scheme: the palette's light shades,
+    // the values these components always used. Dark scheme: the colour as a
+    // translucent tint over the surface, and lighter text on it.
+    for color_name in ColorName::all() {
+        let name = color_name.css_name();
+        push_variant_tokens(
+            &mut css,
+            theme.dark_mode,
+            &format!("--rinch-color-{name}"),
+            &format!("var(--rinch-color-{name}-6)"),
+            &|i| format!("var(--rinch-color-{name}-{i})"),
+        );
+    }
+    push_variant_tokens(
+        &mut css,
+        theme.dark_mode,
+        "--rinch-primary-color",
+        "var(--rinch-primary-color)",
+        &|i| format!("var(--rinch-primary-color-{i})"),
+    );
 
     // Reduced motion preference
     css.push_str("}\n\n");
@@ -199,6 +237,51 @@ pub fn generate_css_variables(theme: &Theme) -> String {
     }
 
     css
+}
+
+/// Writes one colour's `light` variant tokens (#2879):
+///
+/// | token | light scheme | dark scheme |
+/// |---|---|---|
+/// | `{prefix}-light` | shade 0 | `tint` at 15% |
+/// | `{prefix}-light-hover` | shade 1 | `tint` at 20% |
+/// | `{prefix}-light-active` | shade 2 | `tint` at 25% |
+/// | `{prefix}-light-color` | shade 6 | shade 4 |
+/// | `{prefix}-light-color-strong` | shade 7 | shade 3 |
+/// | `{prefix}-light-text` | shade 9 | `--rinch-color-text` |
+///
+/// The dark tints are `color-mix(... transparent)`, so they lie over whatever
+/// surface the component sits on, as `--rinch-color-option-selected` does.
+fn push_variant_tokens(
+    css: &mut String,
+    dark: bool,
+    prefix: &str,
+    tint: &str,
+    shade: &dyn Fn(usize) -> String,
+) {
+    let mix = |pct: u32| format!("color-mix(in srgb, {tint} {pct}%, transparent)");
+    let rows: [(&str, String); 6] = if dark {
+        [
+            ("light", mix(15)),
+            ("light-hover", mix(20)),
+            ("light-active", mix(25)),
+            ("light-color", shade(4)),
+            ("light-color-strong", shade(3)),
+            ("light-text", "var(--rinch-color-text)".to_string()),
+        ]
+    } else {
+        [
+            ("light", shade(0)),
+            ("light-hover", shade(1)),
+            ("light-active", shade(2)),
+            ("light-color", shade(6)),
+            ("light-color-strong", shade(7)),
+            ("light-text", shade(9)),
+        ]
+    };
+    for (suffix, value) in rows {
+        css.push_str(&format!("  {prefix}-{suffix}: {value};\n"));
+    }
 }
 
 /// Generate base CSS styles for the theme (body styles, etc.).

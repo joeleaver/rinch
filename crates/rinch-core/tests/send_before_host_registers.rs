@@ -4,7 +4,7 @@
 //! probing beardictate's report: with no main thread registered,
 //! `is_main_thread()` answers `true` on the worker, so `update_send` ran the
 //! write right there, against the worker's own (empty) thread-local signal
-//! store, where the signal does not exist — `warn_write_to_freed`, and the
+//! store, where the signal does not exist — `warn_write_dropped`, and the
 //! write is gone. `rinch::run_on_main_thread` always queues, so the same
 //! write made through it survives.
 //!

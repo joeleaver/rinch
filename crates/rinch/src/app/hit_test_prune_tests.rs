@@ -24,7 +24,7 @@ use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
 
 /// The oracle: `hit_test` as it was before the prune and the cache.
 fn reference_hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<u64> {
-    reference_hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y, false)
+    reference_hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y, None)
 }
 
 struct Rng(u64);
@@ -792,9 +792,10 @@ fn reference_hit_test_node(
     y: f32,
     vx: f32,
     vy: f32,
-    // The probe is outside a clip a `position: fixed` descendant escapes
-    // (#549); see `hit_test_node`. Unpruned here: every entry is entered.
-    clipped: bool,
+    // The outermost clip the probe is outside of that a `position: fixed`
+    // descendant (#549) or an escaping absolute one (#2815) escapes; see
+    // `hit_test_node`. Unpruned here: every entry is entered.
+    clipped: Option<u64>,
 ) -> Option<u64> {
     tree.perf
         .bump(rinch_dom::perf::Counter::HitTestNodesVisited);
@@ -812,7 +813,7 @@ fn reference_hit_test_node(
         vy,
     } = descend(tree, node, node_id, offset_x, offset_y, x, y, vx, vy)?;
 
-    if clipped && rinch_dom::paint::contains_fixed_descendants(node) {
+    if clipped.is_some() && rinch_dom::paint::contains_fixed_descendants(node) {
         return None;
     }
 
@@ -906,6 +907,59 @@ fn reference_hit_test_node(
                 if is_stretched_ifc_text(child) {
                     continue;
                 }
+                // A relative inline element: its atomic inlines, then its
+                // drawn text, which answers its IFC root (#2819).
+                if rinch_dom::paint::paints_in_own_entry(child) {
+                    let inside = check_children
+                        && clipped.is_none()
+                        && order
+                            .clips_for(entry)
+                            .iter()
+                            .all(|c| c.contains(x as f64, y as f64));
+                    let over = inside
+                        .then(|| {
+                            rinch_dom::text_query::layered_span_at(
+                                tree,
+                                child,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                            )
+                        })
+                        .flatten();
+                    if inside {
+                        for id in rinch_dom::text_query::layered_span_boxes(tree, child)
+                            .into_iter()
+                            .rev()
+                        {
+                            if let Some(hit) = reference_hit_test_node(
+                                tree,
+                                id,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                                vx,
+                                vy,
+                                None,
+                            ) {
+                                return Some(hit);
+                            }
+                        }
+                    }
+                    if over == Some(true)
+                        && !rinch_dom::visibility::hides_own(tree, child)
+                        && !matches!(
+                            child.computed_style.pointer_events,
+                            rinch_dom::computed_style::PointerEventsValue::None
+                        )
+                        && let Some(root) = child.ifc_root
+                    {
+                        return Some(root);
+                    }
+                    continue;
+                }
                 // The clipping ancestors this entry was hoisted past. Since
                 // #324 an `overflow` box is not a stacking context, so the
                 // walk went straight through them and the `check_children`
@@ -915,16 +969,31 @@ fn reference_hit_test_node(
                 // The clips are in this root's own space, which is the space
                 // `x`/`y` are in here, and at scale 1.0 because that is what
                 // this walk asked `stacking_paint_order` for.
-                let inside_clips = check_children
-                    && order
+                let chain_out = if check_children {
+                    order
                         .clips_for(entry)
                         .iter()
-                        .all(|c| c.contains(x as f64, y as f64));
+                        .find(|c| !c.contains(x as f64, y as f64))
+                        .map(|c| c.owner)
+                } else {
+                    None
+                };
                 // A fixed entry escapes this root's gate, its own (empty)
-                // chain and every clip `clipped` stands for (#545, #549);
-                // anything else clipped away is still entered, clipped, to
-                // look for one.
-                let child_clipped = !escapes_clips && (clipped || !inside_clips);
+                // chain and every clip `clipped` stands for (#545, #549); an
+                // absolute one whose containing block is above this root
+                // escapes the outermost of them when that block holds it
+                // (#2815); anything else clipped away is still entered,
+                // clipped, to look for one.
+                let child_clipped = if escapes_clips {
+                    None
+                } else {
+                    clipped
+                        .or((!check_children).then_some(node_id))
+                        .or(chain_out)
+                        .filter(|&c| {
+                            !rinch_dom::paint::absolute_escapes_clip(tree, node_id, child, c)
+                        })
+                };
                 if let Some(hit) = reference_hit_test_node(
                     tree,
                     entry.node_id,
@@ -939,7 +1008,7 @@ fn reference_hit_test_node(
                     return Some(hit);
                 }
             }
-        } else if check_children && !clipped {
+        } else if check_children && clipped.is_none() {
             // Not a stacking-context root — test only the children that were
             // not hoisted to an ancestor's sequence, in reverse tree order.
             // Nothing here can be a fixed box: one creates a stacking context
@@ -957,7 +1026,7 @@ fn reference_hit_test_node(
                     continue;
                 }
                 if let Some(hit) =
-                    reference_hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy, false)
+                    reference_hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy, None)
                 {
                     return Some(hit);
                 }
@@ -972,7 +1041,7 @@ fn reference_hit_test_node(
         && !clip_x
         && !clip_y
         && super::inline_box_outside(tree, node, x - nx, y - ny);
-    if clipped
+    if clipped.is_some()
         || !(point_in_bounds || in_inline_box)
         || (hidden && !super::visible_text_at(tree, node, x - nx, y - ny))
     {
@@ -1038,7 +1107,7 @@ fn reference_hit_test_node_is_per_axis_like_the_real_one() {
         150.0,
         50.0,
         150.0,
-        false,
+        None,
     );
     assert_eq!(
         real,

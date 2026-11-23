@@ -26,6 +26,27 @@ fn serialize_debug<T: std::fmt::Debug, S: serde::Serializer>(
     s.serialize_str(&format!("{v:?}"))
 }
 
+/// `-webkit-box-pack` (#2581); see [`ComputedStyle::webkit_box_pack`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WebkitBoxPack {
+    #[default]
+    Start,
+    End,
+    Center,
+    Justify,
+}
+
+/// `-webkit-box-align` (#2581); see [`ComputedStyle::webkit_box_align`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WebkitBoxAlign {
+    #[default]
+    Stretch,
+    Start,
+    End,
+    Center,
+    Baseline,
+}
+
 /// Pre-parsed CSS properties for efficient layout and paint.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComputedStyle {
@@ -112,6 +133,21 @@ pub struct ComputedStyle {
     /// `flex-grow` and `flex-shrink` are then [`Self::webkit_box_flex`].
     #[serde(skip)]
     pub webkit_box_item: Option<bool>,
+    /// `-webkit-box-pack` (#2581): where a legacy flex `-webkit-box` puts
+    /// its items on the main axis. Chrome reads it, and not
+    /// `justify-content`, there. Not inherited.
+    #[serde(skip)]
+    pub webkit_box_pack: WebkitBoxPack,
+    /// `-webkit-box-align` (#2581): how a legacy flex `-webkit-box` aligns
+    /// its items on the cross axis, in place of `align-items` and every
+    /// item's `align-self`. Not inherited.
+    #[serde(skip)]
+    pub webkit_box_align: WebkitBoxAlign,
+    /// `-webkit-box-direction: reverse` (#2581): a legacy flex
+    /// `-webkit-box` lays its items out from the main axis's end. Not
+    /// inherited.
+    #[serde(skip)]
+    pub webkit_box_reverse: bool,
     /// A table cell whose parent box is an inline (CSS 2.1 §17.2.1): CSS
     /// wraps it in an anonymous `inline-table` on the line, which rinch,
     /// with no anonymous table box, lays out as the cell itself at `display:
@@ -273,6 +309,11 @@ pub struct ComputedStyle {
     /// alike, so only an explicit `luminance` differs). Empty for `none`, and
     /// for a list with nothing rinch can paint.
     pub mask_image: Vec<BackgroundLayer>,
+    /// `clip-path` is not `none`. rinch does not paint a clip path; this is
+    /// read only where its presence changes which clips apply to a box: an
+    /// absolute box below such an element does not escape the clips above
+    /// it (Chrome 158, #2815's review; `paint::LiftedClips::lift_absolute`).
+    pub clip_path: bool,
     /// `background-clip: text` (and `-webkit-background-clip: text`, #2719),
     /// per layer as written, first listed first, a shorter list repeating:
     /// a `true` entry paints that layer only inside the glyphs of the
@@ -417,6 +458,11 @@ pub struct ComputedStyle {
     pub overflow_wrap: OverflowWrapValue,
     /// CSS `word-break` (#2388).
     pub word_break: WordBreakValue,
+    /// `word-break` computes `break-word` (#2628): `word_break` is then
+    /// `Normal` and `overflow_wrap` `Anywhere`. Inherited; kept so that a
+    /// child whose own `word-break` a `var()` left invalid inherits it
+    /// (#2870).
+    pub word_break_break_word: bool,
     /// CSS `hyphens: none` (#2621): a soft hyphen is no hyphenation
     /// opportunity, no break and no hyphen. Inherited. `manual` (the initial
     /// value) and `auto` (no dictionary here, as in Chrome without one for
@@ -492,6 +538,9 @@ impl Default for ComputedStyle {
             webkit_box: false,
             webkit_box_flex: 0.0,
             webkit_box_item: None,
+            webkit_box_pack: WebkitBoxPack::Start,
+            webkit_box_align: WebkitBoxAlign::Stretch,
+            webkit_box_reverse: false,
             anonymous_inline_table: None,
             position: PositionValue::default(),
             float: taffy::Float::None,
@@ -575,6 +624,7 @@ impl Default for ComputedStyle {
             background_blend_mode: BlendModeValue::Normal,
             background_layers: Vec::new(),
             mask_image: Vec::new(),
+            clip_path: false,
             background_clip_text: Vec::new(),
             color: None,
 
@@ -629,6 +679,7 @@ impl Default for ComputedStyle {
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
             word_break: WordBreakValue::default(),
+            word_break_break_word: false,
             hyphens_none: false,
             line_break: LineBreakValue::default(),
             text_indent: TextIndentValue::default(),
@@ -729,6 +780,7 @@ impl ComputedStyle {
             overflow_wrap: parent.overflow_wrap,
             tab_size: parent.tab_size,
             word_break: parent.word_break,
+            word_break_break_word: parent.word_break_break_word,
             hyphens_none: parent.hyphens_none,
             line_break: parent.line_break,
             text_indent: parent.text_indent,

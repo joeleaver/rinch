@@ -70,9 +70,11 @@ the focused field shows a `data-preedit`. Web: the document bubble keydown
 delegate (a key with nothing focused targets `<body>` and bubbles there) after
 the surface block and before the Tab trap, skipping `isComposing`/`Process`
 and a key whose target is an editor's (`key_target_is_editor`); the keyup
-delegate after the interceptor. rinch-web marks no document, so a web listener
-hears every island's keys and page inputs' outside any root; a desktop one
-registered from `main` hears the DevTools window's. Pins: `app/app_key_1784_tests.rs`,
+delegate after the interceptor. rinch-web offers the key to the listeners as
+no root's (it pushes document `0` around `dispatch_app_key`, while the rest of
+the key runs as the target's root's, #2811), so a web listener hears every
+island's keys and page inputs' outside any root, whichever root registered it;
+a desktop one registered from `main` hears the DevTools window's. Pins: `app/app_key_1784_tests.rs`,
 `rinch-web/tests/app_key_1784.rs`, `rinch-core` `events::app_key::tests`.
 
 **Element focus events** (#2731): `onfocus` / `onblur` / `onfocusin` /
@@ -989,11 +991,15 @@ because the physical key was `Unidentified`. A packet with a nonzero scan code
 would have been handled as the key that code names: a menu chord, a button's
 Space, or `Mod-b`.
 
-A character outside the BMP is still lost. Its two surrogate halves each come
-in their own `VK_PACKET` tap, and winit-win32 finalizes each press with half a
-pair, which is not a valid UTF-16 string, so `text` is `None`. This was
-measured: both halves of an emoji arrived with no text. Fixing that needs a
-change to the winit fork. Pins: the
+A character outside the BMP (an emoji) comes as two `VK_PACKET` taps, one
+per UTF-16 surrogate. Unpatched winit-win32 finalized each press with half a
+pair, which is not a valid UTF-16 string, so both had no text (measured) and
+the character was lost. The pinned fork (#2850, joeleaver/winit-fork#14)
+holds a high surrogate that ends a press's `WM_CHAR` text and puts it in
+front of the low surrogate that starts the next press's: the first press has
+no text, and the second has the whole character in `text` and
+`text_with_all_modifiers`. Any other press, or focus leaving, drops the held
+unit; a lone surrogate gives no text. Pins: the fork's `keyboard::tests`, the
 `winit_input.rs` `text_only_key_translation` tests and
 `shell/rinch_runtime/text_only_key_2848_tests.rs`.
 

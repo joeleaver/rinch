@@ -165,9 +165,10 @@ impl Button {
             Some(format!(
                 "--rinch-button-color: var(--rinch-color-{}-6); \
                  --rinch-button-color-hover: var(--rinch-color-{}-7); \
-                 --rinch-button-color-light: var(--rinch-color-{}-0); \
-                 --rinch-button-color-light-hover: var(--rinch-color-{}-1);",
-                self.color, self.color, self.color, self.color
+                 --rinch-button-color-light: var(--rinch-color-{}-light); \
+                 --rinch-button-color-light-hover: var(--rinch-color-{}-light-hover); \
+                 --rinch-button-color-light-color: var(--rinch-color-{}-light-color);",
+                self.color, self.color, self.color, self.color, self.color
             ))
         }
     }

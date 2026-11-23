@@ -54,7 +54,7 @@ pub fn styles() -> String {
 }
 
 .rinch-switch__input:focus + .rinch-switch__track {
-    box-shadow: 0 0 0 2px var(--rinch-primary-color-2);
+    box-shadow: 0 0 0 2px var(--rinch-color-focus-ring);
 }
 
 /* Switch thumb */

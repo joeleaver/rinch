@@ -10,7 +10,9 @@
 //!
 //! - `-webkit-line-clamp: N` into `--rinch-webkit-line-clamp: N`,
 //! - `-webkit-box-orient: vertical` into `--rinch-webkit-box-orient: vertical`,
-//! - `-webkit-box-flex: N` into `--rinch-webkit-box-flex: N` (#2581),
+//! - `-webkit-box-flex: N` into `--rinch-webkit-box-flex: N` (#2581), and
+//!   `-webkit-box-pack`, `-webkit-box-align` and `-webkit-box-direction`
+//!   into `--rinch-webkit-box-pack` and so on,
 //! - `display: -webkit-box` into `display: flow-root; --rinch-webkit-display:
 //!   -webkit-box` (`inline-block` for `-webkit-inline-box`): Chrome computes
 //!   a box that clamps `flow-root`, and blockifies no child of one that does
@@ -38,7 +40,10 @@
 //!   the block Stylo was given as its computed `display`, so that a run is
 //!   one anonymous block box, and makes its Taffy style the flex container
 //!   (`ComputedStyle::legacy_box_taffy_style`, #2581); its items grow and
-//!   shrink by `-webkit-box-flex` alone (`--rinch-webkit-box-flex`);
+//!   shrink by `-webkit-box-flex` alone (`--rinch-webkit-box-flex`), and it
+//!   places them by `-webkit-box-pack`, `-webkit-box-align` and
+//!   `-webkit-box-direction`, Chrome ignoring `justify-content`,
+//!   `align-items`, `align-self` and `flex-direction` there;
 //! - `-webkit-line-clamp` or `-webkit-box-orient` on a box that is not
 //!   `-webkit-box` does nothing.
 //!
@@ -65,7 +70,13 @@
 //! (#2820), and substituted there by the cascade: [`apply`] reads such a
 //! declaration's substituted value ([`substituted`]), and a
 //! `-webkit-text-stroke` shorthand holding one is split where it is read
-//! ([`stroke_half`]). Not done: `display: var(--d)` naming `-webkit-box`.
+//! ([`stroke_half`]). A `display` or `text-indent` holding a `var()` is
+//! handed to Stylo as written and mirrored into its custom property
+//! (#2870): [`apply`] makes a substituted `-webkit-box` the legacy box (Stylo
+//! made the declaration `inline`), and `ComputedStyle::from_stylo` splits a
+//! substituted `text-indent` ([`VAR_MARKER`]). A `var()` that leaves
+//! `hyphens`, `word-break` or `text-indent` invalid inherits
+//! (`ComputedStyle::inherit_invalid_text`).
 //! Known small divergences: `getComputedStyle`-style readers see `flow-root`/
 //! `inline-block`, not `-webkit-box`; in nested CSS, declarations before a
 //! nested rule in the same block are not rewritten; a comment after the
@@ -81,6 +92,9 @@ const DISPLAY: &str = "rinch-webkit-display";
 const CLAMP: &str = "rinch-webkit-line-clamp";
 const ORIENT: &str = "rinch-webkit-box-orient";
 const FLEX: &str = "rinch-webkit-box-flex";
+const PACK: &str = "rinch-webkit-box-pack";
+const ALIGN: &str = "rinch-webkit-box-align";
+const DIRECTION: &str = "rinch-webkit-box-direction";
 /// The custom property `hyphens` is carried in (#2621), without its `--`.
 pub(crate) const HYPHENS: &str = "rinch-hyphens";
 /// The custom property every `word-break` declaration is mirrored into
@@ -124,10 +138,28 @@ fn note_text_paint() {
     TEXT_PAINT_SEEN.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether any style sheet or inline style has carried a `var()` into
+/// `hyphens`, `word-break` or `text-indent` (#2870). Until one has, no
+/// element's value of them can be invalid at computed-value time, and
+/// nothing looks for one (`ComputedStyle::inherit_invalid_text`).
+static VAR_REWRITE_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a `var()` has ever been carried into `hyphens`, `word-break` or
+/// `text-indent` ([`VAR_REWRITE_SEEN`]).
+pub(crate) fn var_rewrite_seen() -> bool {
+    VAR_REWRITE_SEEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn note_var_rewrite() {
+    VAR_REWRITE_SEEN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// A `-webkit-text-stroke-width` in CSS px: a non-negative `px`, `em` (of
 /// `font_size`), `rem` (of 16px), `pt`, `pc`, `in`, `cm`, `mm`, `q` length,
-/// a bare `0`, or `thin` / `medium` / `thick` (1, 3 and 5 px, as Chrome
-/// computes them). `None` for anything else (a negative length, a `calc()`).
+/// a bare `0`, `thin` / `medium` / `thick` (1, 3 and 5 px, as Chrome
+/// computes them), or a `calc()` of lengths and numbers (#2870), clamped at
+/// `0` as Chrome clamps it. `None` for anything else (a negative length, a
+/// percentage).
 pub(crate) fn parse_stroke_width(v: &str, font_size: f32) -> Option<f32> {
     let v = v.trim();
     let keyword = |k: &str| v.eq_ignore_ascii_case(k);
@@ -140,28 +172,210 @@ pub(crate) fn parse_stroke_width(v: &str, font_size: f32) -> Option<f32> {
     if keyword("thick") {
         return Some(5.0);
     }
-    if v == "0" {
-        return Some(0.0);
+    if is_calc(v) {
+        return match parse_length_percentage(v, font_size)? {
+            (px, 0.0) => Some(px.max(0.0)),
+            _ => None,
+        };
     }
-    let split = v.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(v.len());
-    let (num, unit) = v.split_at(split);
-    let n: f32 = num
-        .parse()
-        .ok()
-        .filter(|n: &f32| n.is_finite() && *n >= 0.0)?;
-    let per = match unit.to_ascii_lowercase().as_str() {
-        "px" => 1.0,
-        "em" => font_size,
-        "rem" => 16.0,
-        "pt" => 96.0 / 72.0,
-        "pc" => 16.0,
-        "in" => 96.0,
-        "cm" => 96.0 / 2.54,
-        "mm" => 96.0 / 25.4,
-        "q" => 96.0 / 101.6,
-        _ => return None,
+    parse_length_percentage(v, font_size)
+        .filter(|&(px, pct)| pct == 0.0 && px >= 0.0)
+        .map(|(px, _)| px)
+}
+
+fn is_calc(v: &str) -> bool {
+    v.len() > 5 && v[..5].eq_ignore_ascii_case("calc(")
+}
+
+/// A length, a percentage or a `calc()` of them (and of numbers, `*` and
+/// `/`), as `(px, fraction)`: the length in CSS px (`em` of `font_size`,
+/// `rem` of 16px) plus a fraction of the basis. A bare `0` is a length.
+/// `None` for anything else, a `calc()` that multiplies two lengths among it.
+pub(crate) fn parse_length_percentage(v: &str, font_size: f32) -> Option<(f32, f32)> {
+    let mut calc = Calc {
+        s: v.trim().as_bytes(),
+        i: 0,
+        font_size,
     };
-    Some(n * per)
+    let t = calc.term()?;
+    calc.ws();
+    (calc.i == calc.s.len() && !t.number).then_some((t.px, t.pct))
+}
+
+/// A `calc()` term: `px + pct × basis`, or a plain `number`.
+#[derive(Clone, Copy)]
+struct Term {
+    px: f32,
+    pct: f32,
+    number: bool,
+}
+
+/// A recursive-descent reader of a length, a percentage or a `calc()`.
+struct Calc<'a> {
+    s: &'a [u8],
+    i: usize,
+    font_size: f32,
+}
+
+impl Calc<'_> {
+    fn ws(&mut self) {
+        while self.s.get(self.i).is_some_and(u8::is_ascii_whitespace) {
+            self.i += 1;
+        }
+    }
+
+    /// One value: a dimension, a percentage, a number, or a bracketed sum.
+    fn term(&mut self) -> Option<Term> {
+        self.ws();
+        let rest = &self.s[self.i..];
+        if rest.len() >= 5 && rest[..5].eq_ignore_ascii_case(b"calc(") {
+            self.i += 5;
+            return self.bracketed();
+        }
+        if rest.first() == Some(&b'(') {
+            self.i += 1;
+            return self.bracketed();
+        }
+        let start = self.i;
+        let mut end = start;
+        if matches!(self.s.get(end), Some(b'+' | b'-')) {
+            end += 1;
+        }
+        while self
+            .s
+            .get(end)
+            .is_some_and(|c| c.is_ascii_digit() || *c == b'.')
+        {
+            end += 1;
+        }
+        // An exponent (`1e2`), not a unit starting with `e` (`2em`).
+        if matches!(self.s.get(end), Some(b'e' | b'E'))
+            && self.s.get(end + 1).is_some_and(u8::is_ascii_digit)
+        {
+            end += 1;
+            while self.s.get(end).is_some_and(u8::is_ascii_digit) {
+                end += 1;
+            }
+        }
+        let n: f32 = std::str::from_utf8(&self.s[start..end])
+            .ok()?
+            .parse()
+            .ok()
+            .filter(|n: &f32| n.is_finite())?;
+        let unit_start = end;
+        while self
+            .s
+            .get(end)
+            .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'%')
+        {
+            end += 1;
+        }
+        self.i = end;
+        let unit = std::str::from_utf8(&self.s[unit_start..end])
+            .ok()?
+            .to_ascii_lowercase();
+        let length = |px: f32| Term {
+            px,
+            pct: 0.0,
+            number: false,
+        };
+        Some(match unit.as_str() {
+            "" => Term {
+                px: n,
+                pct: 0.0,
+                // A bare `0` is a length.
+                number: n != 0.0 || self.depth_is_calc(),
+            },
+            "%" => Term {
+                px: 0.0,
+                pct: n / 100.0,
+                number: false,
+            },
+            "px" => length(n),
+            "em" => length(n * self.font_size),
+            "rem" => length(n * 16.0),
+            "pt" => length(n * 96.0 / 72.0),
+            "pc" => length(n * 16.0),
+            "in" => length(n * 96.0),
+            "cm" => length(n * 96.0 / 2.54),
+            "mm" => length(n * 96.0 / 25.4),
+            "q" => length(n * 96.0 / 101.6),
+            _ => return None,
+        })
+    }
+
+    /// Inside a `calc()` (or a bracket in one), where a bare `0` is a number.
+    fn depth_is_calc(&self) -> bool {
+        self.s[..self.i].contains(&b'(')
+    }
+
+    /// A sum up to its closing `)`.
+    fn bracketed(&mut self) -> Option<Term> {
+        let t = self.sum()?;
+        self.ws();
+        (self.s.get(self.i) == Some(&b')')).then(|| self.i += 1)?;
+        Some(t)
+    }
+
+    /// Products joined by ` + ` and ` - ` (white space around both).
+    fn sum(&mut self) -> Option<Term> {
+        let mut acc = self.product()?;
+        loop {
+            let before = self.i;
+            self.ws();
+            let op = self.s.get(self.i).copied();
+            if !matches!(op, Some(b'+' | b'-'))
+                || self.i == before
+                || !self.s.get(self.i + 1).is_some_and(u8::is_ascii_whitespace)
+            {
+                self.i = before;
+                return Some(acc);
+            }
+            self.i += 1;
+            let rhs = self.product()?;
+            if rhs.number != acc.number {
+                return None;
+            }
+            let sign = if op == Some(b'-') { -1.0 } else { 1.0 };
+            acc.px += sign * rhs.px;
+            acc.pct += sign * rhs.pct;
+        }
+    }
+
+    /// Terms joined by `*` and `/`; one side of each is a number.
+    fn product(&mut self) -> Option<Term> {
+        let mut acc = self.term()?;
+        loop {
+            let before = self.i;
+            self.ws();
+            let op = self.s.get(self.i).copied();
+            if !matches!(op, Some(b'*' | b'/')) {
+                self.i = before;
+                return Some(acc);
+            }
+            self.i += 1;
+            let rhs = self.term()?;
+            match op {
+                Some(b'*') if rhs.number => {
+                    acc.px *= rhs.px;
+                    acc.pct *= rhs.px;
+                }
+                Some(b'*') if acc.number => {
+                    let k = acc.px;
+                    acc = Term {
+                        px: rhs.px * k,
+                        pct: rhs.pct * k,
+                        number: false,
+                    };
+                }
+                Some(b'/') if rhs.number && rhs.px != 0.0 => {
+                    acc.px /= rhs.px;
+                    acc.pct /= rhs.px;
+                }
+                _ => return None,
+            }
+        }
+    }
 }
 
 fn valid_text_color(v: &str) -> bool {
@@ -188,18 +402,29 @@ fn has_var(v: &str) -> bool {
 /// the result. No longhand value starts with it.
 const STROKE_SHORTHAND: &str = "/";
 
+/// What a `text-indent` holding a `var()` is carried behind in
+/// `--rinch-text-indent` (#2870), as [`STROKE_SHORTHAND`] is for the stroke.
+pub(crate) const VAR_MARKER: &str = STROKE_SHORTHAND;
+
 /// The `-webkit-text-stroke-width` (`width`) or `-webkit-text-stroke-color`
 /// half of a computed `--rinch-text-stroke-*` value: the value itself when a
 /// longhand declared it, and the matching half of the substituted shorthand
 /// when [`STROKE_SHORTHAND`] leads it (#2820). `None` when the substituted
 /// shorthand is no `-webkit-text-stroke` value, which Chrome treats as
-/// invalid at computed-value time.
+/// invalid at computed-value time, or a CSS-wide keyword that inherits.
+///
+/// A `var()` fallback can substitute a CSS-wide keyword (`var(--x,
+/// initial)`), and Chrome then applies the keyword (#2870): `initial` is the
+/// initial `0` and `currentcolor`; the rest inherit (both properties are
+/// inherited, and an author `revert` has no user-agent value to revert to).
 pub(crate) fn stroke_half(v: &str, width: bool) -> Option<Cow<'_, str>> {
     let Some(shorthand) = v.strip_prefix(STROKE_SHORTHAND) else {
         return Some(Cow::Borrowed(v));
     };
     let shorthand = shorthand.trim();
-    // A CSS-wide keyword cannot come out of a substitution.
+    if shorthand.eq_ignore_ascii_case("initial") {
+        return Some(Cow::Borrowed(if width { "0" } else { "currentcolor" }));
+    }
     if is_wide_keyword(shorthand) {
         return None;
     }
@@ -291,6 +516,8 @@ fn wanted(css: &str) -> bool {
         || contains_ci(css, "hyphens")
         || contains_ci(css, "word-break")
         || contains_ci(css, "text-indent")
+        // `display: var(--d)` may name `-webkit-box` (#2870).
+        || (contains_ci(css, "display") && has_var(css))
 }
 
 /// A `text-indent` value split into what Stylo's servo build parses (the
@@ -298,7 +525,7 @@ fn wanted(css: &str) -> bool {
 /// `--rinch-text-indent` carries them (`none` for neither); `None` when it is
 /// not a value Chrome takes (no length, or a keyword twice). A CSS-wide
 /// keyword is both halves.
-fn split_text_indent(v: &str) -> Option<(String, String)> {
+pub(crate) fn split_text_indent(v: &str) -> Option<(String, String)> {
     if is_wide_keyword(v) {
         return Some((v.to_string(), v.to_string()));
     }
@@ -371,7 +598,7 @@ fn split_important(value: &str) -> (&str, bool) {
     (value, false)
 }
 
-fn is_wide_keyword(v: &str) -> bool {
+pub(crate) fn is_wide_keyword(v: &str) -> bool {
     ["inherit", "initial", "unset", "revert", "revert-layer"]
         .iter()
         .any(|k| v.eq_ignore_ascii_case(k))
@@ -396,6 +623,50 @@ fn valid_flex(v: &str) -> bool {
 
 fn parse_flex(v: &str) -> Option<f32> {
     v.parse::<f32>().ok().filter(|f| f.is_finite() && *f >= 0.0)
+}
+
+/// A `-webkit-box-pack` value: `start`, `end`, `center` or `justify`.
+fn parse_pack(v: &str) -> Option<crate::computed_style::WebkitBoxPack> {
+    use crate::computed_style::WebkitBoxPack as P;
+    [
+        ("start", P::Start),
+        ("end", P::End),
+        ("center", P::Center),
+        ("justify", P::Justify),
+    ]
+    .into_iter()
+    .find_map(|(k, p)| v.eq_ignore_ascii_case(k).then_some(p))
+}
+
+/// A `-webkit-box-align` value: `stretch`, `start`, `end`, `center` or
+/// `baseline`.
+fn parse_align(v: &str) -> Option<crate::computed_style::WebkitBoxAlign> {
+    use crate::computed_style::WebkitBoxAlign as A;
+    [
+        ("stretch", A::Stretch),
+        ("start", A::Start),
+        ("end", A::End),
+        ("center", A::Center),
+        ("baseline", A::Baseline),
+    ]
+    .into_iter()
+    .find_map(|(k, a)| v.eq_ignore_ascii_case(k).then_some(a))
+}
+
+/// A `-webkit-box-direction` value: `true` for `reverse`, `false` for
+/// `normal`.
+fn parse_direction(v: &str) -> Option<bool> {
+    if v.eq_ignore_ascii_case("reverse") {
+        Some(true)
+    } else if v.eq_ignore_ascii_case("normal") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn valid_keyword<T>(v: &str, parse: impl Fn(&str) -> Option<T>) -> bool {
+    is_wide_keyword(v) || has_var(v) || parse(v).is_some()
 }
 
 fn valid_hyphens(v: &str) -> bool {
@@ -489,6 +760,9 @@ fn rewrite_list(list: &str, out: &mut String) {
                 out.push_str(&format!("{lead}--{CLAMP}: {v}{bang}"));
             }
             "hyphens" if valid_hyphens(v) => {
+                if has_var(v) {
+                    note_var_rewrite();
+                }
                 out.push_str(&format!("{lead}--{HYPHENS}: {v}{bang}"));
             }
             // Every `word-break` is mirrored into `--rinch-word-break`, in
@@ -497,6 +771,9 @@ fn rewrite_list(list: &str, out: &mut String) {
             // `normal` replaces an inherited `break-word`. Stylo is given
             // `normal` for `break-word`, its `word-break` half.
             "word-break" if valid_word_break(v) => {
+                if has_var(v) {
+                    note_var_rewrite();
+                }
                 let stylo = if v.eq_ignore_ascii_case("break-word") {
                     "normal"
                 } else {
@@ -509,6 +786,14 @@ fn rewrite_list(list: &str, out: &mut String) {
             // Every `text-indent` is mirrored into `--rinch-text-indent`
             // (its keywords, or `none`), so an element's own value replaces
             // an inherited `hanging`; Stylo is given the length alone.
+            // A `var()` may substitute keywords Stylo's servo build drops the
+            // declaration over (#2870): Stylo gets it as written, and the
+            // mirror carries it behind [`VAR_MARKER`] to be split once the
+            // cascade has substituted it (`ComputedStyle::from_stylo`).
+            "text-indent" if has_var(v) => {
+                note_var_rewrite();
+                out.push_str(&format!("{decl}; --{TEXT_INDENT}: {VAR_MARKER} {v}{bang}"));
+            }
             "text-indent" => match split_text_indent(v) {
                 Some((length, keywords)) => out.push_str(&format!(
                     "{lead}text-indent: {length}{bang}; --{TEXT_INDENT}: {keywords}{bang}"
@@ -580,6 +865,15 @@ fn rewrite_list(list: &str, out: &mut String) {
             "-webkit-box-flex" if valid_flex(v) => {
                 out.push_str(&format!("{lead}--{FLEX}: {v}{bang}"));
             }
+            "-webkit-box-pack" if valid_keyword(v, parse_pack) => {
+                out.push_str(&format!("{lead}--{PACK}: {v}{bang}"));
+            }
+            "-webkit-box-align" if valid_keyword(v, parse_align) => {
+                out.push_str(&format!("{lead}--{ALIGN}: {v}{bang}"));
+            }
+            "-webkit-box-direction" if valid_keyword(v, parse_direction) => {
+                out.push_str(&format!("{lead}--{DIRECTION}: {v}{bang}"));
+            }
             "display"
                 if v.eq_ignore_ascii_case("-webkit-box")
                     || v.eq_ignore_ascii_case("-webkit-inline-box") =>
@@ -592,6 +886,13 @@ fn rewrite_list(list: &str, out: &mut String) {
                 out.push_str(&format!(
                     "{lead}display: {stylo}{bang}; --{DISPLAY}: {marker}{bang}"
                 ));
+            }
+            // A `var()` may substitute `-webkit-box` (#2870): Stylo gets the
+            // declaration as written (and makes it `inline`, invalid at
+            // computed-value time, when it does), and the marker carries
+            // the `var()` for [`apply`] to read substituted.
+            "display" if has_var(v) => {
+                out.push_str(&format!("{decl}; --{DISPLAY}: {v}{bang}"));
             }
             _ => out.push_str(decl),
         }
@@ -612,11 +913,17 @@ fn supports_prelude(prelude: &str) -> Cow<'_, str> {
             .replace("-webkit-line-clamp", "\u{0}C")
             .replace("-webkit-box-orient", "\u{0}O")
             .replace("-webkit-box-flex", "\u{0}F")
+            .replace("-webkit-box-pack", "\u{0}P")
+            .replace("-webkit-box-align", "\u{0}A")
+            .replace("-webkit-box-direction", "\u{0}D")
             .replace("-webkit-inline-box", "inline-block")
             .replace("-webkit-box", "flow-root")
             .replace("\u{0}C", &format!("--{CLAMP}"))
             .replace("\u{0}O", &format!("--{ORIENT}"))
-            .replace("\u{0}F", &format!("--{FLEX}")),
+            .replace("\u{0}F", &format!("--{FLEX}"))
+            .replace("\u{0}P", &format!("--{PACK}"))
+            .replace("\u{0}A", &format!("--{ALIGN}"))
+            .replace("\u{0}D", &format!("--{DIRECTION}")),
     )
 }
 
@@ -716,10 +1023,59 @@ pub(crate) fn own_declaration_inherits(
     name: &str,
 ) -> bool {
     use style::properties::CSSWideKeyword;
-    match own_winner(cv, guard, |d| custom(d, name)) {
-        None | Some(Declared::Value(_)) => true,
-        Some(Declared::Keyword(k)) => matches!(k, CSSWideKeyword::Inherit | CSSWideKeyword::Unset),
+    let keyword = match own_winner(cv, guard, |d| custom(d, name)) {
+        None => return true,
+        // A `var()` whose fallback is a CSS-wide keyword and whose custom
+        // property is missing substitutes the keyword, which Chrome applies
+        // (#2870).
+        Some(Declared::Value(v)) => match fallback_keyword(cv, &v) {
+            Some(k) => k,
+            None => return true,
+        },
+        Some(Declared::Keyword(k)) => k,
+    };
+    matches!(keyword, CSSWideKeyword::Inherit | CSSWideKeyword::Unset)
+}
+
+/// The CSS-wide keyword `v` substitutes when it is a `var()` (or a chain of
+/// them, `var(--a, var(--b, initial))`) whose custom properties are missing
+/// on the element and whose last fallback is the keyword (#2870).
+fn fallback_keyword(
+    cv: &style::properties::ComputedValues,
+    v: &str,
+) -> Option<style::properties::CSSWideKeyword> {
+    use style::properties::CSSWideKeyword;
+    let v = v.trim();
+    let inner = v
+        .get(..4)
+        .filter(|p| p.eq_ignore_ascii_case("var("))
+        .and_then(|_| v[4..].strip_suffix(')'))?;
+    let (name, fallback) = inner.split_once(',')?;
+    let name = name.trim().strip_prefix("--")?;
+    let defined = cv
+        .custom_properties()
+        .get(
+            style::properties_and_values::rule::Descriptors::unregistered(),
+            &style::Atom::from(name),
+        )
+        .is_some();
+    if defined {
+        return None;
     }
+    let fallback = fallback.trim();
+    CSSWideKeyword::from_ident(fallback)
+        .ok()
+        .or_else(|| fallback_keyword(cv, fallback))
+}
+
+/// Whether the element itself declares the rewritten custom property
+/// `name`.
+pub(crate) fn own_declares(
+    cv: &style::properties::ComputedValues,
+    guard: &style::shared_lock::SharedRwLockReadGuard,
+    name: &str,
+) -> bool {
+    own_winner(cv, guard, |d| custom(d, name)).is_some()
 }
 
 /// A rewritten custom property's declared text, or its CSS-wide keyword.
@@ -765,8 +1121,9 @@ fn custom(decl: &style::properties::PropertyDeclaration, name: &str) -> Option<D
 }
 
 thread_local! {
-    static NAMES: [style::Atom; 5] =
-        [DISPLAY, CLAMP, ORIENT, FLEX, BACKGROUND_CLIP].map(style::Atom::from);
+    static NAMES: [style::Atom; 8] =
+        [DISPLAY, CLAMP, ORIENT, FLEX, PACK, ALIGN, DIRECTION, BACKGROUND_CLIP]
+            .map(style::Atom::from);
 }
 
 /// Whether the element or an ancestor declares any of them: custom
@@ -779,7 +1136,7 @@ pub(crate) fn may_declare(cv: &style::properties::ComputedValues) -> bool {
     }
     // `--rinch-background-clip` (the last name) is looked for only once a
     // sheet has carried it (#2719): a page that never writes it pays nothing.
-    let names = if text_paint_seen() { 5 } else { 4 };
+    let names = if text_paint_seen() { 8 } else { 7 };
     NAMES.with(|all| {
         all[..names].iter().any(|name| {
             props
@@ -850,6 +1207,29 @@ pub(crate) fn apply(
             Declared::Keyword(_) => None,
         })
         .unwrap_or(0.0);
+    // `-webkit-box-pack`, `-webkit-box-align`, `-webkit-box-direction`
+    // (#2581): read where the box is a legacy flex one.
+    style.webkit_box_pack = own_winner(cv, guard, |d| custom(d, PACK))
+        .and_then(|d| match substituted(cv, PACK, d) {
+            Declared::Value(v) => parse_pack(&v),
+            Declared::Keyword(k) if inherit(&k) => parent.map(|p| p.webkit_box_pack),
+            Declared::Keyword(_) => None,
+        })
+        .unwrap_or_default();
+    style.webkit_box_align = own_winner(cv, guard, |d| custom(d, ALIGN))
+        .and_then(|d| match substituted(cv, ALIGN, d) {
+            Declared::Value(v) => parse_align(&v),
+            Declared::Keyword(k) if inherit(&k) => parent.map(|p| p.webkit_box_align),
+            Declared::Keyword(_) => None,
+        })
+        .unwrap_or_default();
+    style.webkit_box_reverse = own_winner(cv, guard, |d| custom(d, DIRECTION))
+        .and_then(|d| match substituted(cv, DIRECTION, d) {
+            Declared::Value(v) => parse_direction(&v),
+            Declared::Keyword(k) if inherit(&k) => parent.map(|p| p.webkit_box_reverse),
+            Declared::Keyword(_) => None,
+        })
+        .unwrap_or(false);
     // An item of a legacy box laid out as a flex container (#2581).
     style.webkit_box_item = parent
         .filter(|p| p.webkit_box && p.line_clamp.is_none())
@@ -864,15 +1244,43 @@ pub(crate) fn apply(
         ) {
             return Some(None);
         }
-        custom(d, DISPLAY).map(|d| match d {
-            Declared::Value(v) => Some(v.eq_ignore_ascii_case("-webkit-inline-box")),
-            Declared::Keyword(_) => None,
+        // A `var()` (#2870) counts where it substitutes a legacy box.
+        custom(d, DISPLAY).map(|d| {
+            let via_var = matches!(&d, Declared::Value(v) if has_var(v));
+            match substituted(cv, DISPLAY, d) {
+                Declared::Value(v) if v.eq_ignore_ascii_case("-webkit-inline-box") => {
+                    Some((true, via_var))
+                }
+                Declared::Value(v) if v.eq_ignore_ascii_case("-webkit-box") => {
+                    Some((false, via_var))
+                }
+                _ => None,
+            }
         })
     })
     .flatten();
-    let Some(inline) = marker else {
+    let Some((inline, via_var)) = marker else {
         return;
     };
+    // Stylo cannot parse a substituted `-webkit-box`, and made the
+    // declaration invalid at computed-value time: `inline`, or the `block`
+    // it blockifies to. The box is what the rewrite gives a written-out one,
+    // `flow-root` or `inline-block` (or `flow-root` blockified).
+    if via_var {
+        match style.display {
+            DisplayValue::Inline => {
+                style.display = if inline {
+                    DisplayValue::InlineBlock
+                } else {
+                    DisplayValue::Block
+                };
+                style.flow_root = !inline;
+                style.inline_level_before_blockify = inline;
+            }
+            DisplayValue::Block => style.flow_root = true,
+            _ => {}
+        }
+    }
     // `display: none` and the like were decided by Stylo; only a box Stylo
     // made of the rewrite is changed.
     if !matches!(
@@ -944,6 +1352,36 @@ fn counted_lines(il: &crate::node::InlineLayout) -> usize {
     } else {
         il.layout.len()
     }
+}
+
+/// The border-box height of a box whose content box would be `content` tall,
+/// held to its `min-height` and `max-height` (the minimum winning, as in
+/// CSS); `insets` is its padding and border, top and bottom together. Only a
+/// length bound is applied: a percentage one (or a `calc()` holding one)
+/// counts as none here, though Taffy, which lays the box out, applies it.
+fn min_max_height(cs: &ComputedStyle, content: f32, insets: f32) -> f32 {
+    use crate::computed_style::DimensionValue as D;
+    let length = |d: &D| match *d {
+        D::Length(px) => Some(px),
+        D::Calc { px, pct: 0.0 } => Some(px.max(0.0)),
+        _ => None,
+    };
+    // The bounds as border-box heights.
+    let border = |px: f32| {
+        if cs.box_sizing_border_box {
+            px.max(insets)
+        } else {
+            px + insets
+        }
+    };
+    let mut height = content + insets;
+    if let Some(max) = length(&cs.max_height) {
+        height = height.min(border(max));
+    }
+    if let Some(min) = length(&cs.min_height) {
+        height = height.max(border(min));
+    }
+    height
 }
 
 /// Whether `node`, a box-tree child, is in-flow content: anything that
@@ -1095,7 +1533,11 @@ impl crate::RinchDocument {
                     nodes[id].layout.height
                 } else {
                     heights.push((id, (border_box, content)));
-                    border_box
+                    // Taffy holds the box to its `min-height` and
+                    // `max-height`, so the box around it ends where this one
+                    // does after that (#2581: a `max-height: 30px` wrapper
+                    // around the clamped line).
+                    min_max_height(&nodes[id].computed_style, content, top + end_inset)
                 };
                 bottom = nodes[id].layout.y + height;
             }
@@ -1167,6 +1609,23 @@ mod tests {
         assert_eq!(
             rewrite("-webkit-box-flex: 1.5; -webkit-box-flex: -1", true),
             "--rinch-webkit-box-flex: 1.5; -webkit-box-flex: -1"
+        );
+    }
+
+    #[test]
+    fn pack_align_and_direction_become_custom_properties_issue_2581() {
+        assert_eq!(
+            rewrite(
+                "-webkit-box-pack: Center; -webkit-box-align: baseline !important; \
+                 -webkit-box-direction: reverse; -webkit-box-pack: left",
+                true
+            ),
+            "--rinch-webkit-box-pack: Center; --rinch-webkit-box-align: baseline !important; \
+             --rinch-webkit-box-direction: reverse; -webkit-box-pack: left"
+        );
+        assert_eq!(
+            super::supports_prelude("@supports (-webkit-box-pack: end) {"),
+            "@supports (--rinch-webkit-box-pack: end) {"
         );
     }
 

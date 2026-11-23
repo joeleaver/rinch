@@ -47,7 +47,7 @@ pub fn styles() -> String {
 }
 
 .rinch-radio__input:focus + .rinch-radio__indicator {
-    box-shadow: 0 0 0 2px var(--rinch-primary-color-2);
+    box-shadow: 0 0 0 2px var(--rinch-color-focus-ring);
 }
 
 /* Radio dot */

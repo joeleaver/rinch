@@ -89,6 +89,29 @@ pub(crate) enum EventFor {
 // winit 0.31 removes send_event(T); we queue events and call proxy.wake_up().
 pub(super) static NATIVE_EVENT_QUEUE: Mutex<NativeEventQueue> = Mutex::new(NativeEventQueue::new());
 
+/// Whether a desktop runtime was made in this process: what drains
+/// [`NATIVE_EVENT_QUEUE`]. Set by [`RinchRuntime::new`], never cleared (a
+/// request sent after the runtime is gone is queued as before).
+static RUNTIME_MADE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Note that a desktop runtime exists, so native events are queued for it.
+pub(super) fn note_runtime_made() {
+    RUNTIME_MADE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a native event sent now is drained by anything. The crate's own
+/// unit tests drive the queue with no runtime, so it always is there.
+fn runtime_drains() -> bool {
+    cfg!(test) || RUNTIME_MADE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many native events are queued for the desktop runtime, for a test
+/// that pins what an embed-only process queues (#2801). Not part of the API.
+#[doc(hidden)]
+pub fn __native_events_queued() -> usize {
+    NATIVE_EVENT_QUEUE.lock().unwrap().events.len()
+}
+
 /// Queue a native event and wake the event loop. A `ReRender` while one is
 /// already queued is dropped — see [`NativeEventQueue`].
 pub(crate) fn send_native_event(event: RinchNativeEvent) {
@@ -105,12 +128,28 @@ pub(crate) fn send_native_event_for(to: EventFor, event: RinchNativeEvent) {
     let Some(event) = crate::testing::capture_native_event(to, event) else {
         return;
     };
+    // An embedded `RinchContext`'s code: its host takes it (#2801).
+    #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+    let Some(event) = crate::embed::window_requests::capture(to, event) else {
+        return;
+    };
+    // Nothing drains the queue in a process that never made a desktop
+    // runtime (an embed-only host): queued, it would stay for the life of the
+    // process (#2801).
+    if !runtime_drains() {
+        tracing::debug!("no desktop runtime to take {event:?}: dropped");
+        return;
+    }
     let is_rerender = matches!(event, RinchNativeEvent::ReRender);
     if !NATIVE_EVENT_QUEUE.lock().unwrap().push(to, event) {
         return;
     }
     if is_rerender {
-        crate::app::RERENDER_EVENTS_QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The sender's document's, when this thread counts it (#2798).
+        crate::app::count_doc_rerender(match to {
+            EventFor::Sender(doc) => doc,
+            EventFor::Window(_) => None,
+        });
     }
     if let Some(proxy) = GLOBAL_PROXY.get() {
         proxy.wake_up();
@@ -259,6 +298,8 @@ pub enum RinchNativeEvent {
     ApplyWindowTitle,
     /// Apply the vsync setting `rinch::window::set_vsync` stored (#2095).
     ApplyVsync,
+    /// Apply the zoom `rinch::window::set_zoom` set to every open window.
+    ApplyZoom,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).
@@ -280,8 +321,10 @@ pub enum RinchNativeEvent {
     OpenWindow(u64),
     /// Close the window, with no veto asked (`WindowHandle::close`, #2416).
     CloseWindow,
-    /// Bring the window to the front and give it the keyboard (#2416).
-    FocusWindow,
+    /// Bring the window to the front and give it the keyboard (#2416), with
+    /// the xdg-activation token that lets a Wayland compositor do so, when
+    /// the app has one (#2817).
+    FocusWindow(Option<String>),
     /// Set the window's title (`WindowHandle::set_title`, #2416).
     SetWindowTitle(String),
     /// End the event loop after this turn (`rinch::exit`, #2416).

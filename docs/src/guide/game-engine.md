@@ -185,7 +185,12 @@ rinch = { version = "…", default-features = false, features = ["components", "
   then draws on the new device with a new `f.generation` — rebuild what you made on the old
   one. Where none can be had (the browser blocks WebGPU after repeated GPU crashes), or the
   device was `destroy()`ed, GPU frames stop being available and the render callback runs. A
-  device you handed over is yours to watch: after losing it, call `set_external_gpu` again.
+  surface that drew GPU frames then gets a new `<canvas>` in the old one's place (a canvas
+  keeps its first kind of context): the surface's node handle and a `bounds_signal()` on it
+  follow the new element, and a press the old canvas held ends there, as a press whose
+  release never arrives does (`PointerCancel`, or a `MouseUp` at the last position without
+  pointer events). A device you handed over is yours to watch: after losing it, call
+  `set_external_gpu` again.
 - **Pacing** is the desktop's: on demand until `set_continuous`, a frame at the first size,
   at each new size and for each `request_frame()`. The ordinary render callback's
   `requestAnimationFrame` loop is unchanged.
@@ -321,8 +326,9 @@ What your app sees:
   device comes by then, the startup rule decides: an app that chose the GPU or configured the
   device itself (`Renderer::Gpu`, `App::gpu_config`, `App::external_gpu`) panics with the error,
   and any other presents with the software renderer for the rest of the session (the listener
-  hears `None`). A window shown or opened in those 5 seconds (a tray app's window, DevTools) waits
-  with the others instead of taking that rule at once.
+  hears `None`). A window shown or opened in those 5 seconds (a tray app's window, DevTools), or prepared
+  then with `prepare_current_window`, waits with the others instead of taking that rule at once;
+  a prepared window is prepared again on the new device.
 - **Textures registered with `GpuTextureRegistrar::set_texture_source` are dropped** (they belong
   to the dead device). Make your resources again on the new device and register the texture again,
   from the listener or when your render thread sees the generation move. A render thread that
@@ -1132,6 +1138,40 @@ that reads keys but takes no text wants the keyboard and no input method. The
 caret area is where the caret is painted, so it follows transforms and a text
 field's horizontal scroll.
 
+### Window requests
+
+Your content may ask for things of its window: `set_window_title`,
+`rinch::windows::hide_current_window` and `show_current_window`,
+`set_current_window_size`, `rinch::exit`, and the rest of `rinch::windows`.
+Your engine owns that window, so the context keeps these requests for you
+instead of carrying them out. Read them after each `update` with
+`take_window_requests()` and honour the ones you want for your own window:
+
+```rust
+let actions = ctx.update(&events);
+for request in ctx.take_window_requests() {
+    match request {
+        WindowRequest::SetTitle(title) => my_window.set_title(&title),
+        WindowRequest::Hide => my_window.hide(),
+        WindowRequest::Show => my_window.show(),
+        WindowRequest::SetSize(w, h) => my_window.resize_logical(w, h),
+        WindowRequest::Exit => quit = true,
+        // `WindowRequest` is `#[non_exhaustive]`; ignore what you don't support.
+        _ => {}
+    }
+}
+```
+
+The requests come oldest first and are taken once. They are the same
+`WindowRequest` values `rinch::testing`'s `TestApp` reports. A request
+belongs to a context when that context's code made it: in its component,
+including the component's first line, in a handler or effect, or in a
+`rinch::exit` call. Two contexts each read only their own. A request made
+outside any context's code goes to the desktop runtime if your process runs
+one. If the process never made a desktop runtime, the request is dropped,
+because nothing would ever carry it out. Needs the `windowing` feature,
+which `desktop` includes; without it, `rinch::windows` does not exist.
+
 ### Split Layout (Viewport Hole)
 
 Use `GameViewport` to mark a transparent region where the game renders:
@@ -1617,6 +1657,7 @@ PlatformEvent::Resized { width: 1920, height: 1080 }
 | `wants_keyboard() -> bool` | True for a text input, the editor, an open `<select>` popup, a generic node that registered `on_key`, or a *keyboard-focused* (Tab/`NodeHandle::focus()`) generic node — **not** a plain button/link a mouse click merely focused (issue #548; the click-vs-Tab split follows `:focus-visible`) |
 | `ime_state() -> ImeState` | Whether the focused target wants the platform IME, and its caret area (logical px) — see [Input methods](#input-methods-ime) |
 | `take_ime_change() -> Option<ImeChange>` | The `Enable` / `Update` / `Disable` that takes the host's IME from what it last reported to `ime_state()` |
+| `take_window_requests() -> Vec<WindowRequest>` | What the context's code asked of its window since the last call (title, show/hide, size, exit, …), oldest first, for the host to honour — see [Window requests](#window-requests). `windowing` feature |
 | `needs_update() -> bool` | True if UI needs repaint (including a due `next_wake`, a new `RenderSurface` frame, or a wheel glide still running, #2287) |
 | `next_wake() -> Option<Instant>` | When to call `update()` again with no input (the caret blink), or `None` |
 | `register_font(data)` | Register font data for text rendering after the mount: `&'static [u8]` or owned bytes (`Vec<u8>`, `Arc<[u8]>`, `Blob<u8>`; see [Fonts](#fonts)) |

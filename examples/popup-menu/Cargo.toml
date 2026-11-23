@@ -1,0 +1,12 @@
+[package]
+name = "popup-menu"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+# `cargo run -p popup-menu --features debug`: the rinch debug server.
+debug = ["rinch/debug"]
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop"] }

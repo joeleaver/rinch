@@ -330,9 +330,72 @@ the keyboard.
 The system has the last word. A system that prevents focus stealing may only
 mark the window as wanting attention. On Wayland an app cannot raise its own
 shown window without an xdg-activation token from the input that asked for it,
-and rinch has none to give, so the window is only marked as wanting attention
-(KDE and GNOME show that in the taskbar or as a notification); a hidden window
-is shown as a new window, which the compositor usually focuses.
+so `focus_current_window()` only marks the window as wanting attention (KDE and
+GNOME show that in the taskbar or as a notification); a hidden window is shown
+as a new window, which KWin and sway focus when it maps, while GNOME's
+focus-stealing prevention may hold it back without a token.
+
+#### Raising it on Wayland: pass the launch's token
+
+The launcher that started the second copy (a desktop's menu, a browser opening
+a link) gave it a token in `XDG_ACTIVATION_TOKEN`, tied to the click that asked.
+Take it first thing in `main`. If a copy is already running, hand the token to
+it, and it raises its window with it. If none is, this launch is the first one
+and the token is its own: give it to `App::activation_token`, which creates the
+first window with it (as GTK and Qt do with theirs), since once taken from the
+environment nothing else would use it.
+
+```rust
+use rinch::prelude::*;
+
+fn main() {
+    // First thing in main: it removes XDG_ACTIVATION_TOKEN from the
+    // environment, so programs this one starts do not inherit it.
+    // SAFETY: no other thread is running yet.
+    let token = unsafe { rinch::windows::take_launch_activation_token() };
+    if let Some(running) = my_ipc::connect_to_running_copy() {
+        running.send_open(std::env::args().nth(1), token);
+        return;
+    }
+    App::new(app).activation_token(token).run();
+}
+
+// In the running copy, when the IPC message arrives (on the UI thread or not):
+fn on_open(link: Option<String>, token: Option<String>) {
+    match token {
+        Some(token) => rinch::windows::activate_current_window_with_token(&token),
+        None => rinch::windows::focus_current_window(),
+    }
+    // ... open the link
+}
+```
+
+`activate_current_window_with_token(token)` (`WindowHandle::activate_with_token`
+for any window) does what `focus_current_window()` does, and on Wayland
+activates the window with the token: a shown window is raised and given the
+keyboard, and a hidden one is shown with the token in its new window's
+attributes (activated before the window first appears, as a first launch's
+window is). The compositor decides what
+the token is worth: one from a recent click raises the window on KWin, and on
+sway with `focus_on_window_activation focus` (sway's default marks the window
+urgent); a stale or unknown token is ignored without an error. Off Wayland the
+token is not used and the call is `focus_current_window()`. A Wayland
+layer-shell window is not activated, and a non-activating window is only
+shown or restored, token or not.
+
+**Which window.** The *current* window is the window of the document whose
+code is running. Called from anywhere else, such as the IPC thread above, or a
+timer or `main` outside any component, `activate_current_window_with_token`
+(like `focus_current_window`) acts on the main window. A multi-window app
+that wants another window raised, and a
+[windowless](#starting-with-no-window-tray-only-apps) app, which has no main
+window, call `WindowHandle::activate_with_token(&token)` on the window's
+handle instead.
+
+`take_launch_activation_token()` is `unsafe` because it changes the process's
+environment, which is undefined behaviour while another thread reads it: call
+it before anything starts a thread. It reads only `XDG_ACTIVATION_TOKEN`
+(X11's `DESKTOP_STARTUP_ID` is left alone) and answers `Some` once.
 
 ### Preparing a hidden window for its first show
 
@@ -687,7 +750,8 @@ the browser (issue #1770):
 |----------|---------|-----|
 | `open_url(url) -> Result<(), OpenUrlError>` | `xdg-open` / `open` / `ShellExecuteW` | a new tab (`window.open`, `opener` cleared) |
 | `set_window_title(title)` | the main window's title bar (any thread) | `document.title` |
-| `scale_factor() -> f64` | the main window's display scale | `devicePixelRatio` |
+| `scale_factor() -> f64` | the main window's display scale times the app's [zoom](#zoom) | `devicePixelRatio` |
+| `set_zoom(z) -> f64`, `zoom() -> f64` | the app's [zoom](#zoom) | not applied (`1.0`): the browser's own zoom |
 | `window_size() -> (f64, f64)` | the main window's content size, logical px | `innerWidth`, `innerHeight` |
 | `window_physical_size() -> (u32, u32)` | the main window's surface size, device px | `innerWidth`, `innerHeight` times `devicePixelRatio`, rounded |
 | `window_focused() -> bool` | the main window has the system's focus | the page's window has focus |
@@ -773,6 +837,52 @@ Calling `bounds_signal()` again for the same element from the same owner — the
 same component render, effect run or handler — returns the same signal, so
 asking for it per event costs nothing after the first call. A call from
 another component gets a signal of its own, freed with that component.
+
+## Zoom
+
+`rinch::window::set_zoom(z)` draws everything in the app's windows `z` times
+larger (or smaller), as a browser's `Ctrl` `+` / `Ctrl` `-` zooms a page: for
+people who read more easily at another size. `zoom()` reads it back
+(reactive); `1.0` is actual size, and the value is clamped to
+`ZOOM_MIN..=ZOOM_MAX` (0.25 to 5, as browsers allow).
+
+```rust
+#[component]
+fn zoom_controls() -> NodeHandle {
+    rsx! {
+        button { onclick: || { set_zoom(zoom() * 1.25); }, "Zoom in" }
+        button { onclick: || { set_zoom(1.0); }, "Actual size" }
+        span { {|| format!("{:.0}%", zoom() * 100.0)} }
+    }
+}
+```
+
+- **It multiplies the display scale.** A window on a 2x display zoomed to
+  1.5 is laid out and painted at 3 device pixels per CSS pixel: text, borders,
+  images, SVG and `RenderSurface`s are drawn at that scale, so they stay sharp.
+  `scale_factor()` answers that scale, zoom included (the browser's
+  `devicePixelRatio` includes its zoom too), from the event loop's next turn
+  after `set_zoom` (when the windows apply it; `zoom()` changes at once), and
+  a move to a display with another scale keeps the zoom.
+- **The window keeps its size on screen; the viewport changes.**
+  `window_size()` (CSS pixels) shrinks by the zoom, as a browser's
+  `innerWidth` does, and `window_physical_size()` does not change. Window
+  geometry (`set_current_window_size`, positions) stays in the display's
+  logical pixels.
+- Pointer positions, hit testing, the IME's caret area, input regions and the
+  size a content-sized window asks for all follow the zoom, so an app that
+  reads pointer positions in CSS pixels (every `PlatformEvent`, the click
+  context, a `Drag`, a surface's pointer events) needs no change.
+- It is the app's, for every window it opens (DevTools too), and it is not
+  saved: an app that remembers it sets it again at start, before its first
+  window when it can, so the first frame is drawn at it. Call it on the UI
+  thread; elsewhere it is ignored with a warning.
+- **Web:** not applied. The browser zooms the page itself (its own
+  `Ctrl` `+`), which already reaches the app as `devicePixelRatio`;
+  `set_zoom` changes nothing and `zoom()` answers `1.0`, so an app can tell
+  and point the person to the browser's zoom. **Android:** not applied either.
+- **Native embed:** `RinchContext` keeps the scale its host gives it. A host
+  that wants the app's zoom passes `scale * zoom()` to `set_scale_factor`.
 
 ## Outputs (Monitors)
 
@@ -863,7 +973,9 @@ that output moves, is resized or is rescaled: its `Window` closes and a new one
 opens on the same output, a frame with nothing there and the window's whole
 first-frame cost again. So iterate the ids, which stay equal while the same
 outputs are connected, and read the rest of the output inside the row with
-`output(id)`, which is reactive and `None` once the output is gone:
+`output(id)`, which is reactive and `None` once the output is gone. A reader
+of `output(id)` runs again only when that output changes, appears or goes, so
+one window's content does not run when another monitor changes:
 
 ```rust
 use rinch::prelude::*;
@@ -1958,6 +2070,167 @@ When the app ends is `App::exit_when`:
 To keep a window's geometry across runs, persist [`current_window_restore()`](#bringing-the-window-back-as-it-was) (or `handle.restore()`) and give it back as `WindowProps` at the next start.
 
 ---
+
+## Popup windows
+
+A popup is a window the system places against an element of another window,
+sized by its content: a menu from a 40 px panel, a tooltip above a bar, a
+submenu. Unlike the menus and tooltips rinch draws inside a window, it can
+leave its parent's surface. On Wayland it is an `xdg_popup` (#2552).
+
+```rust
+use std::rc::Rc;
+use rinch::prelude::*;
+use rinch::{Adjust, Dismissal, Placement, PopupAnchor, PopupProps};
+
+#[component]
+fn TrayButton() -> NodeHandle {
+    let button: Signal<Option<NodeHandle>> = Signal::new(None);
+    let menu: Signal<Option<WindowHandle>> = Signal::new(None);
+    let open_menu = move || {
+        // Open already: this press closes it (see "Closing" below).
+        if menu.get().is_some_and(|m| m.is_open()) {
+            return;
+        }
+        let Some(anchor) = button.get() else { return };
+        let opened = open_popup(
+            PopupProps {
+                // The button across the bar's height: the menu never covers the bar.
+                anchor: PopupAnchor::NodeAcross(anchor),
+                placement: Placement::TOP_START, // above a bottom bar
+                adjust: Adjust::BAR_MENU,
+                offset: (0.0, -4.0),             // a 4 px gap
+                on_dismissed: Some(Rc::new(|why: Dismissal| println!("{why:?}"))),
+                ..PopupProps::default()
+            },
+            |__scope: &mut RenderScope| rsx! { div { class: "menu", "Open" "Quit" } },
+        );
+        match opened {
+            Ok(handle) => menu.set(Some(handle)),
+            // Not on this platform: draw the menu in the window instead.
+            Err(e) => eprintln!("no popup: {e}"),
+        }
+    };
+    rsx! { button { ref: button, onclick: open_menu, "Menu" } }
+}
+```
+
+- **Where.** [`popups_supported()`](rinch::popups_supported) is `true` in a
+  Wayland session. On X11, Windows and macOS (for now), on the web and on
+  Android it is `false`, and `open_popup` answers `PopupError::Unsupported`:
+  keep your in-window popup for those. `App::popup_windows(false)` turns
+  popups off for the whole app.
+- **A popup is a window.** It has its own document, built once from the
+  content closure, and a [`WindowHandle`](rinch::WindowHandle):
+  `is_open`, `close`, `is_popup`, `placement()` (where the system put it,
+  relative to its parent, and whether it flipped; reactive) and
+  `close_popup_chain()` (from a menu item: the whole menu, submenus
+  included). It belongs to the owner in scope as an `open_window` window
+  does, takes its parent's theme, and is drawn at its parent's scale from
+  its first frame with the renderer the parent uses.
+- **Its parent** is the anchor's window: a node's window for
+  `PopupAnchor::Node`, the named window for `PopupAnchor::Rect` (the
+  current one with `window: None`). A popup anchored in a popup is above it
+  in the same **chain**: a submenu.
+- **Its size** is its content's (the box rinch sizes, as in "A window sized
+  by its content" above: pad the content, not `<body>`; avoid viewport
+  units), up to `max_size`, by default its parent's output. With
+  `Adjust::RESIZE_Y` the system may give it less height than it asked for
+  (a menu taller than the space left); the content then scrolls.
+- **Placement** is `side` and `align` ([`Placement`](rinch::Placement)
+  constants such as `BOTTOM_START`, `TOP_START`, `RIGHT_START`), an
+  `offset` in logical px, and what the system may do when it does not fit
+  ([`Adjust`](rinch::Adjust), default flip and slide). The area a popup is
+  kept inside is the compositor's: the work area on KWin, the whole output on
+  sway and labwc. When a node anchor moves, the popup is placed again.
+- **A menu from a bar.** Anchor it with `PopupAnchor::NodeAcross(button)`:
+  the button's columns across the bar's whole height, so the menu opens past
+  the bar's edge and never covers the bar (it follows the button, a resize
+  and the zoom). Open it away from the edge (`TOP_START` from a bottom bar,
+  `BOTTOM_START` from a top one) with `Adjust::BAR_MENU` (slide along the
+  bar, flip only when better, made shorter with its content scrolling when
+  taller than the space left). A `PopupAnchor::Rect` is in CSS px; the app's
+  zoom is applied to it.
+  A submenu goes `RIGHT_START` with a negative `offset.1` to line its first
+  row up with its opener.
+
+### Kinds: menus and tooltips
+
+- **`PopupKind::Menu`** (the default) takes a grab: it needs a press in its
+  parent chain to name, within the last 10 s (`popup::PRESS_RECENT`; a click,
+  a key; `Err(NoUserInput)` with none, as from a timer at start-up or a D-Bus
+  signal long after the last click), has the keyboard, and the system closes it on a press
+  in another app. Calendars, volume sliders and other popups that take input
+  are menus too for now; a kind of their own may come later. A menu cannot
+  open on a tooltip (`Err(MenuOnTooltip)`).
+- **`PopupKind::Tooltip`** takes no grab, never the keyboard, and no pointer
+  input (an empty input region), so a tooltip that appears under a resting
+  pointer leaves it with the element it describes. Nothing closes it but the
+  app and its parent going.
+- **One menu chain at a time.** A menu whose parent is neither the topmost
+  menu nor the foot of the open chain closes the menus in its way
+  (`Dismissal::Replaced`) and is made a turn later, once they are gone: moving
+  from one tray item's menu to the next is close, then open.
+
+### Closing
+
+- A window's popups close before it, topmost first, whatever owns them: a
+  bar closed (its output removed) closes its menu and submenus, each told
+  `Dismissal::ParentClosed`.
+- `on_dismissed` is told once why a popup went, for every cause but the
+  app's own close (its handle's `close`, `close_popup_chain`, its owner
+  going): `System` (the compositor dismissed it), `PressOutside { on_anchor }`,
+  `Escape`, `ParentClosed`, `Replaced`, `Failed(..)`.
+- **A press in any of the app's windows** outside the popups above it closes
+  them (a press in a menu closes its submenus only). The press is delivered
+  too, and the menus close at the end of its handling: the press's own
+  handlers (rinch runs `onclick` on the press) still find the menu open, so a
+  toggle button that returns when its menu is open closes it. `on_anchor`
+  says the press was on the popup's anchor. **But** a toggle that is
+  draggable (`draggable`, a drag source) gets its `onclick` on the release,
+  after the press has closed the menu: it finds the menu closed and opens it
+  again. Such a toggle remembers `PressOutside { on_anchor: true }` from
+  `on_dismissed` and skips the next click.
+- **Escape** closes the topmost menu.
+
+### The keyboard
+
+- While a menu is open, the keys that reach any window of its chain go to
+  the topmost menu's document (on sway and labwc the compositor leaves them
+  with the bar), and the app's menu shortcuts are held. The bar's loss of the
+  keyboard to its menu (KWin) is not a blur of the bar.
+- **A bar whose keyboard interactivity is `none`** gets no keys on sway and
+  labwc, and so neither does its menu. `PopupProps::keyboard_via_parent`
+  raises the bar to `exclusive` before the menu is made, waits for the
+  keyboard to arrive (at most 300 ms), and puts the bar back when the chain
+  closes; the compositor then gives the keyboard back to the window that had
+  it (sway and labwc do; in a session with no other window sway leaves it on
+  the bar). Leave it off on KWin, which gives a grabbing menu the keyboard by
+  itself, and where raising leaves the bar holding the keyboard. It is never
+  done while a menu is open. A menu closed while it waits puts the bar back
+  too. A submenu opened in the same handler as its menu, while that menu
+  still waits for the keyboard, cannot be made (its parent has no window
+  yet): it closes at once, told `Dismissal::Failed`. Open submenus from the
+  menu's own handlers.
+- A window's loss of the keyboard while its chain has a menu open is held,
+  and told (a blur) once the chain closes, unless the keyboard came back
+  first.
+
+### Testing popups
+
+`rinch::testing` drives popups as it drives child windows: `open_popup` in a
+`TestApp` opens one (the harness stands in a Wayland compositor), it is in
+`app.windows()`, sized by its content, and `app.window(handle)` drives it.
+A click in the app or a child closes the menus above it, `key_down` goes to
+the topmost menu, a child closed by the system closes its popups first, and
+`app.dismiss_popup_by_system(handle)` plays the compositor's dismissal.
+
+### Performance lines
+
+Under `RINCH_PERF`, a popup's lines carry its window id, and two more lines
+say what it is and when it first showed:
+`[PERF] window 5 popup: kind=menu parent=2` and
+`[PERF] window 5 first frame: 12.3 ms after open_popup`.
 
 ## Rendering Backends
 

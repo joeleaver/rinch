@@ -77,13 +77,18 @@ mod main_window;
 mod native_events;
 mod open_windows;
 mod paint;
+mod popups;
 mod wake;
 mod winit_input;
 
 #[cfg(test)]
+mod layer_drain_2829_tests;
+#[cfg(test)]
 mod physical_size_tests;
 #[cfg(test)]
 mod text_only_key_2848_tests;
+#[cfg(test)]
+mod zoom_tests;
 
 pub(crate) use app_identity::*;
 pub use entry::*;
@@ -151,6 +156,8 @@ pub struct RinchRuntime {
     windowless_root_warned: bool,
     /// The app's bundled fonts, for every window's document.
     fonts: Vec<crate::font::AppFont>,
+    /// The popups' state beside the windows (#2552).
+    popups: popups::PopupState,
 
     /// Test builds only (#1733): the lock every test that queues or drains the
     /// process-wide main-thread and native queues holds. Dropping a runtime
@@ -207,6 +214,17 @@ impl RinchRuntime {
         }
     }
 
+    /// Window `role`, if it is still open (#2891): a role kept from before
+    /// its window closed (the device-loss rebuild's) names nothing.
+    #[cfg(feature = "gpu-renderer")]
+    fn open_w(&mut self, role: WindowRole) -> Option<&mut ShellWindow> {
+        match role {
+            WindowRole::Main => (!self.main_closed).then_some(&mut self.main),
+            WindowRole::DevTools => self.devtools.as_mut(),
+            WindowRole::Other(id) => self.others.iter_mut().find(|w| w.handle == id),
+        }
+    }
+
     /// The windows that are open: the main one (unless it has closed), then
     /// DevTools, then the others, oldest first.
     fn roles(&self) -> impl Iterator<Item = WindowRole> + use<> {
@@ -228,6 +246,12 @@ impl RinchRuntime {
 struct ShellWindow {
     /// Platform-agnostic application logic.
     app: RinchApp,
+    /// An xdg-activation token for the window's next OS window, given in its
+    /// attributes (`WindowAttributesWayland::with_activation_token`, #2817):
+    /// the app's launch token (`App::activation_token`) for the main
+    /// window's first shown window, or the token of a focus request that
+    /// shows a hidden window. Cleared once a shown window is made.
+    activation_token: Option<String>,
     /// Desktop window wrapper.
     window: Option<WinitWindow>,
     /// GPU renderer (only available with the `gpu-renderer` feature).
@@ -252,6 +276,10 @@ struct ShellWindow {
     /// had taken then. A picture that lands later is painted into it again
     /// ([`RinchRuntime::keep_prepared`]). `None` while shown, and from a hide
     /// until the app prepares the window.
+    /// The renderer choice the window was last prepared with (#2633): a
+    /// rebuild after a device loss builds its renderer by it (#2891).
+    #[cfg(feature = "gpu-renderer")]
+    prepared_with: super::renderer::Renderer,
     prepared: Option<(f64, u64)>,
     /// Window title.
     title: String,
@@ -365,6 +393,9 @@ struct ShellWindow {
     /// when the focused editor actually changed.
     #[cfg(feature = "a11y")]
     a11y_last: Option<(rinch_editor_core::Node, rinch_editor_core::Selection)>,
+    /// A popup whose first frame is still to come, and when the app asked
+    /// for it (#2552): `[PERF] window N first frame`.
+    popup_first_frame: Option<std::time::Instant>,
 }
 
 impl ShellWindow {
@@ -379,6 +410,7 @@ impl ShellWindow {
         app.window_focused = false;
         Self {
             app,
+            activation_token: None,
             window: None,
             #[cfg(feature = "gpu-renderer")]
             renderer: None,
@@ -386,6 +418,8 @@ impl ShellWindow {
             parked_renderer: None,
             #[cfg(feature = "gpu-renderer")]
             awaits_gpu: false,
+            #[cfg(feature = "gpu-renderer")]
+            prepared_with: super::renderer::Renderer::Auto,
             prepared: None,
             soft_renderer: None,
             title: title.to_string(),
@@ -424,7 +458,29 @@ impl ShellWindow {
             a11y: None,
             #[cfg(feature = "a11y")]
             a11y_last: None,
+            popup_first_frame: None,
         }
+    }
+
+    /// The app's zoom changed (`rinch::window::set_zoom`): the document
+    /// takes the window's new scale (the display's times the zoom), as a
+    /// `ScaleFactorChanged` gives it, and is laid out again at the logical
+    /// size the same surface has at it, as the `SurfaceResized` that follows
+    /// a new display scale does. The surface keeps its size, so the renderer
+    /// is not reconfigured; the whole window is painted again.
+    pub(super) fn rezoom(&mut self) -> Vec<AppAction> {
+        let scale = self.scale_factor();
+        let size = self.window_size();
+        let mut actions =
+            self.app
+                .handle_event(PlatformEvent::ScaleFactorChanged(scale), size, scale);
+        let resized = self.surface_resized(winit::dpi::PhysicalSize::new(size.0, size.1), scale);
+        actions.extend(self.app.handle_event(resized, size, scale));
+        self.app.mark_scene_dirty();
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+        actions
     }
 
     /// What a `SurfaceResized` to the physical `size` at `scale` asks of
@@ -458,6 +514,13 @@ impl ShellWindow {
             height: logical.1,
         }
     }
+}
+
+/// What a window's move to a display at `os_scale` (winit's
+/// `ScaleFactorChanged`) hands its document: the new display's scale times
+/// the app's zoom (`rinch::window::set_zoom`), so the zoom is kept.
+fn display_scale_changed(os_scale: f64) -> PlatformEvent {
+    PlatformEvent::ScaleFactorChanged(crate::zoom::apply(os_scale))
 }
 
 /// One thread's share of `RERENDER_EVENTS_TEST_LOCK` for its test runtimes
@@ -532,6 +595,9 @@ impl RinchRuntime {
         // fallback and reflows once the real face arrives.
         #[cfg(test)]
         let _queue_lock = TestQueueLock::hold();
+        // From here native events are queued: this runtime drains them
+        // (#2801).
+        wake::note_runtime_made();
         // The named video sink factory (rinch-core's hook), so video players
         // and rinch-rtc's remote tracks deliver frames through the
         // RenderSurface compositing pipeline. Here rather than in the two
@@ -545,6 +611,9 @@ impl RinchRuntime {
         let windowless = crate::window_handle::windowless();
         // A windowless root has no window to describe.
         app.set_publishes_window_state(!windowless);
+        // Nor any frames: its reactive work is nobody's, on the pass line
+        // (#2798), not on a line never printed.
+        app.set_counts_own_perf(!windowless);
         // A windowless app's root is no window: `WindowHandle::main()` is
         // `None` and `windows()` lists only what it opens.
         let main_handle = if windowless {
@@ -574,6 +643,7 @@ impl RinchRuntime {
             windowless,
             windowless_root_warned: false,
             fonts: fonts.to_vec(),
+            popups: Default::default(),
             #[cfg(test)]
             _queue_lock,
         }
@@ -581,8 +651,13 @@ impl RinchRuntime {
 
     /// Explicit shutdown: drop resources in the correct order and clear global state.
     fn shutdown(&mut self) {
-        // 0. Close DevTools and the other windows first.
+        // 0. Close DevTools and the other windows first: the main window's
+        // popups first of all, told their parent closed (#2552).
         self.close_devtools();
+        if !self.main_closed {
+            let main = self.main_handle;
+            self.close_popups_above(main);
+        }
         self.close_all_others();
 
         // 1. Clear the signal-change callback so no stale closures fire during drop.
@@ -627,6 +702,11 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
+        // Popup windows: on Wayland (#2552).
+        crate::popup::set_supported(
+            super::overlay_window::Backend::of(event_loop)
+                == super::overlay_window::Backend::Wayland,
+        );
         // Whether the compositor paces Fifo itself (`wp_fifo_v1`), before
         // any window presents (#2669).
         #[cfg(feature = "gpu-renderer")]
@@ -759,7 +839,11 @@ impl ApplicationHandler for RinchRuntime {
         }
         self.keep_prepared();
         self.about_to_wait_inner(event_loop);
+        // A popup whose anchor moved is placed again (#2552).
+        self.follow_popup_anchors();
         self.settle_closes(event_loop);
+        // Popups that waited for the next iteration are asked for again.
+        self.popups_end_of_turn(event_loop);
     }
 }
 
@@ -787,6 +871,9 @@ impl RinchRuntime {
             }
             return;
         }
+        // Keys reaching any window of a menu chain go to its topmost menu
+        // (#2552).
+        let role = self.input_role(role, &event);
         // Raw motion that came before this event reaches the app first.
         self.flush_pointer_motion(event_loop);
 
@@ -826,7 +913,9 @@ impl RinchRuntime {
             }
             // A layer surface's move or resize (#1523) takes the pointer, as
             // a compositor move does.
-            if self.update_layer_gesture(role, (lx, ly), event_loop) {
+            // In the display's logical pixels, as the layer's place is.
+            let zoom = crate::zoom::current();
+            if self.update_layer_gesture(role, (lx * zoom, ly * zoom), event_loop) {
                 return;
             }
             let id = pointer_id_of(source);
@@ -887,12 +976,23 @@ impl RinchRuntime {
                 .pressed_pointers
                 .note(pointer.id, button.clone().mouse_button(), pressed);
             crate::render_surface::set_current_pointer(Some(pointer));
+            // A press outside the popups above it closes them, after it is
+            // delivered (#2552).
+            if pressed {
+                self.light_dismiss_press(role);
+            }
         }
         self.flush_pointer_move(role, event_loop);
 
         // A layer surface's move reached the compositor (#1523).
         if let WindowEvent::Moved(p) = &event {
             self.w(role).layer_moved((p.x, p.y));
+        }
+        // Where the system put a popup (#2552).
+        match &event {
+            WindowEvent::Moved(p) => self.popup_placed(role, Some((p.x, p.y))),
+            WindowEvent::SurfaceResized(_) => self.popup_placed(role, None),
+            _ => {}
         }
         // Keep the published geometry (#1546) current: each window its own.
         if matches!(
@@ -911,9 +1011,15 @@ impl RinchRuntime {
             // compositor's, for an output that went away. Show it again
             // rather than quitting (#1523).
             // Only the main window can be a layer surface.
+            // A popup the system dismissed (`popup_done`, #2552): closed with
+            // no veto, its surface is gone.
+            WindowEvent::CloseRequested if self.popup_done(role) => return,
             WindowEvent::CloseRequested
                 if role == WindowRole::Main && self.main.layer.is_some() =>
             {
+                // Its popups go first, topmost first (#2552).
+                let main = self.main_handle;
+                self.close_popups_above(main);
                 self.main
                     .layer_surface_closed(event_loop, self.native_menu.as_ref());
                 return;
@@ -943,7 +1049,7 @@ impl RinchRuntime {
                 // needs no reconfigure here — winit follows this event with a
                 // `SurfaceResized` carrying the new physical size, handled
                 // above.
-                PlatformEvent::ScaleFactorChanged(scale_factor)
+                display_scale_changed(scale_factor)
             }
             WindowEvent::RedrawRequested => {
                 // winit delivers a window's `RedrawRequested` only once the
@@ -975,7 +1081,11 @@ impl RinchRuntime {
                 let painted = match role {
                     WindowRole::Main => self.paint(),
                     WindowRole::DevTools => self.paint_devtools(),
-                    WindowRole::Other(_) => self.w(role).paint_window(),
+                    WindowRole::Other(_) => {
+                        let painted = self.w(role).paint_window();
+                        self.w(role).note_popup_frame();
+                        painted
+                    }
                 };
                 if let Err(e) = painted {
                     // Not `eprintln!`, which panics on a closed stderr (#2531).
@@ -1124,7 +1234,16 @@ impl RinchRuntime {
                     None => return,
                 }
             }
+            // KWin moves the keyboard from a menu's parent to the menu: the
+            // parent did not lose it to the user (#2552).
+            // (held, and told when the chain closes)
+            WindowEvent::Focused(focused) if self.hold_focus_change(role, focused) => return,
             WindowEvent::Focused(focused) => {
+                // A parent raised for a menu's keyboard has it: the menu is
+                // made now (#2552).
+                if focused && let Some(id) = self.window_id_of(role) {
+                    self.parent_got_keyboard(id, event_loop);
+                }
                 // A window that lost focus may never be sent the release of a
                 // button held across the blur (it goes to the window that took
                 // focus): forget every press, or a hover on a surface with
@@ -1500,6 +1619,33 @@ mod bundled_font_tests {
         }
         let plain = build_runtime(component, &Default::default(), None, &[]);
         assert!(!plain.main.main_window_always_on_top());
+    }
+
+    /// #2817: a window's activation token goes in its Wayland attributes
+    /// (winit's `with_activation_token`, activated before the initial
+    /// commit), and only there: not on X11, not for a non-activating window.
+    #[test]
+    fn an_activation_token_goes_in_a_wayland_windows_attributes_2817() {
+        let token_in = |runtime: &mut RinchRuntime, backend: Backend| {
+            let steps = runtime.main.main_window_steps(backend, true);
+            let attrs = runtime
+                .main
+                .main_window_attributes(steps, backend, true, true);
+            format!("{:?}", attrs.platform).contains("\"launch-2817\"")
+        };
+        let mut runtime = build_runtime(component, &Default::default(), None, &[]);
+        assert!(!token_in(&mut runtime, Backend::Wayland), "none given");
+        runtime.main.activation_token = Some("launch-2817".into());
+        assert!(token_in(&mut runtime, Backend::Wayland));
+        assert!(!token_in(&mut runtime, Backend::X11));
+
+        let props = rinch_core::element::WindowProps {
+            non_activating: true,
+            ..Default::default()
+        };
+        let mut runtime = build_runtime(component, &props, None, &[]);
+        runtime.main.activation_token = Some("launch-2817".into());
+        assert!(!token_in(&mut runtime, Backend::Wayland), "non-activating");
     }
 
     /// #1519, the default path: an ordinary window takes no hit-test call and

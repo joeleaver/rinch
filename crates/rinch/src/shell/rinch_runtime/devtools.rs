@@ -58,7 +58,8 @@ impl RinchRuntime {
             .expect("Failed to create DevTools window");
 
         let size = window.surface_size();
-        let dt_scale = window.scale_factor();
+        // DevTools follows the app's zoom, as every window does.
+        let dt_scale = crate::zoom::apply(window.scale_factor());
 
         // DevTools presents the way the main window does: on the GPU only when
         // the main window is, and with software if the GPU will not start for
@@ -279,6 +280,8 @@ fn devtools_app(
     app.set_surface_size((surface.0.max(1), surface.1.max(1)));
     app.set_device_pixel_ratio(scale);
     app.set_publishes_own_window_state();
+    // DevTools ends no performance frames: its work stays nobody's (#2798).
+    app.set_counts_own_perf(false);
     let logical = to_logical(surface, scale);
     app.mount_component(logical.0 as f32, logical.1 as f32);
     (app, logical)

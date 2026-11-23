@@ -152,3 +152,121 @@ fn a_moved_block_in_a_split_inline_is_hit_over_the_next_runs_box() {
         }
     }
 }
+
+/// #2819: a `position: relative` span after an absolute box is painted over
+/// it, so it is hit over it: a point on the span's text answers the IFC root
+/// (whose text it is, as for any text in its lines) and the span's text
+/// node under it, not the box. With the span `static`, or the span
+/// `pointer-events: none`, the box is hit.
+///
+/// Before #2819 the span was drawn with its IFC's lines, under the box, and
+/// the box was hit.
+#[test]
+fn a_relative_span_over_an_earlier_absolute_box_is_hit_over_it() {
+    let case = |span_style: &str| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = doc.create_element("div");
+        doc.set_attribute(
+            c,
+            "style",
+            "position: absolute; left: 100px; top: 50px; width: 400px; height: 100px; \
+             font: 40px/100px sans-serif",
+        );
+        doc.append_child(body, c);
+        doc.set_inner_html(
+            c,
+            &format!(
+                r#"<div id="abs" style="position: absolute; left: 0; top: 0; width: 300px; height: 100px"></div><span id="s" style="{span_style}">MM</span>"#
+            ),
+        );
+        doc.resolve_layout(800.0, 600.0);
+        let abs = rinch_dom::testing::query_selector(&doc.tree, "#abs")[0];
+        let s = rinch_dom::testing::query_selector(&doc.tree, "#s")[0];
+        (doc, c, abs, s)
+    };
+    // On the first `M`, inside the line, off the fixed point of the box's
+    // corner.
+    let (x, y) = (100.0 + 13.0, 50.0 + 47.0);
+
+    let (doc, _, abs, _) = case("");
+    assert_eq!(
+        hit_test(&doc.tree, x, y),
+        Some(abs),
+        "positive control: a static span is under the box"
+    );
+    let (doc, _, abs, _) = case("position: relative; pointer-events: none");
+    assert_eq!(
+        hit_test(&doc.tree, x, y),
+        Some(abs),
+        "a span that takes no pointer passes it to the box"
+    );
+
+    let (doc, c, _, s) = case("position: relative");
+    assert_eq!(
+        hit_test(&doc.tree, x, y),
+        Some(c.0),
+        "the span's text, over the box"
+    );
+    let span_text = doc.tree.get(s).unwrap().children[0];
+    assert_eq!(
+        super::text_node_at(&doc.tree, c.0, x, y),
+        Some(span_text),
+        "the span's text is under the point"
+    );
+    let (doc, c, _, _) = case("position: relative; left: 7px; top: 5px");
+    assert_eq!(
+        hit_test(&doc.tree, x, y),
+        Some(c.0),
+        "a moved span is hit where it is drawn"
+    );
+}
+
+/// A `filter` on a static inline span (#2869) makes it a stacking context
+/// painted in its own entry, but does not change what a point hits (Chrome
+/// 158: filters do not affect hit testing): the inline-block in it is hit at
+/// its box, and the span's shadow 30px under it is the container's, as with
+/// no filter.
+#[test]
+fn a_filtered_span_is_hit_as_without_its_filter() {
+    let place = |filter: &str| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = doc.create_element("div");
+        doc.set_attribute(
+            c,
+            "style",
+            "position: absolute; left: 100px; top: 50px; width: 300px; height: 100px; \
+             font: 16px/20px sans-serif",
+        );
+        doc.append_child(body, c);
+        doc.set_inner_html(
+            c,
+            &format!(
+                r#"lead <span style="{filter}">text <span id="ib" style="display: inline-block; width: 30px; height: 20px"></span></span>"#
+            ),
+        );
+        doc.resolve_layout(800.0, 600.0);
+        let ib = rinch_dom::testing::query_selector(&doc.tree, "#ib")[0];
+        (doc, c, NodeId(ib))
+    };
+    for filter in ["", "filter: drop-shadow(0 30px 0 red)"] {
+        let (doc, c, ib) = place(filter);
+        assert_eq!(
+            rinch_dom::paint::paints_in_own_entry(
+                doc.tree
+                    .get(doc.tree.get(ib.0).unwrap().parent.unwrap())
+                    .unwrap()
+            ),
+            !filter.is_empty(),
+            "the filtered span paints in its own entry"
+        );
+        let (x, y) = center(&doc, ib);
+        assert_eq!(hit_test(&doc.tree, x, y), Some(ib.0), "{filter:?}: the box");
+        assert_eq!(
+            hit_test(&doc.tree, x, y + 30.0),
+            Some(c.0),
+            "{filter:?}: the shadow is not the span's"
+        );
+    }
+}

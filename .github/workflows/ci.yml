@@ -385,8 +385,10 @@ jobs:
           # a retired device's is ignored, an external replacement, errors on
           # a lost device, a surface's fresh target and frame, one unmounted
           # across the loss remounting with a fresh target, and a late
-          # registration of the old device's texture dropped (7).
-          run 133 -p rinch --features gpu,video --lib -- \
+          # registration of the old device's texture dropped (7), and #2891's
+          # hidden prepared window prepared again on the renderer the rebuild
+          # built it (1).
+          run 134 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
             --skip probe_2688 --test-threads=1
           # #2688's limit on the embed overlay's frames in flight (1; the
@@ -485,6 +487,9 @@ jobs:
             --ignored --test-threads=1
           # #549's fixed box escaping the clips above its stacking context.
           run 3 -p rinch --features gpu,video --test gpu_fixed_escape_549 -- \
+            --ignored --test-threads=1
+          # #2815's absolute box escaping the clips above its stacking context.
+          run 3 -p rinch --features gpu,video --test gpu_absolute_escape_2815 -- \
             --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).

@@ -954,7 +954,7 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `get_glyph_bounds` | The box of the **one** glyph cluster at a given `byte_offset` in a text node — not every glyph; logical px in the same frame as `absolute` (#421), over the layout the text is painted with (`RinchApp::input_glyph_rect` for a field, `RinchDocument::text_glyph_window_rect` otherwise; #1136) |
 | `disconnect` | Disconnect from the app without closing it |
 | `launch_app` | Launch a rinch app via `cargo run -p <package>`, wait for debug registration, auto-connect |
-| `perf_stats` | The app's per-frame performance counters (cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, repainted px, hit tests, effect runs, phase times) as `last_frame` / `current_frame` / `total` JSON, and the same for every open window under `windows` (#2657); `reset: true` zeroes them after reading. Use it, not DevTools, to measure an interaction |
+| `perf_stats` | The app's per-frame performance counters (cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, repainted px, hit tests, effect runs, phase times) as `last_frame` / `current_frame` / `total` JSON, the same for every open window under `windows` (#2657), and the work of no window under `pass` (#2798); `reset: true` zeroes them after reading. Use it, not DevTools, to measure an interaction |
 
 **Performance counters** (`rinch_dom::perf`, re-exported as `rinch::perf`). Every
 `NodeTree` carries `perf: PerfCounters`: always-compiled `u64` counters bumped by
@@ -986,6 +986,30 @@ after a trim. Both flags are one-shot flags on `Presenter`
 window (a stand-in surface that keeps its contents, on the virtual clock),
 so `testing/idle_trim_perf_2852_tests.rs` pins the lines through
 `window_perf::capture`, a test-only thread-local copy of what is printed.
+**Reactive counters per document** (#2798). `rinch_core::reactive` keeps the
+thread's totals (`reactive_counters`, which `batch` also reads to tell whether
+it wrote) and, in the doc-keyed registry `DOC_COUNTERS`, each counted
+document's: `count_effect_run(inner.doc)` charges the document the effect's
+frame re-enters, `count_signal_notify` the ambient document
+(`context::current_doc_raw`: the dispatching one, an effect's, a timer's
+recorded frame, the disposing one). A document is counted from
+`count_doc_reactive_work`, which `RinchApp::mount_component` calls before the
+component is built unless `counts_own_perf` is off (the windowless root and
+DevTools, which end no frames); work under no counted document is
+`unattributed_reactive_counters`. `forget_doc` drops a document's entry.
+`ReRender`s follow the same split in `rinch`: `count_doc_rerender` charges the
+sender's document when this thread counts it (`DOC_RERENDERS`), anything else
+bumps the process-wide `RERENDER_EVENTS_QUEUED`. `end_perf_frame` folds the
+document's own deltas, and, when `counted_doc_count() <= 1`, the unattributed
+delta too, through one thread-local cursor (`UNATTRIBUTED_SEEN`,
+`take_unattributed_perf`) shared with `window_perf::end_pass`, which the
+desktop shell calls at the end of `about_to_wait_inner` and which takes that
+delta when two or more documents are counted, printing `[PERF] pass N` when it
+is non-zero. One cursor means each unit is counted once, whichever takes it,
+as the number of windows changes. `RinchApp::new` advances the cursor when no
+document is counted yet, so a lone app's first frame starts at its creation,
+as before. Pinned by `shell/rinch_runtime/perf_attribution_2798_tests.rs`.
+
 `RINCH_PERF=1` prints one line per frame (the env var is read once), `perf_stats`
 serves them over MCP, and `RinchApp::last_frame_perf` / `doc.tree.perf.frame()`
 serve tests. **Prove a perf fix with a counter, not a timing**:
@@ -1397,6 +1421,19 @@ ThemeProvider generates CSS variables:
 - Shadows: `--rinch-shadow-{xs,sm,md,lg,xl}`
 - Typography: `--rinch-font-size-{xs,sm,md,lg,xl}`, `--rinch-font-family`
 - Semantic: `--rinch-color-body`, `--rinch-color-text`, `--rinch-color-dimmed`
+- Variant (#2879): `--rinch-color-{name}-light{,-hover,-active,-color,-color-strong,-text}`
+  and `--rinch-primary-color-light…`, written per scheme by `push_variant_tokens`
+  in `crates/rinch-theme/src/css.rs`; plus `--rinch-color-focus-ring` and
+  `--rinch-color-mark`
+
+**A component's tint should be a scheme token, not a palette shade** (#2871, #2879).
+`-0`, `-1`, `-2` and `yellow-2` are near-white in both schemes, because the palette
+does not flip; a rule that names one paints a pale slab in the dark scheme. The
+light scheme's token values are exactly the shades the rules used before, so a move
+onto them changes nothing there: `crates/rinch/tests/light_variants_dark_scheme_2879.rs`
+compares every light-scheme sample with a swatch of the old shade, and checks the
+dark scheme's fills are dark, its text reads (4.5:1) and rest, hover and active
+stay three colours.
 
 **Generic font families are repaired on Android** (`crates/rinch-dom/src/fonts.rs`,
 issue #322). fontique maps the `monospace` slot to the literal name `"monospace"`,

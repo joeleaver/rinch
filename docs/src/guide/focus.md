@@ -851,10 +851,10 @@ fn studio() -> NodeHandle {
 - **Which document's keys.** On desktop, a listener registered while a
   document's code runs (its render, an effect, a handler) hears only that
   document's keys; one registered from `main` hears every document on the
-  thread — the DevTools window's included. `rinch-web` marks no document, so a
-  listener there hears every key the page's `document` sees: every island's
-  (`mount_into` roots) and keys typed into page inputs outside any root. Check
-  the focused element if that matters.
+  thread — the DevTools window's included. On `rinch-web` a listener hears
+  every key the page's `document` sees, whichever root registered it: every
+  island's (`mount_into` roots) and keys typed into page inputs outside any
+  root. Check the focused element if that matters.
 - **Tab.** A listener that consumes Tab takes it before `trap_focus`
   containment, which runs in the default stage (as a browser `window` listener
   can `preventDefault` a Tab a dialog would otherwise trap).
@@ -1260,9 +1260,12 @@ build on, with this menu as the fallback.
   registered from `main` is the thread-global fallback that intercepts for
   every document without its own — so two windows that each register at mount
   or from their own event handling no longer clobber each other. Registrations
-  made outside any document (from `main`, a timer or `run_on_main_thread`
-  closure armed there, or on rinch-web, which marks no document) still share
-  the single fallback slot, last-wins. A timer, `run_on_main_thread` closure or
+  made outside any document (from `main`, or a timer or `run_on_main_thread`
+  closure armed there) still share the single fallback slot, last-wins. On
+  rinch-web each mounted root is a document (issue #2811): its build, its
+  effects and the handlers its events run are its document's code, so two
+  islands' interceptors do not clobber each other either, and the fallback is
+  what page script outside any root registers. A timer, `run_on_main_thread` closure or
   http/ws completion armed *inside* a document runs as that document's code
   (issue #963), and so does a menu, tray, hotkey, notification, focus-target
   or Android callback made inside one (issue #1032), so what it registers or

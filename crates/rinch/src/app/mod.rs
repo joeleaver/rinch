@@ -543,12 +543,96 @@ pub(crate) enum ThemeKey {
     Owned(u64),
 }
 
-/// `ReRender` native events queued to the desktop event loop, process-wide
-/// and monotonic. Bumped by the shell's `send_native_event`; folded into the
-/// document's `rerender_events_queued` counter per frame by
-/// [`RinchApp::end_perf_frame`].
+/// `ReRender` native events queued to the desktop event loop for no counted
+/// document (sent from outside any document, or from another thread),
+/// process-wide and monotonic. Bumped by the shell's `send_native_event`; one
+/// sent by a document this thread counts is that document's
+/// ([`count_doc_rerender`], #2798). Folded into a frame's
+/// `rerender_events_queued` by [`RinchApp::end_perf_frame`] when the thread
+/// has one document, else into the pass's (`window_perf::end_pass`).
 pub(crate) static RERENDER_EVENTS_QUEUED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+rinch_core::doc_keyed! {
+    /// `ReRender` events each counted document of this thread queued (#2798).
+    static DOC_RERENDERS: rinch_core::DocMap<u64> = rinch_core::DocMap::new();
+}
+
+thread_local! {
+    /// The work under no counted document (the reactive runtime's, and
+    /// [`RERENDER_EVENTS_QUEUED`]) already folded into a frame or a pass
+    /// line, so each unit of it is counted once (#2798).
+    static UNATTRIBUTED_SEEN: std::cell::Cell<(rinch_core::reactive::ReactiveCounters, u64)> =
+        std::cell::Cell::new(Default::default());
+}
+
+/// Count one queued `ReRender` for the document `doc` names. A document this
+/// thread counts takes it; anything else (no document, a document of another
+/// thread or one nobody counts) is the pass's, in [`RERENDER_EVENTS_QUEUED`].
+#[cfg_attr(not(feature = "windowing"), allow(dead_code))]
+pub(crate) fn count_doc_rerender(doc: Option<u64>) {
+    // The entry is made at the mount (`count_doc_rerenders`), which joins
+    // the registry to the sweep's inventory; this only bumps it.
+    if let Some(doc) = doc
+        && DOC_RERENDERS
+            .try_with_mut(|m| m.get_mut(doc).map(|n| *n += 1))
+            .flatten()
+            .is_some()
+    {
+        return;
+    }
+    RERENDER_EVENTS_QUEUED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Count document `doc`'s `ReRender`s on their own from now on (its mount).
+fn count_doc_rerenders(doc: u64) {
+    if doc != 0 {
+        DOC_RERENDERS.with_mut(|m| {
+            m.get_or_insert_with(doc, || 0);
+        });
+    }
+}
+
+/// The `ReRender`s document `doc` has queued since it was counted.
+fn doc_rerenders(doc: u64) -> u64 {
+    DOC_RERENDERS
+        .try_with(|m| m.get(doc).copied())
+        .flatten()
+        .unwrap_or(0)
+}
+
+/// The work under no counted document since it was last taken: effect runs,
+/// signal writes and `ReRender`s, in that order. Taken by the frame of a
+/// thread's only document, else by the pass line.
+pub(crate) fn take_unattributed_perf() -> [(rinch_dom::perf::Counter, u64); 3] {
+    use rinch_dom::perf::Counter;
+    let now = (
+        rinch_core::reactive::unattributed_reactive_counters(),
+        RERENDER_EVENTS_QUEUED.load(std::sync::atomic::Ordering::Relaxed),
+    );
+    let (seen, rerender_seen) = UNATTRIBUTED_SEEN.with(|c| c.replace(now));
+    [
+        (
+            Counter::EffectRuns,
+            now.0.effect_runs.wrapping_sub(seen.effect_runs),
+        ),
+        (
+            Counter::SignalNotifies,
+            now.0.signal_notifies.wrapping_sub(seen.signal_notifies),
+        ),
+        (
+            Counter::RerenderEventsQueued,
+            now.1.wrapping_sub(rerender_seen),
+        ),
+    ]
+}
+
+/// Whether the work under no counted document belongs on a document's own
+/// frame: when the thread counts at most one document, that document and the
+/// thread are the same, and its line reads as the thread's (#2798).
+fn unattributed_is_the_documents() -> bool {
+    rinch_core::reactive::counted_doc_count() <= 1
+}
 
 /// Held by every test that writes [`RERENDER_EVENTS_QUEUED`] and asserts an
 /// exact delta on it, so two such tests on different threads of one test
@@ -1220,11 +1304,17 @@ pub struct RinchApp {
     /// `repaint_full_*` counter (see [`Self::invalidate_previous_frame`]).
     #[cfg(software_shell)]
     pub(crate) full_repaint_reason: Option<rinch_dom::perf::FullRepaintReason>,
-    /// The reactive counters as of the last [`Self::end_perf_frame`], so the
-    /// next one folds in only the delta.
+    /// The document's own reactive counters
+    /// ([`rinch_core::reactive::doc_reactive_counters`]) as of the last
+    /// [`Self::end_perf_frame`], so the next one folds in only the delta.
     pub(crate) perf_reactive_seen: rinch_core::reactive::ReactiveCounters,
-    /// [`RERENDER_EVENTS_QUEUED`] as of the last [`Self::end_perf_frame`].
+    /// The document's own `ReRender`s as of the last [`Self::end_perf_frame`].
     pub(crate) perf_rerender_seen: u64,
+    /// Whether the document's reactive work is counted on its own (#2798):
+    /// `false` for a document whose frames nobody ends (DevTools, a
+    /// windowless app's root), whose work is then nobody's, on the frames of
+    /// a thread's only window or on the pass line, rather than on no line.
+    pub(crate) counts_own_perf: bool,
     /// The framebuffer rect the drag ghost occupied in the frame currently on
     /// screen, in device pixels — `None` when the last frame drew no ghost.
     ///
@@ -1566,8 +1656,16 @@ impl RinchApp {
             has_previous_frame: false,
             #[cfg(software_shell)]
             full_repaint_reason: None,
-            perf_reactive_seen: rinch_core::reactive::reactive_counters(),
-            perf_rerender_seen: RERENDER_EVENTS_QUEUED.load(std::sync::atomic::Ordering::Relaxed),
+            perf_reactive_seen: {
+                // An app alone on its thread starts its first frame here, as
+                // it always has: the thread's work before it is nobody's.
+                if rinch_core::reactive::counted_doc_count() == 0 {
+                    let _ = take_unattributed_perf();
+                }
+                Default::default()
+            },
+            perf_rerender_seen: 0,
+            counts_own_perf: true,
             #[cfg(software_shell)]
             last_ghost_rect: None,
             #[cfg(software_shell)]
@@ -1639,6 +1737,15 @@ impl RinchApp {
             window_logical_size: None,
             surface_size: None,
         }
+    }
+
+    /// Whether this app's document counts its reactive work on its own, for
+    /// its own frames (#2798). On by default; the shell turns it off, before
+    /// the mount, for a document whose frames it never ends (DevTools, a
+    /// windowless app's root), so that work stays on a line someone prints.
+    #[cfg(feature = "windowing")]
+    pub(crate) fn set_counts_own_perf(&mut self, counts: bool) {
+        self.counts_own_perf = counts;
     }
 
     /// Publish this app's window to [`rinch::window`](crate::window) (issue
@@ -2033,6 +2140,16 @@ impl RinchApp {
     /// Called once after the window and renderer are ready.
     pub fn mount_component(&mut self, viewport_width: f32, viewport_height: f32) {
         let doc = Rc::new(RefCell::new(RinchDocument::new()));
+        // Its reactive work is counted on its own from here, before any of
+        // its code runs, so its frames carry its work and not the thread's
+        // (#2798).
+        if self.counts_own_perf {
+            let key = doc.borrow().doc_key();
+            rinch_core::reactive::count_doc_reactive_work(key);
+            count_doc_rerenders(key);
+        }
+        self.perf_reactive_seen = Default::default();
+        self.perf_rerender_seen = 0;
         doc.borrow_mut().tree.text_scale = self.text_scale;
         // Push the display scale into Stylo before any style resolution, so a
         // document mounted on a HiDPI display resolves `resolution` media
@@ -3996,19 +4113,24 @@ impl RinchApp {
         doc.borrow().tree.perf.label().map(str::to_owned)
     }
 
-    /// End the current performance frame: fold in the reactive runtime's
-    /// counters since the last call, then roll the document's counters over
-    /// (see [`rinch_dom::perf::PerfCounters::end_frame`], which also prints
-    /// the `RINCH_PERF` line). The desktop shell calls this after each
-    /// present and the embed context after each `update`. Returns the frame
-    /// that ended.
+    /// End the current performance frame: fold in the document's own
+    /// reactive work since the last call (its effects' runs, the signal
+    /// writes made under it, the `ReRender`s it queued; #2798), then roll the
+    /// document's counters over (see
+    /// [`rinch_dom::perf::PerfCounters::end_frame`], which also prints the
+    /// `RINCH_PERF` line). The work under no document is folded in too when
+    /// this is the only document its thread counts, so a single window's
+    /// frames read as the thread's; with several, it is the pass's
+    /// (`[PERF] pass N`). The desktop shell calls this after each present and
+    /// the embed context after each `update`. Returns the frame that ended.
     pub fn end_perf_frame(&mut self) -> Option<rinch_dom::perf::FrameStats> {
         use rinch_dom::perf::Counter;
-        let reactive = rinch_core::reactive::reactive_counters();
-        let rerender = RERENDER_EVENTS_QUEUED.load(std::sync::atomic::Ordering::Relaxed);
+        let doc = self.doc.as_ref()?;
+        let key = doc.borrow().doc_key();
+        let reactive = rinch_core::reactive::doc_reactive_counters(key);
+        let rerender = doc_rerenders(key);
         let seen = std::mem::replace(&mut self.perf_reactive_seen, reactive);
         let rerender_seen = std::mem::replace(&mut self.perf_rerender_seen, rerender);
-        let doc = self.doc.as_ref()?;
         let mut d = doc.borrow_mut();
         let perf = &mut d.tree.perf;
         perf.add(
@@ -4023,6 +4145,11 @@ impl RinchApp {
             Counter::RerenderEventsQueued,
             rerender.wrapping_sub(rerender_seen),
         );
+        if unattributed_is_the_documents() {
+            for (counter, n) in take_unattributed_perf() {
+                perf.add(counter, n);
+            }
+        }
         Some(perf.end_frame())
     }
 
@@ -4045,8 +4172,12 @@ impl RinchApp {
     /// Zero the document's performance counters (current frame, last frame,
     /// total and frame count).
     pub fn reset_perf(&mut self) {
-        self.perf_reactive_seen = rinch_core::reactive::reactive_counters();
-        self.perf_rerender_seen = RERENDER_EVENTS_QUEUED.load(std::sync::atomic::Ordering::Relaxed);
+        let key = self.doc_key();
+        self.perf_reactive_seen = rinch_core::reactive::doc_reactive_counters(key);
+        self.perf_rerender_seen = doc_rerenders(key);
+        if unattributed_is_the_documents() {
+            let _ = take_unattributed_perf();
+        }
         if let Some(doc) = &self.doc {
             doc.borrow_mut().tree.perf.reset();
         }

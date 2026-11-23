@@ -16,7 +16,9 @@ use peniko::kurbo::Affine;
 use peniko::{Brush, Fill};
 
 use super::painter::{BlendMode, GlyphSynthesis, PaintGlyph, PaintShape, Painter};
-use super::text::{PaintText, TextEffects, TextMask, TextPass, WeightSynthesisOff, draw_text};
+use super::text::{
+    InlineScope, PaintText, TextEffects, TextMask, TextPass, WeightSynthesisOff, draw_text,
+};
 use crate::computed_style::{DisplayValue, PositionValue, VisibilityValue};
 use crate::node::{Node, NodeKind, NodeTree};
 
@@ -118,7 +120,7 @@ fn visit(
         let mut text = PaintText::of_ifc(inline_layout);
         text.set_weight_synthesis_off(WeightSynthesisOff::for_ifc(tree, inline_layout, node));
         text.set_effects(TextEffects::for_ifc(tree, inline_layout, node));
-        let mask = TextMask::for_ifc(tree, inline_layout, is_hidden(node));
+        let mask = TextMask::for_ifc(tree, inline_layout, is_hidden(node), InlineScope::All);
         draw_text(
             painter,
             &text,

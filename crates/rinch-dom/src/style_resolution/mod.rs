@@ -1058,6 +1058,18 @@ impl RinchDocument {
                 new_style.inherit_invalid_text_paint(&computed_values, &guard, parent);
             }
 
+            // `hyphens`, `word-break` and `text-indent` values a `var()` left
+            // invalid are the parent's (#2870).
+            if crate::webkit_box::var_rewrite_seen()
+                && let Some(parent) = node
+                    .parent
+                    .and_then(|p| self.tree.nodes.get(p))
+                    .map(|p| &p.computed_style)
+            {
+                let guard = self.tree.guard.read();
+                new_style.inherit_invalid_text(&computed_values, &guard, parent);
+            }
+
             // Whether it was a containing block for absolute descendants,
             // asked before the filter bit below changes: a filter makes one
             // (#2719), and the answer reads that bit.

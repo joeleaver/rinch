@@ -52,8 +52,8 @@ pub fn styles() -> String {
 
 /* Badge variants - light */
 .rinch-badge--light {
-    background-color: var(--rinch-primary-color-0);
-    color: var(--rinch-primary-color-6);
+    background-color: var(--rinch-primary-color-light);
+    color: var(--rinch-primary-color-light-color);
 }
 
 /* Badge variants - outline */
@@ -102,20 +102,20 @@ pub fn styles() -> String {
 .rinch-badge--filled[data-color="orange"] { background-color: var(--rinch-color-orange-6); }
 
 /* Badge color variants - light */
-.rinch-badge--light[data-color="dark"] { background-color: var(--rinch-color-dark-0); color: var(--rinch-color-dark-6); }
-.rinch-badge--light[data-color="gray"] { background-color: var(--rinch-color-gray-0); color: var(--rinch-color-gray-6); }
-.rinch-badge--light[data-color="red"] { background-color: var(--rinch-color-red-0); color: var(--rinch-color-red-6); }
-.rinch-badge--light[data-color="pink"] { background-color: var(--rinch-color-pink-0); color: var(--rinch-color-pink-6); }
-.rinch-badge--light[data-color="grape"] { background-color: var(--rinch-color-grape-0); color: var(--rinch-color-grape-6); }
-.rinch-badge--light[data-color="violet"] { background-color: var(--rinch-color-violet-0); color: var(--rinch-color-violet-6); }
-.rinch-badge--light[data-color="indigo"] { background-color: var(--rinch-color-indigo-0); color: var(--rinch-color-indigo-6); }
-.rinch-badge--light[data-color="blue"] { background-color: var(--rinch-color-blue-0); color: var(--rinch-color-blue-6); }
-.rinch-badge--light[data-color="cyan"] { background-color: var(--rinch-color-cyan-0); color: var(--rinch-color-cyan-6); }
-.rinch-badge--light[data-color="teal"] { background-color: var(--rinch-color-teal-0); color: var(--rinch-color-teal-6); }
-.rinch-badge--light[data-color="green"] { background-color: var(--rinch-color-green-0); color: var(--rinch-color-green-6); }
-.rinch-badge--light[data-color="lime"] { background-color: var(--rinch-color-lime-0); color: var(--rinch-color-lime-6); }
-.rinch-badge--light[data-color="yellow"] { background-color: var(--rinch-color-yellow-0); color: var(--rinch-color-yellow-6); }
-.rinch-badge--light[data-color="orange"] { background-color: var(--rinch-color-orange-0); color: var(--rinch-color-orange-6); }
+.rinch-badge--light[data-color="dark"] { background-color: var(--rinch-color-dark-light); color: var(--rinch-color-dark-light-color); }
+.rinch-badge--light[data-color="gray"] { background-color: var(--rinch-color-gray-light); color: var(--rinch-color-gray-light-color); }
+.rinch-badge--light[data-color="red"] { background-color: var(--rinch-color-red-light); color: var(--rinch-color-red-light-color); }
+.rinch-badge--light[data-color="pink"] { background-color: var(--rinch-color-pink-light); color: var(--rinch-color-pink-light-color); }
+.rinch-badge--light[data-color="grape"] { background-color: var(--rinch-color-grape-light); color: var(--rinch-color-grape-light-color); }
+.rinch-badge--light[data-color="violet"] { background-color: var(--rinch-color-violet-light); color: var(--rinch-color-violet-light-color); }
+.rinch-badge--light[data-color="indigo"] { background-color: var(--rinch-color-indigo-light); color: var(--rinch-color-indigo-light-color); }
+.rinch-badge--light[data-color="blue"] { background-color: var(--rinch-color-blue-light); color: var(--rinch-color-blue-light-color); }
+.rinch-badge--light[data-color="cyan"] { background-color: var(--rinch-color-cyan-light); color: var(--rinch-color-cyan-light-color); }
+.rinch-badge--light[data-color="teal"] { background-color: var(--rinch-color-teal-light); color: var(--rinch-color-teal-light-color); }
+.rinch-badge--light[data-color="green"] { background-color: var(--rinch-color-green-light); color: var(--rinch-color-green-light-color); }
+.rinch-badge--light[data-color="lime"] { background-color: var(--rinch-color-lime-light); color: var(--rinch-color-lime-light-color); }
+.rinch-badge--light[data-color="yellow"] { background-color: var(--rinch-color-yellow-light); color: var(--rinch-color-yellow-light-color); }
+.rinch-badge--light[data-color="orange"] { background-color: var(--rinch-color-orange-light); color: var(--rinch-color-orange-light-color); }
 
 /* Badge color variants - outline */
 .rinch-badge--outline[data-color="dark"] { color: var(--rinch-color-dark-6); border-color: var(--rinch-color-dark-6); }

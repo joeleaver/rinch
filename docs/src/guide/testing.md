@@ -486,6 +486,11 @@ not wrap.
   first runs it. A signal it writes (`run_on_main_thread(move || s.set(..))`)
   is then another thread's, and the write is dropped with a warning; write
   from a worker with `s.send(..)`.
+- **A signal written with `send` lives on an app's thread.** Make it inside the
+  `TestApp` (or on any thread that hosts one). A signal made on a bare test
+  thread with no `TestApp` has nothing to apply writes to it: a worker's
+  `send` to it is dropped where another test's app drains it, with a warning
+  that says the signal was made on a thread that hosts no app.
 - **Render surfaces** (`RenderSurface`, `GameViewport`) are laid out but their
   per-frame render callbacks do not run.
 - **Text widths depend on fonts.** A test asserting horizontal text geometry

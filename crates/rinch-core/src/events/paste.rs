@@ -59,7 +59,7 @@ crate::doc_keyed! {
 /// and get the just-pasted content. Only one interceptor can be active at a time
 /// **per document**: a second call from the same document replaces the first
 /// (issue #478). Registering outside any document — from `main`, a timer armed
-/// there, and everywhere on rinch-web, which never marks dispatch — fills the
+/// there, or page script outside any rinch-web root (#2811) — fills the
 /// thread-global fallback slot, which serves every document that has no
 /// interceptor of its own.
 ///

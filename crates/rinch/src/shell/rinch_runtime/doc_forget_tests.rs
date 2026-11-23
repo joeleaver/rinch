@@ -3,10 +3,15 @@
 
 use super::*;
 
+/// A window's document, as a scope hands it out.
+type DocWeak = std::rc::Weak<std::cell::RefCell<dyn rinch_core::dom::DomDocument>>;
+
 thread_local! {
     /// The root of the last window [`focusing`] built, for a test to free its
     /// children through.
     static ROOT: std::cell::RefCell<Option<NodeHandle>> = const { std::cell::RefCell::new(None) };
+    /// The node the last [`registering`] window registers at.
+    static TARGET: std::cell::RefCell<Option<NodeHandle>> = const { std::cell::RefCell::new(None) };
 }
 
 /// A window whose content is one 200×40 focus target at its top left.
@@ -85,12 +90,18 @@ fn a_closed_windows_parked_freed_target_is_forgotten() {
 
 /// Every registry keyed by document that a second window's code reaches, by
 /// the name `rinch_core::doc_entries` gives it (its static's path).
-/// `FREED` is the one left out: it fills only when a claimed target is freed,
-/// and [`a_closed_windows_parked_freed_target_is_forgotten`] covers it.
-const EVERY_KIND: [&str; 14] = [
+/// Left out, each covered by a test of its own: `FREED`, which fills only
+/// when a claimed target is freed
+/// ([`a_closed_windows_parked_freed_target_is_forgotten`]), and the sortable
+/// list's preview wrappers and focus request, which fill only during and
+/// after a drag (`sortable_2154_tests`).
+const EVERY_KIND: [&str; 25] = [
+    "rinch::app::DOC_RERENDERS",
     "rinch::editor::virtualization::WINDOWS",
     "rinch::focus_registry::CLAIMED",
     "rinch::focus_registry::TARGETS",
+    "rinch_components::dropdown_menu_sub::SUBS",
+    "rinch_components::sortable::LISTS",
     "rinch_core::events::app_key::LISTENERS",
     "rinch_core::events::dismiss::STACK",
     "rinch_core::events::display::CHANGES",
@@ -102,13 +113,21 @@ const EVERY_KIND: [&str; 14] = [
     "rinch_core::events::selection::SAVED_SELECTION",
     "rinch_core::events::selection::SELECTION_CALLBACK",
     "rinch_core::events::selection::SELECTION_SYNC_CALLBACK",
+    "rinch_core::reactive::DOC_COUNTERS",
+    "rinch_editor_view::blink::CLOCKS",
+    "rinch_editor_view::registry::DRAG",
+    "rinch_editor_view::registry::EDITORS",
+    "rinch_editor_view::registry::IMAGE_HOVER",
+    "rinch_editor_view::registry::LINK_HOVER",
+    "rinch_editor_view::registry::OVERLAY_PASSES_OWED",
+    "rinch_editor_view::styles::INJECTED",
 ];
 
 /// One entry in every registry for document `doc`, made by `node`'s
 /// window's code: what app code, a component or the runtime makes there.
 /// A dismiss handle is kept (forgotten), as an app that holds one for its life
 /// does; an app key's handle does not unregister it when dropped.
-fn register_everywhere(doc: u64, node: &NodeHandle) {
+fn register_everywhere(doc: u64, node: &NodeHandle, document: &DocWeak) {
     use rinch_core::events::*;
     let _ = rinch_core::events::display_scale_changes(doc);
     post_text_selection_request(doc, 1, 0, 0, rinch_core::dom::SelectionDirection::Forward);
@@ -123,6 +142,71 @@ fn register_everywhere(doc: u64, node: &NodeHandle) {
     set_paste_interceptor(|_| false);
     set_selection_callback(|_| Vec::new());
     set_selection_sync_callback(|_| {});
+    register_in_the_editor_view(doc, node);
+    render_components_kept(node, document);
+    // A `ReRender` it queued (#2798); its reactive work is counted from the
+    // mount.
+    crate::app::count_doc_rerender(Some(doc));
+}
+
+/// One entry in each of the editor view's registries for document `doc`, at
+/// `node`'s id, made by its key as the runtime makes them: an editor
+/// registered, its drag-select, an owed overlay pass, its blink clock, and
+/// the link and image its pointer is over. No owner removes them.
+fn register_in_the_editor_view(doc: u64, node: &NodeHandle) {
+    use crate::editor::registry::{owe_overlay_pass_for, register_editor};
+    use crate::editor::{
+        ImageHover, LinkHover, LinkSpan, begin_drag, caret_blink_tick, create_editor,
+        set_image_hover, set_link_hover,
+    };
+    let container = node.node_id().0;
+    let editor = create_editor();
+    register_editor(doc, container, editor.clone());
+    begin_drag(Some(doc), container, 0);
+    owe_overlay_pass_for(doc);
+    let _ = caret_blink_tick(doc, Some(container));
+    let link = LinkSpan {
+        href: "https://example.com".into(),
+        title: None,
+        from: rinch_editor_core::Pos(0),
+        to: rinch_editor_core::Pos(1),
+    };
+    set_link_hover(
+        Some(doc),
+        Some((
+            editor.clone(),
+            LinkHover {
+                link,
+                rect: Default::default(),
+            },
+        )),
+    );
+    set_image_hover(
+        Some(doc),
+        Some((
+            editor,
+            ImageHover {
+                pos: rinch_editor_core::Pos(0),
+                attrs: Default::default(),
+                rect: Default::default(),
+            },
+        )),
+    );
+}
+
+/// A `DropdownMenuSub` and a `SortableList` rendered under `node` in a scope
+/// that is kept for the thread's life, as one an app holds and never drops:
+/// their registrations are made and nothing of theirs removes them.
+fn render_components_kept(node: &NodeHandle, document: &DocWeak) {
+    use rinch_core::element::Component;
+    let doc = document.upgrade().expect("the window's document");
+    let mut scope = RenderScope::new(doc, node.node_id());
+    let sub =
+        rinch_components::dropdown_menu_sub::DropdownMenuSub::default().render(&mut scope, &[]);
+    let list = rinch_components::sortable::SortableList::default().render(&mut scope, &[]);
+    node.append_child(&sub);
+    node.append_child(&list);
+    std::mem::forget(scope);
 }
 
 /// A window that registers everywhere in its ordinary code (its mount) and
@@ -141,8 +225,10 @@ fn registering(scope: &mut RenderScope) -> NodeHandle {
     root.append_child(&editor);
     let target = scope.create_element("div");
     root.append_child(&target);
-    register_everywhere(doc, &target);
-    scope.on_cleanup(move || register_everywhere(doc, &target));
+    TARGET.with(|t| *t.borrow_mut() = Some(target.clone()));
+    let document = scope.doc_weak();
+    register_everywhere(doc, &target, &document);
+    scope.on_cleanup(move || register_everywhere(doc, &target, &document));
     root
 }
 
@@ -180,15 +266,18 @@ fn open_registering(runtime: &mut RinchRuntime) -> (u64, u64) {
     let doc = doc_of(runtime, id);
     let window = runtime.others.iter_mut().find(|w| w.handle == id).unwrap();
     window.app.resolve_and_repaint(400.0, 300.0);
-    // The layout drained the focus and selection requests its mount posted,
-    // as it should. Post them again, as the window's code does between
-    // frames (a handler, a timer), so they are parked when it closes.
+    // The layout drained the focus and selection requests its mount posted
+    // and the overlay pass it owed, as it should. Post them again, as the
+    // window's code does between frames (a handler, a timer), so they are
+    // parked when it closes.
     {
         use rinch_core::events::*;
         let _doc = rinch_core::push_dispatching_doc(doc);
         post_text_selection_request(doc, 1, 0, 0, rinch_core::dom::SelectionDirection::Forward);
         post_release_request(doc, 1);
         post_focus_request(doc, FocusRequest::Node(1));
+        // And the overlay pass the layout ran.
+        crate::editor::registry::owe_overlay_pass_for(doc);
     }
     (id, doc)
 }
@@ -249,4 +338,77 @@ fn another_windows_entries_survive_a_close() {
     runtime.close_other(gone);
     assert_eq!(left_for(gone_doc), []);
     assert_eq!(comparable(kept_doc), before, "the other window's entries");
+}
+
+/// The editor view's registrations and the components', made by a window's
+/// ordinary code and by its cleanup with nothing to remove them, are gone
+/// once the window closes: read through each registry's own public lookups,
+/// not the sweep's inventory.
+#[test]
+fn a_closed_windows_editor_view_entries_are_forgotten() {
+    use crate::editor::registry::all_editors;
+    use crate::editor::{drag_anchor, editor_for_doc, overlay_pass_owed};
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let editors_before = all_editors().len();
+    let (id, doc) = open_registering(&mut runtime);
+    let container = TARGET
+        .with(|t| t.borrow().clone())
+        .expect("the window's target")
+        .node_id()
+        .0;
+    assert!(
+        editor_for_doc(doc, container).is_some() && drag_anchor(Some(doc)).is_some(),
+        "control: registered"
+    );
+    runtime.close_other(id);
+    assert_eq!(editor_for_doc(doc, container).map(|_| ()), None);
+    assert_eq!(drag_anchor(Some(doc)), None);
+    assert!(
+        !overlay_pass_owed(doc),
+        "an overlay pass owed to no document"
+    );
+    assert_eq!(all_editors().len(), editors_before, "no editor stays");
+}
+
+/// Many windows opened and closed leave the registries as they found them:
+/// nothing grows with the number of windows the app has had.
+#[test]
+fn registries_stay_flat_over_many_windows() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let keys_before = rinch_core::events::app_key_listener_count();
+    let editors_before = crate::editor::registry::all_editors().len();
+    // Counted whatever their document: an entry whose document can no
+    // longer be read (its nodes' document is gone) is in no count by
+    // document.
+    let components = || {
+        (
+            rinch_components::dropdown_menu_sub::__registered_count(),
+            rinch_components::sortable::__registered_count(),
+        )
+    };
+    let components_before = components();
+    let mut docs = Vec::new();
+    for _ in 0..5 {
+        let (id, doc) = open_registering(&mut runtime);
+        docs.push(doc);
+        runtime.close_other(id);
+        assert_eq!(
+            rinch_core::events::app_key_listener_count(),
+            keys_before,
+            "app keys after a close"
+        );
+        assert_eq!(
+            crate::editor::registry::all_editors().len(),
+            editors_before,
+            "editors after a close"
+        );
+        assert_eq!(
+            components(),
+            components_before,
+            "submenus and sortable lists after a close"
+        );
+    }
+    for doc in docs {
+        assert_eq!(left_for(doc), [], "document {doc}'s entries");
+    }
 }

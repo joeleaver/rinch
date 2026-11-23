@@ -18,6 +18,9 @@
 //!   which makes the surface again;
 //! - `hide-rename-show`: the panel hidden, given the namespace `desktop`,
 //!   and shown;
+//! - `content-margin`: the content-sized panel (`PROBE_CONTENT=1`) given a
+//!   350 px left margin, which narrows its content and so changes its size
+//!   (#2829);
 //! - `quit`.
 //!
 //! Before and after a change it prints `PROBE-BEGIN <command>` and, a
@@ -28,16 +31,48 @@
 //! (a layer surface the app positions, #1523); otherwise it is a panel, the
 //! app's own layer surface (`WindowProps::wayland_layer`, #2413), named
 //! `PROBE_NAMESPACE` when that is set (#2821). `PROBE_APP_ID` sets
-//! `WindowProps::app_id`.
+//! `WindowProps::app_id`. `PROBE_CONTENT=1` starts it as a panel sized by
+//! its content (#2552) at the top-left corner: a wrapping row of 24 boxes,
+//! 100 x 20 each, as many to a row as the output's width less the left
+//! margin holds.
 
 use std::io::BufRead;
 
 use rinch::prelude::*;
-use rinch_core::element::WindowProps;
+use rinch_core::element::{ContentSizing, WindowProps};
 
 #[component]
 fn app() -> NodeHandle {
     rsx! { div { style: "width: 100%; height: 100%; background: #36a;", "layer commit probe" } }
+}
+
+/// The content-sized panel's content: 24 boxes of 100 x 20 in a wrapping
+/// row.
+#[component]
+fn boxes() -> NodeHandle {
+    rsx! {
+        div { style: "display: flex; flex-wrap: wrap; background: #36a;",
+            for i in 0..24u32 {
+                div { key: i, style: "width: 100px; height: 20px; flex: none;" }
+            }
+        }
+    }
+}
+
+/// The content-sized panel: top-left, `left` px from the left edge.
+fn corner(left: i32) -> LayerSurface {
+    LayerSurface {
+        anchor: LayerAnchor {
+            top: true,
+            left: true,
+            ..LayerAnchor::NONE
+        },
+        margins: LayerMargins {
+            left,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 /// The panel at `edge`, reserving `zone`, named `PROBE_NAMESPACE`.
@@ -111,12 +146,23 @@ fn main() {
                     set_current_window_layer(renamed("desktop", 32));
                     show_current_window();
                 }),
+                "content-margin" => turn(name, || set_current_window_layer(corner(350))),
                 "quit" => std::process::exit(0),
                 _ => {}
             }
         }
     });
 
+    if std::env::var("PROBE_CONTENT").is_ok_and(|v| v == "1") {
+        let props = WindowProps {
+            title: "rinch-layer-commit-probe".into(),
+            size_to_content: Some(ContentSizing::new()),
+            wayland_layer: Some(corner(0)),
+            ..Default::default()
+        };
+        App::new(boxes).window_props(props).run();
+        return;
+    }
     let props = if overlay {
         WindowProps {
             title: "rinch-layer-commit-probe".into(),
