@@ -81,6 +81,11 @@ pub fn styles() -> String {
     height: 1.25rem;
 }
 
+/* A right section that stands in for the chevron turns with it. */
+.rinch-navlink__right svg {
+    transition: transform 200ms ease;
+}
+
 /* NavLink body */
 .rinch-navlink__body {
     display: flex;
@@ -129,16 +134,12 @@ pub fn styles() -> String {
     transform: rotate(90deg);
 }
 
-/* NavLink children (nested links) */
+/* NavLink children (nested links). Open, they are as tall as their content
+   (#2192: a fixed `max-height: 1000px` clipped a taller list); closed, the
+   component sets `display: none` on the container, as a closed <details> is
+   not rendered, so Tab skips them. Open and close are instant. */
 .rinch-navlink__children {
     padding-left: var(--rinch-navlink-children-offset, var(--rinch-spacing-lg));
-    overflow: hidden;
-    max-height: 1000px;
-    transition: max-height 200ms ease;
-}
-
-.rinch-navlink__children--collapsed {
-    max-height: 0;
 }
 
 /* Disabled state */

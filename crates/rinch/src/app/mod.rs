@@ -105,6 +105,8 @@ mod detach_damage_966_tests;
 mod devtools_keys;
 #[cfg(test)]
 mod devtools_keys_2689_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod img_error_2202_tests;
 mod spellcheck;
 #[cfg(test)]
 mod spellcheck_tests;
@@ -292,6 +294,8 @@ mod implicit_focus_tests;
 mod inline_draggable_2233_tests;
 #[cfg(test)]
 mod inline_drop_target_2246_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod spellcheck_menu_tests;
 // A window's input region (#2741): the desktop shell's alone.
 #[cfg(feature = "windowing")]
 pub(crate) mod input_region;
@@ -306,6 +310,8 @@ mod inline_ink_damage_1815_tests;
 mod inline_menu_spacer_529_tests;
 #[cfg(test)]
 mod input_commit_tests;
+#[cfg(all(test, software_shell))]
+mod input_direction_2939_tests;
 #[cfg(all(test, software_shell))]
 mod input_horizontal_scroll_1721_tests;
 #[cfg(test)]
@@ -468,6 +474,8 @@ mod text_context_menu;
 mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
+mod text_selection_2256_tests;
+#[cfg(test)]
 mod text_selection_across_tests;
 #[cfg(test)]
 mod text_selection_chrome_tests;
@@ -529,7 +537,9 @@ pub use devtools_keys::{DEVTOOLS_DEFAULT, DEVTOOLS_ENV, set_devtools_default};
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
 pub use smooth_wheel::set_smooth_wheel_scroll_default;
-pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
+pub use text_context_menu::{
+    TextContextMenuPresentation, TextEditAction, TextEditState, TextSpelling,
+};
 pub use title_tooltip::{TITLE_TOOLTIP_DELAY, set_title_tooltips_default};
 
 use std::cell::RefCell;
@@ -1014,6 +1024,23 @@ pub(crate) struct TextSelection {
     /// the end is made; the anchor keeps its side when the focus moves.
     pub(crate) anchor_side: EndSide,
     pub(crate) focus_side: EndSide,
+    /// The word or paragraph a double or triple click selected: a
+    /// Shift+click after it extends by that unit (#2256). `None` for a
+    /// selection made by a single press.
+    pub(crate) unit: Option<SelectionUnit>,
+}
+
+/// One end of a read-only selection: a root, a byte offset in its text,
+/// and the side of the boxes there it is on.
+pub(crate) type SelectionEnd = (u64, usize, EndSide);
+
+/// What a double or triple click selected ([`TextSelection::unit`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionUnit {
+    /// A paragraph (a triple click), else a word.
+    pub(crate) paragraph: bool,
+    pub(crate) start: SelectionEnd,
+    pub(crate) end: SelectionEnd,
 }
 
 /// Which side of the boxes at its offset a selection end is on (review of
@@ -1025,8 +1052,9 @@ pub(crate) struct EndSide {
     /// A start after them leaves them out, an end after them takes them.
     pub(crate) after_inline: bool,
     /// Whether the floats and positioned boxes at its offset are in the
-    /// selection. A float is on no line, so only an end outside the
-    /// paragraph takes it: Select All's, not a press, drag or triple click.
+    /// selection. A float is on no line, so a press or drag never takes
+    /// one: Select All's ends do, and a double click's word running on
+    /// into one (#2259).
     pub(crate) takes_floats: bool,
 }
 
@@ -1508,6 +1536,12 @@ pub struct RinchApp {
     /// Who presents the text context menu — the runtime's DOM menu, or the
     /// shell through [`AppAction::ShowTextContextMenu`].
     pub(crate) text_menu_presentation: TextContextMenuPresentation,
+    /// The misspelled word the last context gesture landed on, and its
+    /// suggestions (#2862, stage 3): what the menu's spelling rows and
+    /// [`TextEditState::spelling`] show while the word stays selected.
+    pub(crate) text_spell: Option<text_context_menu::SpellTarget>,
+    /// Counts suggestion requests, so a late answer finds its own.
+    pub(crate) text_spell_requests: u64,
     /// The "goal column" (a window-space x) preserved across consecutive vertical
     /// cursor moves (Up/Down) in the focused new editor, so the caret keeps its
     /// horizontal position through short lines instead of drifting to line ends.
@@ -1703,6 +1737,8 @@ impl RinchApp {
             text_menu_dismiss_handle: None,
             text_menu_css_injected: false,
             text_menu_presentation: TextContextMenuPresentation::default(),
+            text_spell: None,
+            text_spell_requests: 0,
             #[cfg(feature = "windowing")]
             editor_goal_x: None,
             hovered_surface: None,
@@ -2436,6 +2472,7 @@ impl RinchApp {
                 && !theme_changed
                 && !fonts_adopted
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
+                && d.tree.pending_img_errors.is_empty()
                 && !self.has_owed_editor_overlay_pass()
                 && !Self::has_owed_scroll(&d)
                 && !d.tree.has_deferred_minify()
@@ -2534,6 +2571,8 @@ impl RinchApp {
         // Dispatch deferred scroll events for offsets the layout clamped, now
         // that the last resolve of the frame has run (#144).
         self.dispatch_scroll_clamp_events();
+        // The `error` events of pictures that failed to load (#2202/#2203).
+        self.dispatch_img_error_events();
     }
 
     /// Lay out again what bounds-signal subscribers wrote, in the frame that
@@ -2657,6 +2696,39 @@ impl RinchApp {
         for (handler_id, event) in to_fire {
             use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
             dispatch_scroll_event(EventHandlerId(handler_id), event);
+        }
+    }
+
+    /// Fire `onerror` (`data-onerror`) on each `<img>` whose picture failed
+    /// to load since the last call: the browser's `error` event (#2202,
+    /// #2203). The failure is learnt during layout (a load's answer is drained
+    /// there, and a malformed `data:` URL fails as its `src` is written), so
+    /// the handlers run here, after it, with no borrow of the document held:
+    /// they are app code and usually write to the document (a fallback
+    /// picture, initials in its place), which the bounds settle pass that
+    /// follows lays out in this same frame.
+    fn dispatch_img_error_events(&mut self) {
+        let Some(doc) = self.doc.clone() else { return };
+        let failed = doc.borrow_mut().drain_img_errors();
+        if failed.is_empty() {
+            return;
+        }
+        let to_fire: Vec<usize> = {
+            let d = doc.borrow();
+            failed
+                .iter()
+                .filter_map(|node| {
+                    d.tree
+                        .nodes
+                        .get(node.0)
+                        .and_then(|n| n.attributes.get("data-onerror"))
+                        .and_then(|s| s.parse::<usize>().ok())
+                })
+                .collect()
+        };
+        let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
+        for handler_id in to_fire {
+            rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(handler_id));
         }
     }
 
@@ -11141,7 +11213,7 @@ mod input_caret_hit_tests {
             &mut d.font_cx,
             &mut layout_cx,
         );
-        let (ox, oy) = rinch_dom::form_control::field_text_origin(node, layout.height(), scroll);
+        let (ox, oy) = rinch_dom::form_control::field_text_origin(node, &layout, 1.0, scroll);
 
         let lines = layout
             .lines()

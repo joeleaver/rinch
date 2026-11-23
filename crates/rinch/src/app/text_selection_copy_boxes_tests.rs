@@ -76,7 +76,7 @@ fn select_range(html: &'static str) -> RinchApp {
 
 /// Copies of `cases` (name, markup, Chrome 156's string), checked together
 /// so a failure names every case off.
-fn copies_as_chrome(cases: &[(&str, &'static str, &str)]) {
+pub(super) fn copies_as_chrome(cases: &[(&str, &'static str, &str)]) {
     let off: Vec<String> = cases
         .iter()
         .filter_map(|&(name, html, chrome)| {

@@ -105,6 +105,23 @@ impl EditorState {
         }
     }
 
+    /// This state with `plugins` instead of its own (ProseMirror's
+    /// `reconfigure`): the document, selection and stored marks are kept, a
+    /// plugin already installed keeps its folded state (undo history
+    /// included), and only a new one starts from its
+    /// [`init_state`](Plugin::init_state).
+    pub fn reconfigure(&self, plugins: Vec<Rc<dyn Plugin>>) -> EditorState {
+        let mut next = EditorState::create(self.config.schema.clone(), self.doc.clone(), plugins);
+        for (key, st) in &self.plugin_state {
+            if next.config.plugins.iter().any(|p| p.key() == *key) {
+                next.plugin_state.insert(*key, st.clone());
+            }
+        }
+        next.selection = self.selection.clone();
+        next.stored_marks = self.stored_marks.clone();
+        next
+    }
+
     /// A fresh [`Transaction`] starting from this state.
     pub fn tr(&self) -> Transaction {
         Transaction::new(

@@ -1492,9 +1492,11 @@ impl std::fmt::Debug for InlineLayout {
     }
 }
 
-/// A text control's displayed text: `(caret x, caret y, full width, height)`
-/// in logical px (#1721, #827).
-pub(crate) type InputLineMetrics = (f32, f32, f32, f32);
+/// A text control's displayed text: `(caret x, caret y, full width, height,
+/// line offset)` in logical px (#1721, #827) — the caret in the layout's own
+/// x, and where the layout's x = 0 stands in the column before any scroll
+/// (`form_control::field_line_offset`, #2939).
+pub(crate) type InputLineMetrics = (f32, f32, f32, f32, f32);
 
 /// A node in the DOM tree.
 pub struct Node {
@@ -4447,6 +4449,14 @@ pub struct NodeTree {
     /// here — coalesced per node, last value wins, since layout may resolve
     /// more than once per frame — for the facade to drain after layout.
     pub pending_scroll_clamps: Vec<(RawNodeId, f64)>,
+    /// `<img>` elements whose picture failed to load since the facade last
+    /// drained them (#2202/#2203), for their `onerror` (`data-onerror`): the
+    /// browser's `error` event. One entry per element per drain, however many
+    /// times layout resolved; queued by the newly-failed drain and by a `src`
+    /// written to a picture already known to have failed (a malformed `data:`
+    /// URL fails in place). The facade fires the handlers after layout, with
+    /// no document borrow held, as it does [`Self::pending_scroll_clamps`].
+    pub pending_img_errors: Vec<RawNodeId>,
     /// `<textarea>`s whose value may have changed since the last resolve —
     /// a `value` write, or a write to one of its text children — noted by
     /// [`Self::push_dirty`] (review of #2023). A textarea's scroll range is
@@ -4731,6 +4741,7 @@ impl NodeTree {
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
+            pending_img_errors: Vec::new(),
             textarea_extent_dirty: Vec::new(),
             device_scale: 1.0,
             text_scale: 1.0,
@@ -4936,6 +4947,14 @@ impl NodeTree {
         }
     }
 
+    /// Queue `id`'s `onerror` in [`Self::pending_img_errors`], once per
+    /// drain.
+    pub(crate) fn queue_img_error(&mut self, id: RawNodeId) {
+        if !self.pending_img_errors.contains(&id) {
+            self.pending_img_errors.push(id);
+        }
+    }
+
     /// If `id` is a `<textarea>` or one of its text children, queue the
     /// textarea for the extent refresh and scroll clamp the next resolve owes
     /// it ([`Self::textarea_extent_dirty`]).
@@ -5115,17 +5134,41 @@ impl NodeTree {
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
         // reads its inline elements' styles, #1048), then written.
+        // Answers whether the node's subtree reach is to be measured after
+        // the paint: a box painted for the first time, or one that moved —
+        // what a later move would read. A box that changed in place is left
+        // unmeasured until it moves (a text edit does not pay for it).
         let refresh = |nodes: &mut crate::node_slab::NodeSlab, id: RawNodeId, layout: bool| {
             let Some(node) = nodes.get(id) else {
-                return;
+                return false;
             };
+            let measure = layout
+                && (node.painted.is_none()
+                    || node.prev_layout.x != node.layout.x
+                    || node.prev_layout.y != node.layout.y);
             let mut state = PaintedState::of_in(node, members, |i| nodes.get(i));
             state.unrounded = unrounded_rect(taffy, node);
+            // A box that only moved keeps its subtree's reach (#2222): its
+            // size, scroll offset and clip are what of its own the reach
+            // reads beyond its subtree. A change under it drops the reach
+            // below. A whole-document restyle (`layout` false) drops it.
+            state.subtree_reach = node
+                .painted
+                .as_ref()
+                .filter(|old| {
+                    layout
+                        && old.scroll == state.scroll
+                        && (old.clips_x, old.clips_y) == (state.clips_x, state.clips_y)
+                        && node.prev_layout.width == node.layout.width
+                        && node.prev_layout.height == node.layout.height
+                })
+                .and_then(|old| old.subtree_reach);
             let node = &mut nodes[id];
             if layout {
                 node.prev_layout = node.layout;
             }
             node.painted = Some(state);
+            measure
         };
         // A whole-document restyle changes styles without pushing the nodes
         // it changed, and the paint consuming it drew *every* node with the
@@ -5141,7 +5184,7 @@ impl NodeTree {
                 .map(|(id, _)| id)
                 .collect();
             for id in painted {
-                refresh(nodes, id, false);
+                let _ = refresh(nodes, id, false);
             }
         }
         let mut dirty = std::mem::take(&mut self.paint_dirty_nodes);
@@ -5158,8 +5201,11 @@ impl NodeTree {
         // spans' lines, and once per member was quadratic in the pills of a
         // paragraph (review of #1837: one text edit among 500 pills, 500 ms).
         let mut roots: Vec<RawNodeId> = Vec::new();
+        let mut measure: Vec<RawNodeId> = Vec::new();
         for &id in &dirty {
-            refresh(nodes, id, true);
+            if refresh(nodes, id, true) {
+                measure.push(id);
+            }
             if let Some(root) = nodes.get(id).and_then(|n| n.ifc_root)
                 && root != id
             {
@@ -5180,6 +5226,9 @@ impl NodeTree {
                 state.ink = ink;
             }
         }
+        // Before the visits are folded: measuring an IFC root's reach walks
+        // its spans' lines, and those visits belong to this frame.
+        self.record_subtree_reaches(&dirty, &measure);
         self.perf.add(
             crate::perf::Counter::InlineSpanLineVisits,
             crate::paint::take_span_line_visits(),
@@ -5213,6 +5262,74 @@ impl NodeTree {
         }
         self.bar_check_parents.clear();
         self.whole_document_damaged = false;
+    }
+
+    /// Bring [`PaintedState::subtree_reach`] level with the paint that
+    /// consumed `dirty` (#2222): drop it on every ancestor of a changed node
+    /// (and of a parent a subtree left), whose subtree is no longer the one
+    /// it describes, then measure it for each box of `measure` (painted for
+    /// the first time, or moved) that has none, deepest first so a box's walk
+    /// reads its children's fresh reaches.
+    /// Ancestors are measured when they next change themselves; until then a
+    /// move of one walks its subtree. O(depth) per changed node, each
+    /// ancestor once.
+    fn record_subtree_reaches(&mut self, dirty: &[RawNodeId], measure: &[RawNodeId]) {
+        let mut seen: HashSet<RawNodeId> = HashSet::new();
+        let starts = dirty
+            .iter()
+            .map(|&id| self.nodes.get(id).and_then(|n| n.parent))
+            .chain(self.bar_check_parents.iter().map(|&p| Some(p)))
+            .collect::<Vec<_>>();
+        let mut last = None;
+        for start in starts {
+            // A sibling of the last one (a reflow's moved rows): its chain
+            // is done, with no hashing per row.
+            if start.is_none() || start == last {
+                continue;
+            }
+            last = start;
+            let mut cur = start;
+            while let Some(a) = cur {
+                if !seen.insert(a) {
+                    break;
+                }
+                let Some(n) = self.nodes.get_mut(a) else {
+                    break;
+                };
+                if let Some(p) = n.painted.as_mut() {
+                    p.subtree_reach = None;
+                }
+                cur = n.parent;
+            }
+        }
+        let mut todo: Vec<(u32, RawNodeId)> = measure
+            .iter()
+            .filter(|&&id| {
+                self.nodes.get(id).is_some_and(|n| {
+                    n.painted
+                        .as_ref()
+                        .is_some_and(|p| p.subtree_reach.is_none())
+                        && n.layout.width > 0.0
+                        && n.layout.height > 0.0
+                })
+            })
+            .map(|&id| {
+                let mut depth = 0;
+                let mut cur = self.nodes.get(id).and_then(|n| n.parent);
+                while let Some(a) = cur {
+                    depth += 1;
+                    cur = self.nodes.get(a).and_then(|n| n.parent);
+                }
+                (depth, id)
+            })
+            .collect();
+        todo.sort_unstable_by_key(|&(depth, _)| std::cmp::Reverse(depth));
+        for (_, id) in todo {
+            let reach = crate::paint::measure_subtree_reach(self, id);
+            if let Some(p) = self.nodes.get_mut(id).and_then(|n| n.painted.as_mut()) {
+                p.subtree_reach = reach;
+            }
+        }
     }
 
     /// Drop the sizes the measure function cached for IFC root `root`, so the
@@ -5475,6 +5592,7 @@ impl NodeTree {
             |(x, _)| gone(x),
             &mut steps,
         );
+        prune(&mut self.pending_img_errors, gone, &mut steps);
         prune(&mut self.textarea_extent_dirty, gone, &mut steps);
         if !self.atomic_leaf_layouts.is_empty() {
             steps += self.atomic_leaf_layouts.len() as u64;
@@ -5772,6 +5890,30 @@ pub struct PaintedState {
     /// list that moves no pixel, #2719): a filter change damages the
     /// subtree's extent grown by the old reach as well as the new.
     pub filter_reach: f32,
+    /// Its scroll offset when painted: a scroll moves its content without
+    /// moving a descendant box, so a recorded [`Self::subtree_reach`] is
+    /// kept only while it holds.
+    pub scroll: (f64, f64),
+    /// What its subtree painted, as `paint::layer_bounds::measure_subtree_reach`
+    /// measured it right after the paint (#2222). `None` when not measured,
+    /// or dropped since: by a change to a node under it, by a new size, scroll
+    /// offset or clip of its own, or by a whole-document restyle. A box that
+    /// only moved keeps it, which is what lets a reflow that shifts a long
+    /// list damage each moved row without walking its subtree.
+    pub subtree_reach: Option<SubtreeReach>,
+}
+
+/// A subtree's painted reach ([`PaintedState::subtree_reach`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SubtreeReach {
+    /// Everything it painted lies in `[x0, y0, x1, y1]`, in CSS px from its
+    /// border-box origin, before its own transform. Contains the box.
+    Within([f32; 4]),
+    /// A descendant the walk could not place, which a clip above may still
+    /// bound (`position: sticky`).
+    Unknown,
+    /// The walk could not bound it at all.
+    Escapes,
 }
 
 /// `node`'s unrounded Taffy rect `[x, y, width, height]`, in its Taffy
@@ -5830,6 +5972,8 @@ impl PaintedState {
             contains_fixed: node.establishes_fixed_containing_block(),
             order: crate::stacking::PaintOrderKey::of(node),
             unrounded: None,
+            scroll: node.scroll_offset,
+            subtree_reach: None,
             filter_reach: if cs.filter.is_empty() {
                 0.0
             } else {

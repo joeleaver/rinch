@@ -225,7 +225,7 @@ pub use loader::{Loader, LoaderDefaults};
 pub use mark::Mark;
 pub use navlink::NavLink;
 pub use number_input::NumberInput;
-pub use pagination::Pagination;
+pub use pagination::{Pagination, PaginationItemRenderer};
 pub use paper::Paper;
 pub use password_input::PasswordInput;
 pub use progress::Progress;
