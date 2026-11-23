@@ -287,7 +287,8 @@ pub const COMPONENTS_LAYER: &str = "rinch-components";
 
 /// The theme sheet followed by the component sheet, joined to the cascade the
 /// way `mode` says (#2208): concatenated as before, each in its cascade layer
-/// (theme first) so any unlayered app rule outranks them, or the theme alone.
+/// (theme first) so any unlayered app rule outranks them, or the theme with
+/// only rinch's window chrome ([`styles::generate_chrome_styles`]).
 pub fn compose_theme_and_component_css(
     theme_css: &str,
     mode: rinch_core::ComponentStyles,
@@ -301,6 +302,6 @@ pub fn compose_theme_and_component_css(
              @layer {COMPONENTS_LAYER} {{\n{}\n}}\n",
             generate_component_css()
         ),
-        ComponentStyles::Off => theme_css.to_string(),
+        ComponentStyles::Off => format!("{theme_css}{}", styles::generate_chrome_styles()),
     }
 }

@@ -139,3 +139,17 @@ pub fn generate_all_component_styles() -> String {
 
     css
 }
+
+/// The sheets of rinch's own window chrome: the DOM menu bar, the borderless
+/// window's frame and title bar, and the text context menu. Part of
+/// [`generate_all_component_styles`], and the part
+/// `ComponentStyles::Off` keeps (#2208): the shell sizes the space it
+/// reserves for the menu bar from these rules (`MENU_BAR_HEIGHT`), so they
+/// are rinch's chrome, not components an app restyles.
+pub fn generate_chrome_styles() -> String {
+    let mut css = String::new();
+    css.push_str(&context_menu::styles());
+    css.push_str(&borderless_window::styles());
+    css.push_str(&app_menu_bar::styles());
+    css
+}

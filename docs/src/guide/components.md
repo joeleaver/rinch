@@ -1331,6 +1331,10 @@ gets the `rinch-accordion__chevron` class the rotation targets, and CloseButton'
 and Alert's get the `width`/`height` the built-in had), so draw an `<svg>` with
 `stroke="currentColor"` to take the component's color. A slot left `None` keeps
 the built-in glyph, and a component's own icon prop still wins over the set.
+The set is read once, when a component renders (as the theme's other
+component defaults are), and the glyph closure runs untracked: providing a
+different set later changes the glyphs of components rendered after it, not
+of those already on screen.
 
 ## Custom Components with #[component]
 

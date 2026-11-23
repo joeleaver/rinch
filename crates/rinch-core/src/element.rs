@@ -1211,7 +1211,9 @@ pub enum ComponentStyles {
     Layered,
     /// No component stylesheet: the components render their markup and
     /// classes unstyled, for an app that styles them itself. The theme sheet
-    /// (variables and base styles) stays.
+    /// (variables and base styles) stays, and so does rinch's own window
+    /// chrome (the DOM menu bar, the borderless window frame, the text
+    /// context menu).
     Off,
 }
 

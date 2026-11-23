@@ -1029,6 +1029,38 @@ fn bare_focus_visible_rule_paints_on_first_focus() {
     assert_eq!(outline(&doc), 0.0, "blur drops the bare ring");
 }
 
+/// #2208 review: the bare ring inside a cascade layer (the theme sheet under
+/// `ComponentStyles::Layered`), and inside an `@media` inside a layer, still
+/// paints on the first focus — the bare-focus scan recurses into every rule
+/// that holds rules, not only `@media` and `@supports`.
+#[test]
+fn bare_focus_visible_rule_in_a_layer_paints_on_first_focus() {
+    for css in [
+        "@layer rinch-theme { :focus-visible { outline-width: 2px; outline-style: solid; } }",
+        "@layer a { @media screen { :focus-visible { outline-width: 2px; outline-style: solid; } } }",
+    ] {
+        let mut doc = RinchDocument::new();
+        doc.load_css(css);
+        let body = doc.body();
+        let div = doc.create_element("div");
+        doc.set_attribute(div, "style", "width: 100px; height: 100px");
+        doc.set_attribute(div, "tabindex", "0");
+        doc.append_child(body, div);
+        doc.resolve_layout(800.0, 600.0);
+        let outline =
+            |doc: &RinchDocument| doc.tree.get(div.0).unwrap().computed_style.outline_width;
+        assert_eq!(outline(&doc), 0.0, "{css}: unfocused, no ring");
+        doc.update_focus(Some(div.0));
+        doc.set_focus_visible(div.0, true);
+        doc.resolve_layout(800.0, 600.0);
+        assert_eq!(
+            outline(&doc),
+            2.0,
+            "{css}: the layered ring paints on the first focus"
+        );
+    }
+}
+
 // ===== #250: inline-style colours go through stylo (regression guard) =====
 
 /// #250 was reported as "a named colour outside rinch-dom's legacy dozen (or an

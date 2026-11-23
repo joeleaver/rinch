@@ -187,3 +187,37 @@ fn a_components_colour_carries_its_contrast() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// #2208 review: under `Layered` the theme's default focus ring (a bare
+/// `:focus-visible` rule, now inside `@layer rinch-theme`) still paints when a
+/// button takes keyboard focus.
+#[test]
+fn the_layered_theme_still_draws_the_focus_ring() {
+    use rinch_core::dom::DomDocument;
+    for mode in [ComponentStyles::Unlayered, ComponentStyles::Layered] {
+        let mut doc = rinch_dom::RinchDocument::new();
+        doc.load_css(&sheet(false, ColorName::Blue, mode));
+        let body = doc.body();
+        let button = doc.create_element("button");
+        doc.set_attribute(button, "class", "rinch-button rinch-button--filled");
+        doc.append_child(body, button);
+        doc.resolve_layout(200.0, 80.0);
+        let ring = |doc: &rinch_dom::RinchDocument| {
+            doc.tree.get(button.0).unwrap().computed_style.outline_width
+        };
+        assert_eq!(ring(&doc), 0.0, "{mode:?}: no ring before focus");
+        doc.update_focus(Some(button.0));
+        doc.set_focus_visible(button.0, true);
+        doc.resolve_layout(200.0, 80.0);
+        assert_eq!(ring(&doc), 2.0, "{mode:?}: Tab draws the theme's 2px ring");
+    }
+}
+
+/// `Off` keeps rinch's own window chrome: the menu bar's rules stay.
+#[test]
+fn off_keeps_the_window_chrome() {
+    let off = sheet(false, ColorName::Blue, ComponentStyles::Off);
+    assert!(off.contains(".rinch-app-menu-bar"));
+    assert!(off.contains(".rinch-borderlesswindow"));
+    assert!(!off.contains(".rinch-tabs"), "components are gone");
+}

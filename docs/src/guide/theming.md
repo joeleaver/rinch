@@ -744,9 +744,11 @@ let theme = ThemeProviderProps {
 |---|---|
 | `Unlayered` (default) | The theme sheet, then the component sheet, unlayered, as rinch always did |
 | `Layered` | The theme sheet in `@layer rinch-theme` and the component sheet in `@layer rinch-components` (declared in that order). **Any** unlayered app rule outranks them whatever its specificity, the way author CSS outranks a browser's built-in look of its controls: `button { background: … }` restyles a `Button`. With no app CSS it paints what `Unlayered` paints. |
-| `Off` | No component sheet: the components render their markup and `rinch-*` classes unstyled, for an app that styles them itself. The theme sheet (variables and base styles) stays. |
+| `Off` | No component sheet: the components render their markup and `rinch-*` classes unstyled, for an app that styles them itself. The theme sheet (variables and base styles) stays, and so does rinch's own window chrome (the DOM menu bar, the borderless window frame, the text context menu: `rinch_components::styles::generate_chrome_styles`), whose sizes the shell relies on. |
 
-Under `Layered` a generic app rule now reaches the components too (`* { margin: 0 }`
+Under `Layered` an app's unlayered rules also outrank the theme's base styles
+(the `body` font and colour, headings' margins, links, the default focus
+ring), which sit in `rinch-theme`. A generic app rule now reaches the components too (`* { margin: 0 }`
 or `div { display: flex }` restyles them), so it suits an app that writes its
 CSS knowing that. The other side of cascade layers: a layered `!important` (the
 overlays' visibility rules in Modal, Drawer and Notification) outranks an

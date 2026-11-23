@@ -1465,7 +1465,13 @@ white).
 `rinch_components::compose_theme_and_component_css`: `Unlayered` concatenates
 (the default, unchanged), `Layered` wraps the theme in `@layer rinch-theme` and
 the components in `@layer rinch-components` after a `@layer rinch-theme,
-rinch-components;` statement, `Off` returns the theme alone. Stylo 0.22's servo
+rinch-components;` statement, `Off` returns the theme plus
+`styles::generate_chrome_styles` (menu bar, borderless window, context menu:
+the shell reserves `MENU_BAR_HEIGHT` from the bar's rules). The bare-focus scan
+(`rules_have_bare_focus`, `style_resolution/mod.rs`) recurses into every rule
+with children (`CssRule::children`), so the theme's `:focus-visible` ring
+inside `@layer rinch-theme` still makes nodes focus-sensitive; it used to look
+only inside `@media` and `@supports`, and under `Layered` no ring painted. Stylo 0.22's servo
 build parses and cascades `@layer` (see `crates/rinch-dom/tests/style_sheet_order_2694_tests.rs`).
 The base styles must be layered with the components: their unlayered
 `button, input, select, textarea { color: inherit }` would otherwise outrank

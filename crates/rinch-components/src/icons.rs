@@ -137,7 +137,9 @@ fn replaced(
 ) -> Option<NodeHandle> {
     let set = rinch_core::try_use_context::<IconSet>()?;
     let glyph = slot(&set).clone()?;
-    Some(glyph(scope))
+    // The app's closure, run untracked like every other app callback: a
+    // signal it reads subscribes no effect of the component drawing it.
+    Some(rinch_core::untracked_handler(|| glyph(scope)))
 }
 
 // =============================================================================
