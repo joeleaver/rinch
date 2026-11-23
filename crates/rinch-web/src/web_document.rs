@@ -1961,6 +1961,10 @@ impl DomDocument for WebDocument {
         // carries it for the reverse lookups.
         self.nodes.insert(node.0, fresh.clone());
         set_nid(&fresh, node);
+        // A bounds signal on the node follows it to the new element (#2813).
+        if let Some(el) = fresh.dyn_ref::<web_sys::Element>() {
+            crate::bounds::renew(self.doc_key, node.0, el);
+        }
         true
     }
 

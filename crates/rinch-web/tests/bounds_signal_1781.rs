@@ -255,3 +255,37 @@ async fn calls_share_one_signal_and_the_watch_ends_with_it() {
     );
     f.teardown();
 }
+
+/// A renewed element (`NodeHandle::renew_element`, the fresh `<canvas>` a
+/// GPU surface gets after its device is lost, #1768) goes on feeding the
+/// signal taken before the renewal (#2813): the watch follows the node id to
+/// the new element, and a resize of the new element reaches the signal.
+#[wasm_bindgen_test]
+async fn the_signal_follows_a_renewed_element() {
+    let (f, handle, _) = mount_scene();
+    let old = f.el("target-1781");
+    let scope = rinch_core::reactive::Scope::new();
+    let sig = scope.run(|| handle.bounds_signal());
+    frames(2).await;
+    assert_tracks(sig, &old, "before the renewal");
+
+    assert!(handle.renew_element(), "the element was renewed");
+    let fresh = f.el("target-1781");
+    assert!(!fresh.is_same_node(Some(&old)), "a new element");
+    assert!(!old.is_connected(), "the old one left the page");
+
+    // Off the old width, and with no other DOM write after it: only the new
+    // element's own resize can report it.
+    frames(2).await;
+    fresh.style().set_property("width", "173px").unwrap();
+    frames(3).await;
+    assert_tracks(sig, &fresh, "after the new element resized");
+    assert_eq!(sig.get().width, 173.0);
+    assert_eq!(
+        rinch_web::__bounds_watch_count(),
+        1,
+        "one element is watched: the new one, not both"
+    );
+    scope.dispose();
+    f.teardown();
+}
