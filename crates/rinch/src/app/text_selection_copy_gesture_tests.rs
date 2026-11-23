@@ -12,12 +12,39 @@ use super::*;
 
 const VP: (u32, u32) = (800, 600);
 
-/// The point `fx` of the way across `#id`'s painted box, 10px down.
+/// The point `fx` of the way across `#id`'s painted box, 10px down. An
+/// inline span's painted box is empty (#2257): for one, the caret `fx` of
+/// the way through its first text (as a point `fx` across its glyphs is in
+/// Chrome), half a pixel in.
 fn pt(app: &RinchApp, id: &str, fx: f32) -> (f32, f32) {
     let n = node(app, id);
     let d = app.doc.as_ref().unwrap().borrow();
     let (x, y, w, _) = super::hit_testing::painted_element_box(&d.tree, n);
-    (x + w * fx, y + 10.0)
+    if w > 0.0 {
+        return (x + w * fx, y + 10.0);
+    }
+    let text = d.tree.get(n).unwrap().children[0];
+    let mut id = text;
+    let root = loop {
+        let at = d.tree.get(id).unwrap();
+        if let Some(b) = at.run_box {
+            break b;
+        }
+        id = at.parent.unwrap();
+        if d.tree.get(id).unwrap().text_layout.is_some() {
+            break id;
+        }
+    };
+    let l = d.tree.get(root).unwrap().text_layout.as_ref().unwrap();
+    let r = l.text_ranges.iter().find(|r| r.node_id == text).unwrap();
+    let chars: Vec<usize> = l.text_content[r.flat_start..r.flat_end]
+        .char_indices()
+        .map(|(i, _)| r.flat_start + i)
+        .chain([r.flat_end])
+        .collect();
+    let at = chars[((chars.len() - 1) as f32 * fx).round() as usize];
+    let (cx, cy, ch) = d.text_caret_window_rect(root, at).unwrap();
+    (cx + 0.5, cy + ch / 2.0)
 }
 
 fn clicks(app: &mut RinchApp, p: (f32, f32), times: usize) {
@@ -41,7 +68,12 @@ fn drag_from_to(app: &mut RinchApp, a: (f32, f32), b: (f32, f32)) {
 /// Run `ops` (the Chrome script's: `click:id:fx:n`, `clickpx:id:px:n`,
 /// `shift:id:fx`, `drag:id:fx:id:fx`, `dragpx:id:px:id:fx`, `all`) on
 /// `html` and copy.
-fn copy_after(html: &'static str, ops: &str) -> String {
+pub(super) fn copy_after(html: &'static str, ops: &str) -> String {
+    app_after(html, ops).text_selection_text().unwrap_or_default()
+}
+
+/// The app holding `html` after `ops` ([`copy_after`]).
+pub(super) fn app_after(html: &'static str, ops: &str) -> RinchApp {
     let mut app = mount(html, SEL);
     for op in ops.split(';') {
         let p: Vec<&str> = op.split(':').collect();
@@ -96,7 +128,7 @@ fn copy_after(html: &'static str, ops: &str) -> String {
             other => panic!("no op {other}"),
         }
     }
-    app.text_selection_text().unwrap_or_default()
+    app
 }
 
 const GESTURES: &[(&str, &str, &str, &str)] = &[
@@ -253,10 +285,8 @@ const GESTURES: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// The cases of [`GESTURES`] named `names`, checked together. A triple
-/// click's copy in Chrome ends with the paragraph's "\n\n" (and a
-/// Shift+click after one extends by paragraphs); rinch's does not yet
-/// (#2256), so a triple click's case is compared without its trailing
-/// line breaks.
+/// click's copy ends with the paragraph's line breaks, as Chrome's does
+/// (#2256).
 fn gestures_as_chrome(names: &[&str]) {
     let off: Vec<String> = names
         .iter()
@@ -268,11 +298,6 @@ fn gestures_as_chrome(names: &[&str]) {
         })
         .filter_map(|(name, html, ops, chrome)| {
             let t = copy_after(html, ops);
-            let chrome = if ops.contains(":3") {
-                chrome.trim_end_matches('\n')
-            } else {
-                chrome
-            };
             (t != chrome).then(|| format!("{name}: {t:?}, Chrome {chrome:?}"))
         })
         .collect();

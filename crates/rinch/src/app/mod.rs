@@ -460,6 +460,8 @@ mod text_context_menu;
 mod text_context_menu_tests;
 mod text_selection;
 #[cfg(test)]
+mod text_selection_2256_tests;
+#[cfg(test)]
 mod text_selection_across_tests;
 #[cfg(test)]
 mod text_selection_chrome_tests;
