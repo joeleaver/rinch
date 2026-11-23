@@ -600,8 +600,8 @@ spellchecker needs the app's own (`.aff`/`.dic`, en_US's `.dic` is 860 KB);
 an app either builds them in with `include_bytes!` or fetches them at run time
 and passes them to `rinch::spellcheck::configure`, which keeps them out of the
 `.wasm` (see [Spellcheck](spellcheck.md#on-the-web)). The checking code itself
-is in every build that has the editor: about 113 KB of `examples/editor-web`
-(release, before `wasm-opt`).
+is behind `rinch-web`'s `spellcheck` feature (on by default): `examples/editor-web`
+is 5,375,913 bytes with it and 5,267,767 without (release, before `wasm-opt`).
 
 ## Reference
 

@@ -207,10 +207,20 @@ LibreOffice's `dictionaries` repository and in every Linux distribution's
 `hunspell-*` packages; mind each one's licence.
 
 A browser page has no second thread, so the checking is cut into slices of
-about 3 ms of words each, one browser task apiece, so typing and scrolling are
-never held up: a whole long document is marked over a few frames (a
-650,000-character document took 42 slices, the longest 6.6 ms, in Chrome
-157). Each slice's marks appear as it finishes.
+about 3 ms each, marking included, one browser task apiece, so typing and
+scrolling are never held up: a whole long document is marked over a few
+frames (a 650,000-character document took 55 slices, 3 ms on average, in
+Chrome 157). Each slice's marks appear as it finishes. The slicing is the
+app's to tune: `SpellcheckConfig::slice_budget_ms` (default 3),
+`slice_max_found` (the most marks one slice adds, default 100) and
+`slice_chunk_bytes` (the piece checked between looks at the clock, default
+512); the desktop, which checks on a thread, ignores them.
+
+The checking code is behind `rinch-web`'s `spellcheck` feature, on by
+default. An app that never supplies dictionaries can drop it (about 108 KB
+of wasm) with `rinch-web = { version = "...", default-features = false }`;
+the editor is then never checked on the web, and fields are the browser's as
+always.
 
 The squiggle is the browser's own `text-decoration: underline wavy`, on the
 same `<span class="pm-spell-error">` and with the same

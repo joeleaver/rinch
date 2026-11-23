@@ -98,6 +98,42 @@ pub fn set_timeout(delay_ms: u32, cb: impl FnOnce() + 'static) -> TimeoutHandle 
     TimeoutHandle(id)
 }
 
+/// Schedules a [`yield_now`] wake: run timer `id` (through
+/// [`fire_timeout`]) in a new task as soon as the platform can, without a
+/// timer's delay.
+type YieldBackend = fn(id: u64);
+
+static YIELD_BACKEND: Mutex<Option<YieldBackend>> = Mutex::new(None);
+
+/// Install the platform's [`yield_now`] scheduler. The web runtime installs
+/// one that posts to a `MessageChannel`: a nested `setTimeout(0)` is clamped
+/// to 4 ms by browsers, a message is not. Without one, [`yield_now`] is a
+/// [`set_timeout`] of 0 ms.
+pub fn set_yield_backend(backend: YieldBackend) {
+    *YIELD_BACKEND.lock().unwrap() = Some(backend);
+}
+
+/// Run `cb` on the main thread in a task of its own, as soon as the page (or
+/// event loop) has had a turn: what long work cut into slices waits on
+/// between slices, so input and painting run in between. Cancel it with
+/// [`clear_timeout`], like a timeout; it is owned by the running component
+/// the same way.
+///
+/// On the web this is a `MessageChannel` post, not a `setTimeout(0)`,
+/// which browsers clamp to 4 ms once nested; under a test's virtual clock it
+/// is a 0 ms timeout on that clock.
+pub fn yield_now(cb: impl FnOnce() + 'static) -> TimeoutHandle {
+    crate::task::refuse_in_worker("yield_now");
+    let id = park_main_callback::<()>(move |()| cb());
+    let backend = *YIELD_BACKEND.lock().unwrap();
+    match backend {
+        Some(post) if !virtual_time::schedule(id.raw(), 0) => post(id.raw()),
+        Some(_) => {}
+        None => schedule(id.raw(), 0),
+    }
+    TimeoutHandle(id)
+}
+
 /// Cancel a scheduled timeout. Idempotent, and safe to call after it has fired.
 ///
 /// This drops the parked callback and withdraws the timer from its scheduler,

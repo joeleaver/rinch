@@ -370,9 +370,11 @@ puts a native unit test on the web's path):
   dictionaries (`SYSTEM_DICTIONARIES`, false on wasm32), so `session()` is
   `None` and `is_active()` false from the start. `create_editor` adds the
   plugin on the web only when `session()` is `Some` (`wanted`); without it,
-  no plugin state, no `apply`, no decorations, no timer. An editor made while
-  a configuration exists but no session (dictionaries still being fetched)
-  registers one configuration listener (`watch_for_dictionaries`); when a
+  no plugin state, no `apply`, no decorations, no timer. An editor made with
+  no session (dictionaries still being fetched, or no configuration at all
+  yet: a handle made before `App::run`, an island whose app configures after
+  its fetch) registers one configuration listener (`watch_for_dictionaries`;
+  `set_config` tells its listeners on the first configuration too); when a
   later `configure` makes a session, the listener adds the plugin with
   `EditorHandle::install_plugin(.., keep = true)`, which uses the new
   `EditorState::reconfigure` (ProseMirror's: every installed plugin keeps its
@@ -382,12 +384,17 @@ puts a native unit test on the web's path):
 - **Slices, not a thread.** `spawn` runs inline on wasm, so `spell_check`
   does not call it there: `spell_start_slices` takes the dirty textblocks
   (`dirty_blocks`, positions and node clones: cheap, no text built) into a
-  `Slicer` and runs `spell_slice` from a `set_timeout(0)`, one browser task
-  per slice, the first one too (a press returns at once). A slice builds the
-  next block's text (`block_job`) only when it reaches it, cuts each dirty
-  range at white space into pieces of about 512 bytes (`pieces`), and checks
-  pieces until `SLICE_BUDGET_MS` (3 ms) has passed or `SLICE_MAX_FOUND` (100)
-  misspellings are found; byte offsets become positions by counting chars
+  `Slicer` and runs `spell_slice` from `rinch_core::yield_now`, one browser
+  task per slice, the first one too (a press returns at once). On the web
+  `yield_now` posts to one `MessageChannel` (`web_runtime::web_yield`), not a
+  `setTimeout(0)`, which browsers clamp to 4 ms once nested. A slice builds
+  the next block's text (`block_job`) only when it reaches it, cuts each
+  dirty range at white space into pieces of `slice_chunk_bytes` (512)
+  (`pieces`), and checks pieces until `slice_budget_ms` (3 ms) less what
+  applying the previous slice's result took has passed (at least one piece),
+  or `slice_max_found` (100) misspellings are found (all three are
+  `SpellcheckConfig` options, copied into `Session::slices`); byte offsets
+  become positions by counting chars
   forward from the last one asked, so a long block is not re-counted. Its
   result goes in at once as `SpellMeta::Result { upto: Some(p) }`: the plugin
   replaces the marks in `checked` and trims its dirty list to what lies past
@@ -406,19 +413,25 @@ puts a native unit test on the web's path):
   through `spell_after_dispatch`, as on the desktop. The web editor is no Tab
   stop of its own, so there is no Tab path.
 
+- **The feature.** `rinch-editor-view`'s `spellcheck` feature (forwarded
+  and on by default in `rinch-web`) gates it on wasm: off, the const `ON` is
+  false in `wanted`, `watch_for_dictionaries` and `spell_session`, nothing
+  reaches the checking code, and the linker drops it. Off the web `ON` is
+  always true.
+
 Measured (Chrome 157 on nico-top, `cargo test --release`, the
 `a_long_document_is_checked_in_slices` page and a 650,000-character document
-of ordinary prose with the system en_US): a slice is 3 to 4 ms on average,
-6.6 ms at the longest; applying a result is most of the long ones (the
-decoration set and view are rebuilt from all marks, O(marks): 16,400 marks
-made the apply about 6 ms; before `SLICE_MAX_FOUND`, a slice that added 6,400
-spans took 25 ms). `spell_user_focus` on the 650,000-character document took
+of ordinary prose with the system en_US): with the apply counted in the
+budget, 55 slices averaging 3.0 ms on the prose document (longest 7.7 ms,
+one apply of 6.5 ms), 209 averaging 2.6 ms (longest 5.9 ms) on the 16,400
+marks of the test page. Applying a result is most of a long slice (the
+decoration set and view are rebuilt from all marks, O(marks); before
+`slice_max_found`, a slice that added 6,400 spans took 25 ms). In a debug
+build an apply alone outlasts the budget, so each slice checks one piece. `spell_user_focus` on the 650,000-character document took
 2 ms; `HunspellChecker::from_bytes` for en_US 33 ms (350 ms in a debug build).
-`slice_stats()` / `reset_slice_stats()` (doc-hidden) report it. The code
-itself (the plugin, segmentation, skip rules; no dictionary) adds 115,760
-bytes to `examples/editor-web` (5,201,371 → 5,317,131, release, before
-`wasm-opt`) whether or not the app supplies dictionaries; a cargo feature
-could take it out of apps that never do.
+`slice_stats()` / `reset_slice_stats()` (doc-hidden) report it.
+`examples/editor-web` (release, before `wasm-opt`): 5,252,139 bytes on main
+before this, 5,375,913 with the feature, 5,267,767 without.
 
 **Known gap:** no spelling suggestions or "Add to dictionary" in the web
 editor's context menu. rinch-web leaves the browser's own menu on editable

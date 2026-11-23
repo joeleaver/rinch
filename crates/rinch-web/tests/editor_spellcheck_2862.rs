@@ -186,6 +186,14 @@ async fn a_press_marks_the_misspelled_words_with_a_wavy_underline() {
     let p = fx.editor().query_selector("p").unwrap().unwrap();
     assert_eq!(style_of(&p, "text-decoration-line"), "none");
 
+    // The dark theme has its own default red, and the property still wins
+    // over it (review of #2930: the dark rule hard-coded its colour).
+    fx.editor().set_attribute("data-pm-theme", "dark").unwrap();
+    assert_eq!(
+        style_of(&span, "text-decoration-color"),
+        "rgb(255, 123, 114)"
+    );
+
     // Cascade-scoped, as on the desktop.
     fx.host
         .unchecked_ref::<web_sys::HtmlElement>()
@@ -258,6 +266,20 @@ async fn no_dictionaries_no_work_until_they_arrive() {
     configure(with_dictionaries());
     assert_eq!(fx.marked_when(&["helo", "wrld"]).await, ["helo", "wrld"]);
     assert!(rinch_editor_view::spellcheck::slice_stats().slices > 0);
+}
+
+/// Review of #2930: an editor mounted before the app configured anything
+/// (an island whose app calls `configure` after its fetch) is checked once
+/// the dictionaries arrive.
+#[wasm_bindgen_test]
+async fn an_editor_mounted_before_any_configuration_is_checked_later() {
+    rinch::spellcheck::clear_config();
+    let fx = mount("<p>helo wrld</p>", None);
+    fx.press();
+    sleep(50).await;
+    assert!(fx.marked().is_empty());
+    configure(with_dictionaries());
+    assert_eq!(fx.marked_when(&["helo", "wrld"]).await, ["helo", "wrld"]);
 }
 
 /// A long document's first check is many slices, and ends with every word

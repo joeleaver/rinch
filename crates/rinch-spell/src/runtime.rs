@@ -229,6 +229,15 @@ mod native {
     /// after the last key and marked at 1 s.
     pub const DEFAULT_DEBOUNCE_MS: u32 = 1000;
 
+    /// The web editor's default [`SpellcheckConfig::slice_budget_ms`].
+    pub const DEFAULT_SLICE_BUDGET_MS: u32 = 3;
+
+    /// The web editor's default [`SpellcheckConfig::slice_max_found`].
+    pub const DEFAULT_SLICE_MAX_FOUND: usize = 100;
+
+    /// The web editor's default [`SpellcheckConfig::slice_chunk_bytes`].
+    pub const DEFAULT_SLICE_CHUNK_BYTES: usize = 512;
+
     /// Where the words come from.
     #[derive(Clone)]
     pub enum Dictionaries {
@@ -290,6 +299,18 @@ mod native {
         /// keyboard, as Chrome does (a `<textarea>` and the editor keep
         /// theirs). Off, an `<input>` shows its marks blurred too.
         pub hide_input_marks_on_blur: bool,
+        /// The web editor only (a browser page has no checking thread): how
+        /// long one slice of checking may take, applying its marks included,
+        /// before it lets the page run. Default [`DEFAULT_SLICE_BUDGET_MS`].
+        pub slice_budget_ms: u32,
+        /// The web editor only: the most misspellings one slice marks
+        /// (each new mark is a `<span>` the browser builds). Default
+        /// [`DEFAULT_SLICE_MAX_FOUND`].
+        pub slice_max_found: usize,
+        /// The web editor only: a dirty range is cut at white space into
+        /// pieces of about this many bytes, the unit a slice checks between
+        /// two looks at the clock. Default [`DEFAULT_SLICE_CHUNK_BYTES`].
+        pub slice_chunk_bytes: usize,
     }
 
     impl Default for SpellcheckConfig {
@@ -304,6 +325,9 @@ mod native {
                 debounce_ms: DEFAULT_DEBOUNCE_MS,
                 require_interaction: true,
                 hide_input_marks_on_blur: true,
+                slice_budget_ms: DEFAULT_SLICE_BUDGET_MS,
+                slice_max_found: DEFAULT_SLICE_MAX_FOUND,
+                slice_chunk_bytes: DEFAULT_SLICE_CHUNK_BYTES,
             }
         }
     }
@@ -399,6 +423,24 @@ mod native {
             self.hide_input_marks_on_blur = on;
             self
         }
+
+        /// See [`SpellcheckConfig::slice_budget_ms`] (the web editor).
+        pub fn slice_budget_ms(mut self, ms: u32) -> Self {
+            self.slice_budget_ms = ms;
+            self
+        }
+
+        /// See [`SpellcheckConfig::slice_max_found`] (the web editor).
+        pub fn slice_max_found(mut self, n: usize) -> Self {
+            self.slice_max_found = n.max(1);
+            self
+        }
+
+        /// See [`SpellcheckConfig::slice_chunk_bytes`] (the web editor).
+        pub fn slice_chunk_bytes(mut self, bytes: usize) -> Self {
+            self.slice_chunk_bytes = bytes.max(1);
+            self
+        }
     }
 
     type Resolved = Option<Arc<dyn SpellChecker>>;
@@ -426,7 +468,9 @@ mod native {
     }
 
     /// Installs `config` for this (UI) thread and tells every
-    /// [`on_config_change`] listener, which drop their marks and check again.
+    /// [`on_config_change`] listener, which drop their marks and check again
+    /// (also on the first one: an editor made before the app configured
+    /// anything is waiting for it).
     pub fn set_config(config: impl Into<SpellcheckConfig>) {
         let config = config.into();
         let checker = Arc::new(OnceLock::new());
@@ -449,18 +493,14 @@ mod native {
             g.set(g.get() + 1);
             g.get()
         });
-        let had = ACTIVE.with(|a| {
-            a.borrow_mut()
-                .replace(Active {
-                    config,
-                    generation,
-                    checker,
-                })
-                .is_some()
+        ACTIVE.with(|a| {
+            a.borrow_mut().replace(Active {
+                config,
+                generation,
+                checker,
+            })
         });
-        if had {
-            notify();
-        }
+        notify();
     }
 
     /// Turns checking on or off, keeping the rest of the configuration.
@@ -498,8 +538,8 @@ mod native {
         GENERATION.with(|g| g.get())
     }
 
-    /// Calls `listener` after each [`set_config`] that replaced a
-    /// configuration, and each [`clear_config`]. Answers an id for
+    /// Calls `listener` after each [`set_config`] and each [`clear_config`]
+    /// that removed one. Answers an id for
     /// [`remove_config_listener`].
     pub fn on_config_change(listener: impl Fn() + 'static) -> u64 {
         let id = NEXT_LISTENER.with(|n| {
@@ -546,6 +586,11 @@ mod native {
                 debounce_ms: a.config.debounce_ms,
                 require_interaction: a.config.require_interaction,
                 hide_input_marks_on_blur: a.config.hide_input_marks_on_blur,
+                slices: Slices {
+                    budget_ms: a.config.slice_budget_ms,
+                    max_found: a.config.slice_max_found.max(1),
+                    chunk_bytes: a.config.slice_chunk_bytes.max(1),
+                },
             })
         })
     }
@@ -560,6 +605,19 @@ mod native {
         debounce_ms: u32,
         require_interaction: bool,
         hide_input_marks_on_blur: bool,
+        slices: Slices,
+    }
+
+    /// How the web editor slices its checking (a [`Session`]'s copy of the
+    /// configuration's `slice_*` settings).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Slices {
+        /// [`SpellcheckConfig::slice_budget_ms`].
+        pub budget_ms: u32,
+        /// [`SpellcheckConfig::slice_max_found`], at least 1.
+        pub max_found: usize,
+        /// [`SpellcheckConfig::slice_chunk_bytes`], at least 1.
+        pub chunk_bytes: usize,
     }
 
     impl std::fmt::Debug for Session {
@@ -590,6 +648,11 @@ mod native {
         /// See [`SpellcheckConfig::hide_input_marks_on_blur`].
         pub fn hide_input_marks_on_blur(&self) -> bool {
             self.hide_input_marks_on_blur
+        }
+
+        /// The web editor's slicing settings.
+        pub fn slices(&self) -> Slices {
+            self.slices
         }
 
         /// The skip rules.

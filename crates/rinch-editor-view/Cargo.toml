@@ -21,6 +21,11 @@ rinch-spell = { workspace = true }
 [features]
 # Collaborative editing (M9): wires the rinch-editor-collab adapter into EditorHandle.
 collaboration = ["dep:rinch-editor-collab"]
+# The spellchecker on the web (#2862). Only wasm32 reads it: off the web the
+# editor is always checked (with a configuration). Off on the web, nothing
+# reaches the checking code and the linker drops it (~113 KB). `rinch-web`
+# turns it on by default.
+spellcheck = []
 
 [dev-dependencies]
 # The MockDomDocument the view/handle tests project onto (proof the seam is

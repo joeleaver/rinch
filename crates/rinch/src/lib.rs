@@ -347,8 +347,9 @@ pub mod time {
 /// `docs/src/guide/spellcheck.md`.
 pub mod spellcheck {
     pub use rinch_spell::runtime::{
-        DEFAULT_DEBOUNCE_MS, Dictionaries, SpellcheckConfig, attribute_state, clear_config, config,
-        input_type_is_checked, on_config_change, remove_config_listener, set_enabled,
+        DEFAULT_DEBOUNCE_MS, DEFAULT_SLICE_BUDGET_MS, DEFAULT_SLICE_CHUNK_BYTES,
+        DEFAULT_SLICE_MAX_FOUND, Dictionaries, SpellcheckConfig, attribute_state, clear_config,
+        config, input_type_is_checked, on_config_change, remove_config_listener, set_enabled,
     };
     pub use rinch_spell::*;
 

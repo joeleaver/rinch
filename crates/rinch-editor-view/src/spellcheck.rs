@@ -439,19 +439,17 @@ pub(crate) fn run_jobs(session: &spell::Session, jobs: &[BlockJob]) -> CheckResu
     (checked, found)
 }
 
-/// The longest a slice spends checking words before it lets the page run
-/// (its result is applied after, see [`SliceStats`]).
-const SLICE_BUDGET_MS: u128 = 3;
+/// Whether this build checks the editor at all: always off the web; on the
+/// web with the `spellcheck` feature (`rinch-web`'s, on by default). Off,
+/// nothing reaches the checking code and the linker drops it.
+const ON: bool = cfg!(any(feature = "spellcheck", not(target_family = "wasm")));
 
-/// The most misspellings one slice marks. Applying a result builds a
-/// `<span>` per new mark, and in a browser that, not the checking, is most of
-/// a slice's cost when many words are wrong (measured on #2862's long
-/// document: 6,400 new marks took 25 ms to apply).
-const SLICE_MAX_FOUND: usize = 100;
-
-/// The most bytes of text checked between two looks at the clock: a dirty
-/// range is cut at white space into pieces about this long.
-const CHUNK_BYTES: usize = 512;
+// The web's slices are configured per app: `SpellcheckConfig::slice_budget_ms`
+// (how long one slice may take, applying its marks included),
+// `slice_max_found` (applying a result builds a `<span>` per new mark, and in
+// a browser that, not the checking, is most of a long slice: 6,400 new marks
+// took 25 ms to apply on #2862's long document) and `slice_chunk_bytes` (the
+// piece checked between two looks at the clock).
 
 thread_local! {
     /// Native tests take the web's path (slices, the plugin only with the
@@ -477,7 +475,9 @@ fn web_path() -> bool {
 /// Whether a new editor gets the plugin: the thread has a configuration and,
 /// on the web, it is on and has the app's own dictionaries.
 pub(crate) fn wanted() -> bool {
-    if web_path() {
+    if !ON {
+        false
+    } else if web_path() {
         spell::session().is_some()
     } else {
         spell::config().is_some()
@@ -485,10 +485,12 @@ pub(crate) fn wanted() -> bool {
 }
 
 /// An editor made on the web before the app's dictionaries arrived (or
-/// while checking was off): when a configuration change makes checking
-/// possible, the plugin is added then, keeping the editor's state.
+/// while checking was off, or before the app configured anything at all: a
+/// handle made before `App::run`, an island whose app configures after its
+/// fetch): when a configuration change makes checking possible, the plugin
+/// is added then, keeping the editor's state. One listener, nothing else.
 pub(crate) fn watch_for_dictionaries(handle: &EditorHandle) {
-    if web_path() && handle.spell_peek(|_| ()).is_none() && spell::config().is_some() {
+    if ON && web_path() && handle.spell_peek(|_| ()).is_none() {
         handle.spell_listen();
     }
 }
@@ -535,6 +537,11 @@ pub(crate) struct Slicer {
     skip: Rc<Skip>,
     /// The block being checked.
     current: Option<Current>,
+    /// The piece size (`slice_chunk_bytes`).
+    chunk_bytes: usize,
+    /// How long the last slice took to apply its result: the next one stops
+    /// checking that much sooner, so the whole slice keeps to the budget.
+    last_apply: std::time::Duration,
 }
 
 /// The block a [`Slicer`] is in: its text, its remaining pieces, and how far
@@ -564,7 +571,7 @@ impl Slicer {
                 let pieces = job
                     .ranges
                     .iter()
-                    .flat_map(|r| pieces(&job.text, r.clone()))
+                    .flat_map(|r| pieces(&job.text, r.clone(), self.chunk_bytes))
                     .collect();
                 (job, pieces, (0, 0))
             });
@@ -581,13 +588,13 @@ impl Slicer {
     }
 }
 
-/// `range` of `text` cut at white space into pieces of about
-/// [`CHUNK_BYTES`].
-fn pieces(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
+/// `range` of `text` cut at white space into pieces of about `chunk`
+/// bytes.
+fn pieces(text: &str, range: Range<usize>, chunk: usize) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut start = range.start;
     while start < range.end {
-        let mut end = (start + CHUNK_BYTES).min(range.end);
+        let mut end = (start + chunk.max(1)).min(range.end);
         while !text.is_char_boundary(end) {
             end += 1;
         }
@@ -647,6 +654,9 @@ impl EditorHandle {
     /// its container's `spellcheck` state (its own or the nearest ancestor's)
     /// is on.
     fn spell_session(&self) -> Option<spell::Session> {
+        if !ON {
+            return None;
+        }
         self.spell_peek(|_| ())?;
         let session = spell::session()?;
         if self.is_read_only() {
@@ -900,6 +910,9 @@ impl EditorHandle {
             dirty: st.dirty.clone(),
             skip: st.skip.clone(),
             current: None,
+            chunk_bytes: spell::session()
+                .map_or(spell::DEFAULT_SLICE_CHUNK_BYTES, |s| s.slices().chunk_bytes),
+            last_apply: std::time::Duration::ZERO,
         };
         self.spell_driver(|d| d.slicer = Some(slicer));
         self.spell_schedule_slice();
@@ -908,7 +921,7 @@ impl EditorHandle {
     fn spell_schedule_slice(&self) {
         let weak = self.downgrade();
         let timer = rinch_core::reactive::unowned(|| {
-            rinch_core::timer::set_timeout(0, move || {
+            rinch_core::timer::yield_now(move || {
                 if let Some(handle) = weak.upgrade() {
                     handle.spell_driver(|d| d.slice_timer = None);
                     handle.spell_slice();
@@ -923,9 +936,10 @@ impl EditorHandle {
         }
     }
 
-    /// One slice of the web's check: words for up to [`SLICE_BUDGET_MS`] (or
-    /// [`SLICE_MAX_FOUND`] misspellings), the result applied, the next slice
-    /// scheduled. A slice for a document that changed since the check was
+    /// One slice of the web's check: words until the configured budget,
+    /// less what applying the last slice's result took, has passed (or the
+    /// configured most misspellings are found), the result applied, the next
+    /// slice scheduled (`yield_now`: one browser task each). A slice for a document that changed since the check was
     /// taken is dropped with the rest of it: the change put its words on the
     /// dirty list and armed a check of its own, and the words already
     /// checked were taken off it.
@@ -940,6 +954,9 @@ impl EditorHandle {
             return;
         };
         let started = rinch_core::timer::now();
+        let limits = session.slices();
+        let budget = std::time::Duration::from_millis(u64::from(limits.budget_ms))
+            .saturating_sub(slicer.last_apply);
         let one_chunk = {
             #[cfg(test)]
             {
@@ -968,11 +985,8 @@ impl EditorHandle {
             let b = slicer.pos(to);
             checked.push((a, b));
             if one_chunk
-                || found.len() >= SLICE_MAX_FOUND
-                || rinch_core::timer::now()
-                    .saturating_duration_since(started)
-                    .as_millis()
-                    >= SLICE_BUDGET_MS
+                || found.len() >= limits.max_found
+                || rinch_core::timer::now().saturating_duration_since(started) >= budget
             {
                 upto = Some(b);
                 break;
@@ -982,21 +996,20 @@ impl EditorHandle {
         // which finds nothing and clears the dirty list.
         let generation = slicer.generation;
         let applying = rinch_core::timer::now();
-        if upto.is_some() {
-            self.spell_driver(|d| d.slicer = Some(slicer));
-        }
         self.spell_meta(SpellMeta::Result {
             generation,
             checked,
             found,
             upto,
         });
+        let end = rinch_core::timer::now();
         if upto.is_some() {
+            slicer.last_apply = end.saturating_duration_since(applying);
+            self.spell_driver(|d| d.slicer = Some(slicer));
             self.spell_schedule_slice();
         } else {
             self.spell_rearm_if_dirty();
         }
-        let end = rinch_core::timer::now();
         let us = end.saturating_duration_since(started).as_micros() as u64;
         let apply_us = end.saturating_duration_since(applying).as_micros() as u64;
         STATS.with(|s| {
@@ -1417,6 +1430,54 @@ mod tests {
         run_slices(&h);
         assert_eq!(marked(&h), ["helo"]);
         assert!(h.command("undo"), "the undo history was lost");
+        web_path(false);
+    }
+
+    /// Review of #2930: an editor made before the app configured anything at
+    /// all (a handle made before `App::run`, an island whose app configures
+    /// after its fetch) is checked once dictionaries arrive. Red before: no
+    /// listener was registered without a configuration, and the first
+    /// `set_config` told no listener.
+    #[test]
+    fn an_editor_made_before_any_configuration_is_checked_later() {
+        spell::set_inline_jobs(true);
+        spell::clear_config();
+        web_path(true);
+        let h = crate::create_editor();
+        h.load_html("<p>helo the wrld</p>");
+        h.spell_user_focus();
+        assert!(h.spell_state().is_none());
+        configure();
+        assert!(
+            h.spell_state().is_some(),
+            "the dictionaries installed nothing"
+        );
+        run_slices(&h);
+        assert_eq!(marked(&h), ["helo", "wrld"]);
+        web_path(false);
+    }
+
+    /// The slice settings are the app's: a smaller piece makes more slices.
+    #[test]
+    fn the_slice_settings_are_the_apps() {
+        spell::set_inline_jobs(true);
+        let count = |chunk: usize| {
+            spell::set_config(
+                SpellcheckConfig::new()
+                    .checker(HunspellChecker::from_bytes("en_TEST", AFF, DIC).unwrap())
+                    .debounce_ms(0)
+                    .slice_chunk_bytes(chunk),
+            );
+            let session = spell::session().unwrap();
+            let h = crate::create_editor();
+            h.load_html(&long_doc(2));
+            h.spell_meta(SpellMeta::Activate);
+            h.spell_check(&session);
+            run_slices(&h)
+        };
+        web_path(true);
+        let (big, small) = (count(4096), count(64));
+        assert!(small > big * 4, "{small} slices of 64 bytes, {big} of 4096");
         web_path(false);
     }
 }
