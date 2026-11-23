@@ -3883,7 +3883,7 @@ pub struct NodeTree {
     /// reads Taffy's unrounded rects. Boxed for the reason above.
     pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
     /// Each scroll container's descendants' overflow below its first boxes
-    /// (#2054), kept until layout under it changes: `content_extents`' memo
+    /// (#2054), kept until something it read under it changes: `content_extents`' memo
     /// of the walk through every box that does not clip. Boxed for the
     /// reason above.
     pub(crate) deep_overflow: Box<crate::paint::scrollbar::DeepOverflow>,

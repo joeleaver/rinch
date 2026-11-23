@@ -461,8 +461,16 @@ fn a_scroll_containers_descendant_walk_is_kept_until_layout_under_it_changes() {
     assert_eq!(d.scroll_width(s), 460.0);
     assert_eq!(walks(&d), before, "nothing moved under the scroller");
 
-    // One that moves the grandchild.
+    // A colour on the grandchild (a hover): pushed paint-dirty, nothing the
+    // walk read changed.
     let g = d.query_selector("#g").expect("#g");
+    d.set_style(g, "background-color", "rgb(200, 0, 0)");
+    d.resolve_layout(800.0, 600.0);
+    let before = walks(&d);
+    assert_eq!(d.scroll_width(s), 460.0);
+    assert_eq!(walks(&d), before, "a colour keeps the walk");
+
+    // One that moves the grandchild.
     d.set_attribute(g, "style", "width:560px;height:5px");
     d.resolve_layout(800.0, 600.0);
     let before = walks(&d);
@@ -488,4 +496,188 @@ fn a_transformed_descendant_moves_the_kept_range() {
     d.set_style(t, "transform", "translateX(350px)");
     d.resolve_layout(800.0, 600.0);
     assert_eq!(d.scroll_width(s), 450.0);
+}
+
+// ── The kept walk against a fresh document (#2054 review) ─────────────────
+//
+// Each scenario primes the scroller's kept walk (a read, and a paint
+// consuming the tree), makes its changes with a layout and a read after
+// each, and reads the range in three orders; each must equal what a fresh
+// document given the same changes, never read in between, answers.
+
+type Step = fn(&mut RinchDocument);
+
+fn kept_doc(html: &str) -> RinchDocument {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0 } div { margin: 0; padding: 0 }");
+    let body = d.body();
+    d.set_inner_html(body, html);
+    d.resolve_layout(800.0, 600.0);
+    d
+}
+
+fn range_of(d: &RinchDocument) -> (f64, f64) {
+    let s = d.query_selector("#s").expect("#s");
+    (d.scroll_width(s), d.scroll_height(s))
+}
+
+fn by_id(d: &RinchDocument, id: &str) -> rinch_core::dom::NodeId {
+    d.query_selector(&format!("#{id}")).expect(id)
+}
+
+fn kept_matches_fresh(what: &str, html: &str, steps: &[Step]) {
+    let fresh = {
+        let mut d = kept_doc(html);
+        for step in steps {
+            step(&mut d);
+            d.resolve_layout(800.0, 600.0);
+        }
+        range_of(&d)
+    };
+    for order in 0..3 {
+        let mut d = kept_doc(html);
+        let _ = range_of(&d);
+        d.tree.consume_paint_dirty();
+        let _ = range_of(&d);
+        for step in steps {
+            step(&mut d);
+            d.resolve_layout(800.0, 600.0);
+            if order != 1 {
+                let _ = range_of(&d);
+            }
+        }
+        let got = match order {
+            0 => range_of(&d),
+            1 => {
+                d.tree.consume_paint_dirty();
+                range_of(&d)
+            }
+            _ => {
+                d.tree.consume_paint_dirty();
+                let _ = range_of(&d);
+                range_of(&d)
+            }
+        };
+        assert_eq!(got, fresh, "{what}, read order {order}");
+    }
+}
+
+const TALL: &str = r#"<div id="s" style="width:200px;height:100px;overflow:auto"><div id="c" style="height:50px;width:100px"><div id="g" style="height:300px;width:150px"></div></div></div>"#;
+const TALL_HIDDEN: &str = r#"<div id="s" style="width:200px;height:100px;overflow:auto"><div id="c" style="height:50px;width:100px;overflow:hidden"><div id="g" style="height:300px;width:150px"></div></div></div>"#;
+
+#[test]
+fn a_box_made_to_clip_drops_the_kept_walk() {
+    kept_matches_fresh(
+        "overflow: hidden",
+        TALL,
+        &[|d| {
+            let c = by_id(d, "c");
+            d.set_style(c, "overflow", "hidden");
+        }],
+    );
+    kept_matches_fresh(
+        "overflow: clip",
+        TALL,
+        &[|d| {
+            let c = by_id(d, "c");
+            d.set_style(c, "overflow", "clip");
+        }],
+    );
+}
+
+#[test]
+fn a_box_that_stops_clipping_drops_the_kept_walk() {
+    kept_matches_fresh(
+        "hidden to visible",
+        TALL_HIDDEN,
+        &[|d| {
+            let c = by_id(d, "c");
+            d.set_style(c, "overflow", "visible");
+        }],
+    );
+}
+
+/// A change and its undoing between two paints: the walk taken in between
+/// must not stand.
+#[test]
+fn a_change_and_back_before_a_paint_drops_the_kept_walk() {
+    kept_matches_fresh(
+        "900 then 300",
+        TALL,
+        &[
+            |d| {
+                let g = by_id(d, "g");
+                d.set_style(g, "width", "900px");
+            },
+            |d| {
+                let g = by_id(d, "g");
+                d.set_style(g, "width", "150px");
+            },
+        ],
+    );
+}
+
+/// More of the family: a grandchild's lines re-shaped wider, a transform
+/// given with no layout, a box taken out of the display, a box added under
+/// one the walk entered, and a block collapsed to an estimated height (its
+/// content, laid out before, is not entered).
+#[test]
+fn other_changes_under_the_scroller_drop_the_kept_walk() {
+    kept_matches_fresh(
+        "lines re-shaped",
+        r#"<div id="s" style="width:200px;height:100px;overflow:auto"><div style="width:100px;height:20px"><div id="p" style="width:100px;white-space:nowrap;font-size:0">x</div></div></div>"#,
+        &[|d| {
+            let p = by_id(d, "p");
+            d.set_inner_html(
+                p,
+                r#"<span style="display:inline-block;width:400px;height:5px"></span>"#,
+            );
+        }],
+    );
+    kept_matches_fresh(
+        "a transform given",
+        TALL,
+        &[|d| {
+            let g = by_id(d, "g");
+            d.set_style(g, "transform", "translateX(300px)");
+        }],
+    );
+    kept_matches_fresh(
+        "display: none",
+        TALL,
+        &[|d| {
+            let g = by_id(d, "g");
+            d.set_style(g, "display", "none");
+        }],
+    );
+    kept_matches_fresh(
+        "a box added",
+        TALL,
+        &[|d| {
+            let c = by_id(d, "c");
+            let n = d.create_element("div");
+            d.set_attribute(n, "style", "width:700px;height:5px");
+            d.append_child(c, n);
+        }],
+    );
+    kept_matches_fresh(
+        "a block collapsed",
+        TALL,
+        &[|d| {
+            let c = by_id(d, "c");
+            d.set_estimated_height(c.0, Some(50.0));
+        }],
+    );
+}
+
+/// A block collapsed by virtualization stands for its content at its
+/// estimate: what it held, laid out before, is not in the range.
+#[test]
+fn a_collapsed_blocks_content_is_not_in_the_range() {
+    let mut d = kept_doc(TALL);
+    assert_eq!(range_of(&d).1, 300.0, "control: the grandchild is reached");
+    let c = by_id(&d, "c");
+    d.set_estimated_height(c.0, Some(50.0));
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(range_of(&d).1, 50.0, "the estimate alone");
 }

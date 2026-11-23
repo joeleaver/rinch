@@ -675,19 +675,27 @@ is collapsed by block virtualization (`estimated_height`: its estimate stands
 for its content); a fixed box, and an absolute one contained above the
 scroller, count nothing; a transformed box is listed and measured where it is
 drawn on each read. **Cost:** the walk is the subtree, so it is kept per
-container (`NodeTree::deep_overflow`, `scrollbar::DeepOverflow`): when
-`layout_epoch` has moved, the entries of the containers above every box whose
-geometry may have changed since the last paint consumed the tree
-(`geometry_may_have_moved`, the boxes `bar_watch_scrollers` climbs from, plus
-any paint-dirty IFC root whose lines were shaped again, plus
-`bar_check_parents`) are dropped, and all of them on a whole-document restyle.
-A read in between — each bar paint, wheel event and pointer move — is a lookup
-and a measure of the listed transformed boxes. Layout's clamp asks the in-flow
-range first (`content_extents_in_flow` leaves this out, as it leaves out the
-listed absolutes), so a relayout scrolled within it walks nothing. Not seen
-until something under the container moves: a transform newly given, with no
-layout, to a box the walk entered. Pins: `tests/geometry_queries_2257_tests.rs`
-(`SCROLLERS`, and the walk count `testing::deep_overflow_walks`).
+container (`NodeTree::deep_overflow`, `scrollbar::DeepOverflow`) with a
+`WalkSnap` of every box it met: its box, its lines' extent, and whether it
+clips, is transformed, positioned, displayed or collapsed. Every read first
+checks the boxes pushed paint-dirty, and the parents a subtree left
+(`bar_check_parents`), since the last check, and `consume_paint_dirty` runs
+the same check before it drains those lists. For each such box the entry of
+each container above it is dropped unless the walk recorded that box with
+the same snapshot, or recorded a box between them as a stop (not entered)
+that is itself unchanged: a hover colour keeps the entry; a box toggled to
+`overflow: hidden`, a size changed and changed back between two paints, a
+transform given with no layout, or a box added under one the walk entered
+drops it. (The first version judged "moved" against the last *paint*, with
+`geometry_may_have_moved`, and missed both the `overflow` toggle and the
+change-and-back: review of #2961.) A whole-document restyle drops every
+entry; a removed container's entry is freed. A read in between is a lookup,
+the check of what was pushed since the last one, and a measure of the listed
+transformed boxes. Layout's clamp asks the in-flow range first
+(`content_extents_in_flow` leaves this out, as it leaves out the listed
+absolutes), so a relayout scrolled within it walks nothing. Pins: `tests/geometry_queries_2257_tests.rs`
+(`SCROLLERS`, the walk count `testing::deep_overflow_walks`, and the
+`kept_matches_fresh` scenarios, each against a fresh document).
 
 **A box that does not scroll (#2223).** It has no range for a bar or the
 wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it
