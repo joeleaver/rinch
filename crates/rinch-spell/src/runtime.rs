@@ -403,6 +403,12 @@ mod native {
 
     type Resolved = Option<Arc<dyn SpellChecker>>;
 
+    /// Whether [`Dictionaries::System`] can find anything on this target.
+    const SYSTEM_DICTIONARIES: bool = cfg!(all(
+        feature = "system-dictionaries",
+        not(target_family = "wasm")
+    ));
+
     struct Active {
         config: SpellcheckConfig,
         generation: u64,
@@ -429,6 +435,12 @@ mod native {
                 let _ = checker.set(Some(Arc::clone(c)));
             }
             Dictionaries::None => {
+                let _ = checker.set(None);
+            }
+            // Nothing to discover in a browser (`system` is compiled out on
+            // wasm32): settled now, so [`session`] answers `None` and an app
+            // that supplied no dictionaries does no spellcheck work at all.
+            Dictionaries::System { .. } if !SYSTEM_DICTIONARIES => {
                 let _ = checker.set(None);
             }
             Dictionaries::System { .. } => {}
@@ -668,7 +680,8 @@ mod native {
     /// by the first call), in the order sent. Under [`set_inline_jobs`] it
     /// runs here, at once.
     pub fn spawn(job: impl FnOnce() + Send + 'static) {
-        // No threads on wasm32 (and rinch-web leaves checking to the browser).
+        // No threads on wasm32: the job runs here (the web editor slices its
+        // checks across tasks itself, `rinch-editor-view`'s spellcheck).
         if cfg!(target_family = "wasm") || INLINE_JOBS.with(|i| i.get()) {
             job();
             return;

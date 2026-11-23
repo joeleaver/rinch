@@ -27,7 +27,6 @@ mod margins;
 mod margins_tests;
 mod node_views;
 pub mod registry;
-#[cfg(not(target_family = "wasm"))]
 pub mod spellcheck;
 mod styles;
 mod view;
@@ -64,7 +63,6 @@ pub use rinch_editor_collab::{CollabError, OversizedTable, StickyAssoc, StickyLo
 // [`EditorHandle::collab_sync_diff`]) needs no re-exported engine types: a state vector
 // and a diff are both opaque `Vec<u8>`, and a diff is applied through the same
 // [`EditorHandle::collab_receive`] as a broadcast delta.
-#[cfg(not(target_family = "wasm"))]
 pub use spellcheck::{SPELL_ERROR_CLASS, SPELLCHECK_KEY, SpellcheckPlugin};
 pub use view::RinchDomEditorView;
 
@@ -85,17 +83,19 @@ use rinch_editor_core::{Node, Schema, default_plugins};
 pub fn create_editor() -> EditorHandle {
     let schema = Rc::new(Schema::starter_kit());
     let empty = empty_doc(&schema);
-    EditorHandle::unmounted(schema, empty, editor_plugins())
+    let handle = EditorHandle::unmounted(schema, empty, editor_plugins());
+    spellcheck::watch_for_dictionaries(&handle);
+    handle
 }
 
 /// [`default_plugins`], plus the spellchecker (#2862) when this thread has a
 /// spellcheck configuration (an app run through `App::run`, an embedded
-/// `RinchContext`). Never on the web, where the browser checks.
+/// `RinchContext`). On the web only when that configuration has the app's own
+/// dictionaries and is on (`spellcheck::wanted`); the browser has none of
+/// its own for rinch to use.
 fn editor_plugins() -> Vec<Rc<dyn rinch_editor_core::Plugin>> {
-    #[allow(unused_mut)]
     let mut plugins = default_plugins();
-    #[cfg(not(target_family = "wasm"))]
-    if rinch_spell::runtime::config().is_some() {
+    if spellcheck::wanted() {
         plugins.push(Rc::new(spellcheck::SpellcheckPlugin::new()));
     }
     plugins
