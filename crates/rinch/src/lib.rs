@@ -170,7 +170,11 @@ pub mod window;
 mod window_handle;
 #[cfg(feature = "windowing")]
 mod window_perf;
-#[cfg(feature = "windowing")]
+// The request type `rinch::testing` and `rinch::embed` hand out (#2801).
+#[cfg(all(
+    feature = "windowing",
+    any(feature = "testing", feature = "embed", feature = "gpu-renderer")
+))]
 mod window_request;
 /// Which window roles the display offers (#2659); the API is re-exported
 /// through [`window`].
