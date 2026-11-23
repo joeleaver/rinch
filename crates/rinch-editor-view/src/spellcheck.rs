@@ -63,6 +63,10 @@ pub(crate) enum SpellMeta {
     /// The editor is not to be checked now (read-only, `spellcheck` off):
     /// drop every mark and forget what is pending.
     Clear,
+    /// These marks' words are correct now (added to the dictionary,
+    /// ignored): drop them. The document did not change, so nothing else is
+    /// stale.
+    Drop(Vec<(usize, usize)>),
     /// A check came back: `found` are the misspelled words in `checked`, for
     /// the document at `generation`.
     Result {
@@ -212,6 +216,9 @@ impl Plugin for SpellcheckPlugin {
                     Vec::new()
                 };
             }
+            Some(SpellMeta::Drop(gone)) => {
+                st.marks.retain(|m| !gone.contains(m));
+            }
             Some(SpellMeta::Result {
                 generation,
                 checked,
@@ -289,6 +296,32 @@ fn char_at(doc: &Node, pos: usize) -> Option<char> {
         found.is_none()
     });
     found
+}
+
+/// The text of document range `a..b` (an inline leaf contributes nothing).
+fn text_of(doc: &Node, a: usize, b: usize) -> String {
+    let mut out = String::new();
+    doc.nodes_between(a, b, &mut |node, at, _| {
+        if let Some(t) = node.text() {
+            let from = a.max(at) - at;
+            let to = b.min(at + node.text_len()).saturating_sub(at);
+            out.extend(t.chars().skip(from).take(to.saturating_sub(from)));
+        }
+        true
+    });
+    out
+}
+
+/// A word the spellchecker marked, as [`EditorHandle::misspelling_at`]
+/// answers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Misspelling {
+    /// Where the word starts.
+    pub from: Pos,
+    /// Where it ends.
+    pub to: Pos,
+    /// The word.
+    pub word: String,
 }
 
 /// Sorted, merged ranges.
@@ -407,6 +440,8 @@ pub(crate) fn run_jobs(session: &spell::Session, jobs: &[BlockJob]) -> CheckResu
 pub(crate) struct Driver {
     timer: Option<rinch_core::timer::TimeoutHandle>,
     listener: Option<u64>,
+    /// The [`spell::on_words_accepted`] listener.
+    words: Option<u64>,
 }
 
 impl Drop for Driver {
@@ -416,6 +451,9 @@ impl Drop for Driver {
         }
         if let Some(id) = self.listener.take() {
             spell::remove_config_listener(id);
+        }
+        if let Some(id) = self.words.take() {
+            spell::remove_words_listener(id);
         }
     }
 }
@@ -450,6 +488,59 @@ impl EditorHandle {
             }
         }
         Some(session)
+    }
+
+    /// The misspelled word at `pos` (a mark that contains it, its ends
+    /// included), if the spellchecker marked one there. What the text
+    /// context menu asks at a right press (#2862, stage 3).
+    pub fn misspelling_at(&self, pos: Pos) -> Option<Misspelling> {
+        let st = self.spell_state()?;
+        let &(a, b) = st.marks.iter().find(|&&(a, b)| a <= pos.0 && pos.0 <= b)?;
+        let word = self.with_state(|s| text_of(&s.doc, a, b));
+        Some(Misspelling {
+            from: Pos(a),
+            to: Pos(b),
+            word,
+        })
+    }
+
+    /// Every word the spellchecker has marked, in document order. Empty when
+    /// the plugin is not installed or nothing is marked.
+    pub fn misspellings(&self) -> Vec<Misspelling> {
+        let Some(st) = self.spell_state() else {
+            return Vec::new();
+        };
+        self.with_state(|s| {
+            st.marks
+                .iter()
+                .map(|&(a, b)| Misspelling {
+                    from: Pos(a),
+                    to: Pos(b),
+                    word: text_of(&s.doc, a, b),
+                })
+                .collect()
+        })
+    }
+
+    /// The checker accepted more words: drop the marks whose word it now
+    /// takes. Asks only the loaded checker, and only about marked words.
+    fn spell_words_accepted(&self) {
+        let Some(st) = self.spell_state() else {
+            return;
+        };
+        let Some(checker) = spell::session().and_then(|s| s.loaded_checker()) else {
+            return;
+        };
+        let gone: Vec<(usize, usize)> = self.with_state(|s| {
+            st.marks
+                .iter()
+                .copied()
+                .filter(|&(a, b)| checker.check(&text_of(&s.doc, a, b)))
+                .collect()
+        });
+        if !gone.is_empty() {
+            self.spell_meta(SpellMeta::Drop(gone));
+        }
     }
 
     /// The user focused the editor (a press in it, a Tab onto it): its first
@@ -629,6 +720,21 @@ impl EditorHandle {
             }
         });
         self.spell_driver(|d| d.listener = Some(id));
+        let weak = self.downgrade();
+        let words = spell::on_words_accepted(move || {
+            if let Some(handle) = weak.upgrade() {
+                handle.spell_words_accepted();
+            }
+        });
+        self.spell_driver(|d| d.words = Some(words));
+        // The checker's reports from other threads (a word the app adds to
+        // its personal dictionary) are delivered on this one.
+        static WAKE: std::sync::Once = std::sync::Once::new();
+        WAKE.call_once(|| {
+            spell::set_change_wake(|| {
+                rinch_core::dispatch_main_callback(Box::new(spell::deliver_changes));
+            });
+        });
     }
 }
 
@@ -693,6 +799,33 @@ mod tests {
         h.spell_meta(SpellMeta::Activate);
         h.spell_check(&session);
         assert_eq!(marked(&h), ["helo", "wrld", "cta"]);
+    }
+
+    /// The menu's questions and answers (#2862, stage 3): the mark under a
+    /// position, ends included, and "Add to dictionary" dropping that word's
+    /// marks in every editor at once while the other words stay marked.
+    #[test]
+    fn add_to_dictionary_drops_the_word_in_every_editor() {
+        configure();
+        let a = crate::create_editor();
+        a.load_html("<p>the helo wrld helo</p>");
+        let b = crate::create_editor();
+        b.load_html("<p>a helo</p>");
+        a.spell_user_focus();
+        b.spell_user_focus();
+        assert_eq!(marked(&a), ["helo", "wrld", "helo"]);
+        assert_eq!(marked(&b), ["helo"]);
+
+        // "the helo": the word is positions 5..9 (paragraph opens at 0).
+        let m = a.misspelling_at(Pos(7)).unwrap();
+        assert_eq!((m.from, m.to, m.word.as_str()), (Pos(5), Pos(9), "helo"));
+        assert_eq!(a.misspelling_at(Pos(9)).unwrap().from, Pos(5), "its end");
+        assert_eq!(a.misspelling_at(Pos(3)), None, "a correct word");
+
+        assert!(spell::add_to_dictionary("helo"));
+        assert_eq!(marked(&a), ["wrld"]);
+        assert!(marked(&b).is_empty());
+        assert_eq!(a.misspelling_at(Pos(7)), None);
     }
 
     /// The marks map through edits that do not touch them: text inserted
