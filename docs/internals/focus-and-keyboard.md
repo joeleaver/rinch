@@ -296,6 +296,19 @@ lock stops the page and no scroll container inside it.) The rules are one functi
 which one a reader uses, so every desktop reader pins it
 (`data-backdrop`'s on both backends).
 
+**What counts as rendered** for Tab, the trap-root search and a parked
+focus (`RinchApp::node_is_visible`): not `visibility: hidden`/`collapse`, and
+either a non-zero layout box or a place in an inline formatting context
+(`Node::is_flowed_inline_element`, #2963). A flowed inline element owns no
+Taffy box, its `layout` is a `0x0` ghost, and the box test alone skipped every
+`<a href>` in a paragraph and every `<span tabindex="0">`. Its `ifc_root` is
+recomputed by each IFC pass and is not kept under a `display: none` ancestor,
+inline or block, so membership is the rendered-ness test; width is not
+consulted, since Chrome 158 stops Tab on an empty `<a href></a>` (a `0x17`
+rect). Pins: `rinch/src/app/inline_tab_stops_2963_tests.rs` (Chrome-measured
+order). The `:focus-visible` outline of an inline element is not drawn around
+its fragments yet (#2973).
+
 A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
 only the node from the Tab order, not its subtree. A **mouse press claims

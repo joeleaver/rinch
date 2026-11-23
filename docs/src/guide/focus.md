@@ -40,7 +40,9 @@ A focusable element that is **visually hidden but laid out** — `opacity: 0`, o
 `position: absolute` off-screen — *is* in the Tab order, and that is correct:
 `.sr-only` text and skip links depend on exactly that, as they do in a browser.
 What leaves the order is a zero-sized box, `display: none`, and
-`visibility: hidden`/`collapse`. Neither is `data-rid` a focusability signal — the `DropdownMenu`'s
+`visibility: hidden`/`collapse`. An **inline** element — an `<a href>` in a
+paragraph, a `<span tabindex="0">` — is in the order wherever its text is laid
+out, in tree order among the rest, even empty, as in a browser. Neither is `data-rid` a focusability signal — the `DropdownMenu`'s
 full-screen dismissal backdrop carries one, and so do clickable cards, table
 rows and list items; none of those should be Tab stops.
 
