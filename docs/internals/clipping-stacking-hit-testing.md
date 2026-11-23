@@ -482,9 +482,9 @@ correct, and each has a fixture in
   `rinch/tests/gpu_fixed_escape_549.rs` (Vello, `test-gpu`), and
   `split_runtime_1865_tests`'
   `gpu_split_runtime_a_fixed_box_escapes_a_clip_around_a_split_surface` (a
-  GPU surface beside or inside the fixed box still splits). An absolute's
-  "Known gap" in `stacking.rs` is untouched: it is the root's bracket applying
-  to an absolute the root does not contain, a different escape. A third consumer has to know the same thing from the other
+  GPU surface beside or inside the fixed box still splits). An absolute box
+  has the same escape for the clips above its containing block's descendants
+  — below. A third consumer has to know the same thing from the other
   side: `paint::layer_bounds` walks the tree rather than the sequence, so it sees
   clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
   narrowing a translucent layer to less than it paints — which tiny-skia ignores
@@ -503,17 +503,55 @@ correct, and each has a fixture in
   #204 introduced. The module's **third** caller,
   `subtree_is_entirely_outside` (the off-window cull, #562), does **not** accept
   that hole and does not close it either: it answers `Escapes` for an absolute
-  whenever a clipping ancestor **below the walk root** sits below the containing
+  whenever a clipping ancestor below the walk root sits below the containing
   block, which is whole-escape where partial would be exact — conservative in the
-  direction that costs an unpruned subtree rather than a deleted box. *Below the
-  walk root* is the whole qualification and not pedantry: the root's own clip is
-  one no absolute inside escapes, because paint opens that bracket around the
-  entire sequence (#549), so a clipping root that is not itself a containing
-  block answers `Within` and prunes —
-  `offscreen_cull_tests::a_clipping_non_containing_block_root_still_prunes`. The asymmetry is
+  direction that costs an unpruned subtree rather than a deleted box. Since
+  #2815 it does so at the root too: an absolute whose containing block is above
+  the root escapes the root's own clip and the clips paint has open around the
+  root that belong to that block's descendants, so a root that is no containing
+  block, holds such a box (`holds_escaping_absolute`) and clips, or has such a
+  clip open (`open_clips_an_absolute_escapes`), answers `Escapes`
+  (`offscreen_cull_tests::a_clipping_non_containing_block_root_keeps_an_escaping_absolute`;
+  a root that is the containing block still prunes,
+  `a_clipping_containing_block_root_still_prunes`). The two bounds callers do
+  not narrow a root by its own clip when it holds such a box, the one case of
+  #550 the lift made reachable at the root. The asymmetry is
   deliberate: a bounds under-measure costs content on the Vello path only, a
   cull under-measure costs it on every path. `layer_bounds.rs`'s module doc names
   all of this explicitly; read it before touching this.
+- **An absolute whose containing block is above the collecting root escapes
+  the clips above the root too (#2815)** — the root's own bracket, and the
+  chains of the contexts the root was hoisted through — as far down as its
+  containing block's descendants' clips go. Under `containing block > clipper
+  > opacity context > absolute` the clipper is pushed around the context's
+  whole subtree, and the absolute was cut to it; Chrome 158 paints it whole,
+  and an `opacity: 0.5; overflow: hidden` context that is no containing block
+  does not clip it either (`stacking.rs`'s old "Known gap"). Paint tags every
+  `overflow` clip it pushes (a bracket, or a chain link, `ClipRect::owner`)
+  with its box on `OPEN_LAYERS` (`push_box_clip`), and
+  `paint_sequence_entry` asks `absolute_containing_block_above` of each
+  absolute entry: when the block is above the root, `LiftedClips::lift_absolute`
+  lifts the run of clips on top of the stack, above `FIXED_FLOOR`, owned by
+  the block's descendants — a suffix, stopping at the first clip that is the
+  block's, an ancestor's or a mask's — by the same two routes a fixed entry's
+  lift takes (in place on the software painter, popped on Vello), before the
+  entry's cull, which then reads what the box paints under. A translucent
+  context holding such a box (`holds_escaping_absolute`, memoised in the hit
+  cache) sinks its group under the escapable clips on the popping route, as
+  for a fixed box. A fixed box contained by a transformed ancestor reads
+  `absolute` and is asked of its fixed containing block. With no containing
+  block (#204) the body stands in. **Not lifted:** an absolute stacking
+  context holding a fixed box that draws, on the software painter — its
+  in-place lift raises the fixed floor to the top of the stack, which would
+  keep the clips above the absolute's containing block on around that fixed
+  box (`absolute_lift_would_trap_a_fixed_box`), so the absolute stays clipped
+  as before. Hit testing carries the outermost clip a probe is outside of
+  (`clipped: Option<u64>`, the clipping box) and an absolute entry clears it
+  when `paint::absolute_escapes_clip` says that box is its containing block's
+  descendant; a context holding such a box is entered under a clip
+  (`holds_escaping_absolute`). Pins: `rinch-dom/tests/absolute_escape_2815_tests.rs`
+  (pixels, both painting routes, Chrome 158) and
+  `rinch/src/app/absolute_escape_hit_2815_tests.rs`.
 - **No transform composition is needed.** A transform creates a stacking
   context, so `descend` never crosses one and every link lives in the collecting
   root's own untransformed space — the same space the entries' offsets are in.

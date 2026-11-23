@@ -1573,6 +1573,28 @@ thread_local! {
     /// that contains such a box (a `transform`, a `filter`, a `mask-image`) —
     /// or `0`, the viewport, when there is none. See [`FixedFloor`].
     static FIXED_FLOOR: Cell<usize> = const { Cell::new(0) };
+
+    /// The box whose `overflow` clip the next `push_clip` is, set by
+    /// [`push_box_clip`] for the length of that one push, so that
+    /// [`ClipTrackingPainter`] can tag the layer it records on
+    /// [`OPEN_LAYERS`] (#2815). `None` for every other clip.
+    static CLIP_OWNER: Cell<Option<RawNodeId>> = const { Cell::new(None) };
+}
+
+/// Push the `overflow` clip of the box `owner` (its bracket, or a link of a
+/// hoisted entry's clip chain), tagged with the box on [`OPEN_LAYERS`]: an
+/// absolute entry whose containing block is above the stacking context
+/// being painted escapes exactly the clips of its containing block's
+/// descendants, and tells them apart by their owner ([`LiftedClips`], #2815).
+fn push_box_clip(
+    painter: &mut dyn Painter,
+    owner: RawNodeId,
+    transform: Affine,
+    shape: &PaintShape,
+) {
+    CLIP_OWNER.with(|o| o.set(Some(owner)));
+    painter.push_clip(Fill::NonZero, transform, shape);
+    CLIP_OWNER.with(|o| o.set(None));
 }
 
 /// One layer a painter has open: what [`ClipTrackingPainter`] was asked to
@@ -1583,6 +1605,8 @@ enum OpenLayer {
         fill: Fill,
         transform: Affine,
         shape: PaintShape,
+        /// The box whose `overflow` clip this is ([`push_box_clip`]).
+        owner: Option<RawNodeId>,
     },
     Layer {
         blend: BlendMode,
@@ -1598,15 +1622,28 @@ enum OpenLayer {
     /// A layer on a painter that lifts clips in place
     /// ([`Painter::lift_clips`]): nothing is ever pushed again there, so only
     /// whether it is a clip is kept, and no shape is copied on every push.
-    Kept { clip: bool },
+    Kept {
+        clip: bool,
+        /// The box whose `overflow` clip this is ([`push_box_clip`]).
+        owner: Option<RawNodeId>,
+    },
 }
 
 impl OpenLayer {
     fn is_clip(&self) -> bool {
         matches!(
             self,
-            OpenLayer::Clip { .. } | OpenLayer::Kept { clip: true }
+            OpenLayer::Clip { .. } | OpenLayer::Kept { clip: true, .. }
         )
+    }
+
+    /// The box whose `overflow` clip this layer is, if it is one
+    /// ([`push_box_clip`]).
+    fn owner(&self) -> Option<RawNodeId> {
+        match self {
+            OpenLayer::Clip { owner, .. } | OpenLayer::Kept { owner, .. } => *owner,
+            _ => None,
+        }
     }
 
     fn push(&self, painter: &mut dyn Painter) {
@@ -1615,7 +1652,12 @@ impl OpenLayer {
                 fill,
                 transform,
                 shape,
-            } => painter.push_clip(*fill, *transform, shape),
+                owner,
+            } => {
+                CLIP_OWNER.with(|o| o.set(*owner));
+                painter.push_clip(*fill, *transform, shape);
+                CLIP_OWNER.with(|o| o.set(None));
+            }
             OpenLayer::Layer {
                 blend,
                 opacity,
@@ -1710,6 +1752,55 @@ fn holds_painted_escaping_fixed(tree: &NodeTree, id: RawNodeId) -> bool {
     escapes
 }
 
+/// Whether an absolutely positioned box under `id` has its containing block
+/// above `id` (#2815): no box between the two establishes one for it, so it
+/// escapes the clips paint opens around `id` that belong to that block's
+/// descendants (`LiftedClips::lift_absolute`). A fixed box contained by a
+/// transformed ancestor counts as such a box when no fixed containing block
+/// is between. Memoised per node in the tree's hit cache, like
+/// [`holds_escaping_fixed`]. Hit testing asks it of a stacking context a
+/// probe is clipped away from, as it asks [`holds_escaping_fixed`].
+pub fn holds_escaping_absolute(tree: &NodeTree, id: RawNodeId) -> bool {
+    if let Some(e) = tree.hit_cache.escaping_absolute(id) {
+        return e;
+    }
+    fn walk(tree: &NodeTree, id: RawNodeId, abs_open: bool, fixed_open: bool) -> bool {
+        let Some(node) = tree.get_live(id) else {
+            return false;
+        };
+        node.children.iter().any(|&c| {
+            let Some(child) = tree.get_live(c) else {
+                return false;
+            };
+            if child.computed_style.display == DisplayValue::None {
+                return false;
+            }
+            if child.box_position() == PositionValue::Absolute
+                && if child.is_contained_fixed() {
+                    fixed_open
+                } else {
+                    abs_open
+                }
+            {
+                return true;
+            }
+            let abs_open = abs_open && !child.establishes_abs_containing_block();
+            let fixed_open = fixed_open && !child.establishes_fixed_containing_block();
+            (abs_open || fixed_open) && walk(tree, c, abs_open, fixed_open)
+        })
+    }
+    let escapes = tree.get_live(id).is_some_and(|node| {
+        walk(
+            tree,
+            id,
+            !node.establishes_abs_containing_block(),
+            !node.establishes_fixed_containing_block(),
+        )
+    });
+    tree.hit_cache.store_escaping_absolute(id, escapes);
+    escapes
+}
+
 /// Whether a `position: fixed` box draws nothing whatever its position: it is
 /// fully transparent, or hidden with no children that could be shown. Read
 /// off its own style only, so it is as cheap as the walks that ask it.
@@ -1787,13 +1878,11 @@ impl LiftedClips {
     #[inline(never)]
     fn lift(painter: &mut dyn Painter) -> Self {
         let floor = FIXED_FLOOR.with(Cell::get);
-        let (first, len) = OPEN_LAYERS.with(|l| {
-            let l = l.borrow();
-            let first = l
+        let first = OPEN_LAYERS.with(|l| {
+            l.borrow()
                 .get(floor..)
                 .and_then(|above| above.iter().position(OpenLayer::is_clip))
-                .map(|first| floor + first);
-            (first, l.len())
+                .map(|first| floor + first)
         });
         let Some(first) = first else {
             return LiftedClips::Popped {
@@ -1801,6 +1890,45 @@ impl LiftedClips {
                 repushed: 0,
             };
         };
+        Self::lift_from(painter, first)
+    }
+
+    /// The clips a `position: absolute` entry whose containing block `cb`
+    /// is above the stacking context being painted escapes (#2815): the
+    /// run of clips on top of the stack, above [`FIXED_FLOOR`], that are
+    /// the `overflow` clips of `cb`'s descendants ([`push_box_clip`]'s
+    /// owner tag). The run stops at the first clip that is not one — `cb`'s
+    /// own, an ancestor's, a mask's — and the clips below it stay on even
+    /// where one of them is escapable too: a lift takes a suffix of the
+    /// stack. The layers among the run that are not clips stay, as for a
+    /// fixed entry. `None` when there is nothing to lift.
+    #[inline(never)]
+    fn lift_absolute(painter: &mut dyn Painter, tree: &NodeTree, cb: RawNodeId) -> Option<Self> {
+        let floor = FIXED_FLOOR.with(Cell::get);
+        let first = OPEN_LAYERS.with(|l| {
+            let l = l.borrow();
+            let mut first = None;
+            for (i, layer) in l.iter().enumerate().skip(floor).rev() {
+                if !layer.is_clip() {
+                    continue;
+                }
+                if layer
+                    .owner()
+                    .is_some_and(|owner| is_strict_descendant(tree, owner, cb))
+                {
+                    first = Some(i);
+                } else {
+                    break;
+                }
+            }
+            first
+        })?;
+        Some(Self::lift_from(painter, first))
+    }
+
+    /// Lift every clip from the layer at `first` to the top of the stack.
+    fn lift_from(painter: &mut dyn Painter, first: usize) -> Self {
+        let len = OPEN_LAYERS.with(|l| l.borrow().len());
         if painter.lift_clips(len - first) {
             return LiftedClips::InPlace {
                 _floor: FixedFloor::here(),
@@ -1835,6 +1963,133 @@ impl LiftedClips {
             }
         }
     }
+}
+
+/// Whether lifting an absolute entry's clips in place would keep clips on
+/// around a `position: fixed` box inside it that it escapes (#2815). A lift
+/// in place raises [`FIXED_FLOOR`] to the top of the stack for its length
+/// (a nested lift cannot reach under one), so a fixed descendant painted in
+/// the absolute entry's own sequence would keep every clip still on below
+/// the lifted run — its containing block's ancestors' clips, which the
+/// absolute box keeps and a fixed box escapes. Only when there is such a
+/// clip and such a box; the absolute entry is then left clipped as before
+/// #2815 rather than the fixed box clipped wrongly where it was not.
+fn absolute_lift_would_trap_a_fixed_box(
+    tree: &NodeTree,
+    painter: &dyn Painter,
+    node_id: RawNodeId,
+) -> bool {
+    painter.lifts_clips()
+        && tree
+            .get(node_id)
+            .is_some_and(|n| n.creates_stacking_context())
+        && holds_painted_escaping_fixed(tree, node_id)
+}
+
+/// Whether paint has a clip open now, above [`FIXED_FLOOR`], that an
+/// absolute box inside the stacking context `root` escapes when its
+/// containing block is above `root` (#2815): the `overflow` clip of a
+/// descendant of the nearest ancestor of `root` that contains fixed boxes
+/// (or of the body) — the highest such a block can be, so the answer is
+/// never `false` where one escapes. Asked by the off-window cull before it
+/// prunes a context holding such a box (`layer_bounds`).
+pub(super) fn open_clips_an_absolute_escapes(tree: &NodeTree, root: RawNodeId) -> bool {
+    let mut cb = tree.body_id;
+    let mut at = tree.get(root).and_then(|n| n.parent);
+    while let Some(id) = at {
+        let Some(n) = tree.get(id) else {
+            break;
+        };
+        if id == tree.body_id || n.establishes_fixed_containing_block() {
+            cb = id;
+            break;
+        }
+        at = n.parent;
+    }
+    let floor = FIXED_FLOOR.with(Cell::get);
+    OPEN_LAYERS.with(|l| {
+        l.borrow().iter().skip(floor).any(|layer| {
+            layer.is_clip()
+                && layer
+                    .owner()
+                    .is_some_and(|owner| is_strict_descendant(tree, owner, cb))
+        })
+    })
+}
+
+/// Whether the box `child`, an entry of the stacking context `root`'s
+/// sequence, escapes the `overflow` clip of `clipper`, a box above it (#2815):
+/// `child` is absolutely positioned (or a fixed box contained by a
+/// transformed ancestor, #1372), its containing block is above `root`, and
+/// `clipper` is that block's descendant. Paint lifts such a clip around the
+/// entry (`LiftedClips::lift_absolute`); hit testing asks this of the
+/// outermost clip a probe is outside of, and enters the entry unclipped when
+/// it answers `true`. A `position: fixed` box escapes every clip and is not
+/// asked.
+pub fn absolute_escapes_clip(
+    tree: &NodeTree,
+    root: RawNodeId,
+    child: &Node,
+    clipper: RawNodeId,
+) -> bool {
+    absolute_containing_block_above(tree, root, child)
+        .is_some_and(|cb| is_strict_descendant(tree, clipper, cb))
+}
+
+/// Whether `node` is a strict descendant of `ancestor` in the element tree.
+fn is_strict_descendant(tree: &NodeTree, node: RawNodeId, ancestor: RawNodeId) -> bool {
+    let mut at = tree.get(node).and_then(|n| n.parent);
+    while let Some(id) = at {
+        if id == ancestor {
+            return true;
+        }
+        at = tree.get(id).and_then(|n| n.parent);
+    }
+    false
+}
+
+/// The containing block of the `position: absolute` box `child`, an entry of
+/// `root`'s sequence, when it is **above** `root` (#2815): the clips between
+/// the two — `root`'s own bracket, and the chains of the stacking contexts
+/// `root` was hoisted through — do not apply to the box, and paint lifts
+/// them ([`LiftedClips::lift_absolute`]). `None` when the containing block is
+/// `root` or inside it, where the entry's own chain (`Collector::span`,
+/// truncated there) is exactly what clips it; and for any box that is not
+/// absolute. A fixed box contained by a transformed ancestor reads
+/// `absolute` (#1372) and is asked of its fixed containing block. With no
+/// containing block at all (the initial one, #204) the body stands in: its
+/// clip, and every clip above it, stay on.
+fn absolute_containing_block_above(
+    tree: &NodeTree,
+    root: RawNodeId,
+    child: &Node,
+) -> Option<RawNodeId> {
+    if child.box_position() != PositionValue::Absolute || root == tree.body_id {
+        return None;
+    }
+    let contained_fixed = child.is_contained_fixed();
+    let contains = |n: &Node| {
+        if contained_fixed {
+            n.establishes_fixed_containing_block()
+        } else {
+            n.establishes_abs_containing_block()
+        }
+    };
+    let mut passed_root = false;
+    let mut at = child.parent;
+    while let Some(id) = at {
+        let n = tree.get(id)?;
+        if id == root {
+            if contains(n) {
+                return None;
+            }
+            passed_root = true;
+        } else if contains(n) || id == tree.body_id {
+            return passed_root.then_some(id);
+        }
+        at = n.parent;
+    }
+    None
 }
 
 /// A stacking context's `opacity` layer, opened **under** the clips a
@@ -1885,8 +2140,9 @@ impl GroupLayer {
         let first = escaped_clips_on_top().filter(|_| !painter.lifts_clips());
         let sunk: Vec<OpenLayer> = match first {
             Some(first)
-                if !contains_fixed_descendants(node)
-                    && holds_painted_escaping_fixed(tree, node_id) =>
+                if (!contains_fixed_descendants(node)
+                    && holds_painted_escaping_fixed(tree, node_id))
+                    || holds_escaping_absolute(tree, node_id) =>
             {
                 OPEN_LAYERS.with(|l| l.borrow()[first..].to_vec())
             }
@@ -2182,13 +2438,15 @@ impl Painter for ClipTrackingPainter<'_> {
             };
             c.push(Some(next));
         });
+        let owner = CLIP_OWNER.with(|o| o.take());
         let kept = if self.lifts {
-            OpenLayer::Kept { clip: true }
+            OpenLayer::Kept { clip: true, owner }
         } else {
             OpenLayer::Clip {
                 fill,
                 transform,
                 shape: shape.clone(),
+                owner,
             }
         };
         OPEN_LAYERS.with(|l| l.borrow_mut().push(kept));
@@ -2207,7 +2465,10 @@ impl Painter for ClipTrackingPainter<'_> {
             c.push(open);
         });
         let kept = if self.lifts {
-            OpenLayer::Kept { clip: false }
+            OpenLayer::Kept {
+                clip: false,
+                owner: None,
+            }
         } else {
             OpenLayer::Layer {
                 blend,
@@ -2226,7 +2487,10 @@ impl Painter for ClipTrackingPainter<'_> {
             c.push(open);
         });
         let kept = if self.lifts {
-            OpenLayer::Kept { clip: false }
+            OpenLayer::Kept {
+                clip: false,
+                owner: None,
+            }
         } else {
             OpenLayer::Isolated {
                 opacity,
@@ -4514,16 +4778,30 @@ fn paint_sequence_entry(
             return;
         }
         (body_transform, Some(LiftedClips::lift(painter)))
+    } else if let Some(cb) = child
+        .and_then(|c| absolute_containing_block_above(tree, root, c))
+        .filter(|_| !absolute_lift_would_trap_a_fixed_box(tree, painter, entry.node_id))
+    {
+        // An absolute entry whose containing block is above this root
+        // escapes the clips between the two (#2815): this root's bracket and
+        // the chains it was hoisted past, as far down as its containing
+        // block's descendants' clips go. Lifted before the cull below, which
+        // then reads what the entry paints under.
+        (
+            node_transform,
+            LiftedClips::lift_absolute(painter, tree, cb),
+        )
     } else {
         (node_transform, None)
     };
 
-    // Asked here, after the entry's chain is pushed, so the cull it
-    // reads is the one the entry would paint under (#910). A lifted
-    // fixed entry is never asked — the helper answers `false` for one.
-    // A stacking-context entry is (#1719): a list whose rows are
-    // stacking contexts entered every row to cull it on arrival.
-    if lifted.is_none()
+    // Asked here, after the entry's chain is pushed (and an absolute
+    // entry's escaped clips lifted), so the cull it reads is the one the
+    // entry would paint under (#910). A lifted fixed entry is never asked —
+    // the helper answers `false` for one. A stacking-context entry is
+    // (#1719): a list whose rows are stacking contexts entered every row to
+    // cull it on arrival.
+    if !escapes_root
         && paints_nothing_without_visit(
             tree,
             entry.node_id,
@@ -4533,6 +4811,9 @@ fn paint_sequence_entry(
             entry_transform,
         )
     {
+        if let Some(lifted) = lifted {
+            lifted.restore(painter);
+        }
         return;
     }
 
@@ -4728,7 +5009,7 @@ fn switch_clip_chain(
     *open = span;
     for clip in &new_chain[shared..] {
         let shape: PaintShape = clip.radii.shape(clip.rect);
-        painter.push_clip(Fill::NonZero, node_transform, &shape);
+        push_box_clip(painter, clip.owner, node_transform, &shape);
     }
 }
 
@@ -5495,7 +5776,7 @@ fn paint_node_unmasked(
             let root_clip: Option<PaintShape> =
                 clip_shape(node, scale, x, y).map(|(clip_rect, _radii)| clip_rect.into());
             if let Some(shape) = &root_clip {
-                painter.push_clip(Fill::NonZero, node_transform, shape);
+                push_box_clip(painter, node_id, node_transform, shape);
             }
 
             let scroll_x = node.scroll_offset.0 * scale;
@@ -5698,7 +5979,7 @@ fn paint_node_unmasked(
         let root_clip: Option<PaintShape> =
             clip.map(|(clip_rect, clip_radii)| clip_radii.shape(clip_rect));
         if let Some(shape) = &root_clip {
-            painter.push_clip(Fill::NonZero, node_transform, shape);
+            push_box_clip(painter, node_id, node_transform, shape);
         }
         let scroll_x = node.scroll_offset.0 * scale;
         let scroll_y = node.scroll_offset.1 * scale;
@@ -6288,7 +6569,7 @@ fn paint_node_unmasked(
             let root_clip: Option<PaintShape> =
                 clip.map(|(clip_rect, clip_radii)| clip_radii.shape(clip_rect));
             if let Some(shape) = &root_clip {
-                painter.push_clip(Fill::NonZero, node_transform, shape);
+                push_box_clip(painter, node_id, node_transform, shape);
             }
 
             // The highlights of this box's content, painted over its

@@ -149,6 +149,7 @@ struct State {
     shows: Vec<Option<bool>>,
     escaping_fixed: Vec<Option<bool>>,
     escaping_fixed_paints: Vec<Option<bool>>,
+    escaping_absolute: Vec<Option<bool>>,
     orders: HashMap<OrderKey, Rc<PaintOrder>>,
 }
 
@@ -216,6 +217,7 @@ impl HitCache {
             s.shows.clear();
             s.escaping_fixed.clear();
             s.escaping_fixed_paints.clear();
+            s.escaping_absolute.clear();
             s.orders.clear();
         }
         s
@@ -375,6 +377,31 @@ impl HitCache {
             s.escaping_fixed_paints.resize(id + 1, None);
         }
         s.escaping_fixed_paints[id] = Some(escapes);
+    }
+
+    /// Whether an absolutely positioned box under `id` has its containing
+    /// block above `id`, so that it escapes the clips paint opened for `id`'s
+    /// ancestors below that block (#2815). Paint asks it before it opens a
+    /// stacking context's group layer under such clips. Reads no scroll
+    /// offset.
+    #[inline]
+    pub fn escaping_absolute(&self, id: RawNodeId) -> Option<bool> {
+        self.state()
+            .escaping_absolute
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
+    }
+
+    /// Store `id`'s "an absolute box below escapes" bit for the current
+    /// generation.
+    pub fn store_escaping_absolute(&self, id: RawNodeId, escapes: bool) {
+        let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
+        if s.escaping_absolute.len() <= id {
+            s.escaping_absolute.resize(id + 1, None);
+        }
+        s.escaping_absolute[id] = Some(escapes);
     }
 
     /// Store `id`'s extent for the current generation.
