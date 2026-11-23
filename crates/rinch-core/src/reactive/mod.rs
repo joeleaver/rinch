@@ -801,7 +801,8 @@ pub(crate) enum WriteRoute {
 /// registered main thread. Nothing is queued for a thread that never drains;
 /// a main thread's drain of a write to a worker's signal finds no such signal
 /// in its own store (the id names the worker's tag) and drops it with the
-/// freed-signal warning, where it used to write the main thread's signal of
+/// warning that it was made on a thread that hosts no app (issue #2889),
+/// where it used to write the main thread's signal of
 /// the same slot. On a main thread with no host threads in the process this
 /// costs one relaxed atomic load more than before.
 pub(crate) fn route_write(id: u32) -> WriteRoute {
@@ -1103,6 +1104,13 @@ impl SignalStore {
     /// another thread's (issue #2778): ids of two threads' stores never alias.
     fn slot_of(&self, id: u32) -> Option<usize> {
         (id & !SLOT_MASK == self.tag_bits).then_some((id & SLOT_MASK) as usize)
+    }
+
+    /// Whether `id` was made on another thread: its tag is not this store's,
+    /// so no slot here can hold it (issue #2889 tells this drop from a freed
+    /// slot's).
+    pub(crate) fn is_foreign(&self, id: u32) -> bool {
+        self.slot_of(id).is_none()
     }
 
     /// Whether this store has ever allocated a signal (slots are never
