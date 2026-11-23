@@ -176,6 +176,9 @@ impl ShellWindow {
                     idle_trim,
                 ),
             );
+            // Whether and when it trims, before this frame's line (#2917).
+            let period = self.soft_renderer.as_ref().and_then(|r| r.idle_period());
+            crate::window_perf::idle_trim(&self.app, period);
         }
 
         // A redraw that changed no pixel the surface shows presents nothing

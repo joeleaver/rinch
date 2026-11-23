@@ -128,11 +128,15 @@ mod content_size;
 #[cfg(test)]
 mod device_pixel_ratio_tests;
 #[cfg(test)]
+mod dir_auto_field_2272_tests;
+#[cfg(test)]
 mod disabled_input_tests;
 #[cfg(test)]
 mod dnd_teardown_tests;
 #[cfg(test)]
 mod drag_auto_scroll_tests;
+#[cfg(test)]
+mod draggable_user_select_2247_tests;
 #[cfg(test)]
 mod drawer_open_animation_tests;
 #[cfg(test)]
@@ -286,6 +290,8 @@ mod html_view_tests;
 mod implicit_focus_tests;
 #[cfg(test)]
 mod inline_draggable_2233_tests;
+#[cfg(test)]
+mod inline_drop_target_2246_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod spellcheck_menu_tests;
 // A window's input region (#2741): the desktop shell's alone.
@@ -461,6 +467,8 @@ mod text_context_menu;
 #[cfg(test)]
 mod text_context_menu_tests;
 mod text_selection;
+#[cfg(test)]
+mod text_selection_2256_tests;
 #[cfg(test)]
 mod text_selection_across_tests;
 #[cfg(test)]
@@ -1010,6 +1018,23 @@ pub(crate) struct TextSelection {
     /// the end is made; the anchor keeps its side when the focus moves.
     pub(crate) anchor_side: EndSide,
     pub(crate) focus_side: EndSide,
+    /// The word or paragraph a double or triple click selected: a
+    /// Shift+click after it extends by that unit (#2256). `None` for a
+    /// selection made by a single press.
+    pub(crate) unit: Option<SelectionUnit>,
+}
+
+/// One end of a read-only selection: a root, a byte offset in its text,
+/// and the side of the boxes there it is on.
+pub(crate) type SelectionEnd = (u64, usize, EndSide);
+
+/// What a double or triple click selected ([`TextSelection::unit`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionUnit {
+    /// A paragraph (a triple click), else a word.
+    pub(crate) paragraph: bool,
+    pub(crate) start: SelectionEnd,
+    pub(crate) end: SelectionEnd,
 }
 
 /// Which side of the boxes at its offset a selection end is on (review of
@@ -1021,8 +1046,9 @@ pub(crate) struct EndSide {
     /// A start after them leaves them out, an end after them takes them.
     pub(crate) after_inline: bool,
     /// Whether the floats and positioned boxes at its offset are in the
-    /// selection. A float is on no line, so only an end outside the
-    /// paragraph takes it: Select All's, not a press, drag or triple click.
+    /// selection. A float is on no line, so a press or drag never takes
+    /// one: Select All's ends do, and a double click's word running on
+    /// into one (#2259).
     pub(crate) takes_floats: bool,
 }
 
@@ -5393,6 +5419,10 @@ impl RinchApp {
             d.tree.paint_dirty_nodes.push(node_id);
         }
         d.tree.dirty_nodes.insert(node_id);
+        // A `dir=auto` field takes its direction from the value (#2272).
+        if !keeps_value {
+            d.note_field_value_changed(node_id);
+        }
         // A field scrolls its caret into view at the move that put it there
         // — an `<input>` horizontally (#1721), a `<textarea>` vertically
         // (#827) — so a run of keys between two frames scrolls as they would
@@ -5425,6 +5455,7 @@ impl RinchApp {
         {
             node.attributes
                 .insert("value".to_string(), state.document.to_text());
+            d.note_field_value_changed(node_id);
         }
     }
 
@@ -7821,6 +7852,7 @@ impl RinchApp {
                 }
                 d.tree.paint_dirty_nodes.push(node_id);
                 d.tree.dirty_nodes.insert(node_id);
+                d.note_field_value_changed(node_id);
             }
         }
     }
@@ -12821,6 +12853,49 @@ mod transform_aware_walk_tests {
         assert_ne!(
             b.width, 100.0,
             "a scaled element is painted at twice its layout width"
+        );
+    }
+
+    /// An inline element's bounds signal is the union of its line fragments,
+    /// the rect `NodeHandle::bounding_rect` and the browser answer (#2257):
+    /// it was `(x, y, 0, 0)`, from the span's `0x0` layout ghost.
+    #[test]
+    fn an_inline_elements_bounds_signal_is_its_bounding_rect() {
+        use rinch_core::reactive::{ElementBounds, Signal};
+
+        let captured: Rc<Cell<Option<Signal<ElementBounds>>>> = Rc::new(Cell::new(None));
+        let handle: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+        let (captured_in, handle_in) = (captured.clone(), handle.clone());
+        let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "width: 120px; padding: 10px 30px; font: 16px/20px sans-serif",
+            );
+            let before = scope.create_text("aaaa aaaa ");
+            let span = scope.create_element("span");
+            span.append_child(&scope.create_text("bbbb cccc dddd"));
+            root.append_child(&before);
+            root.append_child(&span);
+            captured_in.set(Some(span.bounds_signal()));
+            *handle_in.borrow_mut() = Some(span);
+            root
+        });
+        app.mount_component(800.0, 600.0);
+        let bounds = captured.get().expect("bounds signal captured at mount");
+        app.resize_layout(800, 600);
+
+        let b = bounds.get();
+        let r = handle
+            .borrow()
+            .as_ref()
+            .and_then(NodeHandle::bounding_rect)
+            .expect("a laid-out span has a rect");
+        assert!(b.width > 0.0 && b.height > 20.0, "two fragments: {b:?}");
+        assert_eq!(
+            (b.x, b.y, b.width, b.height),
+            (r.x, r.y, r.width, r.height),
+            "the bounds signal is the bounding rect"
         );
     }
 

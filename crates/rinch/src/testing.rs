@@ -1293,9 +1293,10 @@ impl TestApp {
 
     /// Present the frame just painted (`w` x `h`), as the shell's
     /// `paint_software_at` does: the presentation made at the first present,
-    /// its `[PERF] trimmed` line when this redraw presented nothing and
-    /// served the idle trim instead, and its `[PERF] untrimmed` line when
-    /// this present made its buffers again after a trim (#2852).
+    /// with its `[PERF] idle_trim=` line (#2917), its `[PERF] trimmed` line
+    /// when this redraw presented nothing and served the idle trim instead,
+    /// and its `[PERF] untrimmed` line when this present made its buffers
+    /// again after a trim (#2852).
     fn present(&mut self, w: u32, h: u32) {
         let presentation = self.presentation.get_or_insert_with(|| {
             let period = self
@@ -1304,7 +1305,9 @@ impl TestApp {
                 .as_ref()
                 .map_or_else(Default::default, |p: &WindowProps| p.idle_trim)
                 .period();
-            IdleTrimmed::new(Presenter::new(true, period, |_, _| NoSurface))
+            let presentation = IdleTrimmed::new(Presenter::new(true, period, |_, _| NoSurface));
+            crate::window_perf::idle_trim(&self.app, presentation.idle_period());
+            presentation
         });
         let generation = self.app.pixels_generation();
         presentation.present_frame(&[], w, h, generation, rinch_core::timer::now());

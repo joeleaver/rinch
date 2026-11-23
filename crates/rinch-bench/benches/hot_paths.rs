@@ -401,6 +401,14 @@ fn collab_mapped(f: CollabMappedFixture) -> CollabMappedFixture {
     black_box(measure(black_box(f), op_collab_mapped))
 }
 
+// A popup's document opened beside a bar's, up to its first painted frame
+// (#2552): the part of a menu's opening that is rinch's own work.
+#[library_benchmark]
+#[bench::menu_10(setup = setup_popup_open)]
+fn popup_open(f: PopupFixture) -> PopupFixture {
+    black_box(measure(black_box(f), op_popup_open))
+}
+
 #[library_benchmark]
 #[bench::rows_1000(setup = setup_branch_hide)]
 fn branch_hide(f: ShellFixture<Signal<bool>>) -> ShellFixture<Signal<bool>> {
@@ -417,7 +425,8 @@ library_benchmark_group!(
         relayout_beside_text,
         keyed_for,
         memo_flush,
-        branch_hide
+        branch_hide,
+        popup_open
     ]
 );
 

@@ -605,7 +605,7 @@ impl RinchApp {
                 // One hit test per move, shared by the `data-onmousemove`
                 // dispatch, the drop-target search and hover (update-path
                 // audit F2.1). A handler that mutates the document bumps the
-                // hit cache's generation, and `move_hit` re-tests after that,
+                // hit cache's generation, and `shared_hit` re-tests after that,
                 // so sharing never answers from a tree a handler changed.
 
                 // Additive: fire data-onmousemove before any drag/scroll/hover
@@ -2449,9 +2449,11 @@ impl RinchApp {
                     actions.push(AppAction::RequestRedraw);
                 }
                 if let Some(doc) = &self.doc {
+                    // From the inline element under the point, as the
+                    // element-drag drop target is found (#2246).
                     let hit_id = {
                         let d = doc.borrow();
-                        self.shared_hit(&d, x, y)
+                        self.shared_event_target(&d, x, y)
                     };
                     if let Some(hit_id) = hit_id {
                         let target = Self::find_file_drop_target(&doc.borrow().tree, hit_id);
@@ -2482,9 +2484,10 @@ impl RinchApp {
                 let (x, y) = (position.0 as f32, position.1 as f32);
                 if let Some(doc) = self.doc.clone() {
                     let doc = &doc;
+                    // From the inline element under the point (#2246).
                     let hit_id = {
                         let d = doc.borrow();
-                        self.shared_hit(&d, x, y)
+                        self.shared_event_target(&d, x, y)
                     };
                     // An editor that takes pictures itself gets a drop of image
                     // files first; anything else is the app's file-drop handler's.
@@ -3115,8 +3118,21 @@ impl RinchApp {
         let Some((x, y)) = self.active_dnd.as_ref().map(|drag| drag.cursor) else {
             return;
         };
-        // Hit test for drop targets — check both DOM elements and surfaces
-        let hit_id = self.move_hit(x, y);
+        // Hit test for drop targets — check both DOM elements and surfaces.
+        // A render surface is found from the hit; the DOM drop-target walk
+        // starts where the click walk does (#2246): an IFC's text is hit as
+        // its root, so a `data-ondrop` on an inline `<span>` inside a
+        // paragraph was never reached from its text.
+        let (hit_id, drop_from) = match self.doc.as_ref() {
+            Some(doc) => {
+                let d = doc.borrow();
+                (
+                    self.shared_hit(&d, x, y),
+                    self.shared_event_target(&d, x, y),
+                )
+            }
+            None => (None, None),
+        };
         // Kept for the frame's auto-scroll tick, which asks the same point.
         self.drag_hit_memo = self.hit_memo.get();
         let Some(drag) = self.active_dnd.as_mut() else {
@@ -3171,7 +3187,7 @@ impl RinchApp {
             }
         } else {
             // Not over a surface — use DOM drop target system
-            let new_target = hit_id.and_then(|hid| {
+            let new_target = drop_from.and_then(|hid| {
                 self.doc.as_ref().and_then(|doc| {
                     let d = doc.borrow();
                     Self::find_drop_target(&d.tree, hid)
@@ -4082,7 +4098,9 @@ impl RinchApp {
         self.shared_target(&doc.borrow(), x, y)
     }
 
-    /// [`Self::shared_hit`] against this app's own document.
+    /// [`Self::shared_hit`] against this app's own document (only the
+    /// software-shell damage tests use it).
+    #[cfg(all(test, software_shell))]
     pub(super) fn move_hit(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.as_ref()?;
         self.shared_hit(&doc.borrow(), x, y)

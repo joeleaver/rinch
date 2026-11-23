@@ -15,7 +15,7 @@
 //! | `styles/popover.rs:154` (`with_arrow` arrow) | [`a_popover_arrow_is_an_8px_rotated_square`] |
 //! | `styles/divider.rs:47` (`with_label` rules) | [`a_divider_with_a_label_gets_two_flex_strokes`] |
 //! | `styles/badge.rs:73` (`--dot` variant) | [`a_dot_badge_gets_an_8px_round_dot`] |
-//! | `styles/button.rs:166` (`.rinch-button__loader::after`) | **not reachable at all** — see [`a_loading_buttons_spinner_rule_matches_no_element`]; the markup it targets, `.rinch-button__loader`, is never created by `Button::render` (filed separately as #1334) |
+//! | `styles/button.rs:166` (`.rinch-button__loader::after`) | **removed by #1334/#2197**: `Button::render` never created `.rinch-button__loader`, so the rule matched nothing. A loading button now renders the slot with the shared `Loader` in it — see [`a_loading_button_draws_the_shared_loader_in_its_text_colour`] |
 
 use super::*;
 
@@ -308,17 +308,16 @@ fn a_dot_badge_gets_an_8px_round_dot() {
     );
 }
 
-// ── 5. The one rule that still matches nothing ────────────────────────────
+// ── 5. The loading button's spinner ───────────────────────────────────────
 
-/// `.rinch-button__loader::after`'s spinner rule is still dead — not because
-/// of #773, but because `Button::render` never creates the
-/// `.rinch-button__loader` div the rule is scoped under in the first place.
-/// `content: ''` creating a pseudo-element doesn't help a selector whose
-/// ancestor half matches no element at all. Filed as a separate issue
-/// (gh issue: Refs #773 in the audit) rather than fixed here, since it needs
-/// a markup change to `Button::render`, not a pseudo-element fix.
+/// `.rinch-button__loader::after` matched nothing until #1334/#2197: no
+/// `.rinch-button__loader` was ever created. A loading button now renders that
+/// slot with the shared `Loader` in it (#2205). Its oval is the xs step (1rem,
+/// a 2px border, the size the old `::after` rule declared) and draws in the
+/// filled button's white text, not the primary colour that is the button's
+/// own background. Under the theme's `border-box` reset, as in a themed app.
 #[test]
-fn a_loading_buttons_spinner_rule_matches_no_element() {
+fn a_loading_button_draws_the_shared_loader_in_its_text_colour() {
     let app = mount(move |scope| {
         let text = scope.create_text("Save");
         rinch_components::Button {
@@ -327,10 +326,29 @@ fn a_loading_buttons_spinner_rule_matches_no_element() {
         }
         .render(scope, &[text])
     });
-    assert!(
-        nodes_with_class(&app, "rinch-button__loader").is_empty(),
-        "`Button::render` does not create a `.rinch-button__loader` div even \
-         when `loading: true` — the spinner rule has nothing to match, with \
-         or without #773's fix"
+    // The theme's global `box-sizing: border-box` reset (rinch-theme's
+    // `css.rs`), which every themed app has and this file's `mount` does not
+    // load: without it the oval's `height: 100%` gains its 4px of border, in
+    // Chrome as here.
+    let mut app = app;
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css("*, *::before, *::after { box-sizing: border-box; }");
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
+    assert_eq!(nodes_with_class(&app, "rinch-button__loader").len(), 1);
+    let oval = node_with_class(&app, "rinch-loader__oval");
+    assert_eq!(
+        layout_of(&app, oval),
+        (16.0, 16.0),
+        "the xs loader's 1rem box"
+    );
+    assert_eq!(border_widths(&app, oval), (2.0, 2.0, 2.0, 2.0));
+    assert_eq!(
+        border_top_color(&app, oval),
+        Some(peniko::Color::from_rgb8(255, 255, 255)),
+        "the arc takes the filled button's white text colour"
     );
 }

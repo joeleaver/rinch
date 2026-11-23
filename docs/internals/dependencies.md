@@ -63,7 +63,16 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     while UAX #14 broke after every `/` anyway; with `/` glued, a mail template's
     `https://example.com/<wbr>a/<wbr>long` needs it. The ZWSP is not content to white-space
     collapsing (`a <wbr> b` is `a b`) and owns no DOM text: its three flat bytes lie between
-    the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf,
+    the text ranges around it. It is an opportunity whatever the `white-space` (#2261): the
+    ZWSP is pushed in a span of its own with `TextWrapMode::Wrap` (`IfcText::push_wbr`), since
+    parley decides an opportunity after a character by that character's wrap mode (its line
+    breaker and its min-content pass both lag the mode by one atom), and an IFC holding a
+    `<wbr>` is broken at its width even when none of its text wraps (`IfcText::has_wbr`).
+    Chrome 156: `aaaa<wbr>bbbb cc` in a `nowrap` or `pre` box 1px wide is `aaaa` / `bbbb cc`,
+    and its `min-content` is `bbbb cc`'s width (`tests/url_line_break_2369_tests.rs`). Not
+    Chrome's yet: a leading `<wbr>` in a 1px box gives Chrome an empty first line (rinch makes
+    none: parley takes no opportunity at a line's start), and so do two `<wbr>`s in a row
+    under `nowrap` (not under `normal`). The builders that set the override are the IFC, a flex or grid item's text leaf,
     the paint fallback and `ComputedStyle::build_parley_layout`, so a `<textarea>`'s and an
     `<input>`'s text (`form_control::field_text_layout`, through it since #320) breaks as
     ordinary text does (#2387: a URL in a textarea broke after every `/`;
@@ -1375,8 +1384,8 @@ nowrap>hello</span></span> ccc`; `…hello</span><span></span> ccc` and `…hell
 nowrap> ccc</span>` do not (Chrome 156). An element's end inside a `display: contents` element
 closes into the nearest ancestor with a box, text that does not wrap in a contents element whose
 boxed ancestor wraps takes the opportunity away, and a `<wbr>` gives one that empty elements after
-it do not take away (review of #2258); a `<wbr>` right before text that does not wrap still makes
-no opportunity of its own. The seams and edge-box passes ask the same answer
+it do not take away (review of #2258); a `<wbr>` right before text that does not wrap makes its
+own opportunity since #2261 (`IfcText::push_wbr`). The seams and edge-box passes ask the same answer
 (`ifc::UnhungSpaces::space_breaks`), and a paragraph with such a space is broken at its width
 even when none of its text wraps.
 

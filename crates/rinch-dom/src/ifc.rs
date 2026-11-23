@@ -2127,6 +2127,8 @@ pub(crate) struct IfcText<'a> {
     last_wraps: Option<bool>,
     /// A `<wbr>` was met since the last content ([`Self::push_wbr`]).
     wbr: bool,
+    /// A `<wbr>` was pushed anywhere ([`Self::has_wbr`]).
+    any_wbr: bool,
     /// [`Self::last_wraps`] is an atomic inline's own, passed on by element
     /// ends only ([`Self::nowrap_text_in_wrapping_box`]).
     from_box: bool,
@@ -2288,6 +2290,7 @@ impl<'a> IfcText<'a> {
             wraps: true,
             last_wraps: None,
             wbr: false,
+            any_wbr: false,
             from_box: false,
             wrap_spaces: Vec::new(),
             break_before: Vec::new(),
@@ -2333,8 +2336,8 @@ impl<'a> IfcText<'a> {
     /// `aa<span nowrap>hello</span><wbr> ccc` breaks after `hello`), which
     /// elements starting or ending after it, before the next content, do not
     /// take away (review of #2258). It reaches a run of spaces after it; a
-    /// `<wbr>` right before text that does not wrap gets no opportunity of
-    /// its own here.
+    /// `<wbr>` right before text that does not wrap has its own opportunity
+    /// from the character [`Self::push_wbr`] pushes (#2261), not from here.
     /// Text that does not wrap starts in a `display: contents` element whose
     /// nearest boxed ancestor wraps: the opportunity before its spaces goes,
     /// unless an atomic inline gave it (Chrome 156, review of #2258:
@@ -2353,11 +2356,32 @@ impl<'a> IfcText<'a> {
     /// processing — a space held before it stays held and a space after it
     /// still collapses (`a <wbr> b` is `a b`, as in Chrome) — and it owns no
     /// DOM text: its flat bytes lie between the text ranges around it.
+    ///
+    /// The character is pushed in a span of its own that wraps, whatever
+    /// the `white-space` around it (#2261): parley decides an opportunity
+    /// after a character by that character's wrap mode (its line breaker
+    /// and its min-content pass both lag the mode by one atom), so the
+    /// `<wbr>`'s own `nowrap` or `pre` would take the opportunity away.
+    /// Chrome 156 breaks there: `aaaa<wbr>bbbb cc` in a `nowrap` or `pre`
+    /// box 1px wide is `aaaa` / `bbbb cc`, and its `min-content` is `bbbb
+    /// cc`'s width.
     pub(crate) fn push_wbr(&mut self) {
         self.last_wraps = Some(true);
         self.wbr = true;
+        self.any_wbr = true;
+        self.ops.push(IfcOp::Span(vec![
+            parley::style::StyleProperty::TextWrapMode(parley::style::TextWrapMode::Wrap),
+        ]));
         self.ops.push(IfcOp::Text(WBR_TEXT.into()));
+        self.ops.push(IfcOp::Pop);
         self.len += WBR_TEXT.len();
+    }
+
+    /// Whether a `<wbr>` was pushed: its opportunity wraps whatever the
+    /// `white-space` around it ([`Self::push_wbr`]), so the paragraph is
+    /// broken at the available width even where none of its text wraps.
+    pub(crate) fn has_wbr(&self) -> bool {
+        self.any_wbr
     }
 
     /// Bidi control characters an element's `unicode-bidi` puts around its
@@ -6038,6 +6062,15 @@ impl RinchDocument {
         // (#632). Each is placed again from them: it was read back before
         // they existed.
         let marked: Vec<RawNodeId> = inline_layout.out_of_flow.iter().map(|m| m.id).collect();
+
+        // The fonts its inline elements are set in, for measuring their boxes
+        // from a shared borrow (#2257).
+        Self::note_inline_font_boxes(
+            &self.tree,
+            &mut self.font_cx,
+            paint_layout_cx,
+            &inline_layout,
+        );
 
         self.tree.nodes[root_id].text_layout = Some(Box::new(inline_layout));
         self.tree.text_layout_epoch += 1;
@@ -12332,8 +12365,10 @@ impl RinchDocument {
         let boxes: Vec<RawNodeId> = ifc_text.atomic_box_ids().collect();
         // A space with an opportunity before it (#2238) wraps too, though
         // all the text may not: `aa<span nowrap>hello</span><span
-        // normal></span> ccc` breaks before ` ccc` in Chrome.
+        // normal></span> ccc` breaks before ` ccc` in Chrome. So does a
+        // `<wbr>`, whatever the `white-space` (#2261).
         let effective_max_width = if !space_breaks.is_empty()
+            || ifc_text.has_wbr()
             || Self::wraps_anywhere(nodes, root_id, &text_ranges, &boxes)
         {
             max_width

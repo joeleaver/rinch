@@ -614,6 +614,13 @@ impl DomDocument for RinchDocument {
         // Past the no-op return: an identical write moves nothing, and must
         // not leave the next pointer move with a cold hit cache.
         self.tree.hit_cache.invalidate();
+        // New text can change the first strong letter a `dir=auto` element
+        // above takes its direction from (#2272).
+        if self.tree.nodes[n].is_element() {
+            self.note_dir_auto_content(n);
+        } else if let Some(parent) = self.tree.nodes[n].parent {
+            self.note_dir_auto_content(parent);
+        }
 
         // Invalidate IFC if this node belongs to one
         self.invalidate_ifc_for_node(n);
@@ -2206,13 +2213,17 @@ impl DomDocument for RinchDocument {
     /// the bar cannot disagree about what is content (issue #396). This used to
     /// be a second copy of that walk, without the containing-block rule (#765)
     /// and without the descent through `display: contents` wrappers.
+    ///
+    /// A box that does not scroll has no bar to agree with: it answers its
+    /// descendants' overflow too, as Chrome does
+    /// ([`crate::paint::scrollbar::scroll_extents`], #2223).
     fn scroll_height(&self, node: NodeId) -> f64 {
-        crate::paint::scrollbar::content_extents(&self.tree, node.0).1
+        crate::paint::scrollbar::scroll_extents(&self.tree, node.0).1
     }
 
     /// The container's content width; see [`Self::scroll_height`].
     fn scroll_width(&self, node: NodeId) -> f64 {
-        crate::paint::scrollbar::content_extents(&self.tree, node.0).0
+        crate::paint::scrollbar::scroll_extents(&self.tree, node.0).0
     }
 
     /// The container's own content-box height, from

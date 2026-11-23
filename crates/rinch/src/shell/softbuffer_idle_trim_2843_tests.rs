@@ -264,6 +264,10 @@ fn a_surface_that_does_not_keep_its_contents_is_not_trimmed() {
     assert_eq!(p.timer_deadline(), None);
     assert!(!p.service_idle_trim(t0 + 100 * PERIOD));
     assert_eq!(resident(&shm), 2);
+    // And says so: its `RINCH_PERF` line is `idle_trim=never` (#2917).
+    assert_eq!(p.idle_period(), None);
+    let (p, _) = presentation(true, IdleTrim::After(PERIOD));
+    assert_eq!(p.idle_period(), Some(PERIOD));
 }
 
 #[test]

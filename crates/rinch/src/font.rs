@@ -388,3 +388,28 @@ impl AppFont {
         }
     }
 }
+
+/// When the system's generic font families are looked up on a thread of
+/// their own ([`App::font_warmup`](crate::App::font_warmup), issue #2552).
+///
+/// Text with a glyph the first fonts of its stack lack (a menu's `✓`)
+/// otherwise looks them up one by one the first time, on the UI thread: a
+/// panel's first menu took 80–560 ms to show. The look-up costs 250–670 ms
+/// of one core once, and about 1 MB of memory kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FontWarmup {
+    /// Once the app has presented its first frame, so the look-up competes
+    /// with nothing at start-up. An app that presents no frame (a windowless
+    /// one, a main window that starts hidden) does not look them up until it
+    /// does.
+    #[default]
+    AfterFirstFrame,
+    /// As the app starts, whether or not it has a window: for an app whose
+    /// first text comes late and must show at once, such as a launcher that
+    /// starts hidden and is summoned by a key, or a notification daemon with
+    /// no window until its first notification. It makes the font scan on its
+    /// thread if no document has yet, so the first document may wait for it.
+    AtStart,
+    /// Never: the first text that needs a family looks it up.
+    Off,
+}

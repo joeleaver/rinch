@@ -67,19 +67,23 @@ impl<'a> RinchNode<'a> {
             p = n.parent;
         };
         let css = crate::legacy_hints::cell_hints_css(table)?;
+        Some(self.shared_hint_block(&css))
+    }
+
+    /// The parsed block for hint text `css`, one per distinct text for the
+    /// life of the document (`NodeTree::cell_hints`).
+    fn shared_hint_block(&self, css: &str) -> Arc<Locked<PropertyDeclarationBlock>> {
         let mut cache = self.tree.cell_hints.lock().unwrap();
-        Some(
-            cache
-                .entry(css)
-                .or_insert_with_key(|css| {
-                    Arc::new(
-                        self.tree
-                            .guard
-                            .wrap(crate::dom_impl::parse_inline_style(css)),
-                    )
-                })
-                .clone(),
-        )
+        if let Some(block) = cache.get(css) {
+            return block.clone();
+        }
+        let block = Arc::new(
+            self.tree
+                .guard
+                .wrap(crate::dom_impl::parse_inline_style(css)),
+        );
+        cache.insert(css.to_owned(), block.clone());
+        block
     }
 
     /// Create a RinchNode for a different node in the same tree.
@@ -899,6 +903,22 @@ impl<'a> TElement for RinchNode<'a> {
         {
             hints.push(ApplicableDeclarationBlock::from_declarations(
                 block,
+                style::rule_tree::CascadeLevel::new(style::rule_tree::CascadeOrigin::PresHints),
+                style::stylesheets::layer_rule::LayerOrder::root(),
+            ));
+        }
+        // A `dir=auto` element's direction, from its text (#2272): a hint, as
+        // Chrome maps it, so an author `direction` beats it.
+        if let Some(rtl) = crate::legacy_hints::auto_direction(&self.tree.nodes, self.id) {
+            self.tree
+                .dir_auto_seen
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            hints.push(ApplicableDeclarationBlock::from_declarations(
+                self.shared_hint_block(if rtl {
+                    "direction:rtl"
+                } else {
+                    "direction:ltr"
+                }),
                 style::rule_tree::CascadeLevel::new(style::rule_tree::CascadeOrigin::PresHints),
                 style::stylesheets::layer_rule::LayerOrder::root(),
             ));

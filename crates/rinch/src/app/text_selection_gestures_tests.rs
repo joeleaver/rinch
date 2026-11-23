@@ -37,7 +37,8 @@ fn a_double_click_selects_the_word_and_a_triple_click_the_paragraph() {
     drag(&mut app, (p.0 + 1.0, p.1));
     assert_eq!(app.text_selection_text().unwrap(), "paragraph");
     click(&mut app, p, 1);
-    assert_eq!(app.text_selection_text().unwrap(), "first paragraph");
+    // To the start of the next paragraph, as Chrome's triple click (#2256).
+    assert_eq!(app.text_selection_text().unwrap(), "first paragraph\n\n");
 }
 
 #[test]

@@ -208,6 +208,23 @@ thread_local! {
     static SUPPORTED: Cell<bool> = const { Cell::new(false) };
     /// `App::popup_windows(false)`.
     static TURNED_OFF: Cell<bool> = const { Cell::new(false) };
+    /// `App::popup_renderers_kept`.
+    static RENDERERS_KEPT: Cell<usize> = const { Cell::new(DEFAULT_RENDERERS_KEPT) };
+}
+
+/// How many closed popups' GPU renderers are kept by default: a chain three
+/// deep (a menu, a submenu and its submenu) reopens with none built.
+pub const DEFAULT_RENDERERS_KEPT: usize = 3;
+
+/// `App::popup_renderers_kept`.
+pub(crate) fn set_renderers_kept(count: usize) {
+    RENDERERS_KEPT.with(|k| k.set(count));
+}
+
+/// How many closed popups' GPU renderers the shell keeps.
+#[cfg_attr(not(feature = "gpu-renderer"), allow(dead_code))]
+pub(crate) fn renderers_kept() -> usize {
+    RENDERERS_KEPT.with(Cell::get)
 }
 
 /// The shell: whether its display has popup windows (a Wayland session).
