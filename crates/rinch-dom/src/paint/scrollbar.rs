@@ -289,11 +289,18 @@ impl Scrollbars {
 /// inset: 0` child of a padded scroller painted two bars, and a `relative`
 /// box offset toward the start lost the range its static box needs.
 ///
+/// * **Below the children** (#2054): every box under a child that overflows
+///   its own parent, as Chrome counts it — its border box (no margins) where
+///   it is drawn, not entered past a box that clips or is transformed; a
+///   fixed box, and an absolute one contained above the container, count
+///   nothing (`deep_overflow`, kept until layout under the container
+///   changes). A 300px child of a `height: 50px` child scrolls 200, as in
+///   Chrome; it scrolled 0 before.
+///
 /// Not counted yet: a margin that collapses through a child's end (a
 /// child of `height: auto` whose last child has `margin-bottom: 80px` scrolls
-/// 30 in Chrome and 0 here) and an **in-flow** descendant's overflow below the
-/// first box (a 300px child of a `height: 50px` child scrolls 200 in Chrome,
-/// 0 here — #2054).
+/// 30 in Chrome and 0 here), and a transformed child's own overflow (its
+/// border box is counted, transformed).
 ///
 /// In logical pixels — this is layout's own unit, and every caller either wants
 /// it that way or scales the result itself.
@@ -320,9 +327,8 @@ pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
 /// scrollable overflow holds its descendants' unless a box between clips —
 /// a `260px` box holding a `260px` child holding a `460px` grandchild has a
 /// `scrollWidth` of 460 in Chrome 157, where [`content_extents`], which stops
-/// at the first box, answers 260. The walk (`descendant_reach`) runs only
-/// when asked, never for a scroller: a scroller's own range still stops at
-/// the first box (#2054).
+/// at the first box, answers 260. A scroll container's range counts them
+/// too since #2054, kept between layouts (`DeepOverflow`).
 ///
 /// **Cost:** the whole subtree, walked on every call (nothing is cached), for
 /// a box that does not scroll; a scroll container pays [`content_extents`].
@@ -345,7 +351,7 @@ pub fn scroll_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
         if let Some(child) = tree.get_live(child_id)
             && crate::out_of_flow::contributes_to_scrollable_overflow(tree, node_id, child)
         {
-            descend_into(tree, node_id, child, (0.0, 0.0), &mut reach);
+            descend_into(tree, node_id, child, (0.0, 0.0), &mut reach, &mut None);
         }
     }
     if reach == Reach::NONE {
@@ -364,15 +370,24 @@ pub fn scroll_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
 /// container's: unless `node` clips, or is transformed (its own transformed
 /// box, counted where it is, stands for it), or is out of flow
 /// ([`descendant_reach`]). `origin` is `node`'s parent's border-box origin in
-/// the container's frame.
+/// the container's frame. With `live`, a transformed box is listed there
+/// instead of measured, for a caller that keeps `reach` across transform
+/// changes ([`DeepOverflow`]).
 fn descend_into(
     tree: &NodeTree,
     container_id: RawNodeId,
     node: &crate::node::Node,
     origin: (f64, f64),
     reach: &mut Reach,
+    live: &mut Option<Vec<RawNodeId>>,
 ) {
-    if node.is_text() || node.clips_overflow() || node.has_applied_transform() {
+    // A block virtualization collapsed to an estimated height: the estimate
+    // stands for its content, whose boxes are not laid out to it.
+    if node.is_text()
+        || node.clips_overflow()
+        || node.has_applied_transform()
+        || node.estimated_height.is_some()
+    {
         return;
     }
     // A `display: contents` wrapper has no box: its children are laid out in
@@ -388,7 +403,7 @@ fn descend_into(
     };
     for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node.id).iter() {
         if let Some(child) = tree.get_live(child_id) {
-            descendant_reach(tree, container_id, child, at, reach);
+            descendant_reach(tree, container_id, child, at, reach, live);
         }
     }
 }
@@ -397,22 +412,25 @@ fn descend_into(
 /// origin in `container_id`'s frame), and by what overflows it: the lines
 /// of its inline layout, and its own descendants ([`descend_into`]). Its
 /// border box alone, not its margins: Chrome counts no margin of a box
-/// below a container that does not scroll. A fixed box, and an absolute one
+/// below a container's own children. A fixed box, and an absolute one
 /// whose containing block is above the container
 /// ([`crate::out_of_flow::contributes_to_scrollable_overflow`]), are not the
-/// container's overflow; an empty absolute one counts nothing.
+/// container's overflow; an empty absolute one counts nothing. A
+/// transformed box counts where it is drawn, and is not entered; with
+/// `live` it is listed there to be measured by the caller.
 fn descendant_reach(
     tree: &NodeTree,
     container_id: RawNodeId,
     node: &crate::node::Node,
     origin: (f64, f64),
     reach: &mut Reach,
+    live: &mut Option<Vec<RawNodeId>>,
 ) {
     if node.is_text() {
         return;
     }
     if node.taffy_style_owned_by_contents_splice() {
-        descend_into(tree, container_id, node, origin, reach);
+        descend_into(tree, container_id, node, origin, reach, live);
         return;
     }
     if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, node)
@@ -426,17 +444,22 @@ fn descendant_reach(
         origin.1 + (node.layout.y + dy) as f64,
     );
     let (w, h) = (node.layout.width as f64, node.layout.height as f64);
-    let drawn = kurbo::Rect::new(x, y, x + w, y + h);
-    let drawn = if node.has_applied_transform() {
-        super::compose_node_transform(node, x, y, 1.0, kurbo::Affine::IDENTITY)
-            .transform_rect_bbox(drawn)
-    } else {
-        drawn
-    };
-    if drawn.width() > 0.0 || drawn.height() > 0.0 {
-        reach.grow(drawn.x0, drawn.x1, drawn.y1);
+    if node.has_applied_transform() {
+        if let Some(live) = live {
+            live.push(node.id);
+            return;
+        }
+        let drawn = super::compose_node_transform(node, x, y, 1.0, kurbo::Affine::IDENTITY)
+            .transform_rect_bbox(kurbo::Rect::new(x, y, x + w, y + h));
+        if drawn.width() > 0.0 || drawn.height() > 0.0 {
+            reach.grow(drawn.x0, drawn.x1, drawn.y1);
+        }
+        return;
     }
-    if node.clips_overflow() || node.has_applied_transform() {
+    if w > 0.0 || h > 0.0 {
+        reach.grow(x, x + w, y + h);
+    }
+    if node.clips_overflow() || node.estimated_height.is_some() {
         return;
     }
     // Its lines, from its content origin: a `nowrap` line wider than the box
@@ -450,7 +473,165 @@ fn descendant_reach(
             ly + inline.layout.height() as f64,
         );
     }
-    descend_into(tree, container_id, node, origin, reach);
+    descend_into(tree, container_id, node, origin, reach, live);
+}
+
+/// A scroll container's descendants' scrollable overflow below its own
+/// children (#2054), in its border-box frame: what [`descendant_reach`]
+/// finds under each child that contributes, the transformed boxes measured
+/// where they are drawn now.
+///
+/// css-overflow-3 §2.2: a box's scrollable overflow holds its descendants'
+/// unless a box between clips. Chrome 158 scrolls a `200x100` scroller to a
+/// `300px` box inside a `height: 50px` child; [`extend_with_child`] stops at
+/// the child, so the range was 0.
+///
+/// **Cost.** The walk is the container's whole subtree down to the boxes
+/// that clip, so it is kept, per container, until layout under the
+/// container changes ([`DeepOverflow`]): a read in between (each paint of
+/// its bar, each wheel event, each pointer move over it) is a lookup and a
+/// measure of the transformed boxes it found, whose transform may change
+/// with no layout.
+fn deep_overflow(tree: &NodeTree, container_id: RawNodeId) -> Reach {
+    tree.deep_overflow.reach(tree, container_id)
+}
+
+/// The walk [`deep_overflow`] keeps: the static part, and the transformed
+/// boxes found, which are measured on each read.
+fn walk_deep_overflow(tree: &NodeTree, container_id: RawNodeId) -> DeepEntry {
+    let mut reach = Reach::NONE;
+    let mut live = Some(Vec::new());
+    for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, container_id).iter() {
+        if let Some(child) = tree.get_live(child_id)
+            && (child.taffy_style_owned_by_contents_splice()
+                || crate::out_of_flow::contributes_to_scrollable_overflow(
+                    tree,
+                    container_id,
+                    child,
+                ))
+        {
+            descend_into(tree, container_id, child, (0.0, 0.0), &mut reach, &mut live);
+        }
+    }
+    DeepEntry {
+        reach,
+        live: live.unwrap_or_default(),
+    }
+}
+
+/// One container's kept [`walk_deep_overflow`].
+#[derive(Debug, Clone)]
+struct DeepEntry {
+    reach: Reach,
+    /// The transformed boxes the walk met, not entered: measured on each
+    /// read, where they are drawn ([`border_box_in`]).
+    live: Vec<RawNodeId>,
+}
+
+/// [`deep_overflow`]'s memo: each scroll container's walk, kept until layout
+/// under it changes (#2054).
+///
+/// Checked when `NodeTree::layout_epoch` has moved since the last read, and
+/// when a paint consumes the tree (before the lists it reads are drained): the
+/// entry of every container above a box whose geometry may have changed
+/// since the last paint consumed the tree is dropped — the boxes
+/// [`super::bar_watch_scrollers`] climbs from (a paint-dirty box moved,
+/// resized, repositioned, transformed or never painted, a parent a subtree
+/// left), and an IFC root whose lines were shaped again. Over-dropping costs
+/// a walk; every entry is dropped on a frame that restyled the whole document.
+/// A layout that moved nothing under a container, which is most of them in
+/// a page of several scrollers, keeps its entry.
+///
+/// Not seen: a transform added to a box the walk entered, with no layout,
+/// until the next layout that moves something under the container.
+#[derive(Debug, Default)]
+pub(crate) struct DeepOverflow {
+    state: std::cell::RefCell<DeepOverflowState>,
+}
+
+#[derive(Debug, Default)]
+struct DeepOverflowState {
+    /// The `layout_epoch` the entries were last checked against.
+    epoch: Option<u64>,
+    entries: std::collections::HashMap<RawNodeId, DeepEntry>,
+    /// Walks made, for the tests that pin the memo.
+    walks: u64,
+}
+
+impl DeepOverflow {
+    fn reach(&self, tree: &NodeTree, container_id: RawNodeId) -> Reach {
+        let mut state = self.state.borrow_mut();
+        if state.epoch != Some(tree.layout_epoch) {
+            state.epoch = Some(tree.layout_epoch);
+            if !state.entries.is_empty() {
+                Self::drop_moved(tree, &mut state.entries);
+            }
+        }
+        if !state.entries.contains_key(&container_id) {
+            let entry = walk_deep_overflow(tree, container_id);
+            state.walks += 1;
+            state.entries.insert(container_id, entry);
+        }
+        let entry = &state.entries[&container_id];
+        let mut reach = entry.reach;
+        for &id in &entry.live {
+            if let Some(drawn) = border_box_in(tree, id, container_id)
+                && (drawn.width() > 0.0 || drawn.height() > 0.0)
+            {
+                reach.grow(drawn.x0, drawn.x1, drawn.y1);
+            }
+        }
+        reach
+    }
+
+    /// Called by `NodeTree::consume_paint_dirty` before it drains the lists
+    /// [`Self::drop_moved`] reads and records the painted boxes it compares
+    /// against: what moved since the last paint is dropped here, so a read
+    /// after the paint (the bars it records, the next wheel event) cannot
+    /// find an entry the moves made stale and the lists no longer name.
+    pub(crate) fn before_paint_consumed(&self, tree: &NodeTree) {
+        let mut state = self.state.borrow_mut();
+        if !state.entries.is_empty() {
+            Self::drop_moved(tree, &mut state.entries);
+        }
+    }
+
+    /// Drop the entry of every container above a box whose geometry may
+    /// have moved (see [`DeepOverflow`]).
+    fn drop_moved(tree: &NodeTree, entries: &mut std::collections::HashMap<RawNodeId, DeepEntry>) {
+        if tree.whole_document_damaged {
+            entries.clear();
+            return;
+        }
+        let mut seen: std::collections::HashSet<RawNodeId> = std::collections::HashSet::new();
+        let mut climb = |from: RawNodeId, entries: &mut std::collections::HashMap<_, _>| {
+            let mut current = Some(from);
+            while let Some(id) = current {
+                if entries.is_empty() || !seen.insert(id) {
+                    break;
+                }
+                entries.remove(&id);
+                current = tree.get_live(id).and_then(|n| n.parent);
+            }
+        };
+        for &id in &tree.paint_dirty_nodes {
+            let Some(node) = tree.get(id) else { continue };
+            if node.text_layout.is_some() || super::geometry_may_have_moved(tree, node) {
+                climb(id, entries);
+            }
+        }
+        for &id in &tree.bar_check_parents {
+            if tree.nodes.contains(id) {
+                climb(id, entries);
+            }
+        }
+    }
+
+    /// How many walks the memo has made: a test reads it to see a read
+    /// answered from the memo (`testing::deep_overflow_walks`).
+    pub(crate) fn walks(&self) -> u64 {
+        self.state.borrow().walks
+    }
 }
 
 /// [`content_extents`] without the absolute boxes listed for `node_id` from
@@ -463,7 +644,26 @@ pub(crate) fn content_extents_in_flow(tree: &NodeTree, node_id: RawNodeId) -> (f
 }
 
 fn content_extents_with(tree: &NodeTree, node_id: RawNodeId, listed: bool) -> (f64, f64) {
-    let rounded = measure_content(tree, node_id, listed, None);
+    let mut rounded = measure_content(tree, node_id, listed, None);
+    // The descendants' overflow below the children (#2054), of a scroll
+    // container: like the listed absolutes, it only adds to the range, so
+    // layout's clamp asks the in-flow range first and this only past it.
+    if listed
+        && let Some(node) = tree.get(node_id)
+        && (node.scrolls_x() || node.scrolls_y())
+    {
+        let deep = deep_overflow(tree, node_id);
+        if deep != Reach::NONE {
+            let cs = &node.computed_style;
+            // Measured where it is drawn: no end padding (Chrome 158), as
+            // `ContainerFrame::grow_drawn` takes it off.
+            rounded.reach.grow(
+                deep.left + cs.padding_left.to_px() as f64,
+                deep.right - cs.padding_right.to_px() as f64,
+                deep.bottom - cs.padding_bottom.to_px() as f64,
+            );
+        }
+    }
     if let Some(node) = tree.get(node_id)
         && (node.scrolls_x() || node.scrolls_y())
         && let Some(extents) = scroller_extents(tree, node_id, node, &rounded)

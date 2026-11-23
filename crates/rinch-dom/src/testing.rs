@@ -336,6 +336,13 @@ fn geometry_json(tree: &NodeTree, node: &crate::node::Node, id: RawNodeId) -> (V
     )
 }
 
+/// How many times the scroll ranges have walked a scroll container's
+/// descendants (#2054): a test reads it to see a range answered from the
+/// memo rather than walked again.
+pub fn deep_overflow_walks(tree: &NodeTree) -> u64 {
+    tree.deep_overflow.walks()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::RinchDocument;

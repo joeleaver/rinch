@@ -662,10 +662,32 @@ the listed boxes, which only add to it — and measures them only for an offset
 past that, so a relayout of a long list scrolled anywhere but its end measures
 none of them (`abs_badge_relayout`). An absolute box with no area counts nothing, here and as a child (Chrome
 156: `0x500`, `10x0`, `0x0` boxes scroll nothing). Rows:
-`tests/abs_scroll_range_770_tests.rs`. Still not counted in a scroll
-container's range: an **in-flow** descendant's overflow below the first box
-(#2054), so a box that overflows its `height: 50px` parent scrolls nothing
-where its absolute twin now does.
+`tests/abs_scroll_range_770_tests.rs`.
+
+**In-flow boxes below the first box (#2054).** A box that overflows its own
+parent inside a scroller — a 300px box in a `height: 50px` child — is in the
+range, as in Chrome 158 (it scrolled 0; its absolute twin did since #770):
+`content_extents` joins `scrollbar::deep_overflow` to what the walk over the
+children measured, where it is drawn (no end padding, no margins). The walk
+(`descendant_reach`, shared with `scroll_extents` for a box that does not
+scroll) goes down through every box that neither clips nor is transformed nor
+is collapsed by block virtualization (`estimated_height`: its estimate stands
+for its content); a fixed box, and an absolute one contained above the
+scroller, count nothing; a transformed box is listed and measured where it is
+drawn on each read. **Cost:** the walk is the subtree, so it is kept per
+container (`NodeTree::deep_overflow`, `scrollbar::DeepOverflow`): when
+`layout_epoch` has moved, the entries of the containers above every box whose
+geometry may have changed since the last paint consumed the tree
+(`geometry_may_have_moved`, the boxes `bar_watch_scrollers` climbs from, plus
+any paint-dirty IFC root whose lines were shaped again, plus
+`bar_check_parents`) are dropped, and all of them on a whole-document restyle.
+A read in between — each bar paint, wheel event and pointer move — is a lookup
+and a measure of the listed transformed boxes. Layout's clamp asks the in-flow
+range first (`content_extents_in_flow` leaves this out, as it leaves out the
+listed absolutes), so a relayout scrolled within it walks nothing. Not seen
+until something under the container moves: a transform newly given, with no
+layout, to a box the walk entered. Pins: `tests/geometry_queries_2257_tests.rs`
+(`SCROLLERS`, and the walk count `testing::deep_overflow_walks`).
 
 **A box that does not scroll (#2223).** It has no range for a bar or the
 wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it
