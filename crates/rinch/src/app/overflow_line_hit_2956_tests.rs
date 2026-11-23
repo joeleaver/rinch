@@ -6,10 +6,12 @@
 //!
 //! Each case is set in Inter at a declared `font: 16px/20px` in a `400px`
 //! host at the origin (`body { margin: 0 }`), and the answers are Chrome 158
-//! headless at 1x on the same markup. `"host"` is the host; `"-"` is the
-//! root above it (rinch's body).
+//! headless at 1x on the same markup; rinch's answer is the hit test's,
+//! refined to the element under the glyphs as a press is delivered
+//! (`event_target_at`). `"host"` is the host; `"-"` is the root above it
+//! (rinch's body).
 
-use super::hit_test;
+use super::{event_target_at, hit_test};
 use rinch_core::dom::DomDocument;
 
 const FACE: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
@@ -74,6 +76,18 @@ fn document(markup: &str) -> (rinch_dom::RinchDocument, u64) {
     (doc, host.0)
 }
 
+/// The element a press at `(x, y)` reaches, as Chrome's `elementFromPoint`
+/// names it: the hit, and inside an IFC root the element whose text is under
+/// the point (`event_target_at`, as the click path delivers it).
+fn element_at(doc: &rinch_dom::RinchDocument, x: f32, y: f32) -> Option<u64> {
+    let hit = hit_test(&doc.tree, x, y)?;
+    let Some(target) = event_target_at(&doc.tree, hit, x, y) else {
+        return Some(hit);
+    };
+    let node = doc.tree.get(target)?;
+    Some(if node.is_text() { node.parent? } else { target })
+}
+
 fn name(doc: &rinch_dom::RinchDocument, host: u64, hit: Option<u64>) -> String {
     match hit {
         Some(h) if h == host => "host".into(),
@@ -91,16 +105,18 @@ fn name(doc: &rinch_dom::RinchDocument, host: u64, hit: Option<u64>) -> String {
 ///
 /// Mutants: the old bounds test (border box or inline padding only) — every
 /// `a`/`s` point over an overflowing line answers what is behind it;
-/// accepting the line in a box that clips — the `overflow: hidden` point
-/// answers `a`; leaving the lines out of `flow_extent` — the nested case's
-/// `(5, 30)` is pruned at the 10px box.
+/// leaving the lines out of `flow_extent` — the same points are pruned
+/// before the bounds test is reached. (Accepting the line in a box that
+/// clips is not reachable here: a clipping box's flow extent is its own box,
+/// so the prune skips it first, and the `overflow: hidden` case pins the
+/// answer, not the guard.)
 #[test]
 fn text_on_an_overflowing_line_is_hit_as_chrome_158_hits_it() {
     let mut wrong = Vec::new();
     for &(markup, probes) in CASES {
         let (doc, host) = document(markup);
         for &(x, y, want) in probes {
-            let got = name(&doc, host, hit_test(&doc.tree, x, y));
+            let got = name(&doc, host, element_at(&doc, x, y));
             if got != want {
                 wrong.push(format!(
                     "{markup}\n  ({x}, {y}): rinch {got:?}, Chrome {want:?}"

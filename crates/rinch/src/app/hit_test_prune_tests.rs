@@ -1075,8 +1075,18 @@ fn reference_hit_test_node(
         && !clip_x
         && !clip_y
         && super::inline_box_outside(tree, node, x - nx, y - ny);
+    // Text on a line that overflows the root's box (#2956): Chrome 158 hits
+    // the line's text, as it draws it, wherever the line is. Not a root that
+    // clips, whose overflow is not drawn. `flow_extent` holds the lines, so
+    // the prune reaches them.
+    let on_overflowing_line = !point_in_bounds
+        && !in_inline_box
+        && !clip_x
+        && !clip_y
+        && node.text_layout.is_some()
+        && super::visible_text_at(tree, node, x - nx, y - ny);
     if clipped.is_some()
-        || !(point_in_bounds || in_inline_box)
+        || !(point_in_bounds || in_inline_box || on_overflowing_line)
         || (hidden && !super::visible_text_at(tree, node, x - nx, y - ny))
     {
         return None;
