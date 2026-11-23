@@ -605,6 +605,7 @@ where
     /// the first fonts of its stack lack (a menu's `✓`) otherwise looks them
     /// up one by one the first time, on the UI thread: a panel's first menu
     /// took 80–560 ms to show.
+    #[cfg(feature = "windowing")]
     pub fn font_warmup(mut self, when: crate::font::FontWarmup) -> Self {
         self.font_warmup = when;
         self
