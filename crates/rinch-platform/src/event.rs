@@ -329,8 +329,9 @@ pub enum AppAction {
     /// Select all choice itself (issue #813). Emitted only under
     /// `TextContextMenuPresentation::Shell`; the default presentation is the
     /// runtime's own DOM menu, which emits nothing. The shell reads
-    /// `RinchApp::text_edit_state` for the enabled states and the anchor, and
-    /// runs a chosen item through `RinchApp::perform_text_edit`.
+    /// `RinchApp::text_edit_state` for the enabled states, the anchor and, on
+    /// a misspelled word, its suggestions (`spelling`, #2862), and runs a
+    /// chosen item through `RinchApp::perform_text_edit`.
     ShowTextContextMenu,
     /// Initiate a window resize drag from an edge or corner.
     DragResizeWindow(ResizeDirection),

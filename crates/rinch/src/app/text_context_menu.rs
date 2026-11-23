@@ -24,6 +24,19 @@
 //! Precedence is the existing one: a live `data-oncontextmenu` on the pressed
 //! node or an ancestor wins, and the built-in menu is consulted only when
 //! nothing handled the press.
+//!
+//! **Spelling (#2862, stage 3).** A right press on a word the spellchecker
+//! marked selects the word (Chrome's rule, measured in Chrome 158) and the
+//! menu opens with its suggestions on top (up to
+//! [`SpellcheckConfig::menu_suggestions`](rinch_spell::runtime::SpellcheckConfig::menu_suggestions),
+//! Chrome's three), then "Add to dictionary", then the edit rows.
+//! [`TextEditState::spelling`] carries them to a shell, and
+//! [`TextEditAction::Suggestion`] / [`TextEditAction::AddToDictionary`] run
+//! them. The suggestions are computed at the press on the suggestion thread:
+//! the press waits up to
+//! [`menu_suggest_wait_ms`](rinch_spell::runtime::SpellcheckConfig::menu_suggest_wait_ms)
+//! for them, and if they come later the open menu is filled in when they
+//! arrive.
 
 use super::*;
 use rinch_core::dom::NodeId;
@@ -52,7 +65,7 @@ use rinch_core::dom::NodeId;
 /// A `disabled` field never takes the keyboard (issue #315), so it never
 /// reaches here; a `readonly` one does, with `can_cut` and `can_paste` off —
 /// and so does a read-only editor (`EditorHandle::set_read_only`), the same way.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct TextEditState {
     pub can_cut: bool,
@@ -70,9 +83,62 @@ pub struct TextEditState {
     /// measured for it (a `password` field through its bullets), which is why
     /// [`RinchApp::text_edit_state`] takes `&mut self`.
     pub anchor: (f32, f32, f32, f32),
+    /// The misspelled word the selection is, when a context gesture landed
+    /// on a word the spellchecker marked (and selected it), with what the
+    /// menu offers for it. `None` otherwise, and again once the selection or
+    /// the word changes.
+    pub spelling: Option<TextSpelling>,
 }
 
-/// One of the four built-in text-editing operations.
+/// A misspelled word the text context menu offers corrections for (#2862):
+/// the spelling half of [`TextEditState`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TextSpelling {
+    /// The word, as the field or editor holds it.
+    pub word: String,
+    /// The corrections, best first, at most
+    /// [`SpellcheckConfig::menu_suggestions`](rinch_spell::runtime::SpellcheckConfig::menu_suggestions).
+    /// [`TextEditAction::Suggestion`]`(i)` puts `suggestions[i]` in the
+    /// word's place.
+    pub suggestions: Vec<String>,
+    /// The suggestions are still being computed: `suggestions` is empty for
+    /// now and fills in when they arrive (the DOM menu redraws itself; a
+    /// shell reads the state again).
+    pub suggestions_pending: bool,
+    /// Whether "Add to dictionary" is offered
+    /// ([`SpellcheckConfig::menu_add_to_dictionary`](rinch_spell::runtime::SpellcheckConfig::menu_add_to_dictionary)).
+    pub can_add_to_dictionary: bool,
+    /// Whether a disabled "No spelling suggestions" row stands in for an
+    /// empty list
+    /// ([`SpellcheckConfig::menu_no_suggestions_row`](rinch_spell::runtime::SpellcheckConfig::menu_no_suggestions_row)).
+    pub show_no_suggestions: bool,
+}
+
+/// The label of the disabled row that stands in for no suggestions, Chrome's
+/// wording (`IDS_CONTENT_CONTEXT_NO_SPELLING_SUGGESTIONS`).
+pub const NO_SUGGESTIONS_LABEL: &str = "No spelling suggestions";
+
+/// The label of the "Add to dictionary" row, Chrome's.
+pub const ADD_TO_DICTIONARY_LABEL: &str = "Add to dictionary";
+
+/// The misspelled word a context gesture landed on: what
+/// [`TextEditState::spelling`] reports while the word stays selected.
+pub(crate) struct SpellTarget {
+    pub target: FocusTarget,
+    /// The word's byte range in a field's value, or its document range in
+    /// the editor.
+    pub range: std::ops::Range<usize>,
+    pub word: String,
+    pub suggestions: Vec<String>,
+    pub pending: bool,
+    pub request: u64,
+    pub add: bool,
+    pub no_row: bool,
+}
+
+/// One of the built-in text-editing operations: the four edit rows, and the
+/// two spelling rows a misspelled word adds (#2862).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum TextEditAction {
@@ -80,6 +146,15 @@ pub enum TextEditAction {
     Copy,
     Paste,
     SelectAll,
+    /// Replace the misspelled word with suggestion `i` of
+    /// [`TextEditState::spelling`], as one edit the user can undo, through the
+    /// path typing takes (so `oninput` fires, and the editor's `on_change`).
+    Suggestion(usize),
+    /// Add the misspelled word to the personal dictionary
+    /// ([`rinch_spell::runtime::add_to_dictionary`]): the app's dictionary
+    /// listener hears of it, and every mark of it goes, in every field and
+    /// editor.
+    AddToDictionary,
 }
 
 impl TextEditAction {
@@ -91,12 +166,16 @@ impl TextEditAction {
         TextEditAction::SelectAll,
     ];
 
+    /// An edit row's label (the spelling rows are labelled by
+    /// [`RinchApp::open_text_context_menu`]).
     fn label(self) -> &'static str {
         match self {
             TextEditAction::Cut => "Cut",
             TextEditAction::Copy => "Copy",
             TextEditAction::Paste => "Paste",
             TextEditAction::SelectAll => "Select all",
+            TextEditAction::Suggestion(_) => "",
+            TextEditAction::AddToDictionary => ADD_TO_DICTIONARY_LABEL,
         }
     }
 
@@ -107,6 +186,7 @@ impl TextEditAction {
             TextEditAction::Copy => "C",
             TextEditAction::Paste => "V",
             TextEditAction::SelectAll => "A",
+            TextEditAction::Suggestion(_) | TextEditAction::AddToDictionary => "",
         }
     }
 
@@ -116,6 +196,14 @@ impl TextEditAction {
             TextEditAction::Copy => state.can_copy,
             TextEditAction::Paste => state.can_paste,
             TextEditAction::SelectAll => state.can_select_all,
+            TextEditAction::Suggestion(i) => state
+                .spelling
+                .as_ref()
+                .is_some_and(|s| i < s.suggestions.len()),
+            TextEditAction::AddToDictionary => state
+                .spelling
+                .as_ref()
+                .is_some_and(|s| s.can_add_to_dictionary),
         }
     }
 }
@@ -143,6 +231,25 @@ pub(crate) struct TextMenuPanel {
     pub panel_id: u64,
     /// `(action, row node id)` in menu order.
     pub rows: Vec<(TextEditAction, u64)>,
+    /// The spelling rows, built at the first open on a misspelled word (an
+    /// app that never has one never builds them), kept and hidden like the
+    /// panel.
+    pub spell: Option<SpellRows>,
+}
+
+/// The spelling rows above the edit rows: the suggestions (one row per
+/// suggestion, grown as needed), the "No spelling suggestions" row, a
+/// separator, "Add to dictionary", and the separator above the edit rows.
+pub(crate) struct SpellRows {
+    /// `(row, its label's text node)`, in order.
+    suggestions: Vec<(u64, u64)>,
+    none_row: u64,
+    sep_top: u64,
+    add_row: u64,
+    sep_bottom: u64,
+    /// Whether any of them is showing (a menu with no spelling hides them
+    /// only once).
+    shown: bool,
 }
 
 /// The open DOM menu: which target, the rows' states at open, the highlight.
@@ -157,6 +264,12 @@ pub(crate) struct OpenTextMenu {
     /// The highlighted row, if any. None until the pointer or an arrow key
     /// picks one, as a native menu opens with nothing highlighted.
     pub highlighted: Option<usize>,
+    /// Where it was opened, and in what viewport: suggestions that arrive
+    /// after the menu opened redraw it there.
+    pub at: (f32, f32),
+    pub viewport: (f32, f32),
+    /// The suggestion request its spelling rows show, if any.
+    pub spell_request: Option<u64>,
 }
 
 pub(crate) struct TextMenuRow {
@@ -353,6 +466,7 @@ impl RinchApp {
                     can_paste: writable && clipboard,
                     can_select_all: has_content,
                     anchor,
+                    spelling: self.live_spelling(),
                 })
             }
             #[cfg(feature = "windowing")]
@@ -382,6 +496,7 @@ impl RinchApp {
                     can_paste: writable && cfg!(feature = "clipboard"),
                     can_select_all,
                     anchor,
+                    spelling: self.live_spelling(),
                 })
             }
             _ => None,
@@ -401,7 +516,16 @@ impl RinchApp {
     /// an action its state forbids is harmless anyway — a read-only field
     /// refuses the mutation at the command level, and cutting nothing cuts
     /// nothing — which is exactly what the chord does in the same state.
+    ///
+    /// [`TextEditAction::Suggestion`] and [`TextEditAction::AddToDictionary`]
+    /// act on [`TextEditState::spelling`]'s word, and do nothing when there is
+    /// none (the word is no longer selected, or no longer marked).
     pub fn perform_text_edit(&mut self, action: TextEditAction) -> Vec<AppAction> {
+        match action {
+            TextEditAction::Suggestion(i) => return self.replace_misspelling(i),
+            TextEditAction::AddToDictionary => return self.add_misspelling_to_dictionary(),
+            _ => {}
+        }
         match self.focus_target {
             FocusTarget::Input(_) => {
                 match action {
@@ -411,6 +535,7 @@ impl RinchApp {
                         self.handle_paste();
                     }
                     TextEditAction::SelectAll => self.handle_select_all(),
+                    TextEditAction::Suggestion(_) | TextEditAction::AddToDictionary => {}
                 }
                 self.scene_dirty = true;
                 vec![AppAction::RequestRedraw]
@@ -440,6 +565,7 @@ impl RinchApp {
                     TextEditAction::SelectAll => {
                         handle.command("selectAll");
                     }
+                    TextEditAction::Suggestion(_) | TextEditAction::AddToDictionary => {}
                 }
                 self.refresh_editor_overlays();
                 self.scene_dirty = true;
@@ -453,7 +579,8 @@ impl RinchApp {
     /// run the ordinary right-press path (focus and the #316 claim rule; a
     /// right press clicks no `data-rid`, #1093) and then apply the **caret rule** — a press outside the current
     /// selection moves the caret to the press point, a press inside it keeps
-    /// the selection — and answer the target's state. `None` when the press is
+    /// the selection, and a press on a misspelled word selects the word
+    /// (#2862) — and answer the target's state. `None` when the press is
     /// not on a text target, or when the target refused the keyboard (a
     /// `disabled` field, issue #315).
     ///
@@ -742,6 +869,9 @@ impl RinchApp {
                     self.sync_input_cursor_to_dom();
                     self.scene_dirty = true;
                 }
+                // A press on a misspelled word selects it (#2862).
+                self.text_spell = None;
+                self.spell_select_in_input(node_id, offset);
                 self.text_edit_state()
             }
             #[cfg(feature = "windowing")]
@@ -763,6 +893,9 @@ impl RinchApp {
                 self.set_focus_target(FocusTarget::Editor(container));
                 self.editor_goal_x = None;
                 self.apply_editor_context_press(&press)?;
+                // A press on a misspelled word selects it (#2862).
+                self.text_spell = None;
+                self.spell_select_in_editor(container, &press);
                 // A press that missed every textblock keeps the selection.
                 self.refresh_editor_overlays();
                 self.resolve_and_repaint(vp_w, vp_h);
@@ -841,6 +974,15 @@ impl RinchApp {
         d.set_style(panel, "left", &format!("{x}px"));
         d.set_style(panel, "top", &format!("{y}px"));
         let mut items = Vec::with_capacity(rows.len());
+        // The spelling rows first (#2862), when the selection is a
+        // misspelled word; hidden again when it is not.
+        let spell_request = state
+            .spelling
+            .as_ref()
+            .and_then(|_| self.text_spell.as_ref().map(|t| t.request));
+        if let Some(p) = self.text_menu_panel.as_mut() {
+            Self::show_spell_rows(&mut d, p, state.spelling.as_ref(), &mut items);
+        }
         for (action, node_id) in rows {
             let enabled = action.enabled_in(&state);
             let row = NodeId(node_id);
@@ -864,6 +1006,9 @@ impl RinchApp {
             panel_id,
             items,
             highlighted: None,
+            at: (x, y),
+            viewport: (vp_w, vp_h),
+            spell_request,
         });
 
         // Join the dismiss stack at open time (#671), above whatever overlay
@@ -965,7 +1110,129 @@ impl RinchApp {
         TextMenuPanel {
             panel_id: panel.0,
             rows,
+            spell: None,
         }
+    }
+
+    /// One plain row, `label` in a `rinch-tcm-label`, hidden.
+    fn build_spell_row(d: &mut RinchDocument, class: &str, label: &str) -> (NodeId, NodeId) {
+        let row = d.create_element("div");
+        d.set_attribute(row, "class", class);
+        d.set_style(row, "display", "none");
+        let span = d.create_element("span");
+        d.set_attribute(span, "class", "rinch-tcm-label");
+        let text = d.create_text(label);
+        d.append_child(span, text);
+        d.append_child(row, span);
+        (row, text)
+    }
+
+    fn build_spell_sep(d: &mut RinchDocument) -> NodeId {
+        let sep = d.create_element("div");
+        d.set_attribute(sep, "class", "rinch-tcm-sep");
+        d.set_style(sep, "display", "none");
+        let line = d.create_element("div");
+        d.set_attribute(line, "class", "rinch-tcm-sep-line");
+        d.append_child(sep, line);
+        sep
+    }
+
+    /// Show the spelling rows for `spelling` (or hide them for `None`), adding
+    /// the enabled ones to `items` in menu order. Built at the first word
+    /// that needs them; a suggestion row is added when a list is longer than
+    /// any before it, and kept.
+    fn show_spell_rows(
+        d: &mut RinchDocument,
+        panel: &mut TextMenuPanel,
+        spelling: Option<&TextSpelling>,
+        items: &mut Vec<TextMenuRow>,
+    ) {
+        let Some(spelling) = spelling else {
+            if let Some(rows) = panel.spell.as_mut().filter(|r| r.shown) {
+                let all = rows.suggestions.iter().map(|&(row, _)| row).chain([
+                    rows.none_row,
+                    rows.sep_top,
+                    rows.add_row,
+                    rows.sep_bottom,
+                ]);
+                for id in all {
+                    d.set_style(NodeId(id), "display", "none");
+                }
+                rows.shown = false;
+            }
+            return;
+        };
+        let pid = NodeId(panel.panel_id);
+        let first_edit = NodeId(panel.rows[0].1);
+        let rows = panel.spell.get_or_insert_with(|| {
+            let (none_row, _) = Self::build_spell_row(
+                d,
+                "rinch-tcm-item rinch-tcm-no-suggestions",
+                NO_SUGGESTIONS_LABEL,
+            );
+            d.set_attribute(none_row, "data-disabled", "");
+            let sep_top = Self::build_spell_sep(d);
+            let (add_row, _) = Self::build_spell_row(
+                d,
+                "rinch-tcm-item rinch-tcm-add-to-dictionary",
+                ADD_TO_DICTIONARY_LABEL,
+            );
+            d.set_attribute(add_row, "data-tcm-item", "add");
+            let sep_bottom = Self::build_spell_sep(d);
+            for id in [none_row, sep_top, add_row, sep_bottom] {
+                d.insert_before(pid, id, first_edit);
+            }
+            SpellRows {
+                suggestions: Vec::new(),
+                none_row: none_row.0,
+                sep_top: sep_top.0,
+                add_row: add_row.0,
+                sep_bottom: sep_bottom.0,
+                shown: false,
+            }
+        });
+        while rows.suggestions.len() < spelling.suggestions.len() {
+            let (row, text) = Self::build_spell_row(d, "rinch-tcm-item rinch-tcm-suggestion", "");
+            d.set_attribute(row, "data-tcm-item", "suggestion");
+            d.insert_before(pid, row, NodeId(rows.none_row));
+            rows.suggestions.push((row.0, text.0));
+        }
+        let show = |d: &mut RinchDocument, id: u64, on: bool, display: &str| {
+            d.set_style(NodeId(id), "display", if on { display } else { "none" });
+        };
+        for (i, &(row, text)) in rows.suggestions.iter().enumerate() {
+            match spelling.suggestions.get(i) {
+                Some(word) => {
+                    d.set_text_content(NodeId(text), word);
+                    d.remove_attribute(NodeId(row), "data-highlighted");
+                    show(d, row, true, "flex");
+                    items.push(TextMenuRow {
+                        action: TextEditAction::Suggestion(i),
+                        node_id: row,
+                        enabled: true,
+                    });
+                }
+                None => show(d, row, false, "flex"),
+            }
+        }
+        let none = spelling.suggestions.is_empty()
+            && !spelling.suggestions_pending
+            && spelling.show_no_suggestions;
+        show(d, rows.none_row, none, "flex");
+        let above = none || !spelling.suggestions.is_empty();
+        let add = spelling.can_add_to_dictionary;
+        show(d, rows.sep_top, above && add, "block");
+        show(d, rows.add_row, add, "flex");
+        if add {
+            d.remove_attribute(NodeId(rows.add_row), "data-highlighted");
+            items.push(TextMenuRow {
+                action: TextEditAction::AddToDictionary,
+                node_id: rows.add_row,
+                enabled: true,
+            });
+        }
+        show(d, rows.sep_bottom, above || add, "block");
+        rows.shown = true;
     }
 
     /// Whether the open menu's target still holds the keyboard and is still in
@@ -1022,17 +1289,18 @@ impl RinchApp {
         let mut cur = self.shared_hit(&d, x, y);
         // A row is a `data-tcm-item` **inside the panel**: one anywhere else
         // (pasted into a document, an app's own markup) is no row of this menu.
+        // It is found by its node among the open rows (the spelling rows
+        // shift the edit rows' places, #2862).
         let mut row = None;
         while let Some(nid) = cur {
             let Some(node) = d.tree.get(nid) else { break };
-            if row.is_none() {
-                row = node
-                    .attributes
-                    .get("data-tcm-item")
-                    .and_then(|s| s.parse::<usize>().ok());
+            if row.is_none() && node.attributes.contains_key("data-tcm-item") {
+                row = Some(nid);
             }
             if nid == open.panel_id {
-                return row.map_or(MenuHit::InsidePanel, MenuHit::Item);
+                return row
+                    .and_then(|r| open.items.iter().position(|i| i.node_id == r))
+                    .map_or(MenuHit::InsidePanel, MenuHit::Item);
             }
             cur = node.parent;
         }
@@ -1252,6 +1520,245 @@ impl RinchApp {
         }
         self.scene_dirty = true;
         true
+    }
+}
+
+// ── Spelling (#2862, stage 3) ───────────────────────────────────────────────
+
+impl RinchApp {
+    /// [`TextEditState::spelling`]: the misspelled word the last context
+    /// gesture selected, while it is still the selection and still marked.
+    fn live_spelling(&self) -> Option<TextSpelling> {
+        let t = self.live_spell_target()?;
+        Some(TextSpelling {
+            word: t.word.clone(),
+            suggestions: t.suggestions.clone(),
+            suggestions_pending: t.pending,
+            can_add_to_dictionary: t.add,
+            show_no_suggestions: t.no_row,
+        })
+    }
+
+    fn live_spell_target(&self) -> Option<&SpellTarget> {
+        let t = self.text_spell.as_ref()?;
+        if t.target != self.focus_target {
+            return None;
+        }
+        match t.target {
+            FocusTarget::Input(id) => {
+                let state = self.focused_input_state.as_ref()?;
+                if state.selection.start().0 != t.range.start
+                    || state.selection.end().0 != t.range.end
+                {
+                    return None;
+                }
+                let text = state.document.to_text();
+                (text.get(t.range.clone()) == Some(t.word.as_str())
+                    && self.spell_misspelling_at(id, t.range.start, &text) == Some(t.range.clone()))
+                .then_some(t)
+            }
+            #[cfg(feature = "windowing")]
+            FocusTarget::Editor(container) => {
+                let handle = crate::editor::editor_for_doc(self.doc_key(), container)?;
+                let selection = handle.selection();
+                let m = handle.misspelling_at(rinch_editor_core::Pos(t.range.start))?;
+                (selection.from().0 == t.range.start
+                    && selection.to().0 == t.range.end
+                    && m.from.0 == t.range.start
+                    && m.to.0 == t.range.end
+                    && m.word == t.word)
+                    .then_some(t)
+            }
+            _ => None,
+        }
+    }
+
+    /// After the caret rule in a field: a press at byte `offset` of a word
+    /// the spellchecker marked selects the word (Chrome's rule), unless the
+    /// press kept a selection that is something else (a press inside a wider
+    /// selection keeps it and offers no spelling, as in Chrome), and starts
+    /// its suggestions.
+    fn spell_select_in_input(&mut self, node_id: u64, offset: usize) {
+        if self.spelling.is_empty() {
+            return;
+        }
+        let Some(state) = self.focused_input_state.as_ref() else {
+            return;
+        };
+        let text = state.document.to_text();
+        let Some(range) = self.spell_misspelling_at(node_id, offset, &text) else {
+            return;
+        };
+        let (start, end) = (state.selection.start().0, state.selection.end().0);
+        if !state.selection.is_cursor() && (start, end) != (range.start, range.end) {
+            return;
+        }
+        let word = text[range.clone()].to_owned();
+        if let Some(state) = self.focused_input_state.as_mut() {
+            state.selection = Selection::new(range.start, range.end);
+        }
+        self.sync_input_cursor_to_dom();
+        self.scene_dirty = true;
+        self.text_spell = self.new_spell_target(FocusTarget::Input(node_id), range, word);
+    }
+
+    /// The editor's half of [`Self::spell_select_in_input`].
+    #[cfg(feature = "windowing")]
+    fn spell_select_in_editor(&mut self, container: u64, press: &EditorContextPress) {
+        let Some(EditorPressAt::Pos(pos)) = press.at else {
+            return;
+        };
+        let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) else {
+            return;
+        };
+        let Some(m) = handle.misspelling_at(pos) else {
+            return;
+        };
+        let selection = handle.selection();
+        if !selection.is_empty() && (selection.from(), selection.to()) != (m.from, m.to) {
+            return;
+        }
+        handle.set_selection(rinch_editor_core::Selection::text(m.from, m.to));
+        self.text_spell =
+            self.new_spell_target(FocusTarget::Editor(container), m.from.0..m.to.0, m.word);
+    }
+
+    /// The word's menu entry, its suggestions asked for. They are computed on
+    /// the one suggestion thread ([`rinch_spell::runtime::suggest`], which
+    /// drops a request a newer one supersedes, so repeated presses never pile
+    /// up), and the press waits up to
+    /// [`menu_suggest_wait_ms`](rinch_spell::runtime::SpellcheckConfig::menu_suggest_wait_ms)
+    /// for them; later ones arrive through the app's inbox
+    /// ([`Self::text_spell_arrived`]). Under inline jobs (tests, wasm) they are
+    /// computed here.
+    fn new_spell_target(
+        &mut self,
+        target: FocusTarget,
+        range: std::ops::Range<usize>,
+        word: String,
+    ) -> Option<SpellTarget> {
+        let session = rinch_spell::runtime::session()?;
+        self.text_spell_requests += 1;
+        let request = self.text_spell_requests;
+        let max = session.menu_suggestions();
+        let checker = session.loaded_checker().filter(|_| max > 0);
+        let (suggestions, pending) = match checker {
+            None => (Vec::new(), false),
+            Some(checker) => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let sender = self.app_work_sender();
+                rinch_spell::runtime::suggest(checker, word.clone(), max, move |found| {
+                    // Inline, the receiver below takes it and the inbox copy
+                    // finds the target no longer pending.
+                    let _ = tx.send(found.clone());
+                    sender.send(move |app| app.text_spell_arrived(request, found));
+                });
+                let wait =
+                    std::time::Duration::from_millis(u64::from(session.menu_suggest_wait_ms()));
+                match rx.recv_timeout(wait) {
+                    Ok(found) => (found, false),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (Vec::new(), true),
+                    // Superseded unrun (another window's press): none.
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (Vec::new(), false),
+                }
+            }
+        };
+        Some(SpellTarget {
+            target,
+            range,
+            word,
+            suggestions,
+            pending,
+            request,
+            add: session.menu_add_to_dictionary(),
+            no_row: session.menu_no_suggestions_row(),
+        })
+    }
+
+    /// Suggestions that took longer than the press's wait arrived: fill them
+    /// in, and redraw the menu that is waiting for them.
+    pub(crate) fn text_spell_arrived(&mut self, request: u64, found: Vec<String>) {
+        let Some(t) = self.text_spell.as_mut() else {
+            return;
+        };
+        if t.request != request || !t.pending {
+            return;
+        }
+        t.suggestions = found;
+        t.pending = false;
+        if let Some(open) = &self.open_text_menu
+            && open.spell_request == Some(request)
+        {
+            let ((x, y), (w, h)) = (open.at, open.viewport);
+            // The row the user had arrowed or pointed onto stays highlighted
+            // (by its action: the new rows shift its place).
+            let kept = open.highlighted.map(|i| open.items[i].action);
+            self.open_text_context_menu(x, y, w, h);
+            let at = kept.and_then(|action| {
+                self.open_text_menu
+                    .as_ref()?
+                    .items
+                    .iter()
+                    .position(|r| r.action == action && r.enabled)
+            });
+            if at.is_some() {
+                self.set_text_menu_highlight(at);
+                self.resolve_and_repaint(w, h);
+            }
+        }
+    }
+
+    /// [`TextEditAction::Suggestion`]: the word is selected (the spelling
+    /// state says so), so the suggestion goes in as typed text replacing the
+    /// selection, through the path a typed key takes: one undo step, `oninput`
+    /// (the field) or `on_change` (the editor), the caret after it, and the
+    /// word's mark dropped by the edit itself.
+    fn replace_misspelling(&mut self, index: usize) -> Vec<AppAction> {
+        let Some(t) = self.live_spell_target() else {
+            return Vec::new();
+        };
+        let Some(replacement) = t.suggestions.get(index).cloned() else {
+            return Vec::new();
+        };
+        let target = t.target;
+        self.text_spell = None;
+        match target {
+            FocusTarget::Input(_) => {
+                self.handle_input_edit_command(EditCommand::InsertText(replacement));
+            }
+            #[cfg(feature = "windowing")]
+            FocusTarget::Editor(container) => {
+                if let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) {
+                    handle.insert_text(&replacement);
+                }
+                self.refresh_editor_overlays();
+            }
+            _ => return Vec::new(),
+        }
+        self.scene_dirty = true;
+        vec![AppAction::RequestRedraw]
+    }
+
+    /// [`TextEditAction::AddToDictionary`]: the word joins the personal
+    /// dictionary; every mark of it goes now, in every field (here) and every
+    /// editor (their own listeners). The selection stays, as in Chrome.
+    fn add_misspelling_to_dictionary(&mut self) -> Vec<AppAction> {
+        let Some(word) = self
+            .live_spell_target()
+            .filter(|t| t.add)
+            .map(|t| t.word.clone())
+        else {
+            return Vec::new();
+        };
+        self.text_spell = None;
+        if !rinch_spell::runtime::add_to_dictionary(&word) {
+            return Vec::new();
+        }
+        self.spell_words_accepted();
+        #[cfg(feature = "windowing")]
+        self.refresh_editor_overlays();
+        self.scene_dirty = true;
+        vec![AppAction::RequestRedraw]
     }
 }
 
