@@ -6,12 +6,12 @@
 //! matched on desktop, and neither did `(… no-preference)` or
 //! `not (… reduce)`, which a browser matches whenever the OS asks for nothing.
 //!
-//! [`rewrite`] runs on every author sheet before Stylo parses it, after
+//! `rewrite` runs on every author sheet before Stylo parses it, after
 //! `webkit_box::rewrite`. In each `@media` prelude it replaces a
 //! `(prefers-reduced-motion)`, `(prefers-reduced-motion: reduce)` or
 //! `(prefers-reduced-motion: no-preference)` with a condition Stylo evaluates
 //! to the same answer, given the document's preference:
-//! [`ALWAYS`] (`(min-width: 0px)`, which every viewport matches) or [`NEVER`]
+//! `ALWAYS` (`(min-width: 0px)`, which every viewport matches) or `NEVER`
 //! (`(scan)`, which servo never matches: it supports no `tv` media). Any other
 //! value is left alone, and stays the parse error it is in Chrome too.
 //!
