@@ -801,7 +801,8 @@ pub(crate) enum WriteRoute {
 /// registered main thread. Nothing is queued for a thread that never drains;
 /// a main thread's drain of a write to a worker's signal finds no such signal
 /// in its own store (the id names the worker's tag) and drops it with the
-/// freed-signal warning, where it used to write the main thread's signal of
+/// warning that it was made on a thread that hosts no app (issue #2889),
+/// where it used to write the main thread's signal of
 /// the same slot. On a main thread with no host threads in the process this
 /// costs one relaxed atomic load more than before.
 pub(crate) fn route_write(id: u32) -> WriteRoute {
