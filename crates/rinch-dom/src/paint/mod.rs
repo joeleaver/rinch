@@ -3281,8 +3281,9 @@ pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// every block background, then the floats, then every line's content —
 /// because one of its children reaches into what an earlier one paints
 /// (#2276). Hit testing asks it to probe such a run in the reverse order.
-pub fn run_paints_in_phases(tree: &NodeTree, id: RawNodeId) -> bool {
-    phases::splits(tree, id)
+#[inline]
+pub fn run_paints_in_phases(tree: &NodeTree, node: &Node) -> bool {
+    phases::splits(tree, node)
 }
 
 /// Whether `node` is a float that floats (a flex or grid item's `float` is
@@ -4689,7 +4690,7 @@ fn paint_children_with_stacking(
         // The in-flow entries (step 2 of the sequence) are the root's
         // in-flow run: painted in Appendix E phases, all of them in each
         // pass, where a child reaches into an earlier one (#2276).
-        let split = phases::current() == Phase::All && phases::splits(tree, node_id);
+        let split = phases::current() == Phase::All && phases::splits(tree, node);
         let mut run_painted = false;
         for position in 0..order.len() {
             let index = grouped.as_ref().map_or(position, |g| g[position] as usize);
@@ -4792,50 +4793,78 @@ fn paint_children_with_stacking(
         //
         // A run painted whole walks once, in this box's own phase; one whose
         // children reach into each other walks three times, one per
-        // Appendix E phase (#2276, [`phases`]).
+        // Appendix E phase (#2276, [`phases`]). Whether they do is asked of
+        // the members this frame draws — the ones the cull keeps — and is
+        // the layout's memoised answer when one was worked out: two members
+        // outside the damage cannot change a pixel inside it.
         let phase = phases::current();
-        let split = phase == Phase::All && phases::splits(tree, node_id);
-        let passes: &[Phase] = if split {
-            &Phase::SPLIT
-        } else {
-            std::slice::from_ref(&phase)
-        };
-        let kids = crate::RinchDocument::box_tree_children(&tree.nodes, node_id);
-        for (&pass, &child_id) in passes
-            .iter()
-            .flat_map(|pass| kids.iter().map(move |c| (pass, c)))
-        {
+        let members = phases::Members::begin();
+        let mut in_run = 0usize;
+        for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
             let Some(child) = tree.get_live(child_id) else {
                 continue;
             };
             if paints_at_stacking_root(child) || already_drawn_inline(child, PaintKind::InFlow) {
                 continue;
             }
-            let Some(child_phase) = phases::child_phase(pass, child) else {
-                continue;
-            };
-            if paints_nothing_without_visit(
-                tree,
-                child_id,
-                scale,
-                offset_x,
-                offset_y,
-                node_transform,
-            ) {
+            in_run += 1;
+            if phases::child_phase(phase, child).is_none()
+                || paints_nothing_without_visit(
+                    tree,
+                    child_id,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    node_transform,
+                )
+            {
                 continue;
             }
-            phases::request(child_phase);
-            paint_node(
-                tree,
-                child_id,
-                painter,
-                scale,
-                offset_x,
-                offset_y,
-                font_cx,
-                layout_cx,
-                node_transform,
-            );
+            members.push(child_id);
+        }
+        let drawn = members.len();
+        let split = phase == Phase::All
+            && drawn > 1
+            && match phases::memoised(tree, node) {
+                Some(split) => split,
+                None => {
+                    let split = phases::overlap(
+                        tree,
+                        (0..drawn).filter_map(|i| tree.get_live(members.get(i))),
+                    );
+                    if drawn == in_run {
+                        phases::memoise(tree, node, split);
+                    }
+                    split
+                }
+            };
+        let passes: &[Phase] = if split {
+            &Phase::SPLIT
+        } else {
+            std::slice::from_ref(&phase)
+        };
+        for &pass in passes {
+            for i in 0..drawn {
+                let child_id = members.get(i);
+                let Some(child) = tree.get_live(child_id) else {
+                    continue;
+                };
+                let Some(child_phase) = phases::child_phase(pass, child) else {
+                    continue;
+                };
+                phases::request(child_phase);
+                paint_node(
+                    tree,
+                    child_id,
+                    painter,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    font_cx,
+                    layout_cx,
+                    node_transform,
+                );
+            }
         }
     }
 }

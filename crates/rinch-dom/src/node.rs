@@ -2069,6 +2069,15 @@ pub struct Node {
     /// were positioned, even at `position: static`, and that needs this fact
     /// about the parent rather than anything the item's own cascade computes.
     pub is_flex_or_grid_item: Cell<bool>,
+    /// Paint's in-flow extent of this box (`paint::phases`, #2276), relative
+    /// to its border-box origin, stamped with the tree's `layout_epoch` it
+    /// was measured in, plus one (`0`: never measured). On the node, so a
+    /// look-up costs a compare, not a borrow (#2958's perf round).
+    pub(crate) phase_extent: Cell<(u64, [f32; 4])>,
+    /// Whether this box's in-flow run paints in Appendix E phases
+    /// (`paint::phases::splits`): `(layout_epoch + 1) << 1 | answer`, `0`
+    /// when never asked.
+    pub(crate) phase_split: Cell<u64>,
     /// [`crate::computed_style::ComputedStyle::has_filter`], cached at the
     /// same cascade-time moment as [`Self::is_flex_or_grid_item`] (#542, perf
     /// review). `creates_stacking_context` and the containing-block
@@ -2506,6 +2515,8 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            phase_extent: Cell::new((0, [0.0; 4])),
+            phase_split: Cell::new(0),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             raster_cache: std::cell::RefCell::new(None),
@@ -2609,6 +2620,8 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            phase_extent: Cell::new((0, [0.0; 4])),
+            phase_split: Cell::new(0),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             raster_cache: std::cell::RefCell::new(None),
@@ -2711,6 +2724,8 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            phase_extent: Cell::new((0, [0.0; 4])),
+            phase_split: Cell::new(0),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             raster_cache: std::cell::RefCell::new(None),
@@ -2811,6 +2826,8 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            phase_extent: Cell::new((0, [0.0; 4])),
+            phase_split: Cell::new(0),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             raster_cache: std::cell::RefCell::new(None),
