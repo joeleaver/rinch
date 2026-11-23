@@ -262,7 +262,7 @@ fn compute_damage_impl(
         let h = node.layout.height as f64 * scale;
 
         let mut ink = Outsets::from_css(
-            ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
+            ink_outsets_in(node, tree.walks_inline_members(), |id| tree.get_live(id)),
             scale,
         );
         // A positioned box that moved carries its whole painted subtree with
@@ -414,7 +414,7 @@ fn compute_damage_impl(
             // among them (#1048): where they are now, and — from the ink the
             // root was last painted with — where they were.
             let root_ink = Outsets::from_css(
-                ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get_live(id)),
+                ink_outsets_in(root, tree.walks_inline_members(), |id| tree.get_live(id)),
                 scale,
             );
             // A span's own `filter` (#2869, drawn in its own entry through
@@ -516,7 +516,9 @@ fn compute_damage_impl(
                 let ow = owner_node.layout.width as f64 * scale;
                 let oh = owner_node.layout.height as f64 * scale;
                 let ink = Outsets::from_css(
-                    ink_outsets_in(owner_node, tree.inline_text_shadows, |id| tree.get_live(id)),
+                    ink_outsets_in(owner_node, tree.walks_inline_members(), |id| {
+                        tree.get_live(id)
+                    }),
                     scale,
                 );
                 if add(
@@ -1203,7 +1205,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
         && cs.filter.is_empty()
         && !cs.text_paint.strokes()
         && node.text_layout.as_ref().is_none_or(|l| {
-            !tree.inline_text_shadows
+            !tree.walks_inline_members()
                 && !l.shifts_glyphs()
                 && l.background_spans.is_empty()
                 && l.decoration_spans.is_empty()
@@ -1214,7 +1216,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
         return r;
     }
     Outsets::from_css(
-        ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
+        ink_outsets_in(node, tree.walks_inline_members(), |id| tree.get_live(id)),
         scale,
     )
     .grow(r)
@@ -1256,7 +1258,7 @@ pub(crate) fn ink_outsets_in<'a>(
     let mut o = own_ink_outsets(&node.computed_style);
     // What the root's inline content draws past its border box: shifted
     // text, inline backgrounds and borders, wavy underlines (#1815, #1817).
-    let past = inline_ink_outsets(node, &get);
+    let past = inline_ink_outsets(node, enabled, &get);
     let mut shadow = text_shadow_outsets(&node.computed_style.text_shadow);
     // Its own `-webkit-text-stroke`, and that of the inline elements whose
     // text it draws (#2719), as for their shadows.
@@ -1310,13 +1312,14 @@ pub(crate) fn ink_outsets_in<'a>(
 /// only when nothing reaches past it).
 fn inline_ink_outsets<'a>(
     node: &Node,
-    get: impl Fn(RawNodeId) -> Option<&'a Node>,
+    outlines: bool,
+    get: impl Fn(RawNodeId) -> Option<&'a Node> + Copy,
 ) -> Option<[f32; 4]> {
     let inline = node.text_layout.as_ref()?;
     if node.clips_overflow() {
         return None;
     }
-    let past = text::inline_ink_past_lines(get, inline, 1.0)?;
+    let past = text::inline_ink_past_lines(get, inline, 1.0, outlines)?;
     let (ox, oy) = ifc_root_content_origin(node);
     let (w, h) = (node.layout.width as f64, node.layout.height as f64);
     let (ox, oy) = (ox as f64, oy as f64);

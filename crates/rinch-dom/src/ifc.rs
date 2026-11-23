@@ -677,6 +677,15 @@ pub(crate) fn has_inline_border(cs: &crate::computed_style::ComputedStyle) -> bo
         || on(cs.border_bottom_width.to_px(), cs.border_bottom_style)
 }
 
+/// Whether an element draws an outline (#2973): a width, a style that is
+/// not `none` or `hidden`, and a colour.
+pub(crate) fn has_outline(cs: &crate::computed_style::ComputedStyle) -> bool {
+    use crate::computed_style::BorderStyleValue as S;
+    cs.outline_width > 0.0
+        && !matches!(cs.outline_style, S::None | S::Hidden)
+        && cs.outline_color.is_some()
+}
+
 /// The background span inline element `owner` draws over `start..end`, from
 /// its style as it is now; `None` when it has neither a background nor a
 /// border to draw (a border alone gives a span of transparent colour, #1426).
