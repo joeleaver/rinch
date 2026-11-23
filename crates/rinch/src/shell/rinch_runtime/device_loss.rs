@@ -275,7 +275,9 @@ impl RinchRuntime {
             let w = self.w(role);
             // Nothing of the old frames survives: the next one is full.
             w.app.mark_scene_dirty();
-            if w.window.is_some() || on_new_device {
+            // A hidden window the rebuild built a renderer for (#2824) is
+            // prepared again with it, though no shown window made a device.
+            if w.window.is_some() || on_new_device || w.parked_renderer.is_some() {
                 w.redraw_lost_frame();
             }
         }
@@ -292,7 +294,28 @@ impl RinchRuntime {
     fn rebuild_window(&mut self, role: WindowRole, last: bool) -> bool {
         let w = self.w(role);
         let Some(window) = w.window.as_ref().map(|w| w.window.clone()) else {
-            return true;
+            return match w.rebuild_hidden_with(last, |physical| {
+                WgpuRenderer::try_new_offscreen(
+                    physical.0,
+                    physical.1,
+                    crate::shell::renderer::resolved(),
+                )
+            }) {
+                Ok(renderer) => {
+                    w.note_renderer_built(renderer.is_some());
+                    if renderer.is_some() {
+                        w.parked_renderer = renderer;
+                    }
+                    true
+                }
+                Err(e) => {
+                    tracing::info!(
+                        "rinch: no GPU renderer yet for the prepared hidden window after the \
+                         device loss ({e}); trying again"
+                    );
+                    false
+                }
+            };
         };
         if role == WindowRole::DevTools {
             // DevTools presents as it was opened: with `WgpuRenderer::try_new`.
@@ -328,6 +351,42 @@ impl RinchRuntime {
         w.note_renderer_built(built);
         w.renderer_started(renderer);
         true
+    }
+}
+
+impl ShellWindow {
+    /// [`RinchRuntime::rebuild_window`] for a window with no OS window: only
+    /// one the app prepared during the recovery, whose GPU would not start
+    /// then (#2824), waits for a renderer: `build` makes one for the size the
+    /// preparation was painted at, and it is answered (`Ok(Some)`) to be
+    /// parked for the preparation the rebuild's end paints again, and for the
+    /// show. `Err`: the GPU will not start yet, try again. Any other hidden
+    /// window is settled at once (`Ok(None)`): it builds its renderer at its
+    /// show; and so is this one at the rebuild's `last` try, when its show
+    /// takes the startup rule.
+    pub(super) fn rebuild_hidden_with<R>(
+        &mut self,
+        last: bool,
+        build: impl FnOnce((u32, u32)) -> Result<R, crate::shell::desktop::GpuStartError>,
+    ) -> Result<Option<R>, String> {
+        use crate::shell::desktop::GpuStartError;
+        let Some((scale, _)) = self.prepared else {
+            return Ok(None);
+        };
+        if last || self.parked_renderer.is_some() {
+            return Ok(None);
+        }
+        let (w, h) = self.laid_out_size().unwrap_or((1, 1));
+        let physical = (
+            ((w as f64 * scale).round() as u32).max(1),
+            ((h as f64 * scale).round() as u32).max(1),
+        );
+        match build(physical) {
+            Ok(renderer) => Ok(Some(renderer)),
+            // The show presents with software: nothing to prepare on the GPU.
+            Err(GpuStartError::DeclinedCpuAdapter(_)) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 
@@ -474,5 +533,112 @@ mod tests {
         );
         assert_eq!(started, "startup rule");
         assert!(!rt.awaits_gpu(WindowRole::Main));
+    }
+
+    /// #2824: a hidden window the app prepares during the recovery
+    /// (`prepare_current_window`) whose first device request fails does not
+    /// take the startup rule (a frame prepared with software, or none where
+    /// the show would panic): it waits, the rebuild takes it, a later try
+    /// builds its renderer, and the rebuild's end prepares it again on it.
+    #[test]
+    fn a_window_prepared_during_the_recovery_waits_and_is_rebuilt_on_the_new_device() {
+        use super::super::main_window::OffscreenStart;
+        use crate::shell::renderer::Renderer;
+        fn component(scope: &mut RenderScope) -> NodeHandle {
+            scope.create_element("div")
+        }
+        // `Auto` (the startup rule falls back) and `Gpu` (it panics at the
+        // show) alike.
+        for choice in [Renderer::Auto, Renderer::Gpu] {
+            let mut rt = RinchRuntime::new("t", 800, 600, component, &[]);
+            let t0 = Instant::now();
+            note_retired(t0);
+            let prepared = t0 + Duration::from_millis(300);
+            // The preparation's request: the driver is still resetting.
+            let started = rt.main.start_offscreen_with(prepared, choice, false, |_| {
+                Err::<&str, _>("no adapter yet".to_string().into())
+            });
+            assert_eq!(started, OffscreenStart::Waits, "{choice:?}");
+            assert!(rt.awaits_gpu(WindowRole::Main), "{choice:?}");
+            // What `prepare_hidden_as` records after it.
+            rt.main.prepared = Some((1.5, 0));
+
+            rt.adopt_waiting_windows(prepared);
+            let mut rebuild = rt.gpu_rebuild.take().expect("the rebuild takes it");
+            assert!(rebuild.awaits(WindowRole::Main), "{choice:?}");
+            assert!(!rt.main.awaits_gpu, "taken by the rebuild");
+            // The rebuild's first try fails too; the second finds the device.
+            let mut sizes = Vec::new();
+            let mut device_back = false;
+            let mut try_hidden = |w: &mut ShellWindow, last: bool| {
+                let back = std::mem::replace(&mut device_back, true);
+                match w.rebuild_hidden_with(last, |physical| {
+                    sizes.push(physical);
+                    if back {
+                        Ok("renderer")
+                    } else {
+                        Err("still resetting".to_string().into())
+                    }
+                }) {
+                    Ok(built) => {
+                        assert_eq!(built, Some("renderer"), "{choice:?}");
+                        true
+                    }
+                    Err(_) => false,
+                }
+            };
+            let at = rebuild.next();
+            assert!(!rebuild.run(at, |_, last| try_hidden(&mut rt.main, last)));
+            assert!(rebuild.awaits(WindowRole::Main), "it waits again");
+            let at = rebuild.next();
+            assert!(rebuild.run(at, |_, last| try_hidden(&mut rt.main, last)));
+            assert_eq!(sizes.len(), 2, "two tries, {choice:?}");
+            // At the scale the preparation was painted at.
+            let laid_out = rt.main.laid_out_size().unwrap_or((1, 1));
+            let expect = (
+                ((laid_out.0 as f64 * 1.5).round() as u32).max(1),
+                ((laid_out.1 as f64 * 1.5).round() as u32).max(1),
+            );
+            assert_eq!(sizes[1], expect);
+        }
+    }
+
+    /// #2824: outside a recovery the preparation keeps the startup rule: with
+    /// software where the show falls back, nothing where it panics; and a
+    /// hidden window that was not prepared waits for no renderer.
+    #[test]
+    fn outside_a_recovery_the_preparation_takes_the_startup_rule() {
+        use super::super::main_window::OffscreenStart;
+        use crate::shell::renderer::Renderer;
+        fn component(scope: &mut RenderScope) -> NodeHandle {
+            scope.create_element("div")
+        }
+        let mut rt = RinchRuntime::new("t", 800, 600, component, &[]);
+        let t0 = Instant::now();
+        note_retired(t0);
+        let after = t0 + GPU_REBUILD_LIMIT;
+        let fail = |_: &mut ShellWindow| Err::<&str, _>("no adapter".to_string().into());
+        assert_eq!(
+            rt.main
+                .start_offscreen_with(after, Renderer::Auto, false, fail),
+            OffscreenStart::Software
+        );
+        assert_eq!(
+            rt.main
+                .start_offscreen_with(after, Renderer::Gpu, false, fail),
+            OffscreenStart::Nothing
+        );
+        assert_eq!(
+            rt.main
+                .start_offscreen_with(after, Renderer::Auto, true, fail),
+            OffscreenStart::Nothing,
+            "a device the app configured"
+        );
+        assert!(!rt.awaits_gpu(WindowRole::Main));
+        // Never prepared: settled at once, nothing built.
+        let built = rt
+            .main
+            .rebuild_hidden_with(false, |_| -> Result<&str, _> { panic!("built") });
+        assert_eq!(built, Ok(None));
     }
 }
