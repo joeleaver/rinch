@@ -28,6 +28,23 @@ thread_local! {
     static PENDING: RefCell<Vec<Pending>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The token `App::activation_token` gave, until the main window takes it
+/// (#2817).
+static LAUNCH_TOKEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Keep `token` for the main window's first shown OS window.
+pub(crate) fn set_launch_token(token: Option<String>) {
+    *LAUNCH_TOKEN.lock().unwrap_or_else(|p| p.into_inner()) = token;
+}
+
+/// The token `App::activation_token` gave, once.
+pub(crate) fn take_launch_token() -> Option<String> {
+    LAUNCH_TOKEN
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+}
+
 /// Note that winit asked the compositor for `request`'s token under
 /// `serial`, for the window `window`. Only Wayland asks (Linux); elsewhere
 /// nothing is ever pending, and [`done`] and [`window_gone`] find nothing.

@@ -388,10 +388,19 @@ activated with it (the winit fork's `WindowExtWayland::activate_with_token`,
 surface with no serial: the compositor shows it as urgency or, by its own
 policy, raises it. A layer surface gets nothing either way. A token that
 cannot be sent (no `xdg_activation_v1`) falls back to the attention request.
-A hidden window shown by a request with a token is activated with it right
-after `create_window`, before its surface maps, which is what winit does with
-a token given at creation (`with_activation_token`: activate, then the
-initial commit); a non-activating one is not. The token is the second
+A hidden window shown by a request with a token gets it in its new window's
+attributes: the handler stores it in `ShellWindow::activation_token` before
+the show, and `main_window_attributes` hands it to `apply_to_attributes`,
+which sets winit's `WindowAttributesWayland::with_activation_token`; winit
+then activates the new surface before its initial commit (not after
+`create_window`, which has already made that commit). It is left out off
+Wayland, for a layer surface and for a non-activating window, and cleared
+once a shown window is made (or the show made none). The same field carries
+a first launch's own token: `App::activation_token(Option<String>)` stores it
+(`shell::activation_tokens::set_launch_token`, a process global, as
+`gpu_init_threads` stores its count), and the main window's `create_window`
+takes it into the field; a main window that starts hidden keeps it for the
+window its first show makes. The token is the second
 launch's `XDG_ACTIVATION_TOKEN`, which `take_launch_activation_token()`
 (`activation.rs`) reads and removes from the environment (an `unsafe fn`,
 since `std::env::remove_var` is unsound with another thread reading the
@@ -1225,7 +1234,12 @@ takes it, checks the variable is gone, and writes it to the file the first
 probe watches. The first probe then activates its window with it and gets
 the keyboard back. Two controls: `focus_current_window()` (no token, what an
 app could do before) and a token the waiter made for itself with no input
-serial both leave the keyboard with the waiter.
+serial both leave the keyboard with the waiter. A window *made* with a token
+(a first launch's, or a hidden window shown by a request with one) cannot show
+a difference in focus there, since KWin and sway focus a new window when it
+maps; its two tests read the probe's `WAYLAND_DEBUG=client` log instead and
+check that `xdg_activation_v1.activate` names the new surface before that
+surface's first commit.
 
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 

@@ -113,8 +113,13 @@ pub fn focus_current_window() {
 /// started with ([`take_launch_activation_token`]) and hands it to the
 /// running instance over the app's own IPC, which calls this. On Wayland the
 /// shown window is activated with the token
-/// (`xdg_activation_v1.activate`), and a hidden one is shown and then
-/// activated with it. The compositor decides what the token is worth: a
+/// (`xdg_activation_v1.activate`), and a hidden one is shown with the token
+/// in its new window's attributes (winit's `with_activation_token`). The
+/// current window is the window of the document whose code calls this;
+/// from anywhere else (an IPC thread, `main`) it is the main window, so a
+/// multi-window or windowless app uses
+/// [`WindowHandle::activate_with_token`](crate::WindowHandle::activate_with_token).
+/// The compositor decides what the token is worth: a
 /// token tied to a recent user action (a click on a link, a launcher's
 /// entry) raises the window on KWin and on sway set to
 /// `focus_on_window_activation focus` (sway's default marks it urgent); a

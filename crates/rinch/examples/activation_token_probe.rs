@@ -19,9 +19,12 @@
 //! - `PROBE_ACTIVATE_FILE`: the running copy. It watches this file; when it
 //!   appears it is read and removed, and the window is activated with the
 //!   token in it (`activate_current_window_with_token`), or, for the word
-//!   `focus`, focused without one (`focus_current_window`). It prints
+//!   `focus`, focused without one (`focus_current_window`), or, for the
+//!   word `hide`, hidden (`hide_current_window`). It prints
 //!   `PROBE activating`, and `PROBE focus true` / `PROBE focus false` each
 //!   time its window gains or loses the keyboard.
+//! - `PROBE_APP_TOKEN`: a first launch. It takes the token it was started
+//!   with and gives it to its window (`App::activation_token`).
 //! - `PROBE_RELAY_TO`: the second launch. It opens no window: it takes the
 //!   token it was started with (`take_launch_activation_token`), checks that
 //!   `XDG_ACTIVATION_TOKEN` is gone from its environment, writes the token to
@@ -125,6 +128,10 @@ fn watch_for_activation() {
             return;
         };
         let _ = std::fs::remove_file(&file);
+        if text == "hide" {
+            hide_current_window();
+            return;
+        }
         eprintln!("PROBE activating");
         if text == "focus" {
             focus_current_window();
@@ -165,7 +172,14 @@ fn main() -> std::process::ExitCode {
     if let Some(file) = std::env::var_os("PROBE_RELAY_TO") {
         return relay(file);
     }
+    let token = if std::env::var_os("PROBE_APP_TOKEN").is_some() {
+        // SAFETY: first thing in main; nothing else has started a thread.
+        unsafe { take_launch_activation_token() }
+    } else {
+        None
+    };
     App::new(app)
+        .activation_token(token)
         .title("activation token probe")
         .size(400, 300)
         .run();

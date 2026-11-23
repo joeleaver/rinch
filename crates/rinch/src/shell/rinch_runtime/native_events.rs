@@ -185,21 +185,19 @@ impl RinchRuntime {
                 // A hidden window has no OS window: it is shown, as
                 // `show_current_window` does, which focuses it as a first
                 // appearance does (and leaves a non-activating one unfocused).
-                // A token then activates the surface just made, as winit does
-                // with a token given at creation (before the surface maps).
+                // A token goes in the new window's attributes, as winit's
+                // `with_activation_token`: activated before the surface's
+                // initial commit (`main_window_attributes` leaves it out
+                // where it does not apply).
                 if w.window.is_none() {
+                    w.activation_token = token;
                     self.dispatch_to_app(
                         role,
                         PlatformEvent::UserEvent(UserEvent::ShowWindow),
                         event_loop,
                     );
-                    let w = self.w(role);
-                    if let (Some(window), false) = (&w.window, non_activating)
-                        && let Raise::ActivateWithToken(token) =
-                            raise_step(backend, w.layer.is_some(), token.as_deref())
-                    {
-                        activate_with_token(window.raw(), token);
-                    }
+                    // Not shown after all: no stale token for a later show.
+                    self.w(role).activation_token = None;
                     return;
                 }
                 let Some(window) = &w.window else {

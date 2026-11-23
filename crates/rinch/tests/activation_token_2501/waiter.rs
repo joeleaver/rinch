@@ -9,7 +9,7 @@
 //!
 //! For #2817 (`tests/activation_token_2501/raise_2817.rs`) it is the other side: the
 //! program a key is pressed in, which asks for a token naming that press
-//! and gives it away ([`Waiter::token_for_last_key`]).
+//! and gives it away ([`Waiter::token`]).
 
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;

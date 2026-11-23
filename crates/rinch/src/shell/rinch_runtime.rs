@@ -228,6 +228,12 @@ impl RinchRuntime {
 struct ShellWindow {
     /// Platform-agnostic application logic.
     app: RinchApp,
+    /// An xdg-activation token for the window's next OS window, given in its
+    /// attributes (`WindowAttributesWayland::with_activation_token`, #2817):
+    /// the app's launch token (`App::activation_token`) for the main
+    /// window's first shown window, or the token of a focus request that
+    /// shows a hidden window. Cleared once a shown window is made.
+    activation_token: Option<String>,
     /// Desktop window wrapper.
     window: Option<WinitWindow>,
     /// GPU renderer (only available with the `gpu-renderer` feature).
@@ -379,6 +385,7 @@ impl ShellWindow {
         app.window_focused = false;
         Self {
             app,
+            activation_token: None,
             window: None,
             #[cfg(feature = "gpu-renderer")]
             renderer: None,
@@ -1500,6 +1507,33 @@ mod bundled_font_tests {
         }
         let plain = build_runtime(component, &Default::default(), None, &[]);
         assert!(!plain.main.main_window_always_on_top());
+    }
+
+    /// #2817: a window's activation token goes in its Wayland attributes
+    /// (winit's `with_activation_token`, activated before the initial
+    /// commit), and only there: not on X11, not for a non-activating window.
+    #[test]
+    fn an_activation_token_goes_in_a_wayland_windows_attributes_2817() {
+        let token_in = |runtime: &mut RinchRuntime, backend: Backend| {
+            let steps = runtime.main.main_window_steps(backend, true);
+            let attrs = runtime
+                .main
+                .main_window_attributes(steps, backend, true, true);
+            format!("{:?}", attrs.platform).contains("\"launch-2817\"")
+        };
+        let mut runtime = build_runtime(component, &Default::default(), None, &[]);
+        assert!(!token_in(&mut runtime, Backend::Wayland), "none given");
+        runtime.main.activation_token = Some("launch-2817".into());
+        assert!(token_in(&mut runtime, Backend::Wayland));
+        assert!(!token_in(&mut runtime, Backend::X11));
+
+        let props = rinch_core::element::WindowProps {
+            non_activating: true,
+            ..Default::default()
+        };
+        let mut runtime = build_runtime(component, &props, None, &[]);
+        runtime.main.activation_token = Some("launch-2817".into());
+        assert!(!token_in(&mut runtime, Backend::Wayland), "non-activating");
     }
 
     /// #1519, the default path: an ordinary window takes no hit-test call and

@@ -15,6 +15,15 @@
 //! with no token, and a token not tied to any input (the waiter's own,
 //! asked with no serial). Neither takes the keyboard from the waiter.
 //!
+//! The window that is *made* with a token (a first launch's,
+//! `App::activation_token`, or a hidden window shown by
+//! `activate_current_window_with_token`) cannot show a difference in focus:
+//! KWin and sway focus a new window when it maps, token or not. Those two
+//! tests read the probe's protocol log (`WAYLAND_DEBUG=client`) instead:
+//! the token is sent with `xdg_activation_v1.activate` for the new surface
+//! before that surface's first commit, as winit's `with_activation_token`
+//! sends it.
+//!
 //! Run as the rest of this binary is (see `main.rs`).
 
 use super::*;
@@ -136,4 +145,67 @@ fn a_running_window_given_a_token_tied_to_no_input_is_not_raised_2817() {
         "a token tied to no input took the keyboard"
     );
     assert!(waiter.focused());
+}
+
+/// The probe's protocol log (`probe.log`, `WAYLAND_DEBUG=client`): whether
+/// `token` was sent with `xdg_activation_v1.activate` for a surface before
+/// that surface's first commit (counted from its `get_xdg_surface`).
+fn activated_before_first_commit(token: &str) -> Result<(), String> {
+    let log = std::fs::read_to_string(session_dir().join("probe.log")).unwrap_or_default();
+    let lines: Vec<&str> = log.lines().collect();
+    let needle = format!(".activate(\"{token}\", wl_surface#");
+    let at = lines
+        .iter()
+        .position(|line| line.contains("-> ") && line.contains(&needle))
+        .ok_or_else(|| format!("no activate with {token:?} in probe.log"))?;
+    let rest = &lines[at][lines[at].find(&needle).expect("found") + needle.len()..];
+    let surface: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let named = format!("wl_surface#{surface})");
+    let made = lines[..at]
+        .iter()
+        .rposition(|line| line.contains("get_xdg_surface(") && line.contains(&named))
+        .ok_or_else(|| format!("wl_surface#{surface} was never given an xdg_surface"))?;
+    let commit = format!("-> wl_surface#{surface}.commit()");
+    match lines[made..at].iter().find(|line| line.contains(&commit)) {
+        Some(line) => Err(format!(
+            "the surface was committed before the activation: {line}"
+        )),
+        None => Ok(()),
+    }
+}
+
+#[test]
+#[ignore = "needs a compositor: run inside scripts/isolated-session.sh"]
+fn a_first_launch_gives_its_window_the_token_before_its_first_commit_2817() {
+    // The seat's keyboard: the probe is ready once its window has it.
+    let _keyboard = keys::Keyboard::new(&socket(), &runtime_dir());
+    let probe = Probe::start(&[
+        ("XDG_ACTIVATION_TOKEN", Path::new("launch-2817-first")),
+        ("PROBE_APP_TOKEN", Path::new("1")),
+        ("WAYLAND_DEBUG", Path::new("client")),
+    ]);
+    drop(probe);
+    activated_before_first_commit("launch-2817-first").unwrap();
+}
+
+#[test]
+#[ignore = "needs a compositor: run inside scripts/isolated-session.sh"]
+fn a_hidden_window_shown_with_a_token_is_activated_before_its_first_commit_2817() {
+    let _keyboard = keys::Keyboard::new(&socket(), &runtime_dir());
+    let file = session_dir().join("activate-2817");
+    let _ = std::fs::remove_file(&file);
+    let probe = Probe::start(&[
+        ("PROBE_ACTIVATE_FILE", file.as_path()),
+        ("WAYLAND_DEBUG", Path::new("client")),
+    ]);
+    tell_probe("hide", &file);
+    probe_unfocused(&probe);
+    tell_probe("hidden-2817", &file);
+    probe.wait_for("PROBE activating");
+    assert!(
+        probe_focused_within(&probe, PATIENCE),
+        "the window shown again did not get the keyboard"
+    );
+    drop(probe);
+    activated_before_first_commit("hidden-2817").unwrap();
 }
