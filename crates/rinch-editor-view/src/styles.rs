@@ -246,7 +246,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 [data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-grammar-error { text-decoration-color: #3fb950; }
 "#;
 
-thread_local! {
+rinch_core::doc_keyed! {
     /// The [`doc_key`](rinch_core::dom::DomDocument::doc_key)s of documents that
     /// already carry [`DEFAULT_EDITOR_CSS`]. Keyed **per document**, not per
     /// thread: two documents on one thread (e.g. two embedded `RinchContext`s,
@@ -254,8 +254,10 @@ thread_local! {
     /// flag left the second document's editor completely unstyled. The guard
     /// still stops every mounted editor from adding a duplicate copy to *its*
     /// document.
-    static INJECTED: RefCell<std::collections::HashSet<u64>> =
-        RefCell::new(std::collections::HashSet::new());
+    ///
+    /// Swept with its document (#2797), so a closed window's key does not stay
+    /// for the thread's life.
+    static INJECTED: rinch_core::DocMap<()> = rinch_core::DocMap::new();
 }
 
 /// Inject [`DEFAULT_EDITOR_CSS`] into the document `<body>` as a `<style>` element,
@@ -267,7 +269,7 @@ pub(crate) fn ensure_default_styles(doc: &Weak<RefCell<dyn DomDocument>>) {
         return;
     };
     let doc_key = doc.borrow().doc_key();
-    if INJECTED.with(|f| f.borrow().contains(&doc_key)) {
+    if INJECTED.with(|f| f.contains(doc_key)) {
         return;
     }
     let mut d = doc.borrow_mut();
@@ -277,5 +279,5 @@ pub(crate) fn ensure_default_styles(doc: &Weak<RefCell<dyn DomDocument>>) {
     let text = d.create_text(DEFAULT_EDITOR_CSS);
     d.append_child(style, text);
     d.append_child(body, style);
-    INJECTED.with(|f| f.borrow_mut().insert(doc_key));
+    INJECTED.with_mut(|f| f.insert(doc_key, ()));
 }

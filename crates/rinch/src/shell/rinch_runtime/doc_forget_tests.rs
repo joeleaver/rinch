@@ -261,15 +261,18 @@ fn open_registering(runtime: &mut RinchRuntime) -> (u64, u64) {
     let doc = doc_of(runtime, id);
     let window = runtime.others.iter_mut().find(|w| w.handle == id).unwrap();
     window.app.resolve_and_repaint(400.0, 300.0);
-    // The layout drained the focus and selection requests its mount posted,
-    // as it should. Post them again, as the window's code does between
-    // frames (a handler, a timer), so they are parked when it closes.
+    // The layout drained the focus and selection requests its mount posted
+    // and the overlay pass it owed, as it should. Post them again, as the
+    // window's code does between frames (a handler, a timer), so they are
+    // parked when it closes.
     {
         use rinch_core::events::*;
         let _doc = rinch_core::push_dispatching_doc(doc);
         post_text_selection_request(doc, 1, 0, 0, rinch_core::dom::SelectionDirection::Forward);
         post_release_request(doc, 1);
         post_focus_request(doc, FocusRequest::Node(1));
+        // And the overlay pass the layout ran.
+        crate::editor::registry::owe_overlay_pass_for(doc);
     }
     (id, doc)
 }

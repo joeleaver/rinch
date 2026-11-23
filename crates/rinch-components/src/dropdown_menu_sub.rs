@@ -50,7 +50,6 @@
 //! descendants') once more.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use rinch_core::Component;
@@ -227,8 +226,14 @@ struct Sub {
     placement: RefCell<Placement>,
 }
 
+rinch_core::doc_keyed! {
+    /// Every rendered submenu, as `(id, its document, sub)`. Swept with its
+    /// document (#2797): a submenu rendered where no scope will unregister it
+    /// goes when the document dies.
+    static SUBS: rinch_core::DocList<(u64, u64, Rc<Sub>)> = rinch_core::DocList::new(|s| Some(s.1));
+}
+
 thread_local! {
-    static SUBS: RefCell<HashMap<u64, Rc<Sub>>> = RefCell::new(HashMap::new());
     static NEXT_SUB: Cell<u64> = const { Cell::new(1) };
     /// The pointer's last position over a menu panel (viewport px).
     static LAST_POINTER: Cell<Option<(f32, f32)>> = const { Cell::new(None) };
@@ -236,11 +241,11 @@ thread_local! {
 
 fn sub_for(node: &NodeHandle) -> Option<Rc<Sub>> {
     let id = node.get_attribute(SUB_ID_ATTR)?.parse::<u64>().ok()?;
-    SUBS.with(|s| s.borrow().get(&id).cloned())
+    SUBS.with(|s| s.iter().find(|s| s.0 == id).map(|s| s.2.clone()))
 }
 
 fn all_subs() -> Vec<Rc<Sub>> {
-    SUBS.with(|s| s.borrow().values().cloned().collect())
+    SUBS.with(|s| s.iter().map(|s| s.2.clone()).collect())
 }
 
 /// The panel the submenu's row sits in.
@@ -854,7 +859,8 @@ impl Component for DropdownMenuSub {
             dismiss: RefCell::new(None),
             placement: RefCell::new(Placement::default()),
         });
-        SUBS.with(|s| s.borrow_mut().insert(id, sub.clone()));
+        let doc = sub.root.doc_key();
+        SUBS.with_mut(|s| s.push((id, doc, sub.clone())));
         {
             let weak = Rc::downgrade(&sub);
             __scope.on_cleanup(move || {
@@ -864,7 +870,12 @@ impl Component for DropdownMenuSub {
                     let released = sub.dismiss.borrow_mut().take();
                     drop(released);
                 }
-                SUBS.with(|s| s.borrow_mut().remove(&id));
+                // Dropped once the registry is let go.
+                let removed = SUBS.with_mut(|s| {
+                    let at = s.iter().position(|s| s.0 == id);
+                    at.map(|at| s.remove(at))
+                });
+                drop(removed);
             });
         }
 

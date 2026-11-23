@@ -11,7 +11,7 @@
 //! focus-arbiter authority (design A10). The runtime holds the focused editor's
 //! container id and resolves it to a handle via [`editor_for`].
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 
 // Whether a drag-select owned by `owner` may be read or ended while `caller`'s
 // events are being dispatched (issue #139). The rule lives in rinch-core so the
@@ -20,6 +20,7 @@ use std::cell::{Cell, RefCell};
 // `Some` keys that differ are refused. rinch-web passes `None` throughout — one
 // page, one pointer stream, one mouseup listener that must be able to end
 // whatever is in flight.
+use rinch_core::DocList;
 use rinch_core::doc_matches as same_doc;
 
 use crate::handle::EditorHandle;
@@ -27,6 +28,29 @@ use crate::images::ImageHover;
 use crate::links::{LinkHover, LinkSpan};
 
 thread_local! {
+    /// The token the next registration is given — see [`EDITORS`].
+    static NEXT_TOKEN: Cell<u64> = const { Cell::new(0) };
+    /// See [`set_overlay_refresher`].
+    static OVERLAY_REFRESHER: Cell<Option<fn()>> = const { Cell::new(None) };
+    /// How many live editors on this thread have an
+    /// [`EditorHandle::on_link_hover`] callback — see [`link_hover_wanted`].
+    static LINK_HOVER_LISTENERS: Cell<usize> = const { Cell::new(0) };
+    /// How many live editors on this thread have an
+    /// [`EditorHandle::on_image_hover`] callback — see [`image_hover_wanted`].
+    static IMAGE_HOVER_LISTENERS: Cell<usize> = const { Cell::new(0) };
+    /// See [`set_focus_handler`].
+    static FOCUS_HANDLER: Cell<Option<fn(u64)>> = const { Cell::new(None) };
+    /// See [`set_blur_handler`].
+    static BLUR_HANDLER: Cell<Option<fn(u64)>> = const { Cell::new(None) };
+    /// See [`set_unregister_listener`].
+    static UNREGISTER_LISTENER: Cell<Option<UnregisterListener>> = const { Cell::new(None) };
+    /// See [`set_overlay_pass_scheduler`].
+    static OVERLAY_PASS_SCHEDULER: Cell<Option<fn()>> = const { Cell::new(None) };
+    /// See [`set_node_view_host_listener`].
+    static NODE_VIEW_HOST_LISTENER: Cell<Option<NodeViewHostListener>> = const { Cell::new(None) };
+}
+
+rinch_core::doc_keyed! {
     /// `(doc_key, container node id, handle)` for every mounted editor. The
     /// [`doc_key`](rinch_core::dom::DomDocument::doc_key) scopes entries per
     /// document: container node ids are per-document slab indices, so two
@@ -37,9 +61,12 @@ thread_local! {
     /// mount's cleanup releases **its own** registration only (#1498): the id
     /// is a slab index `rinch-dom` re-issues, and a later editor may be
     /// registered under it by the time that cleanup runs.
-    static EDITORS: RefCell<Vec<Registered>> = const { RefCell::new(Vec::new()) };
-    /// The token the next registration is given — see [`EDITORS`].
-    static NEXT_TOKEN: Cell<u64> = const { Cell::new(0) };
+    ///
+    /// Swept with its document (#2797): an editor its document's code
+    /// registered where no scope will release it (in a cleanup run as the
+    /// document is disposed, or by key with [`register_editor`]) goes when the
+    /// document dies.
+    static EDITORS: DocList<Registered> = DocList::new(|r| Some(r.doc_key));
     /// In-progress pointer drag-selects as `(doc, container id, anchor
     /// position)` — **at most one per document**, exactly as [`EDITORS`] holds
     /// at most one handle per `(doc, container)`.
@@ -51,37 +78,21 @@ thread_local! {
     /// still contend for it, so B's mousedown would wipe the anchor A is still
     /// dragging from, and A's mouseup could then no longer clear the entry it no
     /// longer owns.
-    static DRAG: RefCell<Vec<(Option<u64>, u64, usize)>> = const { RefCell::new(Vec::new()) };
-    /// See [`set_overlay_refresher`].
-    static OVERLAY_REFRESHER: Cell<Option<fn()>> = const { Cell::new(None) };
-    /// How many live editors on this thread have an
-    /// [`EditorHandle::on_link_hover`] callback — see [`link_hover_wanted`].
-    static LINK_HOVER_LISTENERS: Cell<usize> = const { Cell::new(0) };
+    ///
+    /// Swept with its document (#2797); a `None` entry is no document's.
+    static DRAG: DocList<(Option<u64>, u64, usize)> = DocList::new(|d| d.0);
     /// The link each document's pointer is over, as `(doc, editor, link)` —
     /// at most one per document, keyed like [`DRAG`]. See [`set_link_hover`].
-    static LINK_HOVER: RefCell<Vec<(Option<u64>, EditorHandle, LinkSpan)>> =
-        const { RefCell::new(Vec::new()) };
-    /// How many live editors on this thread have an
-    /// [`EditorHandle::on_image_hover`] callback — see [`image_hover_wanted`].
-    static IMAGE_HOVER_LISTENERS: Cell<usize> = const { Cell::new(0) };
+    /// Swept with its document (#2797), silently, as an unmount forgets it.
+    static LINK_HOVER: DocList<(Option<u64>, EditorHandle, LinkSpan)> = DocList::new(|h| h.0);
     /// The image each document's pointer is over, as `(doc, editor, hover)` —
     /// at most one per document, keyed like [`DRAG`]. See [`set_image_hover`].
-    static IMAGE_HOVER: RefCell<Vec<(Option<u64>, EditorHandle, ImageHover)>> =
-        const { RefCell::new(Vec::new()) };
-    /// See [`set_focus_handler`].
-    static FOCUS_HANDLER: Cell<Option<fn(u64)>> = const { Cell::new(None) };
-    /// See [`set_blur_handler`].
-    static BLUR_HANDLER: Cell<Option<fn(u64)>> = const { Cell::new(None) };
-    /// See [`set_unregister_listener`].
-    static UNREGISTER_LISTENER: Cell<Option<UnregisterListener>> = const { Cell::new(None) };
+    /// Swept with its document (#2797), silently, as an unmount forgets it.
+    static IMAGE_HOVER: DocList<(Option<u64>, EditorHandle, ImageHover)> = DocList::new(|h| h.0);
     /// The `doc_key`s of documents with an editor that is owed an overlay pass
     /// no DOM change will bring — see [`overlay_pass_owed`]. Empty while nothing
-    /// is owed.
-    static OVERLAY_PASSES_OWED: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-    /// See [`set_overlay_pass_scheduler`].
-    static OVERLAY_PASS_SCHEDULER: Cell<Option<fn()>> = const { Cell::new(None) };
-    /// See [`set_node_view_host_listener`].
-    static NODE_VIEW_HOST_LISTENER: Cell<Option<NodeViewHostListener>> = const { Cell::new(None) };
+    /// is owed. Swept with its document (#2797).
+    static OVERLAY_PASSES_OWED: DocList<u64> = DocList::new(|doc| Some(*doc));
 }
 
 /// What [`set_node_view_host_listener`] takes: `(doc_key, container id, the
@@ -181,8 +192,7 @@ pub(crate) fn blur_handler() -> Option<fn(u64)> {
 /// from owing nothing to owing a pass. May be called with an editor's borrow
 /// held: the scheduler only schedules.
 pub(crate) fn owe_overlay_pass(doc_key: u64) {
-    let newly = OVERLAY_PASSES_OWED.with(|r| {
-        let mut r = r.borrow_mut();
+    let newly = OVERLAY_PASSES_OWED.with_mut(|r| {
         if r.contains(&doc_key) {
             false
         } else {
@@ -218,7 +228,7 @@ pub fn set_overlay_pass_scheduler(schedule: fn()) {
 /// question a runtime whose pass covers every document at once (the web's
 /// `update_all_carets(None, ..)`) asks. See [`overlay_pass_owed`].
 pub fn any_overlay_pass_owed() -> bool {
-    OVERLAY_PASSES_OWED.with(|r| !r.borrow().is_empty())
+    OVERLAY_PASSES_OWED.with(|r| !r.is_empty())
 }
 
 /// Whether an editor in document `doc_key` is owed an overlay pass
@@ -237,7 +247,7 @@ pub fn any_overlay_pass_owed() -> bool {
 /// frame. An input path that runs the pass itself right after its edit clears
 /// it there, and pays nothing more.
 pub fn overlay_pass_owed(doc_key: u64) -> bool {
-    OVERLAY_PASSES_OWED.with(|r| r.borrow().contains(&doc_key))
+    OVERLAY_PASSES_OWED.with(|r| r.contains(&doc_key))
 }
 
 /// [`overlay_pass_owed`] under its first name: it was added for
@@ -283,8 +293,7 @@ pub(crate) fn request_overlay_refresh() {
 /// document's anchor is left in place, because the gesture it belongs to is
 /// still being made.
 pub fn begin_drag(doc: Option<u64>, container: u64, anchor: usize) {
-    DRAG.with(|d| {
-        let mut drags = d.borrow_mut();
+    DRAG.with_mut(|drags| {
         drags.retain(|(owner, _, _)| !same_doc(*owner, doc));
         drags.push((doc, container, anchor));
     });
@@ -298,8 +307,7 @@ pub fn begin_drag(doc: Option<u64>, container: u64, anchor: usize) {
 /// neither extends nor reads the first one's selection.
 pub fn drag_anchor(doc: Option<u64>) -> Option<(u64, usize)> {
     DRAG.with(|d| {
-        d.borrow()
-            .iter()
+        d.iter()
             .find(|(owner, _, _)| same_doc(*owner, doc))
             .map(|(_, container, anchor)| (*container, *anchor))
     })
@@ -308,10 +316,7 @@ pub fn drag_anchor(doc: Option<u64>) -> Option<(u64, usize)> {
 /// End any in-progress pointer drag-select **owned by `doc`**. Another
 /// document's drag-select is left alone: its mouseup has not happened yet.
 pub fn end_drag(doc: Option<u64>) {
-    DRAG.with(|d| {
-        d.borrow_mut()
-            .retain(|(owner, _, _)| !same_doc(*owner, doc))
-    });
+    DRAG.with_mut(|d| d.retain(|(owner, _, _)| !same_doc(*owner, doc)));
 }
 
 /// Whether any editor on this thread has an [`EditorHandle::on_link_hover`]
@@ -345,8 +350,7 @@ pub(crate) fn link_hover_listener_removed() {
 /// resting pointer whose link was edited is reported again on its next move.
 /// Callbacks run after the registry's borrow is released.
 pub fn set_link_hover(doc: Option<u64>, hovered: Option<(EditorHandle, LinkHover)>) {
-    let previous = LINK_HOVER.with(|h| {
-        let mut h = h.borrow_mut();
+    let previous = LINK_HOVER.with_mut(|h| {
         let index = h.iter().position(|(owner, _, _)| *owner == doc);
         if let (Some(i), Some((editor, hover))) = (index, &hovered)
             && h[i].1.same_editor(editor)
@@ -402,8 +406,7 @@ pub(crate) fn image_hover_listener_removed() {
 /// relayout moved under a resting pointer, reports it again with its new box.
 /// Callbacks run after the registry's borrow is released.
 pub fn set_image_hover(doc: Option<u64>, hovered: Option<(EditorHandle, ImageHover)>) {
-    let previous = IMAGE_HOVER.with(|h| {
-        let mut h = h.borrow_mut();
+    let previous = IMAGE_HOVER.with_mut(|h| {
         let index = h.iter().position(|(owner, _, _)| *owner == doc);
         if let (Some(i), Some((editor, hover))) = (index, &hovered)
             && h[i].1.same_editor(editor)
@@ -465,12 +468,11 @@ pub(crate) fn register_editor_token(doc_key: u64, container_id: u64, handle: Edi
     });
     // Out of the borrow: dropping a replaced handle may run `EditorCore`'s
     // `Drop`.
-    let _replaced: Vec<Registered> = EDITORS.with(|e| {
-        let mut e = e.borrow_mut();
-        let (replaced, kept) = std::mem::take(&mut *e)
+    let _replaced: Vec<Registered> = EDITORS.with_mut(|e| {
+        let (replaced, kept) = std::mem::take(&mut **e)
             .into_iter()
             .partition(|r| r.doc_key == doc_key && r.container_id == container_id);
-        *e = kept;
+        **e = kept;
         e.push(Registered {
             doc_key,
             container_id,
@@ -523,14 +525,13 @@ pub(crate) fn unregister_editor_token(doc_key: u64, container_id: u64, token: u6
 /// under `token` when one is given — with the hover state it held, then tell
 /// the [`set_unregister_listener`]. Whether one was dropped.
 fn release(doc_key: u64, container_id: u64, token: Option<u64>) -> bool {
-    let removed: Vec<Registered> = EDITORS.with(|e| {
-        let mut e = e.borrow_mut();
-        let (removed, kept) = std::mem::take(&mut *e).into_iter().partition(|r| {
+    let removed: Vec<Registered> = EDITORS.with_mut(|e| {
+        let (removed, kept) = std::mem::take(&mut **e).into_iter().partition(|r| {
             r.doc_key == doc_key
                 && r.container_id == container_id
                 && token.is_none_or(|t| t == r.token)
         });
-        *e = kept;
+        **e = kept;
         removed
     });
     if removed.is_empty() {
@@ -550,8 +551,7 @@ fn forget_hovers(removed: &[EditorHandle]) {
     // Taken out of the borrow and dropped after it: dropping the last handle
     // runs `EditorCore`'s `Drop`, which must not find `LINK_HOVER` (or
     // `IMAGE_HOVER`) borrowed.
-    let _forgotten: Vec<_> = LINK_HOVER.with(|h| {
-        let mut h = h.borrow_mut();
+    let _forgotten: Vec<_> = LINK_HOVER.with_mut(|h| {
         let mut forgotten = Vec::new();
         let mut i = 0;
         while i < h.len() {
@@ -564,8 +564,7 @@ fn forget_hovers(removed: &[EditorHandle]) {
         forgotten
     });
     drop(_forgotten);
-    let _forgotten: Vec<_> = IMAGE_HOVER.with(|h| {
-        let mut h = h.borrow_mut();
+    let _forgotten: Vec<_> = IMAGE_HOVER.with_mut(|h| {
         let mut forgotten = Vec::new();
         let mut i = 0;
         while i < h.len() {
@@ -582,7 +581,7 @@ fn forget_hovers(removed: &[EditorHandle]) {
 
 /// Whether any editor is registered on this thread.
 fn has_editors() -> bool {
-    EDITORS.with(|e| !e.borrow().is_empty())
+    EDITORS.with(|e| !e.is_empty())
 }
 
 /// Forget every editor whose container is one of `ids` in `doc_key`: nodes
@@ -594,16 +593,15 @@ fn has_editors() -> bool {
 fn forget_freed_containers(doc_key: u64, ids: &[rinch_core::dom::NodeId]) {
     let freed: std::collections::HashSet<u64> = ids.iter().map(|id| id.0).collect();
     let hit: Vec<u64> = EDITORS.with(|e| {
-        e.borrow()
-            .iter()
+        e.iter()
             .filter(|r| r.doc_key == doc_key && freed.contains(&r.container_id))
             .map(|r| r.container_id)
             .collect()
     });
     for container_id in hit {
         crate::blink::forget(doc_key, container_id);
-        DRAG.with(|d| {
-            d.borrow_mut().retain(|(owner, container, _)| {
+        DRAG.with_mut(|d| {
+            d.retain(|(owner, container, _)| {
                 !(*container == container_id && same_doc(*owner, Some(doc_key)))
             })
         });
@@ -616,8 +614,7 @@ fn forget_freed_containers(doc_key: u64, ids: &[rinch_core::dom::NodeId]) {
 /// document — to maintain a per-editor block window.
 pub fn all_editors() -> Vec<(u64, u64, EditorHandle)> {
     EDITORS.with(|e| {
-        e.borrow()
-            .iter()
+        e.iter()
             .map(|r| (r.doc_key, r.container_id, r.handle.clone()))
             .collect()
     })
@@ -629,8 +626,7 @@ pub fn all_editors() -> Vec<(u64, u64, EditorHandle)> {
 /// collide across documents on one thread (issue #134).
 pub fn editor_for_doc(doc_key: u64, container_id: u64) -> Option<EditorHandle> {
     EDITORS.with(|e| {
-        e.borrow()
-            .iter()
+        e.iter()
             .find(|r| r.doc_key == doc_key && r.container_id == container_id)
             .map(|r| r.handle.clone())
     })
@@ -645,8 +641,7 @@ pub fn editor_for_doc(doc_key: u64, container_id: u64) -> Option<EditorHandle> {
 /// is known.
 pub fn editor_for(container_id: u64) -> Option<EditorHandle> {
     EDITORS.with(|e| {
-        e.borrow()
-            .iter()
+        e.iter()
             .find(|r| r.container_id == container_id)
             .map(|r| r.handle.clone())
     })
@@ -676,12 +671,11 @@ pub fn editor_for(container_id: u64) -> Option<EditorHandle> {
 /// [`on_margin_layout`](EditorHandle::on_margin_layout) callback; `true` is
 /// returned when one ran, since the app may have moved what it draws.
 pub fn update_all_carets(doc_key: Option<u64>, focused: Option<u64>) -> bool {
-    OVERLAY_PASSES_OWED.with(|r| {
-        let mut r = r.borrow_mut();
-        if !r.is_empty() {
-            r.retain(|dk| doc_key.is_some_and(|k| k != *dk));
-        }
-    });
+    // Read first, written only when something is owed: the pass runs every
+    // frame, and a write is what joins the sweep's inventory.
+    if OVERLAY_PASSES_OWED.with(|r| !r.is_empty()) {
+        OVERLAY_PASSES_OWED.with_mut(|r| r.retain(|dk| doc_key.is_some_and(|k| k != *dk)));
+    }
     let editors = all_editors();
     let mut moved = false;
     // The margin anchors first, while the geometry is the layout's alone: a
