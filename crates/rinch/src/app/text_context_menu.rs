@@ -32,9 +32,11 @@
 //! Chrome's three), then "Add to dictionary", then the edit rows.
 //! [`TextEditState::spelling`] carries them to a shell, and
 //! [`TextEditAction::Suggestion`] / [`TextEditAction::AddToDictionary`] run
-//! them. The suggestions are computed at the press on a thread of their own:
-//! the press waits up to [`SUGGEST_WAIT`] for them, and if they come later the
-//! open menu is filled in when they arrive.
+//! them. The suggestions are computed at the press on the suggestion thread:
+//! the press waits up to
+//! [`menu_suggest_wait_ms`](rinch_spell::runtime::SpellcheckConfig::menu_suggest_wait_ms)
+//! for them, and if they come later the open menu is filled in when they
+//! arrive.
 
 use super::*;
 use rinch_core::dom::NodeId;
@@ -112,10 +114,6 @@ pub struct TextSpelling {
     /// ([`SpellcheckConfig::menu_no_suggestions_row`](rinch_spell::runtime::SpellcheckConfig::menu_no_suggestions_row)).
     pub show_no_suggestions: bool,
 }
-
-/// How long a right press on a misspelled word waits for its suggestions
-/// before the menu opens without them (they are filled in when they come).
-pub const SUGGEST_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The label of the disabled row that stands in for no suggestions, Chrome's
 /// wording (`IDS_CONTENT_CONTEXT_NO_SPELLING_SUGGESTIONS`).
@@ -1626,10 +1624,13 @@ impl RinchApp {
     }
 
     /// The word's menu entry, its suggestions asked for. They are computed on
-    /// a thread of their own (the checking thread may be busy with a whole
-    /// document), and the press waits up to [`SUGGEST_WAIT`] for them; later
-    /// ones arrive through the app's inbox ([`Self::text_spell_arrived`]).
-    /// Under inline jobs (tests, wasm) they are computed here.
+    /// the one suggestion thread ([`rinch_spell::runtime::suggest`], which
+    /// drops a request a newer one supersedes, so repeated presses never pile
+    /// up), and the press waits up to
+    /// [`menu_suggest_wait_ms`](rinch_spell::runtime::SpellcheckConfig::menu_suggest_wait_ms)
+    /// for them; later ones arrive through the app's inbox
+    /// ([`Self::text_spell_arrived`]). Under inline jobs (tests, wasm) they are
+    /// computed here.
     fn new_spell_target(
         &mut self,
         target: FocusTarget,
@@ -1643,26 +1644,22 @@ impl RinchApp {
         let checker = session.loaded_checker().filter(|_| max > 0);
         let (suggestions, pending) = match checker {
             None => (Vec::new(), false),
-            Some(checker) if rinch_spell::runtime::inline_jobs() => {
-                (checker.suggest(&word, max), false)
-            }
             Some(checker) => {
                 let (tx, rx) = std::sync::mpsc::channel();
                 let sender = self.app_work_sender();
-                let asked = word.clone();
-                let spawned = std::thread::Builder::new()
-                    .name("rinch-spell-suggest".into())
-                    .spawn(move || {
-                        let found = checker.suggest(&asked, max);
-                        let _ = tx.send(found.clone());
-                        sender.send(move |app| app.text_spell_arrived(request, found));
-                    });
-                match spawned {
-                    Ok(_) => match rx.recv_timeout(SUGGEST_WAIT) {
-                        Ok(found) => (found, false),
-                        Err(_) => (Vec::new(), true),
-                    },
-                    Err(_) => (Vec::new(), false),
+                rinch_spell::runtime::suggest(checker, word.clone(), max, move |found| {
+                    // Inline, the receiver below takes it and the inbox copy
+                    // finds the target no longer pending.
+                    let _ = tx.send(found.clone());
+                    sender.send(move |app| app.text_spell_arrived(request, found));
+                });
+                let wait =
+                    std::time::Duration::from_millis(u64::from(session.menu_suggest_wait_ms()));
+                match rx.recv_timeout(wait) {
+                    Ok(found) => (found, false),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (Vec::new(), true),
+                    // Superseded unrun (another window's press): none.
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (Vec::new(), false),
                 }
             }
         };
@@ -1678,7 +1675,7 @@ impl RinchApp {
         })
     }
 
-    /// Suggestions that took longer than [`SUGGEST_WAIT`] arrived: fill them
+    /// Suggestions that took longer than the press's wait arrived: fill them
     /// in, and redraw the menu that is waiting for them.
     pub(crate) fn text_spell_arrived(&mut self, request: u64, found: Vec<String>) {
         let Some(t) = self.text_spell.as_mut() else {
@@ -1693,7 +1690,21 @@ impl RinchApp {
             && open.spell_request == Some(request)
         {
             let ((x, y), (w, h)) = (open.at, open.viewport);
+            // The row the user had arrowed or pointed onto stays highlighted
+            // (by its action: the new rows shift its place).
+            let kept = open.highlighted.map(|i| open.items[i].action);
             self.open_text_context_menu(x, y, w, h);
+            let at = kept.and_then(|action| {
+                self.open_text_menu
+                    .as_ref()?
+                    .items
+                    .iter()
+                    .position(|r| r.action == action && r.enabled)
+            });
+            if at.is_some() {
+                self.set_text_menu_highlight(at);
+                self.resolve_and_repaint(w, h);
+            }
         }
     }
 

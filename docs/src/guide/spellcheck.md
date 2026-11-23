@@ -146,14 +146,15 @@ SpellcheckConfig::new()
     .menu_suggestions(5)            // default 3 (Chrome's); 0 for none
     .menu_add_to_dictionary(false)  // default true
     .menu_no_suggestions_row(true)  // a greyed "No spelling suggestions" row; default false (Chrome shows none)
+    .menu_suggest_wait_ms(50)       // how long the menu waits for suggestions; default 100
 ```
 
 The rows use the menu's own classes (`rinch-tcm-item`, `rinch-tcm-sep`), and
 each spelling row also carries `rinch-tcm-suggestion`,
 `rinch-tcm-add-to-dictionary` or `rinch-tcm-no-suggestions` for a rule of its
 own. Suggestions are computed on a background thread when the menu opens; if
-they take longer than a tenth of a second, the menu opens without them and
-fills them in when they arrive.
+they take longer than `menu_suggest_wait_ms` (a tenth of a second by
+default), the menu opens without them and fills them in when they arrive.
 
 A shell with its own text toolbar (`TextContextMenuPresentation::Shell`) finds
 the word and its suggestions in `RinchApp::text_edit_state().spelling` and

@@ -423,14 +423,18 @@ spelling costs nothing when no field was ever checked
 ### Suggestions without blocking
 
 `new_spell_target` asks the loaded checker (`Session::loaded_checker`, never
-loading on the UI thread) for `menu_suggestions` words on a thread of its own
-(`rinch-spell-suggest`; the `rinch-spellcheck` thread may be busy with a whole
-document), and the press waits up to `SUGGEST_WAIT` (100 ms) for them. Past
-that, the menu opens with `suggestions_pending` (only "Add to dictionary"
-shows) and the answer arrives through the app's inbox
-(`text_spell_arrived`), which redraws the open menu at the same point (the
-highlight, if any, is reset). Hunspell's suggest is the slow call; check is
-cheap. Under `set_inline_jobs` (tests, and always on wasm32) it runs at the
+loading on the UI thread) for `menu_suggestions` words through
+`runtime::suggest`: one reusable thread (`rinch-spell-suggest`, apart from the
+`rinch-spellcheck` thread, which may be busy with a whole document), where each
+request supersedes the ones before it, so a queued older one is dropped unrun
+and repeated presses never pile up (one already running finishes). The press
+waits up to `SpellcheckConfig::menu_suggest_wait_ms` (default 100 ms) for
+them. Past that, the menu opens with `suggestions_pending` (only "Add to
+dictionary" shows) and the answer arrives through the app's inbox
+(`text_spell_arrived`, which takes only the answer to the current request),
+redrawing the open menu at the same point with the highlighted row kept (by
+its action). Hunspell's suggest is the slow call; check is cheap. Under
+`set_inline_jobs` (tests, and always on wasm32) it runs at the
 press.
 
 ### Choosing a suggestion, adding a word
@@ -466,7 +470,7 @@ unsubscribes from its checker.
 
 `SpellcheckConfig::menu_suggestions` (default `DEFAULT_MENU_SUGGESTIONS`, 3;
 `0` asks for none), `menu_add_to_dictionary` (default on),
-`menu_no_suggestions_row` (default off, Chrome's; on shows a disabled "No
+`menu_suggest_wait_ms` (default 100), `menu_no_suggestions_row` (default off, Chrome's; on shows a disabled "No
 spelling suggestions" row, Chrome's string, that is not an item). The rows use
 the menu's classes (`rinch-tcm-item`, `rinch-tcm-label`, `rinch-tcm-sep`)
 plus `rinch-tcm-suggestion`, `rinch-tcm-add-to-dictionary` and

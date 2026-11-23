@@ -238,6 +238,10 @@ mod native {
     /// for [`crate::DEFAULT_MAX_SUGGESTIONS`].
     pub const DEFAULT_MENU_SUGGESTIONS: usize = 3;
 
+    /// How long a right press on a misspelled word waits for its suggestions
+    /// before the menu opens without them (they fill in when they come).
+    pub const DEFAULT_MENU_SUGGEST_WAIT_MS: u32 = 100;
+
     /// Where the words come from.
     #[derive(Clone)]
     pub enum Dictionaries {
@@ -311,6 +315,11 @@ mod native {
         /// suggestion for. Default `false`: Chrome 158 shows no row then
         /// (measured, #2862), only "Add to dictionary".
         pub menu_no_suggestions_row: bool,
+        /// How long the press that opens the text context menu waits for a
+        /// misspelled word's suggestions ([`DEFAULT_MENU_SUGGEST_WAIT_MS`]).
+        /// Past it the menu opens without them and fills them in when they
+        /// arrive. `0` never waits.
+        pub menu_suggest_wait_ms: u32,
     }
 
     impl Default for SpellcheckConfig {
@@ -328,6 +337,7 @@ mod native {
                 menu_suggestions: DEFAULT_MENU_SUGGESTIONS,
                 menu_add_to_dictionary: true,
                 menu_no_suggestions_row: false,
+                menu_suggest_wait_ms: DEFAULT_MENU_SUGGEST_WAIT_MS,
             }
         }
     }
@@ -442,6 +452,13 @@ mod native {
         /// suggestions" row when there are none (default `false`, Chrome's).
         pub fn menu_no_suggestions_row(mut self, on: bool) -> Self {
             self.menu_no_suggestions_row = on;
+            self
+        }
+
+        /// How long the menu's press waits for suggestions (default
+        /// [`DEFAULT_MENU_SUGGEST_WAIT_MS`]).
+        pub fn menu_suggest_wait_ms(mut self, ms: u32) -> Self {
+            self.menu_suggest_wait_ms = ms;
             self
         }
     }
@@ -731,6 +748,7 @@ mod native {
                 menu_suggestions: a.config.menu_suggestions,
                 menu_add_to_dictionary: a.config.menu_add_to_dictionary,
                 menu_no_suggestions_row: a.config.menu_no_suggestions_row,
+                menu_suggest_wait_ms: a.config.menu_suggest_wait_ms,
             })
         })
     }
@@ -749,6 +767,7 @@ mod native {
         menu_suggestions: usize,
         menu_add_to_dictionary: bool,
         menu_no_suggestions_row: bool,
+        menu_suggest_wait_ms: u32,
     }
 
     impl std::fmt::Debug for Session {
@@ -794,6 +813,11 @@ mod native {
         /// See [`SpellcheckConfig::menu_no_suggestions_row`].
         pub fn menu_no_suggestions_row(&self) -> bool {
             self.menu_no_suggestions_row
+        }
+
+        /// See [`SpellcheckConfig::menu_suggest_wait_ms`].
+        pub fn menu_suggest_wait_ms(&self) -> u32 {
+            self.menu_suggest_wait_ms
         }
 
         /// The skip rules.
@@ -937,6 +961,56 @@ mod native {
     /// which has no threads).
     pub fn inline_jobs() -> bool {
         cfg!(target_family = "wasm") || INLINE_JOBS.with(|i| i.get())
+    }
+
+    type SuggestJob = (u64, Box<dyn FnOnce() + Send>);
+
+    static SUGGEST_WORKER: Mutex<Option<mpsc::Sender<SuggestJob>>> = Mutex::new(None);
+    static SUGGEST_LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// Asks `checker` for up to `max` suggestions for `word` on the one
+    /// suggestion thread (`rinch-spell-suggest`, started by the first call;
+    /// apart from the checking thread, which may be busy with a whole
+    /// document), and calls `done` there with them. Each call **supersedes**
+    /// the ones before it: a request still queued when a newer one is made is
+    /// dropped unrun (its `done` is never called), so repeated presses never
+    /// pile up. A request already running finishes. Under
+    /// [`set_inline_jobs`] (and on wasm32) it runs here, at once.
+    pub fn suggest(
+        checker: Arc<dyn SpellChecker>,
+        word: String,
+        max: usize,
+        done: impl FnOnce(Vec<String>) + Send + 'static,
+    ) {
+        let job = move || done(checker.suggest(&word, max));
+        if inline_jobs() {
+            job();
+            return;
+        }
+        let id = SUGGEST_LATEST.fetch_add(1, Ordering::AcqRel) + 1;
+        let mut worker = SUGGEST_WORKER.lock().unwrap_or_else(|e| e.into_inner());
+        let job: SuggestJob = (id, Box::new(job));
+        let job = match worker.as_ref() {
+            Some(tx) => match tx.send(job) {
+                Ok(()) => return,
+                Err(mpsc::SendError(job)) => job,
+            },
+            None => job,
+        };
+        let (tx, rx) = mpsc::channel::<SuggestJob>();
+        let started = std::thread::Builder::new()
+            .name("rinch-spell-suggest".into())
+            .spawn(move || {
+                for (id, job) in rx {
+                    if id != SUGGEST_LATEST.load(Ordering::Acquire) {
+                        continue; // superseded while it waited
+                    }
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                }
+            });
+        if started.is_ok() && tx.send(job).is_ok() {
+            *worker = Some(tx);
+        }
     }
 }
 
@@ -1094,6 +1168,61 @@ mod tests {
         remove_words_listener(words);
         remove_config_listener(config);
         clear_config();
+    }
+
+    /// One suggestion thread, and a request superseded while it waited is
+    /// dropped unrun: three quick requests behind a slow one run the slow one
+    /// (already started) and the newest, never the middle one.
+    #[test]
+    fn suggestions_supersede_older_requests() {
+        use crate::{HunspellChecker, SpellChecker};
+        use std::sync::Arc;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        struct Slow(HunspellChecker);
+        impl SpellChecker for Slow {
+            fn check(&self, w: &str) -> bool {
+                self.0.check(w)
+            }
+            fn suggest(&self, w: &str, max: usize) -> Vec<String> {
+                if w == "first" {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                vec![format!("{w}/{max}")]
+            }
+            fn add_to_dictionary(&self, w: &str) {
+                self.0.add_to_dictionary(w)
+            }
+            fn ignore(&self, w: &str) {
+                self.0.ignore(w)
+            }
+            fn languages(&self) -> Vec<String> {
+                self.0.languages()
+            }
+        }
+        const AFF: &[u8] = include_bytes!("../tests/fixtures/en_TEST.aff");
+        const DIC: &[u8] = include_bytes!("../tests/fixtures/en_TEST.dic");
+        let checker: Arc<dyn SpellChecker> = Arc::new(Slow(
+            HunspellChecker::from_bytes("en_TEST", AFF, DIC).unwrap(),
+        ));
+        set_inline_jobs(false);
+        let (tx, rx) = mpsc::channel();
+        for word in ["first", "middle", "last"] {
+            let tx = tx.clone();
+            suggest(Arc::clone(&checker), word.into(), 2, move |found| {
+                let _ = tx.send(found);
+            });
+            if word == "first" {
+                std::thread::sleep(Duration::from_millis(50)); // let it start
+            }
+        }
+        drop(tx);
+        let got: Vec<Vec<String>> = rx.iter().collect();
+        assert_eq!(
+            got,
+            [vec!["first/2".to_string()], vec!["last/2".to_string()]]
+        );
     }
 
     #[test]

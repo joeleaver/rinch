@@ -13,6 +13,7 @@
 
 use super::*;
 use rinch_core::Component;
+use rinch_core::dom::NodeId;
 use rinch_core::events::{InputCallback, register_input_handler};
 use rinch_editor_core::Pos;
 use rinch_spell::runtime::{self as spell, SpellcheckConfig};
@@ -733,14 +734,19 @@ impl SpellChecker for Slow {
     }
 }
 
-/// Slow suggestions do not hold the press: past `SUGGEST_WAIT` the menu
-/// opens with "Add to dictionary" and the state says they are pending; when
-/// they arrive (from their own thread, through the app's inbox) the open menu
-/// shows them.
+/// Slow suggestions do not hold the press: past `menu_suggest_wait_ms` the
+/// menu opens with "Add to dictionary" and the state says they are pending;
+/// when they arrive (from the suggestion thread, through the app's inbox) the
+/// open menu shows them, and the row the user had arrowed onto stays
+/// highlighted.
 #[test]
 fn slow_suggestions_are_filled_in_when_they_arrive() {
-    let slow = super::text_context_menu::SUGGEST_WAIT * 4;
-    configure(SpellcheckConfig::new().checker(Slow(checker(), slow)));
+    let slow = std::time::Duration::from_millis(800);
+    configure(
+        SpellcheckConfig::new()
+            .checker(Slow(checker(), slow))
+            .menu_suggest_wait_ms(50),
+    );
     let mut p = page(&[("textarea", "the helo wrld")], None);
     let id = p.fields[0];
     activate(&mut p.app, id);
@@ -774,6 +780,20 @@ fn slow_suggestions_are_filled_in_when_they_arrive() {
     let mut lines = vec!["Add to dictionary".to_string(), "--".into()];
     lines.extend(edit_lines());
     assert_eq!(panel_lines(&p.app), lines);
+    // The user arrows past "Add to dictionary" onto an edit row.
+    key_with(&mut p.app, KeyCode::ArrowDown, Modifiers::default());
+    assert_eq!(highlighted(&p.app), Some(TextEditAction::AddToDictionary));
+    key_with(&mut p.app, KeyCode::ArrowDown, Modifiers::default());
+    let edit_row = highlighted(&p.app).unwrap();
+    assert!(EDIT_ROWS.contains(&edit_row), "{edit_row:?}");
+    assert!(
+        p.app
+            .text_edit_state()
+            .unwrap()
+            .spelling
+            .unwrap()
+            .suggestions_pending
+    );
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while p.app.run_deferred_work() == 0 && std::time::Instant::now() < deadline {
@@ -788,7 +808,167 @@ fn slow_suggestions_are_filled_in_when_they_arrive() {
     let s = p.app.text_edit_state().unwrap().spelling.unwrap();
     assert!(!s.suggestions_pending);
     assert_eq!(s.suggestions, ["hello", "house"]);
+    assert_eq!(highlighted(&p.app), Some(edit_row), "the highlight is kept");
     let _ = actions;
+}
+
+fn highlighted(app: &RinchApp) -> Option<TextEditAction> {
+    let m = app.open_text_menu.as_ref()?;
+    m.highlighted.map(|i| m.items[i].action)
+}
+
+/// A late answer lands only on the request it answers: one for an older
+/// word, arriving while a newer word's suggestions are pending, changes
+/// nothing, and the newer word's own answer is taken.
+#[test]
+fn an_old_late_fill_does_not_land_on_a_newer_word() {
+    configure(default_config());
+    let mut p = page(&[("textarea", "the helo wrld")], None);
+    let id = p.fields[0];
+    activate(&mut p.app, id);
+    let at = field_point(&mut p.app, id, 5, 7);
+    press(&mut p.app, at, MouseButton::Right);
+    let old = p.app.text_spell.as_ref().unwrap().request;
+    key_with(&mut p.app, KeyCode::Escape, Modifiers::default());
+    let at = field_point(&mut p.app, id, 10, 12);
+    press(&mut p.app, at, MouseButton::Right);
+    let t = p.app.text_spell.as_mut().unwrap();
+    assert_eq!(t.word, "wrld");
+    let new = t.request;
+    assert!(new > old);
+    // Make the newer word's answer the one still awaited.
+    t.pending = true;
+    t.suggestions.clear();
+
+    p.app.text_spell_arrived(old, vec!["stale".into()]);
+    let s = p.app.text_edit_state().unwrap().spelling.unwrap();
+    assert!(s.suggestions_pending && s.suggestions.is_empty(), "{s:?}");
+
+    p.app.text_spell_arrived(new, vec!["world".into()]);
+    let s = p.app.text_edit_state().unwrap().spelling.unwrap();
+    assert!(!s.suggestions_pending);
+    assert_eq!(s.suggestions, ["world"]);
+    assert_eq!(
+        panel_lines(&p.app)[..3],
+        ["world", "--", "Add to dictionary"]
+    );
+}
+
+/// The value changes under the open menu: choosing a suggestion then does
+/// nothing, whether the app rewrote the value elsewhere (the marks were made
+/// for the old text) or an edit put a different misspelled word where the
+/// selection is.
+#[test]
+fn a_suggestion_does_nothing_once_the_value_changed() {
+    // The app writes the value: the word is still at the selection, but the
+    // marks were made for the old text.
+    configure(default_config());
+    let mut p = page(&[("input", "the helo wrld")], None);
+    let id = p.fields[0];
+    activate(&mut p.app, id);
+    let at = field_point(&mut p.app, id, 5, 7);
+    press(&mut p.app, at, MouseButton::Right);
+    assert!(p.app.text_edit_state().unwrap().spelling.is_some());
+    p.app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .set_attribute(NodeId(id), "value", "the helo world");
+    assert_eq!(p.app.text_edit_state().unwrap().spelling, None);
+    assert_eq!(field(&p.app), ("the helo world".into(), 4, 8));
+    p.log.borrow_mut().clear();
+    assert!(
+        p.app
+            .perform_text_edit(TextEditAction::Suggestion(0))
+            .is_empty()
+    );
+    assert_eq!(field(&p.app).0, "the helo world");
+    assert!(p.log.borrow().is_empty());
+
+    // An edit makes the word another misspelled word, marked at the same
+    // place, and the selection is put back over it.
+    configure(default_config());
+    let mut p = page(&[("input", "the helo wrld")], None);
+    let id = p.fields[0];
+    activate(&mut p.app, id);
+    let at = field_point(&mut p.app, id, 5, 7);
+    press(&mut p.app, at, MouseButton::Right);
+    key_with(&mut p.app, KeyCode::Escape, Modifiers::default());
+    p.app.focused_input_state.as_mut().unwrap().selection = rinch_editable::Selection::new(5, 6);
+    p.app
+        .handle_input_edit_command(rinch_editable::EditCommand::InsertText("x".into()));
+    p.app.spell_tick();
+    assert_eq!(field_marks(&mut p.app, id), ["hxlo", "wrld"]);
+    p.app.focused_input_state.as_mut().unwrap().selection = rinch_editable::Selection::new(4, 8);
+    assert_eq!(p.app.text_edit_state().unwrap().spelling, None);
+    p.log.borrow_mut().clear();
+    assert!(
+        p.app
+            .perform_text_edit(TextEditAction::Suggestion(0))
+            .is_empty()
+    );
+    assert_eq!(field(&p.app).0, "the hxlo wrld");
+    assert!(p.log.borrow().is_empty());
+}
+
+/// The keyboard walks the spelling rows like the edit rows: Down from
+/// nothing to the first suggestion, on through "Add to dictionary" into the
+/// edit rows, Up wrapping back; Enter runs the highlighted suggestion. A
+/// disabled "No spelling suggestions" row is passed over.
+#[test]
+fn the_keyboard_walks_the_spelling_rows() {
+    configure(default_config());
+    let mut p = page(&[("textarea", "the helo wrld")], None);
+    let id = p.fields[0];
+    activate(&mut p.app, id);
+    let at = field_point(&mut p.app, id, 5, 7);
+    press(&mut p.app, at, MouseButton::Right);
+    let down = |p: &mut Page| key_with(&mut p.app, KeyCode::ArrowDown, Modifiers::default());
+    down(&mut p);
+    assert_eq!(highlighted(&p.app), Some(TextEditAction::Suggestion(0)));
+    down(&mut p);
+    assert_eq!(highlighted(&p.app), Some(TextEditAction::Suggestion(1)));
+    down(&mut p);
+    assert_eq!(highlighted(&p.app), Some(TextEditAction::AddToDictionary));
+    down(&mut p);
+    let first_edit = if cfg!(feature = "clipboard") {
+        TextEditAction::Cut
+    } else {
+        TextEditAction::SelectAll
+    };
+    assert_eq!(highlighted(&p.app), Some(first_edit));
+    key_with(&mut p.app, KeyCode::Home, Modifiers::default());
+    key_with(&mut p.app, KeyCode::ArrowUp, Modifiers::default());
+    assert_eq!(
+        highlighted(&p.app),
+        Some(TextEditAction::SelectAll),
+        "wraps"
+    );
+    key_with(&mut p.app, KeyCode::ArrowDown, Modifiers::default());
+    key_with(&mut p.app, KeyCode::ArrowDown, Modifiers::default());
+    assert_eq!(highlighted(&p.app), Some(TextEditAction::Suggestion(1)));
+    key_with(&mut p.app, KeyCode::Enter, Modifiers::default());
+    assert!(!p.app.is_text_context_menu_open());
+    assert_eq!(field(&p.app), ("the house wrld".into(), 9, 9));
+
+    // The disabled stand-in row is never highlighted.
+    configure(default_config().menu_no_suggestions_row(true));
+    let mut p = page(&[("input", "the qwzx is")], None);
+    let id = p.fields[0];
+    activate(&mut p.app, id);
+    let at = field_point(&mut p.app, id, 5, 7);
+    press(&mut p.app, at, MouseButton::Right);
+    assert_eq!(panel_lines(&p.app)[0], "[No spelling suggestions]");
+    down(&mut p);
+    assert_eq!(highlighted(&p.app), Some(TextEditAction::AddToDictionary));
+    key_with(&mut p.app, KeyCode::End, Modifiers::default());
+    key_with(&mut p.app, KeyCode::ArrowDown, Modifiers::default());
+    assert_eq!(
+        highlighted(&p.app),
+        Some(TextEditAction::AddToDictionary),
+        "wraps past it"
+    );
 }
 
 /// Nothing new runs for a right press when no word is marked: the spelling
