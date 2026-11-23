@@ -293,7 +293,7 @@ fn the_close_glyph_is_sized_by_icon_size_then_by_size() {
 }
 
 /// The glyph has geometry, which the `<span>` it replaced did not: nothing in
-/// the workspace styles `.rinch-icon--close`, so that span drew no X.
+/// the workspace styled `.rinch-icon--close` then, so that span drew no X.
 #[test]
 fn the_close_glyph_has_paths_rather_than_an_empty_span() {
     let m = Mounted::new(CloseButton::default());
@@ -303,10 +303,12 @@ fn the_close_glyph_has_paths_rather_than_an_empty_span() {
         "the glyph must carry its own path; an element with no children and no \
          CSS is the invisible span #474 replaced"
     );
+    // #2199 landed that rule: `.rinch-icon--close` now spends the size the
+    // glyph publishes, in place of the inline width/height it carried.
     assert!(
-        !sheet().contains(".rinch-icon--close"),
-        "if a rule for .rinch-icon--close ever lands, the reason this glyph \
-         carries its own size can be revisited"
+        sheet().contains(".rinch-icon--close {"),
+        "the one-class rule that sizes the glyph from \
+         `--rinch-close-button-icon-size`"
     );
 }
 
