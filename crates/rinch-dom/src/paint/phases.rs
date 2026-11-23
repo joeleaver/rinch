@@ -26,6 +26,15 @@
 //! earlier one's extent. A wrong `true` costs two extra walks of that run and
 //! changes no pixel; a `false` paints the run as before #2276.
 //!
+//! The memo is keyed on the layout, not on the hit cache's generation, which
+//! moves on every restyle and DOM write (#2958's perf round: a hover frame
+//! and a pointer move recomputed every run's extents). Extents read boxes and
+//! lines, which only a layout moves. Whether a child is hoisted is not
+//! geometry (`opacity`, `transform` change it without a layout): such a
+//! change is seen at the next layout, and until then the run keeps the order
+//! its last layout decided. Paint asks the question of the members it draws
+//! ([`overlap`] over [`Members`]), memoising it when that is the whole run.
+//!
 //! **How a phase reaches a box.** The phase is a property of the walk, not of
 //! the box, so it is thread-local state rather than a parameter of every paint
 //! function: the run's loop asks for a phase just before it enters a child
