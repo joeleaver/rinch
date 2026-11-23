@@ -1008,6 +1008,23 @@ pub(crate) struct TextSelection {
     /// the end is made; the anchor keeps its side when the focus moves.
     pub(crate) anchor_side: EndSide,
     pub(crate) focus_side: EndSide,
+    /// The word or paragraph a double or triple click selected: a
+    /// Shift+click after it extends by that unit (#2256). `None` for a
+    /// selection made by a single press.
+    pub(crate) unit: Option<SelectionUnit>,
+}
+
+/// One end of a read-only selection: a root, a byte offset in its text,
+/// and the side of the boxes there it is on.
+pub(crate) type SelectionEnd = (u64, usize, EndSide);
+
+/// What a double or triple click selected ([`TextSelection::unit`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionUnit {
+    /// A paragraph (a triple click), else a word.
+    pub(crate) paragraph: bool,
+    pub(crate) start: SelectionEnd,
+    pub(crate) end: SelectionEnd,
 }
 
 /// Which side of the boxes at its offset a selection end is on (review of

@@ -69,7 +69,9 @@ fn drag_from_to(app: &mut RinchApp, a: (f32, f32), b: (f32, f32)) {
 /// `shift:id:fx`, `drag:id:fx:id:fx`, `dragpx:id:px:id:fx`, `all`) on
 /// `html` and copy.
 pub(super) fn copy_after(html: &'static str, ops: &str) -> String {
-    app_after(html, ops).text_selection_text().unwrap_or_default()
+    app_after(html, ops)
+        .text_selection_text()
+        .unwrap_or_default()
 }
 
 /// The app holding `html` after `ops` ([`copy_after`]).
@@ -327,6 +329,9 @@ fn each_end_takes_the_boxes_on_its_side() {
         "px drag from start of after-ib text",
         "px triple then shift-click leading float",
         "px triple then shift-click leading ib",
+        "drag from left of after-float text",
+        "px drag from start of after-float text",
+        "drag a in ib to text after rtl",
     ]);
 }
 
@@ -340,5 +345,19 @@ fn select_all_ends_where_its_last_paragraph_ends() {
         "selectall last para ends with ib",
         "selectall floats",
         "selectall first para starts with ib",
+    ]);
+}
+
+#[test]
+fn a_triple_click_and_a_shift_click_after_it_copy_as_chrome() {
+    // #2256: these were left out above while a triple click stopped at its
+    // paragraph's end and a Shift+click after one extended by characters.
+    gestures_as_chrome(&[
+        "triple leading float",
+        "triple leading ib",
+        "triple inside ib",
+        "triple leading and trailing ib",
+        "triple then shift-click leading float",
+        "triple then shift-click trailing ib",
     ]);
 }

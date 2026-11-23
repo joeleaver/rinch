@@ -399,3 +399,37 @@ fn an_inline_block_in_an_anonymous_boxs_run_is_highlighted() {
         [Some((0, 3))]
     );
 }
+
+/// `side_at` for a point `fx` of the way across `#i`'s box, in `#d`.
+fn side_across(html: &'static str, fx: f32) -> bool {
+    let app = mount(html, SEL);
+    let (d_id, i_id) = (node(&app, "d"), node(&app, "i"));
+    let d = app.doc.as_ref().unwrap().borrow();
+    let (x, y, w, h) = super::hit_testing::painted_element_box(&d.tree, i_id);
+    let layout = d.tree.get(d_id).unwrap().text_layout.as_ref().unwrap();
+    let at = layout
+        .atomic_inlines()
+        .find(|&(id, _)| id == i_id)
+        .map(|(_, at)| at)
+        .expect("#i is an atomic inline of #d");
+    RinchApp::side_at(&d.tree, d_id, x + w * fx, y + h / 2.0, at).after_inline
+}
+
+#[test]
+fn a_boxs_after_side_is_its_left_on_a_right_to_left_line() {
+    // #2259: `side_at` read a box's right half as its after side on every
+    // line; on a right-to-left line the after side is the left
+    // (`inline_box_caret`). Left to right is the control.
+    let rtl = "<div id=\"d\" dir=\"rtl\">שלום <span id=\"i\" style=\"display:inline-block;width:40px;height:16px\"></span> סוף</div>";
+    let ltr = "<div id=\"d\">abc <span id=\"i\" style=\"display:inline-block;width:40px;height:16px\"></span> def</div>";
+    assert!(
+        side_across(rtl, 0.2),
+        "the left half of a box on an RTL line is after it"
+    );
+    assert!(!side_across(rtl, 0.8), "and its right half before it");
+    assert!(
+        side_across(ltr, 0.8),
+        "left to right, the right half is after"
+    );
+    assert!(!side_across(ltr, 0.2));
+}
