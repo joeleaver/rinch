@@ -392,6 +392,45 @@ scrolls it past its insets that is Chrome's answer too, and where a scroll
 would push it rinch's does not stick (sticky offsets are applied to boxes).
 Pinned in `tests/relative_inline_offset_2346_tests.rs`
 (layout, paint, pixels, Chrome 156) and `rinch/src/app/relative_inline_hit_2346_tests.rs`.
+
+**A relative inline element paints as a positioned box** (#2819, CSS 2.1
+Appendix E step 8): its background, border, text, decorations and the atomic
+inlines in it are drawn in its own entry of the stacking context's sequence,
+in tree order with the other positioned boxes, or at its `z-index` (with
+`opacity`, as one group). It always was an entry
+(`stacking::paints_at_stacking_root`), but paint skipped it
+(`drawn_by_its_ifc`) and its IFC root drew its runs with the in-flow content,
+so an earlier `position: absolute` sibling covered it whatever the `z-index`
+(Braynard's HUD: an absolute outline layer over a relative fill layer). Now
+`paint_sequence_entry` draws such an entry (`paint::paints_in_own_entry`: a
+flowed inline element with `position: relative`) through
+`paint_layered_span`, which calls `paint_inline_layout` with `only:
+Some(span)`, and the root's own paint leaves it out: `InlineScope` (built from
+the IFC's `relative_spans` and `relative_spans_resting`, so a change of
+`position`, which rebuilds the lines, keeps it current) decides per text
+range, inline background and atomic inline which paint draws it, by the
+innermost layered span that is or holds the node (`LayeredSpans::owner_of`),
+and goes into every mask the IFC paint builds (`TextMask`, `ShadowGroup`,
+`TextFragment`). A span's entry draws nothing of the root's own (uncovered
+bytes, the ellipsis, the highlights) nor of a layered span nested in it, which
+paints in its own entry (a stacking-context span's sequence holds its nested
+ones, `paint_children_with_stacking`). The entry's offset is the root's
+scrolled border-box origin, since a flowed inline element's `layout` is zeroed;
+the root's content origin is added to it. Hit testing walks the same entry:
+a point on the span's moved text (`text_query::layered_span_at`, its
+selection rects at its offset) answers the IFC root, as a hit on any of its
+text does, before the boxes below the span in the sequence. Pinned in
+`tests/positioned_inline_paint_2819_tests.rs` (Chrome 158 pixels, both clip
+routes) and `relative_inline_hit_2346_tests.rs`. Not Chrome's yet: a `sticky`
+inline, and a static inline with `opacity` (a stacking context too), are
+still drawn with the root's runs (no byte range is recorded for them); an
+absolute box **inside** a relative span is a unit of its host (#591), so it
+is ordered after every positioned descendant of the span, where Chrome puts it
+at its tree position (a relative span after it inside the same span is drawn
+under it, not over); an atomic inline that is itself positioned is still drawn
+by its IFC (`drawn_by_its_ifc`'s own note); the span's `opacity` group is
+unbounded (its extent is its lines', which no box records); and the selection
+highlight is drawn with the root's paint, under the span's entry.
 A pointer on moved **text** is mapped to the character drawn under it
 (#2404): `text_query::unmoved_point` finds the innermost relative span whose
 moved fragment (its selection rects, one per line piece, moved by every

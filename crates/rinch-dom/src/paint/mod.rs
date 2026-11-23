@@ -49,6 +49,8 @@ use layer_bounds::{
 };
 pub(crate) use svg::parse_paint_order;
 use svg::*;
+pub(crate) use text::LayeredSpans;
+pub use text::paints_in_own_entry;
 pub(crate) use text::take_span_line_visits;
 use text::*;
 pub use text::{inline_box_reach, inline_element_at, inline_element_at_where};
@@ -3283,6 +3285,12 @@ pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// double. That is what the old `skip_ifc_children` flag was standing in for,
 /// positionally and only at the sites that happened to pass it.
 ///
+/// **A relative inline element is the exception that is not skipped**
+/// (#2819): it is no box, its entry is where its runs are drawn
+/// ([`paints_in_own_entry`], `paint_layered_span`), and its IFC root leaves
+/// them out of its own paint. `paint_sequence_entry` asks this predicate
+/// first and that one inside it.
+///
 /// **Known divergence.** The IFC's draw is the survivor, so an inline-level
 /// box paints in *inline order* rather than at its `z-index` — visible for
 /// something like `<button style="position: relative; z-index: -1">` inside
@@ -4713,6 +4721,22 @@ fn paint_sequence_entry(
     if let Some(child) = child
         && drawn_by_its_ifc(tree, child)
     {
+        // A `position: relative` inline element is drawn here, in its place
+        // among the positioned boxes, not with its IFC's lines (#2819).
+        if paints_in_own_entry(child) {
+            switch_clip_chain(order, entry.clips, open, painter, node_transform);
+            paint_layered_span(
+                tree,
+                entry.node_id,
+                painter,
+                scale,
+                entry.offset_x,
+                entry.offset_y,
+                font_cx,
+                layout_cx,
+                node_transform,
+            );
+        }
         return;
     }
     // A highlight is drawn with the content it highlights (#2666).
@@ -4839,6 +4863,87 @@ fn paint_sequence_entry(
 
     if let Some(lifted) = lifted {
         lifted.restore(painter);
+    }
+}
+
+/// Paint `span_id`, a `position: relative` inline element
+/// ([`paints_in_own_entry`]), as its entry of a stacking sequence (#2819):
+/// its IFC root's backgrounds, borders, text, decorations and atomic inlines
+/// that belong to it ([`InlineScope::Span`]), then, when it is a stacking
+/// context itself (a `z-index`, an `opacity`), the entries of its own
+/// sequence — the layered spans inside it.
+///
+/// `offset_x`/`offset_y` is the entry's: the span's parent's origin, which is
+/// the IFC root's scrolled border-box origin, since a flowed inline element's
+/// `layout` is zeroed and the walk from the root to it adds nothing else.
+#[allow(clippy::too_many_arguments)]
+fn paint_layered_span(
+    tree: &NodeTree,
+    span_id: RawNodeId,
+    painter: &mut dyn Painter,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    transform: Affine,
+) {
+    let Some(span) = tree.get(span_id) else {
+        return;
+    };
+    let Some(root) = span.ifc_root.and_then(|r| tree.get_live(r)) else {
+        return;
+    };
+    let Some(inline_layout) = root.text_layout.as_ref() else {
+        return;
+    };
+    if span.computed_style.opacity <= 0.0 || skips_hidden_subtree(tree, span) {
+        return;
+    }
+    let (off_x, off_y) = ifc_root_content_origin(root);
+    let content_x = offset_x + off_x as f64 * scale;
+    let content_y = offset_y + off_y as f64 * scale;
+    // `opacity` makes the span a stacking context, composited as one group.
+    // Its extent is its lines', which no box records: the layer is unbounded,
+    // as a box whose extent is unknown gets.
+    let opacity = filter::own_opacity(span_id, span.computed_style.opacity);
+    let group = (opacity < 1.0).then(|| {
+        GroupLayer::push(
+            tree,
+            span_id,
+            span,
+            painter,
+            opacity,
+            transform,
+            &PaintShape::from(layer_bounds::UNBOUNDED),
+        )
+    });
+    paint_inline_layout(
+        tree,
+        painter,
+        scale,
+        content_x,
+        content_y,
+        inline_layout,
+        font_cx,
+        layout_cx,
+        root.computed_style.text_shadow.as_slice(),
+        transform,
+        root,
+        matches!(
+            root.computed_style.visibility,
+            VisibilityValue::Hidden | VisibilityValue::Collapse
+        ),
+        None,
+        Some(span_id),
+    );
+    if span.creates_stacking_context() {
+        paint_children_with_stacking(
+            tree, span_id, painter, scale, offset_x, offset_y, font_cx, layout_cx, transform,
+        );
+    }
+    if let Some(group) = group {
+        group.pop(painter);
     }
 }
 
@@ -5818,6 +5923,7 @@ fn paint_node_unmasked(
                                layout_cx: &mut parley::LayoutContext<Brush>| {
                         paint_held_highlights(tree, node_id, painter, font_cx, layout_cx)
                     }),
+                    None,
                 );
             }
             paint_children_with_stacking(
@@ -6633,6 +6739,7 @@ fn paint_node_unmasked(
                     // maps to; each text run follows its own element (#829).
                     !visible,
                     Some(&mut under_text),
+                    None,
                 );
 
                 // Still paint non-inline (block) children normally
