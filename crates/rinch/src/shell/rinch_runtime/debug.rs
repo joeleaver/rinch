@@ -33,10 +33,24 @@ impl ShellWindow {
 }
 
 impl RinchRuntime {
+    /// The main window made ready for a debug screenshot painted inside the
+    /// drain (#2829): what the turn staged for its layer surface so far is
+    /// sent first ([`Self::flush_layer_turn`]), so a `SetWindowSize` before
+    /// the screenshot in the same drain is the size it is painted at. That
+    /// part of the turn is one commit, and the frame's commit follows it;
+    /// what the drain's later events stage goes out when it ends.
+    #[cfg(any(feature = "debug", test))]
+    pub(super) fn ready_for_screenshot(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.flush_layer_turn(WindowRole::Main, event_loop);
+    }
+
     /// Handle debug commands that require the renderer (e.g., screenshots).
     /// Returns true if the event loop should exit.
     #[cfg(feature = "debug")]
-    pub(super) fn handle_debug_commands_with_renderer(&mut self) -> bool {
+    pub(super) fn handle_debug_commands_with_renderer(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+    ) -> bool {
         let Some(rx) = self.main.app.debug_cmd_rx.take() else {
             return false;
         };
@@ -65,6 +79,7 @@ impl RinchRuntime {
                 }
                 rinch_debug::DebugCommandKind::Screenshot => {
                     // Screenshot needs the renderer -- handle it here in the shell
+                    self.ready_for_screenshot(event_loop);
                     if let Err(e) = self.paint() {
                         DebugResult::Error {
                             message: format!("Paint failed: {}", e),

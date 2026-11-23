@@ -605,7 +605,9 @@ impl ShellWindow {
                 // Sent with the rest of the turn's changes (#2464).
                 self.pending_layer.extend(sets);
                 // A window sized by its content: a new negotiation in the new
-                // configuration, its size asked for with these changes.
+                // configuration, its size staged with these changes when the
+                // drain sends them (`stage_content_size_for_layer_turn`), so
+                // it goes in their one commit (#2829).
                 self.restart_content_size();
             }
         }
@@ -932,8 +934,19 @@ impl ShellWindow {
         }
         // A size the turn asked for and never sent: the next surface is made
         // at it, as a hidden window's size is (#2464).
+        // Published too, so `current_window_size()` reports it while the
+        // window is hidden (#2829), as a size set while hidden is.
         if let Some(size) = staged_size {
             self.saved_geometry.size = Some(size);
+            // In the display's logical pixels, as the window's own readings
+            // (`WindowReading`) and a size set while hidden are published:
+            // the OS scale, not the zoomed one (#2861).
+            let logical = size.to_logical::<f64>(self.os_scale_factor());
+            window_geometry::publish_hidden(
+                self.facts_key,
+                None,
+                Some((logical.width, logical.height)),
+            );
         }
         // A hidden window has lost the keyboard (#1770), and the system's
         // `Focused(false)` for a window rinch drops itself never arrives. So
@@ -1250,6 +1263,19 @@ impl ShellWindow {
     /// above are divided by it): the document's is
     /// `crate::zoom::apply` of it.
     pub(super) fn initial_surface_scale(&self, first_appearance: bool) -> f64 {
+        self.initial_surface_scale_or(first_appearance, self.app.device_pixel_ratio)
+    }
+
+    /// [`Self::initial_surface_scale`], with `document_scale` (zoom
+    /// included) standing in for its document's scale where it would read
+    /// that: a second window's document is not mounted yet when its mount
+    /// scale is chosen, so its own scale is the unset 1.0, and the window
+    /// that opens it gives its scale instead (#2886).
+    pub(super) fn initial_surface_scale_or(
+        &self,
+        first_appearance: bool,
+        document_scale: f64,
+    ) -> f64 {
         let unzoomed = |scale: f64| scale / crate::zoom::current();
         if let Some((scale, _)) = self.prepared {
             return unzoomed(scale);
@@ -1266,11 +1292,11 @@ impl ShellWindow {
             return output.scale;
         }
         if !first_appearance {
-            return unzoomed(self.app.device_pixel_ratio);
+            return unzoomed(document_scale);
         }
         outputs
             .first()
-            .map_or(unzoomed(self.app.device_pixel_ratio), |o| o.scale)
+            .map_or(unzoomed(document_scale), |o| o.scale)
     }
 
     /// The logical size a hidden window is shown at: the size it was hidden

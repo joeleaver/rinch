@@ -210,8 +210,9 @@ Four things about that set are worth knowing before they surprise you.
   nothing there. A `min-height` or `max-height` on a block between a
   clamp and its Nth line holds that block, and the clamp ends after it.
   A `var()` in `-webkit-line-clamp`, `-webkit-box-orient`,
-  `-webkit-box-flex` or the three placing properties is read (#2820);
-  one in `display` naming `-webkit-box` is not.
+  `-webkit-box-flex` or the three placing properties is read (#2820), and
+  so is one in `display` naming `-webkit-box` or `-webkit-inline-box`
+  (#2870).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the
