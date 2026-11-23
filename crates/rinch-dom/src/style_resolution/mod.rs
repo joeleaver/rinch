@@ -322,9 +322,8 @@ impl RinchDocument {
         let url_data = crate::layout::BLANK_URL_DATA.clone();
 
         let media = ServoArc::new(self.tree.guard.wrap(MediaList::empty()));
-        // `-webkit-box` and its two properties ride the cascade as
-        // declarations Stylo keeps (#1703).
-        let css = crate::webkit_box::rewrite(css, false);
+        let source = css;
+        let css = self.author_sheet_text(source);
         let stylesheet = Stylesheet::from_str(
             &css,
             url_data,
@@ -339,7 +338,108 @@ impl RinchDocument {
 
         let sheet = DocumentStyleSheet(ServoArc::new(stylesheet));
         self.note_sheet_layers(&sheet);
+        if crate::reduced_motion::mentions(source) {
+            self.motion_sheets.push((sheet.clone(), source.to_string()));
+        }
         sheet
+    }
+
+    /// An author sheet's source as Stylo is handed it: `-webkit-box` and its
+    /// properties ride the cascade as declarations Stylo keeps (#1703), and
+    /// `prefers-reduced-motion` is answered for this document (#2209).
+    fn author_sheet_text<'a>(&self, css: &'a str) -> std::borrow::Cow<'a, str> {
+        use std::borrow::Cow;
+        match crate::webkit_box::rewrite(css, false) {
+            Cow::Borrowed(css) => crate::reduced_motion::rewrite(css, self.reduced_motion),
+            Cow::Owned(css) => {
+                Cow::Owned(crate::reduced_motion::rewrite(&css, self.reduced_motion).into_owned())
+            }
+        }
+    }
+
+    /// Drop the re-parse entries of sheets no longer in the document (#2209):
+    /// a replaced theme sheet, a `<style>` whose text changed or that left.
+    /// Each entry holds its sheet strongly, with its source, so without this
+    /// every `set_theme_css` (whose default CSS names the feature) and every
+    /// change of such a `<style>`'s text kept one more sheet alive.
+    pub(crate) fn forget_dead_motion_sheets(&mut self) {
+        if self.motion_sheets.is_empty() {
+            return;
+        }
+        let theme = &self.theme_stylesheet;
+        let author = &self.author_stylesheets;
+        let elements = &self.style_element_sheets;
+        self.motion_sheets.retain(|(sheet, _)| {
+            let is = |l: &style::stylesheets::DocumentStyleSheet| ServoArc::ptr_eq(&l.0, &sheet.0);
+            theme.iter().any(is)
+                || author.iter().any(is)
+                || elements.iter().filter_map(|e| e.sheet.as_ref()).any(is)
+        });
+    }
+
+    /// The reduced-motion preference this document answers
+    /// `@media (prefers-reduced-motion)` with (#2209).
+    pub fn prefers_reduced_motion(&self) -> bool {
+        self.reduced_motion
+    }
+
+    /// Answer `@media (prefers-reduced-motion)` with `reduce` from now on
+    /// (#2209). Stylo's servo build has no such media feature, so the answer
+    /// is written into each sheet that names it (`crate::reduced_motion`):
+    /// a change re-parses those sheets and restyles the document, as a
+    /// device-pixel-ratio change does. A no-op when nothing changes, and
+    /// cheap when no sheet names the feature.
+    pub fn set_prefers_reduced_motion(&mut self, reduce: bool) {
+        use style::stylesheets::{AllowImportRules, Origin, StylesheetContents};
+        if reduce == self.reduced_motion {
+            return;
+        }
+        self.reduced_motion = reduce;
+
+        self.forget_dead_motion_sheets();
+        if self.motion_sheets.is_empty() {
+            return;
+        }
+
+        let sheets = std::mem::take(&mut self.motion_sheets);
+        for (sheet, source) in &sheets {
+            let css = self.author_sheet_text(source);
+            let contents = StylesheetContents::from_str(
+                &css,
+                crate::layout::BLANK_URL_DATA.clone(),
+                Origin::Author,
+                &self.tree.guard,
+                None,
+                None,
+                QuirksMode::NoQuirks,
+                AllowImportRules::Yes,
+                None,
+            );
+            {
+                let mut guard = self.tree.guard.write();
+                *sheet.0.contents.write_with(&mut guard) = contents;
+            }
+            self.note_sheet_layers(sheet);
+        }
+        self.motion_sheets = sheets;
+
+        // The rules changed under the Stylist: rebuild its author data and
+        // restyle everything, as a media-feature change on the device does.
+        self.stylist
+            .force_stylesheet_origins_dirty(Origin::Author.into());
+        self.sheet_invalidations_pending = true;
+        self.refresh_author_layer_order();
+        self.recompute_bare_focus_rules();
+        self.tree
+            .note_full_restyle(crate::perf::FullRestyleReason::Stylesheet);
+        for (node_id, _) in self.tree.nodes.iter() {
+            self.tree.nodes[node_id].stylo_element_data.clear();
+        }
+        self.tree.style_roots.clear();
+        crate::node::invalidate_sibling_marks();
+        self.tree.full_style_walk = true;
+        self.tree.styles_dirty = true;
+        self.tree.layout_dirty = true;
     }
 
     /// Load CSS into Stylo's stylesheet system.
@@ -523,6 +623,7 @@ impl RinchDocument {
         drop(guard);
 
         self.theme_stylesheet = Some(new_sheet);
+        self.forget_dead_motion_sheets();
 
         // The old sheet's and the new sheet's rules are both invalidations
         // (#884): replacing the theme restyles what either can reach, with no

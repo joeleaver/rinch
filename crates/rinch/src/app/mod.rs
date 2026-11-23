@@ -1981,6 +1981,33 @@ impl RinchApp {
         self.pending_fonts.push(font);
     }
 
+    /// Whether the document answers `prefers-reduced-motion` other than the
+    /// process's preference says (#2209): the OS's setting or the app's
+    /// override changed since it was parsed.
+    pub(crate) fn reduced_motion_owed(&self) -> bool {
+        self.doc.as_ref().is_some_and(|d| {
+            d.borrow().prefers_reduced_motion()
+                != rinch_dom::reduced_motion::prefers_reduced_motion()
+        })
+    }
+
+    /// Re-answer `prefers-reduced-motion` in the document when it is owed
+    /// ([`Self::reduced_motion_owed`]): its sheets that name the feature are
+    /// re-parsed and everything restyles. Returns whether it changed.
+    pub(crate) fn adopt_reduced_motion(&mut self) -> bool {
+        if !self.reduced_motion_owed() {
+            return false;
+        }
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut()
+                .set_prefers_reduced_motion(rinch_dom::reduced_motion::prefers_reduced_motion());
+        }
+        self.scene_dirty = true;
+        #[cfg(software_shell)]
+        self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::Invalidated);
+        true
+    }
+
     /// Whether the shared system-font scan was refreshed
     /// ([`rinch_dom::fonts::refresh_system_fonts`]) since this app's font
     /// contexts were built (#2486).
@@ -2388,6 +2415,9 @@ impl RinchApp {
         // Fonts installed since the scan (#2486): rebuilt before anything
         // resolves, so this frame lays out with them.
         let fonts_adopted = self.adopt_refreshed_system_fonts();
+        // The reduced-motion preference changed (#2209): this sets the
+        // document's styles dirty, so the frame does not short-circuit.
+        self.adopt_reduced_motion();
         let Some(doc) = self.doc.clone() else {
             return false;
         };
@@ -4274,6 +4304,7 @@ impl RinchApp {
             || self.has_owed_editor_overlay_pass()
             || self.theme_change_owed()
             || self.system_fonts_owed()
+            || self.reduced_motion_owed()
     }
 
     /// Whether a `NodeHandle::scroll_into_view` / `scroll_to_fraction` is
@@ -4334,6 +4365,7 @@ impl RinchApp {
             || self.has_owed_editor_overlay_pass()
             || self.theme_change_owed()
             || self.system_fonts_owed()
+            || self.reduced_motion_owed()
     }
 
     /// Whether a wake of the event loop that ran queued work — main-thread

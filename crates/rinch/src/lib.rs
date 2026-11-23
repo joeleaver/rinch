@@ -145,6 +145,11 @@ mod pointer_lock;
 /// [`PopupProps`], [`PopupAnchor`].
 #[cfg(feature = "windowing")]
 pub mod popup;
+/// Reduced motion (#2209): the OS's setting, the app's override
+/// ([`App::reduced_motion`](app_builder::App::reduced_motion)) and the reactive
+/// [`prefers_reduced_motion`](reduced_motion::prefers_reduced_motion).
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
+pub mod reduced_motion;
 pub mod render_surface;
 #[cfg(any(feature = "windowing", feature = "android"))]
 pub mod shell;
@@ -157,6 +162,8 @@ pub(crate) mod split_frame;
 /// The system font watch behind [`font::watch_system_fonts`] (#2486, #2537).
 #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 mod system_font_watch;
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
+pub use reduced_motion::{prefers_reduced_motion, set_reduced_motion};
 /// Text rasterization: the app's choice ([`App::text_rasterization`](app_builder::App::text_rasterization))
 /// and the OS's text settings it follows (#2286).
 #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
