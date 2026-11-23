@@ -4098,8 +4098,9 @@ impl RinchApp {
         self.shared_target(&doc.borrow(), x, y)
     }
 
-    /// [`Self::shared_hit`] against this app's own document.
-    #[cfg(test)]
+    /// [`Self::shared_hit`] against this app's own document (only the
+    /// software-shell damage tests use it).
+    #[cfg(all(test, software_shell))]
     pub(super) fn move_hit(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.as_ref()?;
         self.shared_hit(&doc.borrow(), x, y)
