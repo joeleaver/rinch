@@ -189,8 +189,8 @@ pub fn push_context_root(root: u64) -> ContextRootGuard {
 ///
 /// `None` means "no document is dispatching" and must be read as *permissive*:
 /// state armed or queried outside any dispatch (a timer armed from `main`, a
-/// menu callback, a backend with a single page-wide event stream like
-/// rinch-web) belongs to nobody in particular and stays drivable by anybody.
+/// menu callback, rinch-web's pointer stream after a press, which may cross
+/// roots) belongs to nobody in particular and stays drivable by anybody.
 /// Only two **`Some`** keys that differ mean "not yours".
 ///
 /// A **timer, a parked continuation (an http completion), a closure queued
@@ -228,8 +228,8 @@ pub fn doc_identity(doc_key: u64) -> Option<u64> {
 ///
 /// Permissive by construction: `None` on either side means "no document in
 /// particular" — state armed or queried outside any dispatch (a timer armed
-/// from `main`, a menu callback, a backend with one page-wide event stream like
-/// rinch-web) belongs to nobody and stays usable by anybody. **Only two `Some` keys that differ**
+/// from `main`, a menu callback, rinch-web's pointer stream after a press)
+/// belongs to nobody and stays usable by anybody. **Only two `Some` keys that differ**
 /// are refused; anything stricter would wedge the state in its *own* document.
 ///
 /// The single home for that rule, shared by the pointer-capture drag

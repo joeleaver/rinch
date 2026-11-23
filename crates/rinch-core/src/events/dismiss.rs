@@ -744,7 +744,7 @@ mod tests {
 
     /// Both halves of the permissive rule: a handler registered with no document
     /// serves every document (a headless host, a test), and a dispatch with no
-    /// document reaches every handler (rinch-web, which never marks dispatch).
+    /// document reaches every handler (rinch-web's key on no root, #2811).
     #[test]
     fn a_document_less_registration_or_dispatch_stays_permissive() {
         clear_stack();

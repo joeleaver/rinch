@@ -286,8 +286,10 @@ armed the drag drives it: another document's `MouseMove` does not reach
 `on_move`, its `MouseUp` does not fire `on_end`, and `Drag::is_active()` answers
 `false` there (so a drag in one window never freezes hover in the other). A drag
 armed **outside** any document — from a timer armed in `main`, a menu
-callback, or on rinch-web, which has one page-wide pointer stream — belongs to
-no document in particular and stays drivable by anybody. Nothing changes for a single-window
+callback — belongs to no document in particular and stays drivable by anybody.
+On rinch-web a drag armed in a press's handler is its root's (#2811), but the
+pointer stream after the press is dispatched as no root's (a gesture may cross
+into another root), so it drives the drag wherever the pointer goes. Nothing changes for a single-window
 app. **An effect counts as its document's code** (issue #295): the effect queue
 is thread-global, so a write in document A's handler flushes document B's
 effects inside A's `handle_event` — but every `Effect` and `Memo` records the
