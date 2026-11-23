@@ -10,7 +10,7 @@ A code comment or test that cites "CLAUDE.md" and a section name ("Keyboard Focu
 
 ## Project Overview
 
-Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom (an HTML/CSS DOM on Stylo, Taffy for layout, Parley for text) with two rendering backends: Vello on wgpu (GPU, `gpu` feature) and tiny-skia (software, always on desktop). Windowing is winit (a pinned fork, below), presentation softbuffer or wgpu, native menus muda. A second backend, `rinch-web`, drives the browser's own DOM through web_sys.
+Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom (an HTML/CSS DOM on Stylo, Taffy for layout, Parley for text) with two rendering backends: Vello on wgpu (GPU, `gpu` or `gpu-renderer` feature) and tiny-skia (software, always on desktop). Windowing is winit (a pinned fork, below), presentation softbuffer or wgpu, native menus muda. A second backend, `rinch-web`, drives the browser's own DOM through web_sys.
 
 **Design philosophy:** declarative UI with fine-grained reactivity. A component function runs **once**; the `rsx!` macro generates DOM construction code, and `{|| expr}` closures become Effects that update single nodes. There are no re-renders.
 
@@ -43,6 +43,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 | `rsx-control-flow-and-props.md` | `if`/`for`/`match` in rsx, keyed reconciliation, `_fn` bindings and the echo guard, undo/caret keys in fields, `onsubmit`, rsx prop transformation rules, boolean attributes, merged `style:`/`class:`, root attributes on components |
 | `common-issues.md` | a rendering surprise: inline-level flex/grid, UA stylesheet defaults (headings, lists, `<hr>`, form controls, `<select>`), CSS tables, unsupported selectors, sizing keywords, empty blocks |
 | `rtc.md` | `rinch-rtc` (WebRTC data channels): the native webrtc-rs worker, the web backend, the main-thread registry rules, exit handling, the str0m interop tests |
+| `spellcheck.md` | `rinch-spell` (#2862): the `SpellChecker` trait, the spellbook Hunspell backend, dictionary loading and system discovery, word segmentation and skip rules, the personal dictionary and session ignores |
 | `ci.md` | GitHub Actions workflows, which checks a PR gets, batched merges and the batch procedure, a red batch, the `test` shards, retargets |
 
 User-facing guides are in `docs/src/guide/`, architecture write-ups in `docs/src/architecture/`, design records in `docs/design/`. The rsx usage rules every UI change needs are in `.claude/rules/rinch-best-practices.md` (loaded automatically).

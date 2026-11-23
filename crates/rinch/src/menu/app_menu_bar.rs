@@ -1273,7 +1273,7 @@ mod tests {
 // ── The renderer with no desktop backend under it ───────────────────────────
 //
 // The suite above mounts the real stylesheet through `RinchDocument` and so
-// needs `desktop`. These do not: they drive the renderer against rinch-core's
+// needs `windowing`. These do not: they drive the renderer against rinch-core's
 // headless document double, which is the configuration a `rinch-web` build
 // compiles — `--no-default-features --features components,theme`. If the module
 // ever re-acquires a dependency on muda, winit or rinch-dom, these stop

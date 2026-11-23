@@ -1,0 +1,18 @@
+# A tiny test-only Hunspell dictionary for rinch-spell's tests (#2862).
+# Written for these tests; not derived from any distributed dictionary.
+SET UTF-8
+TRY esianrtolcdugmfphbyvkw'
+WORDCHARS '
+
+REP 1
+REP f ph
+
+# Plural / third person: cat -> cats, city -> cities.
+SFX S Y 2
+SFX S 0 s [^y]
+SFX S y ies [^aeiou]y
+
+# Past tense: walk -> walked, bake -> baked.
+SFX D Y 2
+SFX D 0 d e
+SFX D 0 ed [^e]

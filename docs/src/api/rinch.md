@@ -37,8 +37,8 @@ fn main() {
 | `.theme(theme)` | `ThemeProviderProps` — colors, radius, dark mode |
 | `.menu(menus)` | Native menu bar, as `Vec<(&str, Menu)>` |
 | `.window_props(props)` | Full `WindowProps` — borderless, transparent, icon, `app_id`, … |
-| `.gpu_config(cfg)` | Raise the compositor device's features/limits (`gpu` feature) |
-| `.external_gpu(gpu)` | Composite onto an embedder-provided device (`gpu` feature) |
+| `.gpu_config(cfg)` | Raise the compositor device's features/limits (`gpu` or `gpu-renderer` feature) |
+| `.external_gpu(gpu)` | Composite onto an embedder-provided device (`gpu` or `gpu-renderer` feature) |
 | `.run()` | Start on desktop; takes over the thread until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
 
@@ -219,7 +219,7 @@ Application runtime and event loop. The entry point is [`rinch::App`](#rinchapp)
 Deprecated shims over `App`:
 - `run()`, `run_with_theme()`, `run_with_menu()` - title/size, plus theme or menu bar
 - `run_with_window_props()`, `run_with_window_props_and_menu()` - full window props
-- `run_with_gpu_config()`, `run_with_external_device()` - GPU device selection (`gpu` feature)
+- `run_with_gpu_config()`, `run_with_external_device()` - GPU device selection (`gpu` or `gpu-renderer` feature)
 
 Lower-level runtime entry points, deprecated since 0.2.0 and **not** shims over
 `App` — they predate it and sit below the layer that installs theme CSS, so

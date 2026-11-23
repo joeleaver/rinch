@@ -402,6 +402,12 @@ them before the event loop starts. On Windows and macOS the DOM bar is logged
 once at `debug` level. A tray (`system-tray`) shows muda's menus, so it turns
 `native-menus` on.
 
+`a11y`, `collaboration` and `global-hotkeys` imply `windowing`, not `desktop`:
+none of them needs the native menus. So an app that lists one of the three
+with neither `desktop` nor `native-menus` (with `default-features = false`)
+gets the DOM bar for `App::menu` on macOS and Windows too. Add `native-menus`
+(or `desktop`) to keep the OS menu bar there.
+
 ## Context Menus
 
 ### Rendered Context Menu

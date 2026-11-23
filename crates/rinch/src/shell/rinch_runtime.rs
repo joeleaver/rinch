@@ -230,7 +230,7 @@ struct ShellWindow {
     app: RinchApp,
     /// Desktop window wrapper.
     window: Option<WinitWindow>,
-    /// GPU renderer (only available with `gpu` feature).
+    /// GPU renderer (only available with the `gpu-renderer` feature).
     #[cfg(feature = "gpu-renderer")]
     renderer: Option<WgpuRenderer>,
     /// The GPU renderer of a hidden window, its surface gone with the OS
@@ -244,7 +244,7 @@ struct ShellWindow {
     #[cfg(feature = "gpu-renderer")]
     awaits_gpu: bool,
     /// Software renderer (CPU pixel presentation via softbuffer). Every
-    /// desktop build has it; a `gpu` build presents with it when `renderer` is
+    /// desktop build has it; a `gpu-renderer` build presents with it when `renderer` is
     /// `None` (software chosen, or the GPU could not start).
     soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
     /// While a hidden window stays prepared (#2633): the scale its last

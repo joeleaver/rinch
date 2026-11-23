@@ -50,8 +50,8 @@ about 2.5 ns a pixel more to decode (20 ms for a 3840x2160 picture). A file
 or network load decodes on a background thread, but a `data:` URL, and every
 load in the wasm32 embed build, decodes on the UI thread, so there that time
 is spent in the frame. The conversion is
-the `color-management` feature of rinch-dom, which `rinch`'s `desktop`,
-`android` and `embed` features turn on. To turn it off for the whole process at
+the `color-management` feature of rinch-dom, which `rinch`'s `windowing`
+(and so `desktop`), `android` and `embed` features turn on. To turn it off for the whole process at
 run time, for example when the app's files are already converted, call
 `rinch::image::set_color_management(false)` before the images load.
 Pixels handed over decoded (`ImageLoadResult::Decoded`, `register_rgba`) are
@@ -1379,7 +1379,7 @@ nothing on the Java side, and the shell asks for the finish itself.
 the IME can see, and rinch's input connection reports none, so from that
 panel only Paste and Select all reach a rinch field — measured.) The
 rich-text `Editor` is not part of an Android build today (it is
-`desktop`-only), so the toolbar covers `<input>` and `<textarea>`.
+`windowing`-only), so the toolbar covers `<input>` and `<textarea>`.
 
 ---
 
@@ -1684,7 +1684,7 @@ The desktop files notifications under the app that sent them. rinch uses the ide
 
 ## Global Hotkeys
 
-Enable with `features = ["global-hotkeys"]` (off by default). `rinch::hotkey` registers **system-wide** hotkeys: they fire while another application has the keyboard focus, and they report **press and release**, so a hold-to-talk binding works.
+Enable with `features = ["global-hotkeys"]` (off by default; it implies `windowing`, not the native menus: see [Menus → Without native menus](menus.md#without-native-menus)). `rinch::hotkey` registers **system-wide** hotkeys: they fire while another application has the keyboard focus, and they report **press and release**, so a hold-to-talk binding works.
 
 ```rust
 use rinch::hotkey::{self, HotkeySpec, HotkeyState};

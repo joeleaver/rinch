@@ -123,16 +123,16 @@ jobs:
           #
           # `cargo test --workspace` unifies features across members, so a gated test
           # can be alive purely because some unrelated example turns its feature on:
-          #   * rinch/tests/multi_context.rs (cfg(any(gpu, embed)) — the #134/#136/#138
+          #   * rinch/tests/multi_context.rs (cfg(any(gpu-renderer, embed)) — the #134/#136/#138
           #     pins) and rinch/tests/input_routing.rs (same cfg — the #139 per-document
           #     drag routing pins) run only because examples/game-embed and
           #     examples/gpu-device-config enable `rinch/gpu`.
-          #   * event_dispatch.rs::paste_image_tests (cfg(all(test, desktop, clipboard)))
+          #   * event_dispatch.rs::paste_image_tests (cfg(all(test, windowing, clipboard)))
           #     runs only because four examples enable `rinch/clipboard`.
           # And one runs ONLY in this shard, never under `--workspace`:
           #   * app/mod.rs::drag_ghost_dirty_region_tests (cfg(all(test, software_shell)) —
-          #     the #173 pin) needs `desktop` WITHOUT `gpu`, and `--workspace` unifies
-          #     `rinch/gpu` on. Adding `gpu` to the `-p rinch` line below would kill it.
+          #     the #173 pin) needs `windowing` WITHOUT `gpu-renderer`, and `--workspace`
+          #     unifies `rinch/gpu` on. Adding `gpu` to the `-p rinch` line below would kill it.
           # Retarget or drop those examples and the pins go dead silently, so name the
           # combinations here rather than inheriting them by luck.
           #
@@ -152,7 +152,8 @@ jobs:
           # pins below stay alive.
           #
           # `desktop` is listed on the `-p rinch` line to name that gate explicitly
-          # rather than inherit it: menu/mod.rs is cfg(feature = "desktop") and
+          # rather than inherit it: menu/mod.rs's muda half is cfg(feature =
+          # "native-menus") and its winit half cfg(feature = "windowing"), and
           # `desktop` is a DEFAULT feature of `rinch`, so its #183 pins do run
           # today — but they would die silently if that default ever flipped.
           # Naming it in the existing set is free (the resolved features are
@@ -191,7 +192,8 @@ jobs:
               # `menu::tests` both run in the `--workspace` job above (`desktop` is a
               # default feature and `--workspace` unifies it on), and what this line
               # alone would notice is a `use muda::…` or a `winit::keyboard::KeyCode`
-              # creeping above the `#[cfg(feature = "desktop")]` line and taking the
+              # creeping above the `#[cfg(feature = "native-menus")]` or
+              # `#[cfg(feature = "windowing")]` lines and taking the
               # whole web menu bar with it. The `cargo check` in the `check` job below
               # is the compile-only half of the same question; this one also runs the
               # tests in that configuration, which is where a *behavioural* regression
@@ -564,6 +566,9 @@ jobs:
           # armed at mount, the uninhabited `NativeMenuBar`) are linted only here.
           cargo clippy -p rinch --no-default-features --features windowing --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features windowing,gpu-renderer --all-targets -- -D warnings
+          # `a11y`, `collaboration` and `global-hotkeys` imply `windowing`, not
+          # `desktop`: linted together without the native menus.
+          cargo clippy -p rinch --no-default-features --features a11y,collaboration,global-hotkeys --all-targets -- -D warnings
           # ui-zoo's `gpu` feature (its render-surface section) is turned on by
           # nothing under `--workspace`: `ui-zoo-desktop` enables `rinch/gpu`,
           # not `ui-zoo/gpu`. It went uncompiled through the wgpu 30 bump (#2485).
@@ -580,16 +585,23 @@ jobs:
           cargo clippy -p rinch-rtc --features media-cisco-openh264,media-vp8 --all-targets -- -D warnings
 
       # #2435: a build without the native menus links no GTK 3 and no libxdo
-      # on Linux, which is the point of `windowing`; muda is where they come
-      # from. Fails if either `windowing` tree lists muda, a gtk-rs crate or
-      # libxdo. The `desktop` tree must list them, so a `cargo tree` that
-      # printed nothing (a renamed feature, a failed resolve) fails too
-      # instead of passing.
+      # on Linux, which is the point of `windowing`. muda is where they come
+      # from, and with them the rest of the gtk-rs stack: GLib, GIO, GObject,
+      # ATK, Cairo, Pango, gdk-pixbuf. `stack` names every crate of it the
+      # `desktop` tree lists (read from `cargo tree`, not from memory). Fails if
+      # a `windowing` tree lists one, and so do the trees of `a11y`,
+      # `collaboration` and `global-hotkeys`, which imply `windowing`, not
+      # `desktop`. The `desktop` tree must list every one of them, so a
+      # `cargo tree` that printed nothing (a renamed feature, a failed resolve)
+      # fails too instead of passing, and so does a name that went stale.
       - name: A build without native menus links no GTK and no libxdo
         run: |
           set -o pipefail
-          banned='^(muda|gtk|gtk-sys|gdk|gdk-sys|gdk-pixbuf|gdk-pixbuf-sys|libxdo|libxdo-sys) v'
-          for features in windowing windowing,gpu-renderer; do
+          stack='muda gtk gtk-sys gtk3-macros gdk gdk-sys gdk-pixbuf gdk-pixbuf-sys
+                 glib glib-sys glib-macros gio gio-sys gobject-sys atk atk-sys
+                 cairo-rs cairo-sys-rs pango pango-sys libxdo libxdo-sys'
+          banned="^($(echo $stack | tr ' ' '|')) v"
+          for features in windowing windowing,gpu-renderer a11y collaboration global-hotkeys; do
             tree=$(cargo tree -e normal -p rinch --no-default-features --features "$features" \
               --target x86_64-unknown-linux-gnu --prefix none)
             if grep -E "$banned" <<<"$tree" | sed 's/ (\*)$//' | sort -u; then
@@ -599,7 +611,7 @@ jobs:
           done
           tree=$(cargo tree -e normal -p rinch --no-default-features --features desktop \
             --target x86_64-unknown-linux-gnu --prefix none)
-          for crate in muda gtk libxdo; do
+          for crate in $stack; do
             grep -qE "^$crate v" <<<"$tree" || {
               echo "::error::the desktop tree has no $crate: the check above proves nothing"
               exit 1
@@ -672,7 +684,7 @@ jobs:
       - name: Run clippy (wasm32)
         run: |
           for crate in rinch-core rinch-words rinch-editor-core rinch-editor-collab \
-                       rinch-editor-view rinch-http rinch-ws rinch-rtc rinch-web; do
+                       rinch-editor-view rinch-http rinch-ws rinch-rtc rinch-spell rinch-web; do
             echo "::group::clippy $crate (wasm32)"
             cargo clippy -p "$crate" --target wasm32-unknown-unknown \
               --all-targets -- -D warnings

@@ -6,7 +6,7 @@
 //! non-clipping ancestor's background and an earlier sibling — except where a
 //! later sibling or a popup covers it, and painted in the corners its own
 //! `border-radius` leaves. The pixel test needs an adapter, so it is
-//! `#[ignore]`d, and needs `gpu` for `pollster`:
+//! `#[ignore]`d, and needs `gpu-renderer` (or `gpu`) for `pollster`:
 //!     cargo test -p rinch --features gpu --test embed_game_viewport_base_layer_1866 -- --ignored
 //!
 //! The warning test builds the scene only, and runs everywhere (debug).

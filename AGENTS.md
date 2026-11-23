@@ -14,7 +14,8 @@ re-renders.
 
 **Desktop pipeline:** component → `RenderScope`/`NodeHandle` → `RinchDocument`
 (Stylo CSS + Taffy layout + Parley text) → `Painter` → window.
-The `Painter` is **tiny-skia + softbuffer by default**; the `gpu` feature adds
+The `Painter` is **tiny-skia + softbuffer by default**; the `gpu` feature (or
+`gpu-renderer`, the same renderer without the native menus) adds
 Vello + wgpu beside it, and the window chooses one at run time, falling back to
 software when the GPU will not start (`shell/renderer.rs`).
 
@@ -40,7 +41,7 @@ list if something looks off.
 | `rinch-macros` | `rsx!` and `#[component]`. |
 | `rinch-platform` | Platform abstraction traits: `PlatformWindow`, `PlatformRenderer`, `PlatformEventLoop`, `PlatformMenu`, plus `PlatformEvent` / `AppAction`. |
 | `rinch-dom` | CSS + layout + paint engine (Stylo, Taffy, Parley, Vello/tiny-skia). The heaviest crate. |
-| `rinch-renderer` | Near-empty stub (two empty modules). Optional dep of `rinch` under `gpu`; nothing meaningful lives here yet. |
+| `rinch-renderer` | Near-empty stub (two empty modules). Optional dep of `rinch` under `gpu-renderer`; nothing meaningful lives here yet. |
 
 **UI**
 
@@ -100,8 +101,10 @@ rinch (facade)
   ├── rinch-core, rinch-macros, rinch-platform   (always)
   ├── rinch-dom, rinch-editable, rinch-editor-core, rinch-editor-view,
   │   winit, parley, softbuffer                  (windowing feature)
-  ├── muda (GTK 3 + libxdo on Linux)             (native-menus → implies windowing)
-  │                                              (desktop = windowing + native-menus)
+  ├── muda (on Linux: GTK 3 with GLib, GIO,      (native-menus → implies windowing)
+  │   ATK, Cairo, Pango, gdk-pixbuf, + libxdo)   (desktop = windowing + native-menus)
+  │                                              (a11y, collaboration, global-hotkeys
+  │                                               → imply windowing, not desktop)
   ├── vello, wgpu, rinch-renderer                (gpu-renderer → implies windowing;
   │                                               gpu = desktop + gpu-renderer)
   ├── rinch-theme                                (theme feature)
@@ -110,7 +113,7 @@ rinch (facade)
   │                                              (clipboard / file-dialogs /
   │                                               system-tray / debug / video /
   │                                               image-network)
-  └── rinch-editor-view/collaboration            (collaboration → implies desktop)
+  └── rinch-editor-view/collaboration            (collaboration → implies windowing)
 
 rinch-dom            → rinch-core + stylo, taffy, parley, vello,
                        tiny-skia (software-renderer), cssparser
@@ -349,8 +352,9 @@ assume the workspace run covers it. (`--all-features` is not an option — it pu
 transitive `ashpd` that fails to build.)
 
 **System deps (Linux):** GTK3, GLib, ATK, Cairo, Pango, gdk-pixbuf, libxdo, libmpv
-development packages. GTK3 and libxdo come with muda (`native-menus`, in `desktop`);
-a `windowing` build without the native menus needs neither (#2435).
+development packages. All but libmpv come with muda (`native-menus`, in `desktop`):
+GTK 3 brings GLib, ATK, Cairo, Pango and gdk-pixbuf with it, and muda adds libxdo. A
+`windowing` build without the native menus needs none of them (#2435).
 
 **No `[patch]` lines at all.** rinch depends on crates.io wgpu 30, on Vello
 0.11 from `joeleaver/vello-fork` and on winit 0.31.0-beta.4 from
@@ -372,7 +376,8 @@ it with rinch's.
    `Callback::new(...)` inside `rsx!` produces confusing type errors.
 3. **Missing `desktop` feature.** The workspace dependency sets
    `default-features = false`, so `run()` and the rendering APIs are unavailable
-   without `features = ["desktop"]`.
+   without `features = ["desktop"]` (or `["windowing"]`, which is `desktop`
+   without the native menus).
 4. **Cross-thread signal writes.** `set()`/`update()` panic off the main thread; use
    `send()`/`update_send()`.
 5. **Using a disposed reactive handle.** Since #141, a freed `Signal`/`Memo` panics on

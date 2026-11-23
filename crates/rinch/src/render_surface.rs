@@ -2096,7 +2096,8 @@ pub fn collect_surface_pixels_for(
 /// starting with `__render_surface_` and paint inline. Surfaces created by
 /// `create_render_surface_with_name()` have custom names and use the compositor.
 ///
-/// Every caller is behind `desktop`, `gpu` (which implies `desktop`) or `embed`,
+/// Every caller is behind `windowing` (which `desktop`, `gpu` and `gpu-renderer`
+/// imply) or `embed`,
 /// so this is dead code on a wasm build without `embed` — gate it the same way
 /// rather than warn there.
 #[cfg(any(feature = "windowing", feature = "embed"))]
@@ -2146,8 +2147,9 @@ fn surface_route(surface: &RenderSurfaceHandle, gpu_images: bool) -> SurfaceRout
 }
 
 /// Whether a GPU compositor presents the window: never on a desktop build
-/// without `gpu`, and on a `gpu` build whenever the GPU renderer started
-/// (`shell::renderer`), which is a run-time question since a `gpu` build can
+/// without `gpu-renderer`, and on a `gpu-renderer` build whenever the GPU
+/// renderer started (`shell::renderer`), which is a run-time question since a
+/// `gpu-renderer` build can
 /// fall back to software. Gated like its callers.
 #[cfg(feature = "windowing")]
 fn has_gpu_compositor() -> bool {
@@ -2217,8 +2219,8 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
             if !surface_takes_compositor_path(
                 is_inline_surface(surface),
                 surface.is_video,
-                // "a GPU compositor presents", not "has the `gpu` feature": a
-                // `gpu` build presents with software when the GPU would not
+                // "a GPU compositor presents", not "has the `gpu-renderer`
+                // feature": a `gpu-renderer` build presents with software when the GPU would not
                 // start, and software paints every viewport inline.
                 has_gpu_compositor(),
             ) {
@@ -4086,7 +4088,7 @@ pub(crate) mod compositor_routing_tests {
     use super::*;
 
     /// `renderer::GPU_PRESENTING` is process-global, and two tests below flip
-    /// it on a `gpu` build while the other one asks it: each holds this for its
+    /// it on a `gpu-renderer` build while the other one asks it: each holds this for its
     /// whole body, or one reads the other's `true` halfway through.
     static PRESENTING: Mutex<()> = Mutex::new(());
 
@@ -5273,7 +5275,7 @@ pub(crate) mod compositor_routing_tests {
              and, since #1768, in the scene on GPU"
         );
 
-        // On a `gpu` build presenting on the GPU too: collected by name for
+        // On a `gpu-renderer` build presenting on the GPU too: collected by name for
         // the scene, not blitted (#1768; it was a compositor layer).
         #[cfg(feature = "gpu-renderer")]
         {
@@ -5323,7 +5325,7 @@ pub(crate) mod compositor_routing_tests {
             "a GameViewport reaches the compositor path on GPU only"
         );
 
-        // A `gpu` build decides at run time: once the GPU renderer presents,
+        // A `gpu-renderer` build decides at run time: once the GPU renderer presents,
         // the same surface is a compositor layer again and nothing is inline.
         #[cfg(feature = "gpu-renderer")]
         {

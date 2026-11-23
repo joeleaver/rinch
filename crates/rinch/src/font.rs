@@ -106,7 +106,7 @@ pub fn refresh_system_fonts() {
 /// Watch for fonts installed while the app runs, or `None` to stop (#2486,
 /// #2537). What `interval` means depends on the platform:
 ///
-/// - **Linux** (the desktop feature): rinch asks the kernel (inotify) to say
+/// - **Linux** (the `windowing` feature): rinch asks the kernel (inotify) to say
 ///   when anything the font scan read changes: its fontconfig configuration
 ///   files and included configuration directories, and its font directories
 ///   (a configured one that does not exist yet included, through its parent).
