@@ -245,3 +245,93 @@ fn a_blur_held_while_the_chain_is_open_is_told_when_it_closes() {
     );
     crate::popup::set_supported(false);
 }
+
+/// A renderer on the default adapter, standing in for a window's.
+#[cfg(feature = "gpu-renderer")]
+fn offscreen_renderer() -> WgpuRenderer {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .unwrap();
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    WgpuRenderer::offscreen(
+        std::sync::Arc::new(device),
+        std::sync::Arc::new(queue),
+        64,
+        64,
+        wgpu::TextureFormat::Rgba8Unorm,
+    )
+}
+
+/// #2552 stage 2: a closed popup's GPU renderer is a next popup's, which
+/// then builds none (Vello's renderer was most of a GPU popup's opening).
+/// Only a popup's is kept, only one that holds nothing of its document
+/// beyond its next full frame, and no more than three.
+#[cfg(feature = "gpu-renderer")]
+#[test]
+#[ignore]
+fn gpu_a_closed_popups_renderer_is_kept_for_the_next_2552() {
+    use super::super::popups::{drop_spare_renderers, take_spare_renderer};
+    drop_spare_renderers();
+    let (mut runtime, bar, menu, sub, _log) = bar_menu_sub();
+    runtime.w(WindowRole::Other(sub)).renderer = Some(offscreen_renderer());
+    let mut layered = offscreen_renderer();
+    rinch_platform::PlatformRenderer::set_composite_layers(
+        &mut layered,
+        vec![rinch_platform::CompositeLayer {
+            pixels: vec![0; 4],
+            width: 1,
+            height: 1,
+            viewport: (0.0, 0.0, 1.0, 1.0),
+            border_radius: [0.0; 4],
+            clip_rect: None,
+        }],
+    );
+    runtime.w(WindowRole::Other(menu)).renderer = Some(layered);
+    runtime.w(WindowRole::Other(bar)).renderer = Some(offscreen_renderer());
+
+    runtime.close_other(sub);
+    let kept = take_spare_renderer().expect("the submenu's renderer");
+    assert!(kept.surface.is_none(), "kept with its surface gone");
+    // One still holding its document's layers is not kept.
+    runtime.close_other(menu);
+    assert!(take_spare_renderer().is_none());
+    // Nor a window's that is not a popup.
+    runtime.close_other(bar);
+    assert!(take_spare_renderer().is_none());
+
+    // Three are kept, the last closed given first.
+    crate::popup::set_supported(true);
+    let (_, bar) = open(&mut runtime, with_row);
+    crate::window_handle::note_press(doc_of(&runtime, bar));
+    let log: Log = Rc::default();
+    let popups: Vec<u64> = (0..4)
+        .map(|_| {
+            let (_, id) = popup(&mut runtime, "p", &log);
+            runtime.w(WindowRole::Other(id)).renderer = Some(offscreen_renderer());
+            id
+        })
+        .collect();
+    for (i, id) in popups.iter().enumerate().rev() {
+        runtime
+            .w(WindowRole::Other(*id))
+            .renderer
+            .as_mut()
+            .unwrap()
+            .surface_config
+            .width = 100 + i as u32;
+        runtime.close_other(*id);
+    }
+    let mut given = Vec::new();
+    while let Some(r) = take_spare_renderer() {
+        given.push(r.surface_config.width);
+    }
+    assert_eq!(
+        given,
+        vec![100, 101, 102],
+        "the three last closed, last first"
+    );
+    crate::popup::set_supported(false);
+}

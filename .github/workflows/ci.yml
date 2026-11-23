@@ -387,8 +387,9 @@ jobs:
           # across the loss remounting with a fresh target, and a late
           # registration of the old device's texture dropped (7), and #2891's
           # hidden prepared window prepared again on the renderer the rebuild
-          # built it (1).
-          run 134 -p rinch --features gpu,video --lib -- \
+          # built it (1), and #2552's closed popup's renderer kept for the
+          # next popup (1).
+          run 135 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
             --skip probe_2688 --test-threads=1
           # #2688's limit on the embed overlay's frames in flight (1; the

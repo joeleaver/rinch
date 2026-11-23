@@ -257,6 +257,8 @@ impl RinchRuntime {
                 }
             }
         }
+        let mut timeline = crate::window_perf::PopupTimeline::new(asked_at);
+        timeline.mark("queued");
         let mut window = Self::new_other_window(pending, &self.fonts);
         // The parent's theme (a document of the shell follows the process's
         // theme; one with its own CSS passes it on).
@@ -268,6 +270,8 @@ impl RinchRuntime {
         let scale = self.w(parent_role).app.device_pixel_ratio;
         window_handle::mounting(id, || window.mount_before_window(scale));
         window_handle::note_mounted(id, window.app.doc_key());
+        timeline.mark("mount");
+        window.popup_first_frame = Some(timeline);
         window.register_perf(false);
         crate::window_perf::popup_opened(id, props.kind, parent);
         let renders_gpu = self.w(parent_role).has_gpu_renderer();
@@ -282,7 +286,6 @@ impl RinchRuntime {
                 return;
             }
         }
-        window.popup_first_frame = Some(asked_at);
         self.others.push(window);
         let role = WindowRole::Other(id);
         // A menu has the keyboard (forwarded to it on wlroots): its
@@ -542,6 +545,7 @@ impl ShellWindow {
         if width == 0 || height == 0 {
             return Err(format!("its content measured {width}x{height}"));
         }
+        self.mark_popup("measure");
         let positioner = crate::shell::popup_positioner::positioner(
             props.placement,
             props.adjust,
@@ -570,12 +574,17 @@ impl ShellWindow {
         let attrs = unsafe { attrs.with_parent_window(Some(raw)) };
         let window = event_loop.create_window(attrs).map_err(|e| e.to_string())?;
         self.shown_once = true;
+        self.mark_popup("create");
 
-        // The app's renderer: the GPU when its parent presents there.
+        // The app's renderer: the GPU when its parent presents there, the
+        // one a closed popup left when there is one.
         #[cfg(feature = "gpu-renderer")]
         let mut renderer_built = false;
         #[cfg(feature = "gpu-renderer")]
         if renders_gpu {
+            if self.parked_renderer.is_none() {
+                self.parked_renderer = take_spare_renderer();
+            }
             let transparent = self.gpu_surface_transparent();
             let (renderer, built) = self.start_gpu_renderer(&*window, transparent);
             renderer_built = built;
@@ -583,6 +592,7 @@ impl ShellWindow {
         }
         #[cfg(not(feature = "gpu-renderer"))]
         let _ = renders_gpu;
+        self.mark_popup("renderer");
 
         let size = window.surface_size();
         let scale = crate::zoom::apply(window.scale_factor());
@@ -623,16 +633,72 @@ impl ShellWindow {
             .map_or(Default::default(), |p| p.input_region);
         self.send_input_region(false);
         self.window.as_ref().unwrap().request_redraw();
+        self.mark_popup("size");
         Ok(rect)
+    }
+
+    /// The step `what` of this popup's opening ended now (`[PERF]`).
+    pub(super) fn mark_popup(&mut self, what: &'static str) {
+        if let Some(t) = &mut self.popup_first_frame {
+            t.mark(what);
+        }
     }
 
     /// A popup's first frame was presented: under `RINCH_PERF`, how long
     /// after the app asked for it.
     pub(super) fn note_popup_frame(&mut self) {
-        if let Some(asked) = self.popup_first_frame.take() {
-            crate::window_perf::popup_first_frame(self.handle, asked.elapsed());
+        if let Some(mut timeline) = self.popup_first_frame.take() {
+            timeline.mark("paint");
+            crate::window_perf::popup_first_frame(self.handle, &timeline);
         }
     }
+}
+
+/// How many closed popups' GPU renderers are kept: a chain three deep (a
+/// menu, a submenu and its submenu) reopens with none built.
+#[cfg(feature = "gpu-renderer")]
+const SPARE_RENDERERS: usize = 3;
+
+#[cfg(feature = "gpu-renderer")]
+thread_local! {
+    /// The GPU renderers of the last popups to close, their surfaces gone
+    /// (#2552): the next popups present with them rather than build their
+    /// own. Building Vello's renderer was most of a GPU popup's opening
+    /// (about 5 ms on RADV, 55–85 ms on llvmpipe); a surface costs a
+    /// fraction.
+    static SPARE_RENDERERS_KEPT: std::cell::RefCell<Vec<WgpuRenderer>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep `renderer`, a closing popup's, for a next popup: its surface goes
+/// now. Up to [`SPARE_RENDERERS`] are kept, the oldest dropped past that.
+/// One that holds anything of its document beyond its next full frame
+/// (split slices, surface frames, layers) is dropped instead.
+#[cfg(feature = "gpu-renderer")]
+pub(super) fn keep_spare_renderer(mut renderer: WgpuRenderer) {
+    if renderer.holds_document_state() {
+        return;
+    }
+    renderer.detach_surface();
+    SPARE_RENDERERS_KEPT.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.len() == SPARE_RENDERERS {
+            s.remove(0);
+        }
+        s.push(renderer);
+    });
+}
+
+/// A renderer a closed popup left, if any: the last one kept.
+#[cfg(feature = "gpu-renderer")]
+pub(super) fn take_spare_renderer() -> Option<WgpuRenderer> {
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().pop())
+}
+
+/// Drop the kept renderers: their device is being replaced (#1788).
+#[cfg(feature = "gpu-renderer")]
+pub(super) fn drop_spare_renderers() {
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().clear());
 }
 
 /// The logical size of the output `window` is on, as `rinch::outputs` lists

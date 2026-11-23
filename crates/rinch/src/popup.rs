@@ -10,7 +10,7 @@
 //!
 //! - **A popup is a window.** It has its own document, built once from its
 //!   content, and a [`WindowHandle`]. It belongs to the owner in scope as a
-//!   window from [`open_window`](crate::open_window) does.
+//!   window from [`crate::open_window`] does.
 //! - **Its parent** is the anchor's window. A popup anchored in a popup is
 //!   above it in the same **chain**: a submenu.
 //! - **Its size** is its content's, up to [`PopupProps::max_size`] (by
@@ -248,7 +248,7 @@ pub fn popups_supported() -> bool {
 /// Main thread only. The handle is usable at once; the popup appears on the
 /// event loop's next turn.
 ///
-/// It belongs to the owner in scope, as [`open_window`](crate::open_window)'s
+/// It belongs to the owner in scope, as [`crate::open_window`]'s
 /// windows do (a popup opened in a menu row's handler closes with the row).
 /// Its parent is the anchor's window, whatever owns it, and it always closes
 /// before its parent.

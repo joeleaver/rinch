@@ -862,6 +862,17 @@ impl WgpuRenderer {
     /// of GPU memory while the window is hidden). Vello's renderer and its
     /// pipelines, what a show would otherwise build again, stay for
     /// [`Self::attach_window`] to present with at the next show.
+    /// Whether this renderer holds anything of the document it presented
+    /// beyond what its next full frame replaces: split slices or registered
+    /// `RenderSurface` frames (#1865, #1768). One that holds none can present
+    /// another document (a popup's, #2552) after [`Self::attach_window`].
+    pub(crate) fn holds_document_state(&self) -> bool {
+        !self.split.is_empty()
+            || !self.surface_images.by_surface.is_empty()
+            || !self.composite_layers.is_empty()
+            || !self.gpu_layers.is_empty()
+    }
+
     pub(crate) fn detach_surface(&mut self) {
         self.surface = None;
         self.pacing.detach();

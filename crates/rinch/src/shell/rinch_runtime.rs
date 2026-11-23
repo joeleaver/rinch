@@ -393,9 +393,10 @@ struct ShellWindow {
     /// when the focused editor actually changed.
     #[cfg(feature = "a11y")]
     a11y_last: Option<(rinch_editor_core::Node, rinch_editor_core::Selection)>,
-    /// A popup whose first frame is still to come, and when the app asked
-    /// for it (#2552): `[PERF] window N first frame`.
-    popup_first_frame: Option<std::time::Instant>,
+    /// A popup whose first frame is still to come: when the app asked for
+    /// it and when each step of its opening ended (#2552): `[PERF] window N
+    /// first frame`.
+    popup_first_frame: Option<crate::window_perf::PopupTimeline>,
 }
 
 impl ShellWindow {
@@ -1076,11 +1077,17 @@ impl RinchRuntime {
                     WindowRole::Main => self.paint(),
                     WindowRole::DevTools => self.paint_devtools(),
                     WindowRole::Other(_) => {
+                        self.w(role).mark_popup("to frame");
                         let painted = self.w(role).paint_window();
                         self.w(role).note_popup_frame();
                         painted
                     }
                 };
+                // The first frame shown: the generic families are resolved
+                // on a thread from here (#2552).
+                if painted.is_ok() {
+                    crate::font_warmup::window_presented();
+                }
                 if let Err(e) = painted {
                     // Not `eprintln!`, which panics on a closed stderr (#2531).
                     tracing::error!("Paint error: {}", e);
