@@ -4435,6 +4435,14 @@ pub struct NodeTree {
     /// here — coalesced per node, last value wins, since layout may resolve
     /// more than once per frame — for the facade to drain after layout.
     pub pending_scroll_clamps: Vec<(RawNodeId, f64)>,
+    /// `<img>` elements whose picture failed to load since the facade last
+    /// drained them (#2202/#2203), for their `onerror` (`data-onerror`): the
+    /// browser's `error` event. One entry per element per drain, however many
+    /// times layout resolved; queued by the newly-failed drain and by a `src`
+    /// written to a picture already known to have failed (a malformed `data:`
+    /// URL fails in place). The facade fires the handlers after layout, with
+    /// no document borrow held, as it does [`Self::pending_scroll_clamps`].
+    pub pending_img_errors: Vec<RawNodeId>,
     /// `<textarea>`s whose value may have changed since the last resolve —
     /// a `value` write, or a write to one of its text children — noted by
     /// [`Self::push_dirty`] (review of #2023). A textarea's scroll range is
@@ -4717,6 +4725,7 @@ impl NodeTree {
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
+            pending_img_errors: Vec::new(),
             textarea_extent_dirty: Vec::new(),
             device_scale: 1.0,
             text_scale: 1.0,
@@ -4919,6 +4928,14 @@ impl NodeTree {
             pending.1 = offset;
         } else {
             self.pending_scroll_clamps.push((id, offset));
+        }
+    }
+
+    /// Queue `id`'s `onerror` in [`Self::pending_img_errors`], once per
+    /// drain.
+    pub(crate) fn queue_img_error(&mut self, id: RawNodeId) {
+        if !self.pending_img_errors.contains(&id) {
+            self.pending_img_errors.push(id);
         }
     }
 
@@ -5461,6 +5478,7 @@ impl NodeTree {
             |(x, _)| gone(x),
             &mut steps,
         );
+        prune(&mut self.pending_img_errors, gone, &mut steps);
         prune(&mut self.textarea_extent_dirty, gone, &mut steps);
         if !self.atomic_leaf_layouts.is_empty() {
             steps += self.atomic_leaf_layouts.len() as u64;

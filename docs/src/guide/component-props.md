@@ -623,8 +623,10 @@ when alpha must be externally drivable.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `href` | `String` | `""` | |
-| `target` | `String` | `""` | e.g., "_blank" |
+| `href` | `String` | `""` | Empty writes no `href`: a placeholder link, as in a browser (not focusable, nothing to follow; `onclick` still runs). It used to be `#` |
+| `target` | `String` | `""` | e.g., "_blank" (which a browser already treats as `noopener`) |
+| `rel` | `String` | `""` | Written as given, e.g. `"noreferrer"`; nothing when empty |
+| `onclick` | `Option<Callback>` | `None` | Runs on a click or Enter on the link. The click is then the app's: on the web the browser does not follow `href` (the link is marked `data-claim-links="menu"`, which keeps the browser's own link menu), so in-app routing works the same on desktop and web. A middle click reaches it too (`click_context().button` is `Middle`); `click_link()` gives the `href` |
 | `size` | `String` | `""` | |
 | `underline` | `bool` | `false` | |
 
@@ -664,11 +666,17 @@ Custom Default: `ignore_case` defaults to `true`.
 |------|------|---------|-------------|
 | `src` | `String` | `""` | Image URL |
 | `alt` | `String` | `""` | |
-| `name` | `String` | `""` | For initials fallback |
+| `name` | `String` | `""` | For initials fallback: the first letters of its first two words, uppercased |
+| `initials` | `String` | `""` | Initials to show instead of the ones `name` gives |
+| `placeholder_icon` | `Option<TablerIcon>` | `None` | The placeholder's icon when there are no children and no initials. `None` draws a person (`TablerIcon::User`) |
 | `size` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `color` | `String` | `""` | |
 | `variant` | `String` | `""` | "filled", "light", "outline" |
+| `on_error` | `Option<Callback>` | `None` | Runs when the image fails to load (the browser's `error` event; on the desktop, after the layout that learnt of it) |
+| `keep_failed_image` | `bool` | `false` | Keep an image that failed to load (its `alt` text shows, as in a browser) instead of replacing it with the placeholder |
+
+Without an image (or once it failed, unless `keep_failed_image`), the avatar shows a placeholder, as Mantine's does: its **children** if it has any (`Avatar { "?" }`), else the initials, else the icon. With an image that loads, the children are not shown.
 
 **AvatarGroup:** `spacing: String` — overlap spacing.
 
@@ -730,8 +738,14 @@ Custom Default: `ignore_case` defaults to `true`.
 | `height` | `String` | `""` | CSS height |
 | `fit` | `String` | `""` | CSS object-fit |
 | `radius` | `String` | `""` | |
-| `fallback_src` | `String` | `""` | Fallback image URL |
+| `fallback_src` | `String` | `""` | The picture shown when `src` fails to load, or is empty. Tried once: a fallback that fails too does not retry itself. (It used to be a JavaScript `onerror` string, which did nothing on the desktop) |
 | `caption` | `String` | `""` | Caption text below image |
+| `on_error` | `Option<Callback>` | `None` | Runs each time a picture fails to load: `src`, then `fallback_src` if that fails as well |
+| `fallback` | `Option<SectionRenderer>` | `None` | Content that replaces the `<img>` once no picture can be shown (`src` failed or is empty, and `fallback_src` failed or is empty). Pass `Some(renderer)` |
+
+With no fallback, a failed picture shows its `alt` text, as a browser does. An empty `src` loads nothing and fires no `on_error`.
+
+Any `<img>` can take a load failure itself: `img { src: …, onerror: move || … }` (the `data-onerror` attribute). The browser fires it from its `error` event; the desktop fires it after the layout in which the failure arrived, once per failure.
 
 ### List / ListItem
 

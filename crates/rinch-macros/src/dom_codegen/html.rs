@@ -678,6 +678,7 @@ mod event_and_fn_prop_tests {
             ("onblur", "data-onblur"),
             ("onfocusin", "data-onfocusin"),
             ("onfocusout", "data-onfocusout"),
+            ("onerror", "data-onerror"),
         ] {
             let out = codegen(&format!("div {{ {name}: || {{}} }}"));
             assert!(!is_error(&out), "{name}: {out}");
@@ -817,6 +818,17 @@ mod focus_event_tests {
             // Not a text field shim: a focus handler makes no element editable.
             assert!(!out.contains("\"data-oninput\""), "{name}: {out}");
         }
+    }
+
+    /// `onerror` (#2202/#2203) is a plain handler written to `data-onerror`:
+    /// not a click, and not a compile error.
+    #[test]
+    fn onerror_is_a_handler_of_its_own() {
+        let out = codegen("img { src: \"a.png\", onerror: || {} }");
+        assert!(!out.contains("compile_error"), "{out}");
+        assert!(out.contains("register_handler"), "{out}");
+        assert!(out.contains("\"data-onerror\""), "{out}");
+        assert!(!out.contains("\"data-rid\""), "{out}");
     }
 
     /// A near miss is a compile error that names the real one.

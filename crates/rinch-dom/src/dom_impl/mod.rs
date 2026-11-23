@@ -1964,6 +1964,14 @@ impl RinchDocument {
 
         // If already loading, don't re-request
         if self.tree.image_cache.contains(src) {
+            // A picture already known to have failed — another element's
+            // earlier load, or a malformed `data:` URL just decoded in place —
+            // fails for this element too: the browser fires `error` at every
+            // `<img>` naming it (#2202/#2203). A failure listed among the
+            // newly failed is queued again by the drain; the queue keeps one.
+            if self.tree.image_cache.is_failed(src) {
+                self.tree.queue_img_error(node_id);
+            }
             return;
         }
 
@@ -2097,6 +2105,28 @@ impl RinchDocument {
         self.tree.pending_background_urls = kept;
     }
 
+    /// The `<img>` elements whose picture failed to load since the last call
+    /// (#2202/#2203): what the browser fires `error` at. The facade fires
+    /// each one's `onerror` (`data-onerror`) after layout. Each element is
+    /// listed once per call, and only while it still names a picture that
+    /// failed: one whose `src` was rewritten to a good picture since is left
+    /// out.
+    pub fn drain_img_errors(&mut self) -> Vec<rinch_core::dom::NodeId> {
+        let queued = std::mem::take(&mut self.tree.pending_img_errors);
+        queued
+            .into_iter()
+            .filter(|&id| {
+                self.tree.nodes.get(id).is_some_and(|n| {
+                    n.tag() == Some("img")
+                        && n.attributes
+                            .get("src")
+                            .is_some_and(|s| self.tree.image_cache.shows_failure(s))
+                })
+            })
+            .map(rinch_core::dom::NodeId)
+            .collect()
+    }
+
     /// Drain completed image loads and update Taffy nodes with intrinsic dimensions.
     ///
     /// Called before layout to pick up newly decoded images.
@@ -2159,6 +2189,9 @@ impl RinchDocument {
             for node_id in node_ids {
                 layout_changed |= self.sync_img_placeholder(node_id);
                 self.push_dirty_flags(node_id, DirtyFlags::PAINT);
+                // Its `error` event (#2202/#2203), fired by the facade after
+                // layout (`drain_img_errors`).
+                self.tree.queue_img_error(node_id);
             }
         }
         if newly_decoded.is_empty() {

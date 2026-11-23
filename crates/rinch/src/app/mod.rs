@@ -105,6 +105,8 @@ mod detach_damage_966_tests;
 mod devtools_keys;
 #[cfg(test)]
 mod devtools_keys_2689_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod img_error_2202_tests;
 mod spellcheck;
 #[cfg(test)]
 mod spellcheck_tests;
@@ -2428,6 +2430,7 @@ impl RinchApp {
                 && !theme_changed
                 && !fonts_adopted
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
+                && d.tree.pending_img_errors.is_empty()
                 && !self.has_owed_editor_overlay_pass()
                 && !Self::has_owed_scroll(&d)
                 && !d.tree.has_deferred_minify()
@@ -2526,6 +2529,8 @@ impl RinchApp {
         // Dispatch deferred scroll events for offsets the layout clamped, now
         // that the last resolve of the frame has run (#144).
         self.dispatch_scroll_clamp_events();
+        // The `error` events of pictures that failed to load (#2202/#2203).
+        self.dispatch_img_error_events();
     }
 
     /// Lay out again what bounds-signal subscribers wrote, in the frame that
@@ -2649,6 +2654,39 @@ impl RinchApp {
         for (handler_id, event) in to_fire {
             use rinch_core::events::{EventHandlerId, dispatch_scroll_event};
             dispatch_scroll_event(EventHandlerId(handler_id), event);
+        }
+    }
+
+    /// Fire `onerror` (`data-onerror`) on each `<img>` whose picture failed
+    /// to load since the last call: the browser's `error` event (#2202,
+    /// #2203). The failure is learnt during layout (a load's answer is drained
+    /// there, and a malformed `data:` URL fails as its `src` is written), so
+    /// the handlers run here, after it, with no borrow of the document held:
+    /// they are app code and usually write to the document (a fallback
+    /// picture, initials in its place), which the bounds settle pass that
+    /// follows lays out in this same frame.
+    fn dispatch_img_error_events(&mut self) {
+        let Some(doc) = self.doc.clone() else { return };
+        let failed = doc.borrow_mut().drain_img_errors();
+        if failed.is_empty() {
+            return;
+        }
+        let to_fire: Vec<usize> = {
+            let d = doc.borrow();
+            failed
+                .iter()
+                .filter_map(|node| {
+                    d.tree
+                        .nodes
+                        .get(node.0)
+                        .and_then(|n| n.attributes.get("data-onerror"))
+                        .and_then(|s| s.parse::<usize>().ok())
+                })
+                .collect()
+        };
+        let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
+        for handler_id in to_fire {
+            rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(handler_id));
         }
     }
 
