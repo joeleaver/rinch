@@ -1163,14 +1163,7 @@ fn paint_wavy_decorations(
             let mut path = BezPath::new();
             for (x0, x1) in segments {
                 let (x0, x1) = (((x0 + mdx) * sf) as f64, ((x1 + mdx) * sf) as f64);
-                path.move_to((x0, mid + amp));
-                let mut x = x0;
-                let mut up = true;
-                while x < x1 {
-                    x = (x + half).min(x1);
-                    path.line_to((x, if up { mid - amp } else { mid + amp }));
-                    up = !up;
-                }
+                push_wave(&mut path, x0, x1, mid, amp, half);
             }
             painter.stroke(
                 &Stroke::new(THICKNESS * scale),
@@ -1179,6 +1172,85 @@ fn paint_wavy_decorations(
                 &path.into(),
             );
         }
+    }
+}
+
+/// One zigzag from `x0` to `x1` about `mid`, `amp` either side, a half
+/// period `half` per stroke.
+fn push_wave(path: &mut peniko::kurbo::BezPath, x0: f64, x1: f64, mid: f64, amp: f64, half: f64) {
+    path.move_to((x0, mid + amp));
+    let mut x = x0;
+    let mut up = true;
+    while x < x1 {
+        x = (x + half).min(x1);
+        path.line_to((x, if up { mid - amp } else { mid + amp }));
+        up = !up;
+    }
+}
+
+/// How a text control draws its spelling marks (#2862): the
+/// `--rinch-spellcheck-style` custom property, `wavy` unless it says `solid`
+/// or `none`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarkLine {
+    Wavy,
+    Solid,
+}
+
+/// Paint a spelling mark under bytes `start..end` of `layout` (a text
+/// control's [`crate::form_control::field_text_layout`], whose geometry is
+/// already device px), its origin at `(x, y)`: the wave
+/// [`paint_wavy_decorations`] draws for `text-decoration-style: wavy`, at the
+/// same place under each line, or a straight line of its thickness.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_layout_mark(
+    painter: &mut dyn Painter,
+    layout: &parley::layout::Layout<Brush>,
+    x: f64,
+    y: f64,
+    transform: Affine,
+    start: usize,
+    end: usize,
+    brush: &Brush,
+    scale: f64,
+    line_kind: MarkLine,
+) {
+    use peniko::kurbo::BezPath;
+    let transform = transform * Affine::translate((x, y));
+    for line in layout.lines() {
+        let line_range = line.text_range();
+        if line_range.end <= start || line_range.start >= end {
+            continue;
+        }
+        let segments = visual_segments(
+            &line,
+            start.max(line_range.start),
+            end.min(line_range.end),
+            None,
+        );
+        if segments.is_empty() {
+            continue;
+        }
+        // The layout is device px already: its metrics take no scale, the
+        // wave's size does.
+        let (mid, amp) = wavy_wave_in(&line, 1.0, scale);
+        let mut path = BezPath::new();
+        for (x0, x1) in segments {
+            let (x0, x1) = (x0 as f64, x1 as f64);
+            match line_kind {
+                MarkLine::Wavy => push_wave(&mut path, x0, x1, mid, amp, (PERIOD * scale) / 2.0),
+                MarkLine::Solid => {
+                    path.move_to((x0, mid));
+                    path.line_to((x1, mid));
+                }
+            }
+        }
+        painter.stroke(
+            &Stroke::new(THICKNESS * scale),
+            transform,
+            brush,
+            &path.into(),
+        );
     }
 }
 
@@ -1191,7 +1263,18 @@ const THICKNESS: f64 = 1.0;
 /// its amplitude, in device px relative to the content origin. The stroke
 /// reaches `amp` and half a [`THICKNESS`] either side of the centre.
 fn wavy_wave(line: &parley::layout::Line<'_, Brush>, scale: f64) -> (f64, f64) {
-    let sf = scale as f32;
+    wavy_wave_in(line, scale, scale)
+}
+
+/// [`wavy_wave`] for a layout whose metrics are scaled by `metric_scale`
+/// and a wave sized by `scale` (a text control's layout is shaped at the
+/// device size, so its metrics take 1).
+fn wavy_wave_in(
+    line: &parley::layout::Line<'_, Brush>,
+    metric_scale: f64,
+    scale: f64,
+) -> (f64, f64) {
+    let sf = metric_scale as f32;
     let metrics = line.metrics();
     let baseline = (metrics.baseline * sf) as f64;
     // Parley's `underline_offset` is measured **up** from the baseline (the

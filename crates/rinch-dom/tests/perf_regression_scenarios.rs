@@ -5003,6 +5003,49 @@ fn a_read_only_selection_writes_one_root_and_repaints_it() {
     );
 }
 
+// ── spelling_mark_writes ──────────────────────────────────────────────────
+
+/// The spellchecker's marks written on one textarea of three (#2862): one
+/// write and a paint-only frame (layout skipped), as for a read-only
+/// selection.
+#[test]
+fn a_spelling_mark_write_repaints_one_control() {
+    let mut doc = doc_with(".f { display: block; width: 200px; height: 30px; }");
+    let body = doc.body();
+    let mut fields = Vec::new();
+    for _ in 0..3 {
+        let f = el(&mut doc, body, "textarea", "f");
+        doc.set_attribute(f, "value", "helo wrld");
+        fields.push(f);
+    }
+    let _ = cold_frame(&mut doc);
+    let marks = || {
+        Some(rinch_dom::SpellingMarks {
+            text: "helo wrld".to_string(),
+            ranges: vec![0..4, 5..9],
+            show_when_blurred: false,
+        })
+    };
+    doc.set_spelling_marks(fields[1].0, marks());
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "spelling marks on one textarea",
+        &s,
+        &[
+            (SpellingMarkWrites, 1),
+            // `paint` draws the whole document, and a control's value is
+            // shaped by every paint of it: three controls, three shapes.
+            (ShapePaint, 3),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 4),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 // ── list_markers_placed ────────────────────────────────────────────────────
 
 /// Twenty `<li><p>` items (#1356; review of #2271). The marker pass places a

@@ -78,6 +78,11 @@ pub struct Textarea {
     /// after a modification) — HTML `change` semantics, receives the final
     /// value. Fires only if the value changed since focus (issue #226).
     pub onchange: Option<InputCallback>,
+    /// Spellchecking for this field (#2862): `Some(false)` turns it off,
+    /// `Some(true)` turns it on inside a subtree that turned it off, `None`
+    /// (the default) inherits the nearest ancestor's `spellcheck`, which is
+    /// on unless something above says otherwise.
+    pub spellcheck: Option<bool>,
 }
 
 impl std::fmt::Debug for Textarea {
@@ -98,6 +103,7 @@ impl std::fmt::Debug for Textarea {
             .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
+            .field("spellcheck", &self.spellcheck)
             .finish()
     }
 }
@@ -158,6 +164,9 @@ impl Component for Textarea {
 
         // Textarea element
         let textarea = rinch_macros::rsx! { textarea { class: "rinch-textarea__input" } };
+        if let Some(on) = self.spellcheck {
+            textarea.set_attribute("spellcheck", if on { "true" } else { "false" });
+        }
 
         if !self.placeholder.is_empty() {
             textarea.set_attribute("placeholder", &self.placeholder);

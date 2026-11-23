@@ -512,6 +512,10 @@ impl RinchApp {
                 self.adopt_focused_input_value_from_dom();
                 self.focused_input_baseline = self.focused_input_value.clone();
             }
+            // A press in a text field is the user's interaction (#2862).
+            if self.focused_input_node_id == Some(nid) {
+                self.spell_user_focus(nid);
+            }
         } else if !press_keeps_claim
             && matches!(
                 self.focus_target,
@@ -849,6 +853,10 @@ impl RinchApp {
             rid
         };
         self.try_focus_input(control);
+        // A press on a label that focused its text field (#2862).
+        if self.focus_target == FocusTarget::Input(control) {
+            self.spell_user_focus(control);
+        }
         if let Some((node_id, handler_id)) = rid
             && dispatched != Some(node_id)
         {

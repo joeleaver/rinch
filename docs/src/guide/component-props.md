@@ -182,6 +182,7 @@ and no stylesheet in the workspace matches that class.
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
 | `onsubmit` | `Option<Callback>` | `None` | Fires on Enter key |
+| `spellcheck` | `Option<bool>` | `None` | Spellchecking for the field (#2862): `false` turns it off, `true` turns it on inside a subtree that turned it off, `None` inherits the nearest ancestor's `spellcheck` (on by default). See [Spellcheck](./spellcheck.md) |
 
 ### Textarea
 
@@ -202,6 +203,7 @@ and no stylesheet in the workspace matches that class.
 | `value_fn` | `Option<ReactiveString>` | `None` | Reactive value binding (auto-wrapped) |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification); only if the value changed since focus |
+| `spellcheck` | `Option<bool>` | `None` | Spellchecking for the field (#2862): `false` turns it off, `true` turns it on inside a subtree that turned it off, `None` inherits the nearest ancestor's `spellcheck` (on by default). See [Spellcheck](./spellcheck.md) |
 
 ### PasswordInput
 
@@ -510,6 +512,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | `disallow_input` | `bool` | `false` | Disallow typing (picker only) |
 | `close_on_click_outside` | `bool` | `true` | Mount a backdrop that takes a click outside the field and dismisses the dropdown (#465). Off mounts none, so the click reaches the page under it; the dropdown still closes if that click moves the focus out of the field (#1572). Escape closes the dropdown either way |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the open picker's panel; its click-catching backdrop stays one below and the field one above (defaults 100 / 99 / 101, #801) |
+| `spellcheck` | `Option<bool>` | `None` | Spellchecking for the colour text field (#2862), as `TextInput`'s. A code with a digit is never checked (the default skip rules) |
 
 `size` and `radius` were declared but unread until #263. **`size` always
 resolves to a step, `radius` does not**: an unrecognised `size` falls back to

@@ -47,6 +47,7 @@
 mod hunspell;
 mod listeners;
 mod personal;
+pub mod runtime;
 mod segment;
 #[cfg(all(feature = "system-dictionaries", not(target_family = "wasm")))]
 pub mod system;

@@ -86,6 +86,11 @@ pub struct TextInput {
     pub onchange: Option<InputCallback>,
     /// Callback when Enter is pressed (form submission).
     pub onsubmit: Option<Callback>,
+    /// Spellchecking for this field (#2862): `Some(false)` turns it off,
+    /// `Some(true)` turns it on inside a subtree that turned it off, `None`
+    /// (the default) inherits the nearest ancestor's `spellcheck`, which is
+    /// on unless something above says otherwise.
+    pub spellcheck: Option<bool>,
 }
 
 impl std::fmt::Debug for TextInput {
@@ -105,6 +110,7 @@ impl std::fmt::Debug for TextInput {
             .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
+            .field("spellcheck", &self.spellcheck)
             .field("onsubmit", &self.onsubmit.as_ref().map(|_| "<callback>"))
             .finish()
     }
@@ -167,6 +173,9 @@ impl Component for TextInput {
             &self.input_type
         };
         let input = rinch_macros::rsx! { input { class: "rinch-text-input__input" } };
+        if let Some(on) = self.spellcheck {
+            input.set_attribute("spellcheck", if on { "true" } else { "false" });
+        }
         input.set_attribute("type", input_type);
 
         if !self.placeholder.is_empty() {

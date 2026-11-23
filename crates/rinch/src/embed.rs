@@ -201,6 +201,14 @@ impl RinchContext {
     {
         let mut app = RinchApp::new(component);
 
+        // Spellcheck is on by default in an embedded UI too (#2862), unless
+        // the host configured it (`rinch::spellcheck::configure`, before or
+        // after this) — the settings are the thread's, shared by every
+        // context on it. Nothing is loaded until a field is used.
+        if rinch_spell::runtime::config().is_none() {
+            rinch_spell::runtime::set_config(rinch_spell::runtime::SpellcheckConfig::default());
+        }
+
         // Per-document theme (issue #138): generate this context's CSS from its
         // own config and hand it to the app before mount. The thread-global
         // theme slot is never touched — creating a second context can no longer

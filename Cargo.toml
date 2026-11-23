@@ -46,6 +46,7 @@ rinch-graph-view = { path = "crates/rinch-graph-view" }
 rinch-debug = { path = "crates/rinch-debug" }
 rinch-editable = { path = "crates/rinch-editable" }
 rinch-words = { path = "crates/rinch-words" }
+rinch-spell = { path = "crates/rinch-spell" }
 rinch-platform = { path = "crates/rinch-platform" }
 rinch-visual-test = { path = "crates/rinch-visual-test" }
 rinch-web = { path = "crates/rinch-web" }
