@@ -51,6 +51,7 @@ enum Part {
 struct Case {
     name: &'static str,
     class: &'static str,
+    /// The probe's `data-color`, or for a coloured Button its `color` prop.
     color: Option<&'static str>,
     state: State,
     part: Part,
@@ -86,6 +87,19 @@ const fn badge(name: &'static str, color: &'static str, part: Part, old: &'stati
     }
 }
 
+/// A `Button { color, variant: light }`: its classes and the inline custom
+/// properties `Button::style_string` writes.
+const fn colored(name: &'static str, state: State, part: Part, old: &'static str) -> Case {
+    Case {
+        name,
+        class: "rinch-button rinch-button--light rinch-button--colored",
+        color: Some("red"),
+        state,
+        part,
+        old,
+    }
+}
+
 use Part::*;
 use State::*;
 
@@ -97,49 +111,290 @@ const AI_OUTLINE: &str = "rinch-action-icon rinch-action-icon--outline";
 const AI_SUBTLE: &str = "rinch-action-icon rinch-action-icon--subtle";
 
 const CASES: &[Case] = &[
-    case("button light", BTN_LIGHT, Rest, Fill, "var(--rinch-primary-color-0)"),
-    case("button light hover", BTN_LIGHT, Hover, Fill, "var(--rinch-primary-color-1)"),
-    case("button light active", BTN_LIGHT, Active, Fill, "var(--rinch-primary-color-2)"),
-    case("button light text", BTN_LIGHT, Rest, Text, "var(--rinch-primary-color-6)"),
-    case("button outline hover", BTN_OUTLINE, Hover, Fill, "var(--rinch-primary-color-0)"),
-    case("button outline active", BTN_OUTLINE, Active, Fill, "var(--rinch-primary-color-1)"),
-    case("button subtle hover", BTN_SUBTLE, Hover, Fill, "var(--rinch-primary-color-0)"),
-    case("button subtle active", BTN_SUBTLE, Active, Fill, "var(--rinch-primary-color-1)"),
-    case("action icon light", AI_LIGHT, Rest, Fill, "var(--rinch-primary-color-0)"),
-    case("action icon light hover", AI_LIGHT, Hover, Fill, "var(--rinch-primary-color-1)"),
-    case("action icon light active", AI_LIGHT, Active, Fill, "var(--rinch-primary-color-2)"),
-    case("action icon light text", AI_LIGHT, Rest, Text, "var(--rinch-primary-color-6)"),
-    case("action icon outline hover", AI_OUTLINE, Hover, Fill, "var(--rinch-primary-color-0)"),
-    case("action icon outline active", AI_OUTLINE, Active, Fill, "var(--rinch-primary-color-1)"),
-    case("action icon subtle hover", AI_SUBTLE, Hover, Fill, "var(--rinch-primary-color-0)"),
-    case("action icon subtle active", AI_SUBTLE, Active, Fill, "var(--rinch-primary-color-1)"),
-    case("badge light", "rinch-badge rinch-badge--light", Rest, Fill, "var(--rinch-primary-color-0)"),
-    case("badge light text", "rinch-badge rinch-badge--light", Rest, Text, "var(--rinch-primary-color-6)"),
+    case(
+        "button light",
+        BTN_LIGHT,
+        Rest,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "button light hover",
+        BTN_LIGHT,
+        Hover,
+        Fill,
+        "var(--rinch-primary-color-1)",
+    ),
+    case(
+        "button light active",
+        BTN_LIGHT,
+        Active,
+        Fill,
+        "var(--rinch-primary-color-2)",
+    ),
+    case(
+        "button light text",
+        BTN_LIGHT,
+        Rest,
+        Text,
+        "var(--rinch-primary-color-6)",
+    ),
+    colored("red button light", Rest, Fill, "var(--rinch-color-red-0)"),
+    colored(
+        "red button light hover",
+        Hover,
+        Fill,
+        "var(--rinch-color-red-1)",
+    ),
+    colored(
+        "red button light text",
+        Rest,
+        Text,
+        "var(--rinch-color-red-6)",
+    ),
+    case(
+        "button outline hover",
+        BTN_OUTLINE,
+        Hover,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "button outline active",
+        BTN_OUTLINE,
+        Active,
+        Fill,
+        "var(--rinch-primary-color-1)",
+    ),
+    case(
+        "button subtle hover",
+        BTN_SUBTLE,
+        Hover,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "button subtle active",
+        BTN_SUBTLE,
+        Active,
+        Fill,
+        "var(--rinch-primary-color-1)",
+    ),
+    case(
+        "action icon light",
+        AI_LIGHT,
+        Rest,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "action icon light hover",
+        AI_LIGHT,
+        Hover,
+        Fill,
+        "var(--rinch-primary-color-1)",
+    ),
+    case(
+        "action icon light active",
+        AI_LIGHT,
+        Active,
+        Fill,
+        "var(--rinch-primary-color-2)",
+    ),
+    case(
+        "action icon light text",
+        AI_LIGHT,
+        Rest,
+        Text,
+        "var(--rinch-primary-color-6)",
+    ),
+    case(
+        "action icon outline hover",
+        AI_OUTLINE,
+        Hover,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "action icon outline active",
+        AI_OUTLINE,
+        Active,
+        Fill,
+        "var(--rinch-primary-color-1)",
+    ),
+    case(
+        "action icon subtle hover",
+        AI_SUBTLE,
+        Hover,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "action icon subtle active",
+        AI_SUBTLE,
+        Active,
+        Fill,
+        "var(--rinch-primary-color-1)",
+    ),
+    case(
+        "badge light",
+        "rinch-badge rinch-badge--light",
+        Rest,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "badge light text",
+        "rinch-badge rinch-badge--light",
+        Rest,
+        Text,
+        "var(--rinch-primary-color-6)",
+    ),
     badge("badge red", "red", Fill, "var(--rinch-color-red-0)"),
     badge("badge red text", "red", Text, "var(--rinch-color-red-6)"),
     badge("badge gray", "gray", Fill, "var(--rinch-color-gray-0)"),
     badge("badge gray text", "gray", Text, "var(--rinch-color-gray-6)"),
     badge("badge teal", "teal", Fill, "var(--rinch-color-teal-0)"),
-    case("alert blue", "rinch-alert rinch-alert--light rinch-alert--blue", Rest, Fill, "var(--rinch-color-blue-0)"),
-    case("alert blue text", "rinch-alert rinch-alert--light rinch-alert--blue", Rest, Text, "var(--rinch-color-blue-9)"),
-    case("alert blue title", "rinch-alert rinch-alert--light rinch-alert--blue", Rest, Title, "var(--rinch-color-blue-7)"),
-    case("alert red", "rinch-alert rinch-alert--light rinch-alert--red", Rest, Fill, "var(--rinch-color-red-0)"),
-    case("alert red text", "rinch-alert rinch-alert--light rinch-alert--red", Rest, Text, "var(--rinch-color-red-9)"),
-    case("alert yellow", "rinch-alert rinch-alert--light rinch-alert--yellow", Rest, Fill, "var(--rinch-color-yellow-0)"),
-    case("alert yellow title", "rinch-alert rinch-alert--light rinch-alert--yellow", Rest, Title, "var(--rinch-color-yellow-7)"),
-    case("alert green", "rinch-alert rinch-alert--light rinch-alert--green", Rest, Fill, "var(--rinch-color-green-0)"),
-    case("alert gray title", "rinch-alert rinch-alert--light rinch-alert--gray", Rest, Title, "var(--rinch-color-gray-7)"),
-    case("alert primary", "rinch-alert rinch-alert--light rinch-alert--primary", Rest, Fill, "var(--rinch-primary-color-0)"),
-    case("alert primary text", "rinch-alert rinch-alert--light rinch-alert--primary", Rest, Text, "var(--rinch-primary-color-9)"),
-    case("alert primary title", "rinch-alert rinch-alert--light rinch-alert--primary", Rest, Title, "var(--rinch-primary-color-7)"),
-    case("code", "rinch-code rinch-code--primary", Rest, Fill, "var(--rinch-primary-color-0)"),
-    case("code text", "rinch-code rinch-code--primary", Rest, Text, "var(--rinch-primary-color-7)"),
-    case("avatar light", "rinch-avatar rinch-avatar--light", Rest, Fill, "var(--rinch-primary-color-1)"),
-    case("mark", "rinch-mark", Rest, Fill, "var(--rinch-color-yellow-2)"),
-    case("highlight", "rinch-highlight__match", Rest, Fill, "var(--rinch-color-yellow-2)"),
-    case("checkbox focus ring", "rinch-checkbox__box", Focus, Ring, "var(--rinch-primary-color-2)"),
-    case("radio focus ring", "rinch-radio__indicator", Focus, Ring, "var(--rinch-primary-color-2)"),
-    case("switch focus ring", "rinch-switch__track", Focus, Ring, "var(--rinch-primary-color-2)"),
+    case(
+        "alert blue",
+        "rinch-alert rinch-alert--light rinch-alert--blue",
+        Rest,
+        Fill,
+        "var(--rinch-color-blue-0)",
+    ),
+    case(
+        "alert blue text",
+        "rinch-alert rinch-alert--light rinch-alert--blue",
+        Rest,
+        Text,
+        "var(--rinch-color-blue-9)",
+    ),
+    case(
+        "alert blue title",
+        "rinch-alert rinch-alert--light rinch-alert--blue",
+        Rest,
+        Title,
+        "var(--rinch-color-blue-7)",
+    ),
+    case(
+        "alert red",
+        "rinch-alert rinch-alert--light rinch-alert--red",
+        Rest,
+        Fill,
+        "var(--rinch-color-red-0)",
+    ),
+    case(
+        "alert red text",
+        "rinch-alert rinch-alert--light rinch-alert--red",
+        Rest,
+        Text,
+        "var(--rinch-color-red-9)",
+    ),
+    case(
+        "alert yellow",
+        "rinch-alert rinch-alert--light rinch-alert--yellow",
+        Rest,
+        Fill,
+        "var(--rinch-color-yellow-0)",
+    ),
+    case(
+        "alert yellow title",
+        "rinch-alert rinch-alert--light rinch-alert--yellow",
+        Rest,
+        Title,
+        "var(--rinch-color-yellow-7)",
+    ),
+    case(
+        "alert green",
+        "rinch-alert rinch-alert--light rinch-alert--green",
+        Rest,
+        Fill,
+        "var(--rinch-color-green-0)",
+    ),
+    case(
+        "alert gray title",
+        "rinch-alert rinch-alert--light rinch-alert--gray",
+        Rest,
+        Title,
+        "var(--rinch-color-gray-7)",
+    ),
+    case(
+        "alert primary",
+        "rinch-alert rinch-alert--light rinch-alert--primary",
+        Rest,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "alert primary text",
+        "rinch-alert rinch-alert--light rinch-alert--primary",
+        Rest,
+        Text,
+        "var(--rinch-primary-color-9)",
+    ),
+    case(
+        "alert primary title",
+        "rinch-alert rinch-alert--light rinch-alert--primary",
+        Rest,
+        Title,
+        "var(--rinch-primary-color-7)",
+    ),
+    case(
+        "code",
+        "rinch-code rinch-code--primary",
+        Rest,
+        Fill,
+        "var(--rinch-primary-color-0)",
+    ),
+    case(
+        "code text",
+        "rinch-code rinch-code--primary",
+        Rest,
+        Text,
+        "var(--rinch-primary-color-7)",
+    ),
+    case(
+        "avatar light",
+        "rinch-avatar rinch-avatar--light",
+        Rest,
+        Fill,
+        "var(--rinch-primary-color-1)",
+    ),
+    case(
+        "mark",
+        "rinch-mark",
+        Rest,
+        Fill,
+        "var(--rinch-color-yellow-2)",
+    ),
+    case(
+        "highlight",
+        "rinch-highlight__match",
+        Rest,
+        Fill,
+        "var(--rinch-color-yellow-2)",
+    ),
+    case(
+        "checkbox focus ring",
+        "rinch-checkbox__box",
+        Focus,
+        Ring,
+        "var(--rinch-primary-color-2)",
+    ),
+    case(
+        "radio focus ring",
+        "rinch-radio__indicator",
+        Focus,
+        Ring,
+        "var(--rinch-primary-color-2)",
+    ),
+    case(
+        "switch focus ring",
+        "rinch-switch__track",
+        Focus,
+        Ring,
+        "var(--rinch-primary-color-2)",
+    ),
 ];
 
 /// The `<input>` whose `:focus` rings each focus-ring probe (its next sibling).
@@ -188,7 +443,15 @@ fn paint(dark: bool, c: &Case) -> ([u8; 3], [u8; 3], [u8; 3]) {
     let probe = doc.create_element("div");
     doc.set_attribute(probe, "class", &format!("{} probe", c.class));
     if let Some(color) = c.color {
-        doc.set_attribute(probe, "data-color", color);
+        if c.class.contains("rinch-button--colored") {
+            let button = rinch_components::Button {
+                color: color.to_string(),
+                ..Default::default()
+            };
+            doc.set_attribute(probe, "style", &button.style_string().unwrap());
+        } else {
+            doc.set_attribute(probe, "data-color", color);
+        }
     }
     doc.append_child(body, probe);
     let text = doc.create_element("div");
@@ -260,7 +523,11 @@ fn light_scheme_is_unchanged() {
             wrong.push(format!("{}: painted {got:?}, was {old:?}", c.name));
         }
     }
-    assert!(wrong.is_empty(), "light scheme changed:\n{}", wrong.join("\n"));
+    assert!(
+        wrong.is_empty(),
+        "light scheme changed:\n{}",
+        wrong.join("\n")
+    );
 }
 
 /// WCAG contrast ratio of two sRGB colours.
@@ -311,6 +578,7 @@ fn states_stay_distinct() {
     for dark in [false, true] {
         for (a, b) in [
             ("button light", "button light hover"),
+            ("red button light", "red button light hover"),
             ("button light hover", "button light active"),
             ("button outline hover", "button outline active"),
             ("button subtle hover", "button subtle active"),

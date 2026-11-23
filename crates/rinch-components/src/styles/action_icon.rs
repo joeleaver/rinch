@@ -47,14 +47,14 @@ pub fn styles() -> String {
 }
 
 .rinch-action-icon--light {
-    background-color: var(--rinch-primary-color-0);
-    color: var(--rinch-action-icon-color, var(--rinch-primary-color-6));
+    background-color: var(--rinch-primary-color-light);
+    color: var(--rinch-action-icon-color, var(--rinch-primary-color-light-color));
 }
 .rinch-action-icon--light:hover:not(:disabled) {
-    background-color: var(--rinch-primary-color-1);
+    background-color: var(--rinch-primary-color-light-hover);
 }
 .rinch-action-icon--light:active:not(:disabled) {
-    background-color: var(--rinch-primary-color-2);
+    background-color: var(--rinch-primary-color-light-active);
     transform: translateY(1px);
 }
 
@@ -63,10 +63,10 @@ pub fn styles() -> String {
     border-color: var(--rinch-action-icon-color, var(--rinch-primary-color));
 }
 .rinch-action-icon--outline:hover:not(:disabled) {
-    background-color: var(--rinch-primary-color-0);
+    background-color: var(--rinch-primary-color-light);
 }
 .rinch-action-icon--outline:active:not(:disabled) {
-    background-color: var(--rinch-primary-color-1);
+    background-color: var(--rinch-primary-color-light-hover);
     transform: translateY(1px);
 }
 
@@ -74,10 +74,10 @@ pub fn styles() -> String {
     background-color: transparent;
 }
 .rinch-action-icon--subtle:hover:not(:disabled) {
-    background-color: var(--rinch-primary-color-0);
+    background-color: var(--rinch-primary-color-light);
 }
 .rinch-action-icon--subtle:active:not(:disabled) {
-    background-color: var(--rinch-primary-color-1);
+    background-color: var(--rinch-primary-color-light-hover);
     transform: translateY(1px);
 }
 
