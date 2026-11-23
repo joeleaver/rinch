@@ -8,7 +8,9 @@ use rinch_core::{Callback, Component};
 /// A styled anchor/link element.
 ///
 /// With no `href` it writes none: the `<a>` is a placeholder link, as in a
-/// browser (not focusable, nothing to follow), whose `onclick` still runs.
+/// browser (not focusable, nothing to follow). With an `onclick` too it is a
+/// button: `tabindex="0"` and `role="button"`, so Tab reaches it and Enter or
+/// Space runs the handler.
 /// With an `onclick`, the click is the app's: on the web the browser does not
 /// follow `href` (the link is marked `data-claim-links`), so a desktop and a
 /// web app route in-app the same way (a middle click comes to it too, with
@@ -81,6 +83,15 @@ impl Component for Anchor {
             // `menu` keeps the browser's own link menu and drag to the tab
             // bar, which a click listener leaves alone in a browser too.
             container.set_attribute("data-claim-links", "menu");
+            // With no `href` the `<a>` is a placeholder, which neither a
+            // browser nor rinch focuses: the keyboard could not reach the
+            // handler (`href="#"` used to make it focusable). A `tabindex`
+            // makes it a stop, and Enter / Space activate a focused
+            // `tabindex` element on both backends, as for a `role="button"`.
+            if self.href.is_empty() {
+                container.set_attribute("tabindex", "0");
+                container.set_attribute("role", "button");
+            }
         }
 
         for child in children {

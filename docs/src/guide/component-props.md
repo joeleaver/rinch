@@ -623,7 +623,7 @@ when alpha must be externally drivable.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `href` | `String` | `""` | Empty writes no `href`: a placeholder link, as in a browser (not focusable, nothing to follow; `onclick` still runs). It used to be `#` |
+| `href` | `String` | `""` | Empty writes no `href`: a placeholder link, as in a browser (not focusable, nothing to follow). It used to be `#`. With an `onclick` too, the anchor is a button for the keyboard: `tabindex="0"` and `role="button"`, so Tab reaches it and Enter or Space runs `onclick` on both backends |
 | `target` | `String` | `""` | e.g., "_blank" (which a browser already treats as `noopener`) |
 | `rel` | `String` | `""` | Written as given, e.g. `"noreferrer"`; nothing when empty |
 | `onclick` | `Option<Callback>` | `None` | Runs on a click or Enter on the link. The click is then the app's: on the web the browser does not follow `href` (the link is marked `data-claim-links="menu"`, which keeps the browser's own link menu), so in-app routing works the same on desktop and web. A middle click reaches it too (`click_context().button` is `Middle`); `click_link()` gives the `href` |

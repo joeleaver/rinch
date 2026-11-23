@@ -39,7 +39,11 @@ when a node is freed): `drain_pending_images` queues every `<img>` naming a
 newly failed source, and `request_image_load_for_node` queues one whose `src`
 names a source already `Failed` (another element's earlier load, or a
 malformed `data:` URL just decoded in place, which never reaches
-`newly_failed`). `RinchDocument::drain_img_errors` hands them over, keeping
+`newly_failed`). An empty `src` (`src=""`, attribute present) is queued
+as it is written and accepted by the drain filter, since Chrome fires `error`
+for it; a missing `src` never reaches `request_image_load_for_node`. Desktop
+`onerror` is `<img>`-only; rinch-web's listener runs any target's
+`data-onerror`, so a failing `<video>`/`<source>` reaches it there. `RinchDocument::drain_img_errors` hands them over, keeping
 only elements that still name a source that `shows_failure` (a `src`
 rewritten to a good picture since is dropped). The shell fires their handlers
 in `after_layout`, after `dispatch_scroll_clamp_events`, with no document
@@ -53,7 +57,10 @@ and runs the target's `data-onerror`. An app scheme answered "not yet" gives
 the browser no `src`, so no `error`: `images.rs` fires `onerror` itself from
 a microtask (`announce_failed` / `fire_failed`) on the first ask, for an
 element given a source already "not yet", and for a reload that leaves an
-element with nothing to show. Pins: `rinch/src/app/img_error_2202_tests.rs`,
+element with nothing to show. The queue's dedup (an unknown `register_rgba`
+name reaches it twice in a frame) and the drain's `shows_failure` filter (a
+`src` rewritten to a good picture before the drain) are pinned there too.
+Pins: `rinch/src/app/img_error_2202_tests.rs`,
 `rinch-web/tests/img_onerror_2202.rs`, and the components' markup in
 `rinch-components/tests/media_props_2202.rs`.
 

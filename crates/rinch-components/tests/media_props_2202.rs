@@ -122,6 +122,9 @@ fn an_anchor_runs_its_onclick_and_claims_the_link() {
         m.root.get_attribute("data-claim-links").as_deref(),
         Some("menu")
     );
+    // It has an `href`: a link, focusable as one, no button role.
+    assert_eq!(m.root.get_attribute("tabindex"), None);
+    assert_eq!(m.root.get_attribute("role"), None);
 
     let m = Mounted::build(|s| {
         Anchor {
@@ -132,6 +135,25 @@ fn an_anchor_runs_its_onclick_and_claims_the_link() {
     });
     assert_eq!(m.root.get_attribute("data-rid"), None);
     assert_eq!(m.root.get_attribute("data-claim-links"), None);
+}
+
+/// #2206 review: with `onclick` and no `href` the placeholder `<a>` becomes a
+/// keyboard stop: `tabindex="0"`, `role="button"`.
+#[test]
+fn an_anchor_with_onclick_and_no_href_is_a_button() {
+    let (_, cb) = counter();
+    let m = Mounted::build(|s| {
+        Anchor {
+            onclick: Some(cb),
+            ..Default::default()
+        }
+        .render(s, &[])
+    });
+    assert_eq!(m.root.get_attribute("tabindex").as_deref(), Some("0"));
+    assert_eq!(m.root.get_attribute("role").as_deref(), Some("button"));
+    // No handler, no button: a plain placeholder.
+    let m = Mounted::build(|s| Anchor::default().render(s, &[]));
+    assert_eq!(m.root.get_attribute("tabindex"), None);
 }
 
 // ------------------------------------------------------------------- Image

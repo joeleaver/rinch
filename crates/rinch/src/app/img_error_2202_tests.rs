@@ -199,3 +199,122 @@ fn an_image_whose_picture_fails_shows_its_fallback_src() {
     assert_eq!(img_srcs(&app), vec![GOOD_DATA_URI.to_string()]);
     assert_eq!(fired.get(), 1, "the fallback loaded: one failure");
 }
+
+/// `src=""` fails, as in Chrome (which fires `error` for it); a missing `src`
+/// is no load at all and fires nothing.
+#[test]
+fn an_empty_src_fires_onerror_and_a_missing_one_does_not() {
+    let fired = Rc::new(Cell::new(0));
+    let mut app = img_with_onerror("", fired.clone());
+    for _ in 0..3 {
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    }
+    assert_eq!(fired.get(), 1, "src=\"\" fires once");
+
+    let missing = Rc::new(Cell::new(0));
+    let m = missing.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let img = scope.create_element("img");
+        let m = m.clone();
+        let id = scope.register_handler(move || m.set(m.get() + 1));
+        img.set_attribute("data-onerror", &id.0.to_string());
+        img.set_attribute("alt", "no source");
+        root.append_child(&img);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    for _ in 0..3 {
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    }
+    assert_eq!(missing.get(), 0, "no src, no error");
+}
+
+/// An unknown `register_rgba` name fails in place and is listed among the
+/// newly failed too, so it reaches the queue twice in one frame: the queue
+/// keeps one, and `onerror` runs once.
+#[test]
+fn a_failure_queued_twice_in_a_frame_fires_once() {
+    let src: &'static str =
+        Box::leak(rinch_core::image::rgba_src("no-such-picture-2202").into_boxed_str());
+    let fired = Rc::new(Cell::new(0));
+    let mut app = img_with_onerror(src, fired.clone());
+    for _ in 0..3 {
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    }
+    assert_eq!(fired.get(), 1);
+}
+
+/// A `src` rewritten to a good picture before the frame that would announce
+/// the failure: the element no longer names a failed picture, so nothing
+/// fires.
+#[test]
+fn a_failure_whose_src_was_replaced_by_a_good_one_fires_nothing() {
+    let fired = Rc::new(Cell::new(0));
+    let f = fired.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let img = scope.create_element("img");
+        let f = f.clone();
+        let id = scope.register_handler(move || f.set(f.get() + 1));
+        img.set_attribute("data-onerror", &id.0.to_string());
+        img.set_attribute("src", BAD_DATA_URI);
+        img.set_attribute("src", GOOD_DATA_URI);
+        root.append_child(&img);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    for _ in 0..3 {
+        app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    }
+    assert_eq!(fired.get(), 0);
+}
+
+/// `Anchor { onclick }` with no `href` (#2206 review): Tab reaches it and
+/// Enter runs the handler. A placeholder `<a>` is not focusable, so without
+/// its `tabindex` the keyboard could not get there. (It is given a box:
+/// desktop Tab skips inline elements altogether, #2963.)
+#[test]
+fn an_anchor_with_onclick_and_no_href_is_reached_by_tab_and_enter() {
+    use rinch_components::anchor::Anchor;
+    let clicks = Rc::new(Cell::new(0));
+    let c = clicks.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let c = c.clone();
+        let root = scope.create_element("div");
+        let text = scope.create_text("Settings");
+        let anchor = Anchor {
+            onclick: Some(Callback::new(move || c.set(c.get() + 1))),
+            ..Default::default()
+        }
+        .render(scope, &[text]);
+        // A box of its own: desktop Tab skips an inline element, whose
+        // Taffy box is 0x0, even an `<a href>` (#2963, not this PR's).
+        anchor.set_attribute("style", "display: inline-block");
+        root.append_child(&anchor);
+        root
+    });
+    app.mount_component(VIEWPORT.0, VIEWPORT.1);
+    app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let key = |app: &mut RinchApp, key: KeyCode| {
+        app.handle_event(
+            PlatformEvent::KeyDown {
+                key,
+                logical_key: None,
+                text: None,
+                modifiers: Modifiers::default(),
+                repeat: KeyRepeat::Unknown,
+            },
+            (800, 600),
+            1.0,
+        );
+    };
+    key(&mut app, KeyCode::Tab);
+    assert!(
+        matches!(app.focus_target, FocusTarget::Node(_)),
+        "Tab reached the anchor, got {:?}",
+        app.focus_target
+    );
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(clicks.get(), 1, "Enter ran its onclick");
+}

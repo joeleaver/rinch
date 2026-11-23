@@ -98,3 +98,56 @@ async fn an_app_source_answered_not_yet_runs_onerror() {
     sleep(100).await;
     assert_eq!(fired.get(), 1);
 }
+
+/// `src=""` fails in the browser (the desktop now matches it).
+#[wasm_bindgen_test]
+async fn an_empty_src_runs_onerror() {
+    let (_root, fired) = mount_img("");
+    wait_for(&fired).await;
+    sleep(100).await;
+    assert_eq!(fired.get(), 1);
+}
+
+/// `Anchor { onclick }` with no `href` (#2206 review) is a keyboard stop the
+/// browser focuses, and Enter on it runs the handler: the browser makes no
+/// click for an `<a>` without `href`, so rinch's `tabindex` activation does.
+#[wasm_bindgen_test]
+fn an_anchor_with_onclick_and_no_href_runs_on_enter() {
+    use rinch::prelude::Anchor;
+    use rinch_core::{Callback, Component};
+    use wasm_bindgen::JsCast;
+    let host = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let clicks = Rc::new(Cell::new(0));
+    let c = clicks.clone();
+    let _root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope| {
+        let c = c.clone();
+        let text = scope.create_text("Settings");
+        let a = Anchor {
+            onclick: Some(Callback::new(move || c.set(c.get() + 1))),
+            ..Default::default()
+        }
+        .render(scope, &[text]);
+        a.set_attribute("id", "anchor-2202");
+        a
+    });
+    let a: web_sys::HtmlElement = document()
+        .get_element_by_id("anchor-2202")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    assert_eq!(a.tab_index(), 0, "the browser takes it as a stop");
+    a.focus().unwrap();
+    assert_eq!(
+        document().active_element().map(|e| e.id()),
+        Some("anchor-2202".to_string()),
+        "it takes the focus"
+    );
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_key("Enter");
+    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    a.dispatch_event(&ev).unwrap();
+    assert_eq!(clicks.get(), 1, "Enter ran its onclick");
+}

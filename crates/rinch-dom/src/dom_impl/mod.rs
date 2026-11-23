@@ -1885,6 +1885,9 @@ impl RinchDocument {
     /// immediately. Otherwise kicks off an async load on a background thread.
     pub(crate) fn request_image_load_for_node(&mut self, node_id: RawNodeId, src: &str) {
         if src.is_empty() {
+            // `src=""` names nothing to load, and the browser fires `error`
+            // for it (a missing `src` fires nothing, and never reaches here).
+            self.tree.queue_img_error(node_id);
             return;
         }
 
@@ -2109,8 +2112,8 @@ impl RinchDocument {
     /// (#2202/#2203): what the browser fires `error` at. The facade fires
     /// each one's `onerror` (`data-onerror`) after layout. Each element is
     /// listed once per call, and only while it still names a picture that
-    /// failed: one whose `src` was rewritten to a good picture since is left
-    /// out.
+    /// failed, or an empty `src` (which the browser fails too): one whose `src`
+    /// was rewritten to a good picture since is left out.
     pub fn drain_img_errors(&mut self) -> Vec<rinch_core::dom::NodeId> {
         let queued = std::mem::take(&mut self.tree.pending_img_errors);
         queued
@@ -2120,7 +2123,7 @@ impl RinchDocument {
                     n.tag() == Some("img")
                         && n.attributes
                             .get("src")
-                            .is_some_and(|s| self.tree.image_cache.shows_failure(s))
+                            .is_some_and(|s| s.is_empty() || self.tree.image_cache.shows_failure(s))
                 })
             })
             .map(rinch_core::dom::NodeId)
