@@ -213,6 +213,17 @@ impl RinchDocument {
         } else if name == "style" {
             self.mark_restyle(node, false);
         }
+        // `dir` decides whether the element resolves a direction from its
+        // text, and whether its text counts for an ancestor's; a text field's
+        // `value` is the text its own `dir=auto` reads (#2272).
+        if name == "dir" {
+            self.mark_restyle(node, false);
+            if let Some(parent) = self.tree.nodes[node].parent {
+                self.note_dir_auto_content(parent);
+            }
+        } else if name == "value" {
+            self.note_field_value_changed(node);
+        }
         match (tag.as_deref(), name) {
             // A text control's measure reads `rows` and `cols` (a textarea) or
             // `type` and `size` (an input) — #297, #1177, `form_control.rs` —
@@ -514,6 +525,53 @@ impl RinchDocument {
     /// Restyle `node` at the next resolve, and with `subtree` every element
     /// under it too. Keeps its current style as the "before" the cascade
     /// compares against to decide whether its children must follow.
+    /// Tell the document that a text field's value changed by a write that
+    /// went around `set_attribute` (the desktop shell writes a focused field's
+    /// `value` itself as the user types). A field in the `dir=auto` state
+    /// takes its direction from its value (#2272), so it is restyled; any
+    /// other node costs nothing.
+    pub fn note_field_value_changed(&mut self, node: RawNodeId) {
+        if self.tree.nodes.get(node).is_some_and(|n| {
+            matches!(n.tag(), Some("input" | "textarea")) && crate::legacy_hints::is_dir_auto(n)
+        }) {
+            self.mark_restyle(node, false);
+        }
+    }
+
+    /// Restyle the `dir=auto` element whose direction can rest on the text
+    /// at or under `from` (#2272), after that text, or a child list there,
+    /// changed: the nearest ancestor-or-self in the auto state, unless an
+    /// element on the way hides its text from it
+    /// (`legacy_hints::hides_text_from_dir_auto`). Its cascade resolves the
+    /// direction again (`legacy_hints::auto_direction`), and its descendants
+    /// inherit the change. Nothing to do in a document whose cascade has met
+    /// no `dir=auto` element.
+    pub(crate) fn note_dir_auto_content(&mut self, from: RawNodeId) {
+        if !self
+            .tree
+            .dir_auto_seen
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let mut at = Some(from);
+        while let Some(id) = at {
+            let Some(n) = self.tree.nodes.get(id) else {
+                return;
+            };
+            if n.is_element() {
+                if crate::legacy_hints::is_dir_auto(n) {
+                    self.mark_restyle(id, false);
+                    return;
+                }
+                if crate::legacy_hints::hides_text_from_dir_auto(n) {
+                    return;
+                }
+            }
+            at = n.parent;
+        }
+    }
+
     pub(crate) fn mark_restyle(&mut self, node: RawNodeId, subtree: bool) {
         let Some(n) = self.tree.nodes.get(node) else {
             return;
@@ -629,6 +687,7 @@ impl RinchDocument {
     ) {
         self.note_table_children_changed(parent);
         self.note_style_elements_moved(parent);
+        self.note_dir_auto_content(parent);
         let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
@@ -856,6 +915,7 @@ impl RinchDocument {
         // table part, so no cascade of its own tells the table (#1083).
         self.note_table_children_changed(parent);
         self.note_style_subtree_inserted(parent, child);
+        self.note_dir_auto_content(parent);
         let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };
