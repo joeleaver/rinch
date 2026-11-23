@@ -732,8 +732,8 @@ pub(crate) fn inline_element_painted_rect(
 }
 
 /// The ascent and descent of each font an inline element is set in
-/// (`font_box`), keyed by what decides its primary face and size: the
-/// computed `font-family`, `font-size`, `font-weight` and `font-style`
+/// (`font_box`), per em, keyed by what decides its primary face: the
+/// computed `font-family`, `font-weight` and `font-style`
 /// (#2257). Filled where lines are shaped
 /// (`RinchDocument::note_inline_font_boxes`), where the font context is at
 /// hand, so an inline element's box can be measured where only the tree is
@@ -744,8 +744,8 @@ pub(crate) struct InlineFontBoxes {
     state: std::cell::RefCell<InlineFontBoxesState>,
 }
 
-type FontBoxKey = (u32, u32, crate::computed_style::FontStyleValue);
-/// One family's recorded fonts: `(size, weight, style)` and its box.
+type FontBoxKey = (u32, crate::computed_style::FontStyleValue);
+/// One family's recorded fonts: `(weight, style)` and its box per em.
 type FamilyFontBoxes = Vec<(FontBoxKey, (f32, f32))>;
 
 #[derive(Debug, Default)]
@@ -757,14 +757,12 @@ struct InlineFontBoxesState {
 
 impl InlineFontBoxes {
     fn key(style: &ComputedStyle) -> FontBoxKey {
-        (
-            style.font_size.to_bits(),
-            style.font_weight.to_bits(),
-            style.font_style,
-        )
+        (style.font_weight.to_bits(), style.font_style)
     }
 
-    /// The font box of `style`'s font, if recorded in `generation`.
+    /// The font box of `style`'s font, if recorded in `generation`: the
+    /// recorded box per em at its size, since a face's metrics scale with
+    /// the size (so an animated `font-size` reads one entry).
     fn get(&self, generation: u64, style: &ComputedStyle) -> Option<(f32, f32)> {
         let state = self.state.borrow();
         if state.generation != generation {
@@ -776,11 +774,12 @@ impl InlineFontBoxes {
             .get(style.font_family.as_str())?
             .iter()
             .find(|(k, _)| *k == key)
-            .map(|&(_, m)| m)
+            .map(|&(_, (a, d))| (a * style.font_size, d * style.font_size))
     }
 
     /// The font box of `style`'s font, measured with `measure` and recorded
-    /// when it is not recorded in `generation`.
+    /// (per em) when it is not recorded in `generation`. At most one entry
+    /// per family, weight and style.
     fn get_or_measure(
         &self,
         generation: u64,
@@ -791,6 +790,10 @@ impl InlineFontBoxes {
             return m;
         }
         let m = measure();
+        let size = style.font_size;
+        if !(size.is_finite() && size > 0.0) {
+            return m;
+        }
         let mut state = self.state.borrow_mut();
         if state.generation != generation {
             state.generation = generation;
@@ -800,7 +803,7 @@ impl InlineFontBoxes {
             .by_family
             .entry(style.font_family.clone())
             .or_default()
-            .push((Self::key(style), m));
+            .push((Self::key(style), (m.0 / size, m.1 / size)));
         m
     }
 }

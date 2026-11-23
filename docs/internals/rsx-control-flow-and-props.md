@@ -289,7 +289,7 @@ before, `(x, y, 0, 0)` from the ghost box, so desktop `element_*` and
 `bounds_signal()` were empty where the web's were the span's box). It has only
 `&NodeTree`, and each fragment's height is the element's **own** font's ascent
 and descent, which needs a shaped probe: so the font boxes are recorded per
-font (`NodeTree::inline_font_boxes`, keyed by family, size, weight, style and
+font (`NodeTree::inline_font_boxes`, per em, keyed by family, weight, style and
 the font generation) for every inline element an IFC flows when its lines are
 shaped (`RinchDocument::note_inline_font_boxes`, from
 `shape_ifc_root_paint_layout`): a lookup per element, a probe per new font.

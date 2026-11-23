@@ -323,6 +323,9 @@ pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
 /// at the first box, answers 260. The walk (`descendant_reach`) runs only
 /// when asked, never for a scroller: a scroller's own range still stops at
 /// the first box (#2054).
+///
+/// **Cost:** the whole subtree, walked on every call (nothing is cached), for
+/// a box that does not scroll; a scroll container pays [`content_extents`].
 pub fn scroll_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     let (w, h) = content_extents(tree, node_id);
     let Some(node) = tree.get(node_id) else {
@@ -337,7 +340,11 @@ pub fn scroll_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     let mut reach = Reach::NONE;
     for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
         // A direct child is [`content_extents`]' own: only what is below it.
-        if let Some(child) = tree.get_live(child_id) {
+        // An out-of-flow child contained above the box (a fixed overlay, a
+        // modal's absolute layer) is not its overflow, nor is its content.
+        if let Some(child) = tree.get_live(child_id)
+            && crate::out_of_flow::contributes_to_scrollable_overflow(tree, node_id, child)
+        {
             descend_into(tree, node_id, child, (0.0, 0.0), &mut reach);
         }
     }
