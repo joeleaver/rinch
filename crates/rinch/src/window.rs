@@ -744,6 +744,11 @@ mod platform {
         #[cfg(feature = "windowing")]
         {
             let doc = rinch_core::current_dispatching_doc();
+            // An embedded `RinchContext`'s code: its host takes it (#2801).
+            #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+            if crate::embed::window_requests::capture_title(doc, title) {
+                return;
+            }
             {
                 let mut stored = super::STORED_TITLE
                     .lock()
