@@ -8,6 +8,8 @@ use rinch_core::element::WindowProps;
 
 #[path = "doc_forget_tests.rs"]
 mod doc_forget;
+#[path = "popups_tests.rs"]
+mod popups;
 
 #[path = "perf_attribution_2798_tests.rs"]
 mod perf_attribution;

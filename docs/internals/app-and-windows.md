@@ -2225,6 +2225,142 @@ guide's "A window sized by its content" has what an app sees; here is how.
   and R0's own (`app/content_size_*tests.rs`, including the fill axis and
   the restart).
 
+### Popup windows (`popup.rs`, `shell/rinch_runtime/popups.rs`, #2552 stage 1)
+
+The guide's "Popup windows" has what an app sees. Wayland only in stage 1:
+`popup::set_supported` is set in `can_create_surfaces` from
+`Backend::Wayland`; everywhere else `open_popup` answers `Unsupported`
+(decision F). Under `rinch::testing`, `popups_supported` follows
+`testing::captures()`. `App::popup_windows(false)` sets a thread-local off
+switch at once.
+
+- **Types.** `Placement`/`Side`/`Align`, `Adjust` (a `u8` newtype, bit for
+  bit `WindowConstraintAdjustment`), `PopupKind`, `PopupPlaced`, `Dismissal`
+  are data in `rinch-core/src/popup_placement.rs`, re-exported from
+  `rinch_core::element`. `PopupProps`, `PopupAnchor` and `PopupError` are in
+  `rinch::popup`, because `PopupAnchor::Rect` names a `WindowHandle`.
+- **Registry.** `open_popup` resolves the parent (a node's document through
+  `window_handle::window_of_doc`: the window mounted as that document, else
+  the main window, else `0`, the harness's mounted app, which is no registry
+  window), checks the rules (`MenuOnTooltip`; `NoUserInput` when neither the
+  parent nor a popup below it in its chain has had a press within
+  `popup::PRESS_RECENT` (10 s, on `rinch_core::timer::now`, the harness's
+  virtual clock there): `note_press`, called from `RinchApp::handle_event`
+  for `MouseDown`/`KeyDown`, keeps each window's newest press, decision C;
+  the fork's own `NoGrabCause` still answers later as `Failed`), builds
+  `WindowProps` (`popup::window_props_for`: content-sized up to `max_size`,
+  never a layer surface, a tooltip's `input_region: None`), wraps the content
+  to push a `push_dismiss_handler_within` entry at its root (Escape →
+  `dismiss(id, Escape)`), and opens it through `window_handle::open` with a
+  `PopupEntry` on the registry entry: parent, props, the placement signal (in
+  the entry's scope), the recorded `Dismissal`, `asked_at`, the anchor rect
+  last sent. `note_closed` calls `on_dismissed` when a cause was recorded,
+  even when the owner's going is what closed it after (a `ParentClosed`
+  popup's owner is usually disposed with its parent). The first cause wins
+  (`note_dismissal`).
+- **The chain** is the parent relation (`popup::chain`, pure, over
+  `(id, parent, kind)` links): `close_order` is every popup above a window,
+  newest first (a popup always opens after its parent, so that is each one
+  before the one it is on); `key_target` is the newest menu of the window's
+  chain; `press_closes` is every menu not below-or-equal to the pressed
+  window. Ownership plays no part: a popup owned by the main window but
+  anchored in a menu is above the menu.
+- **Made** (`open_pending_window` → `open_pending_popup` → `make_popup`):
+  - Decision E: menus in the way (`press_closes(parent)`) close at once,
+    told `Replaced`; a popup closed in this loop iteration
+    (`PopupState::closed_this_turn`) defers a new one to the next
+    (`popups_end_of_turn`, at the end of `about_to_wait`, re-sends its
+    `OpenWindow`): winit has no close-and-reopen in one iteration (#4834).
+  - An `OpenWindow` for a popup no longer pending (made, closed, the keyboard
+    wait's late one) does nothing.
+  - `max_size: None` becomes the parent output's logical size
+    (`output_size_of`: `rinch::outputs` by `native_id`, else winit's mode).
+  - The app is `new_other_window`'s (content-sized by the props), with the
+    parent's own theme CSS when it has one, mounted at the parent document's
+    `device_pixel_ratio` (fractional scales included), measured
+    (`start_surface_negotiation`; 0×0 is refused), then
+    `ShellWindow::create_popup_window`: `WindowType::Popup`, the parent's raw
+    handle (`rwh_06_window_handle`), `shell::popup_positioner::positioner`
+    (the anchor rect is the anchor's bounds × zoom, kept inside the parent
+    and rounded outward, `popup::anchor_rect`; a `NodeAcross` anchor is then
+    stretched across the parent's cross axis, `popup::across`, on every
+    reposition too), `with_active(kind == Menu)`
+    (the grab), the measured size × zoom. The GPU renderer when the parent
+    has one (`has_gpu_renderer`), else software: the app's renderer, never a
+    silent fallback (`start_gpu_renderer` warns on its own fallback). A menu's
+    document is sent `WindowFocus(true)` (keys are forwarded to it on
+    wlroots, where it never gets `Focused`). A tooltip's empty input region
+    goes with its first frame (`send_input_region(false)`).
+  - `[PERF] window N popup: kind=… parent=…` after the `opened` line
+    (`window_perf::popup_opened`; the harness prints it too) and
+    `[PERF] window N first frame: … ms after open_popup` after its first
+    paint (`ShellWindow::popup_first_frame`).
+- **`keyboard_via_parent`** (`raise_parent_keyboard`): only for the first
+  menu of a chain from a layer surface without the keyboard
+  (`app.window_focused` false) whose interactivity is not `exclusive`: the
+  interactivity is set `exclusive` (`set_layer_shell_keyboard_interactivity`,
+  committed by the fork), the pending popup waits in
+  `PopupState::awaiting_keyboard` until the parent's `Focused(true)`
+  (`parent_got_keyboard`), at most `KEYBOARD_WAIT_MS` (300; a timer re-sends
+  its `OpenWindow`, which makes a waiting popup at once: a seat with no
+  keyboard never sends `enter`). `PopupState::raised` remembers what to put
+  back; `restore_raised_keyboards` (from `note_popup_closed`) puts it back
+  once its chain has no menu (and after a make that failed). Never raised
+  while a grab is held (`chain::may_raise_keyboard`, pure) (F0: grab
+  then raise fails on wlroots and dismisses on KWin). The check excludes the
+  popup being made, whose entry exists already (a live run found it
+  answering "a menu is open" for itself).
+- **Closed** (`close_other` → `close_popups_above`, then `close_one_other`):
+  every popup above the window closes first, newest first, each told
+  `ParentClosed` unless it has a cause. Also before a hide (`hide_role`),
+  before the main window's close (`close_main`), before a main layer
+  surface the compositor closed is made again (`CloseRequested` on `Main`
+  with a layer), and at shutdown for the main window's popups. A popup's
+  `CloseRequested` is `popup_done`: `Dismissal::System`, `close_soon`, no
+  veto. The harness's `close_child` does the same.
+- **Input** (`window_event_for`):
+  - `input_role` first: a `KeyboardInput`, `Ime` or `ModifiersChanged`
+    reaching a window of a chain with a menu goes to its topmost menu (the
+    window it reached keeps the modifiers too).
+  - `Focused(false)` on a window of such a chain is held (KWin moves the
+    keyboard from the parent to the menu; `hold_focus_change`) and replayed
+    through `window_event_for` at the end of the turn the chain closed in
+    (`popups_end_of_turn`), unless a `Focused(true)` came first.
+  - A `PointerButton` press runs `light_dismiss_press`: `popup::light_dismiss`
+    records `PressOutside { on_anchor }` (the press point against the
+    anchor's bounds in the anchor's window) and the menus are `close_soon`ed,
+    so they close at the end of the handler, after the press is delivered
+    (and after the press's `onclick`, which rinch runs on the press).
+  - `focus.rs::key_owner` answers `AllKeys` while any menu is open, which
+    holds the menu chords.
+- **Placement**: `Moved` and `SurfaceResized` on a popup update its
+  `PopupPlaced` (`popup_placed`, `popup::placed_from`: only the side's axis is
+  judged for a flip, with half a pixel of slack); `follow_popup_anchors`
+  (each `about_to_wait`) re-places a popup whose anchor rect changed
+  (`request_popup_reposition`). A content change goes through
+  `follow_content_size` → `request_surface_size`, which the fork turns into a
+  reposition; its answer is the `SurfaceResized` grant.
+- **Live** (examples/popup-menu, `POPUP_SCRIPT=1`): on headless sway (1.11)
+  with a virtual pointer and keyboard (zwlr_virtual_pointer_v1,
+  zwp_virtual_keyboard_v1) at scale 1 and 1.5: a menu above a bottom bar
+  with a 4 px gap, a submenu to its right, Escape (forwarded from the bar)
+  closing only the submenu, a press on the button closing the menu with
+  `on_anchor: true`, reopening, the output disabled with a menu and submenu
+  open closing the submenu then the menu (`ParentClosed`) with no protocol
+  error, `keyboard_via_parent` raising and restoring. On KWin (6.6, virtual,
+  no pointer input) only tooltips: placed, flipped at both edges
+  (`POPUP_TIP_FLIP=1`), closed with the bar.
+- **Not in stage 1:** the rsx `Popup { … }` element (a follow-up), portals
+  into the content box (decision D: what a component appends to `<body>`
+  stays outside the measured box), any component default (decision A),
+  X11/Windows/macOS. `[data-rinch-content-box]` stays an internal marker.
+- **Tests:** `popup_tests.rs` (chain order, key target, press closes, anchor
+  rect, flip reading), `shell/popup_positioner.rs` (placement and adjust
+  mapping), `shell/rinch_runtime/popups_tests.rs` (a bar, menu and submenu
+  through the runtime without an event loop: the bar closing, keys, a press,
+  `popup_done`, a replaced chain waiting a turn), `testing/popup_tests.rs`
+  (the harness: every dismissal cause, sizes, perf line).
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch

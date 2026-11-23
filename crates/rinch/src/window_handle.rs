@@ -73,6 +73,8 @@ struct Entry {
     on_closed: Option<Box<dyn FnOnce()>>,
     /// Its title when it was opened, to name it in a warning.
     title: String,
+    /// What makes it a popup (#2552), for one `open_popup` opened.
+    popup: Option<crate::popup::PopupEntry>,
 }
 
 /// A window `open_window` opened that the runtime has not made yet.
@@ -89,6 +91,11 @@ struct Registry {
     main: Option<u64>,
     list: Option<Signal<Vec<WindowHandle>>>,
     pending: Vec<Pending>,
+    /// Each window's newest press (a button, a key, a touch), on rinch's
+    /// clock: a menu popup's grab names one in its parent chain (#2552).
+    /// `0` is a document that is no window of the registry's
+    /// (`rinch::testing`'s).
+    pressed: Vec<(u64, rinch_core::timer::Instant)>,
 }
 
 thread_local! {
@@ -122,6 +129,7 @@ impl Registry {
             owner_gone: false,
             on_closed: None,
             title: String::new(),
+            popup: None,
         });
         (id, self.list())
     }
@@ -175,15 +183,16 @@ pub fn open_window<F>(props: WindowProps, content: F) -> WindowHandle
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    open(props, Box::new(content), None)
+    open(props, Box::new(content), None, None)
 }
 
 /// [`open_window`], with what is called once the window has closed for any
 /// cause but its owner going.
-fn open(
+pub(crate) fn open(
     props: WindowProps,
     content: WindowContent,
     on_closed: Option<Box<dyn FnOnce()>>,
+    popup: Option<crate::popup::PopupEntry>,
 ) -> WindowHandle {
     let title = props.title.clone();
     let (id, _) = with(|r| r.add());
@@ -191,6 +200,8 @@ fn open(
         if let Some(e) = r.entries.iter_mut().find(|e| e.id == id) {
             e.on_closed = on_closed;
             e.title = title;
+            let scope = &e.scope;
+            e.popup = popup.map(|p| p.in_scope(scope));
         }
     });
     with(|r| r.pending.push(Pending { id, props, content }));
@@ -268,7 +279,7 @@ impl WindowHandle {
         with(|r| r.entries.iter().find(|e| e.id == self.0).map(|e| e.open)).is_some_and(|s| s.get())
     }
 
-    fn is_open_untracked(self) -> bool {
+    pub(crate) fn is_open_untracked(self) -> bool {
         with(|r| {
             r.entries
                 .iter()
@@ -480,6 +491,12 @@ pub(crate) fn take_pending(id: u64) -> Option<Pending> {
     })
 }
 
+/// Whether the window `open_window` (or `open_popup`) opened as `id` is
+/// still waiting to be made.
+pub(crate) fn is_pending(id: u64) -> bool {
+    with(|r| r.pending.iter().any(|p| p.id == id))
+}
+
 /// Run `mount`, the mount of window `id`'s document: [`WindowHandle::current`]
 /// in its content is that window from the content's first line.
 pub(crate) fn mounting<R>(id: u64, mount: impl FnOnce() -> R) -> R {
@@ -509,10 +526,14 @@ pub(crate) fn note_mounted(id: u64, doc: u64) {
 pub(crate) fn note_closed(id: u64) {
     let closed = with(|r| {
         r.pending.retain(|p| p.id != id);
+        r.pressed.retain(|&(p, _)| p != id);
         let at = r.entries.iter().position(|e| e.id == id)?;
         Some(r.entries.remove(at))
     });
-    if let Some(entry) = closed {
+    if let Some(mut entry) = closed {
+        // A popup the system or the user dismissed is told why, once,
+        // whoever closes it after (its owner included).
+        let dismissed = entry.popup.as_mut().and_then(|p| p.take_dismissed());
         // Its owner keeps nothing of it (a no-op when the owner's going is
         // what closed it).
         if let Some(cleanup) = entry.owner_cleanup {
@@ -522,6 +543,9 @@ pub(crate) fn note_closed(id: u64) {
         // nothing more, so the signal is freed with the window's scope.
         entry.open.set(false);
         publish_list();
+        if let Some((on_dismissed, why)) = dismissed {
+            rinch_core::reactive::untracked_handler(|| on_dismissed(why));
+        }
         entry.scope.dispose();
         if !entry.owner_gone
             && let Some(on_closed) = entry.on_closed
@@ -565,9 +589,100 @@ where
     C: FnOnce() + 'static,
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let handle = open(props, Box::new(content), Some(Box::new(on_closed)));
+    let handle = open(props, Box::new(content), Some(Box::new(on_closed)), None);
     rinch_core::reactive::untracked_handler(|| on_open(handle));
     scope.create_comment("window")
+}
+
+// ── Popups (#2552) ───────────────────────────────────────────────────────────
+//
+// A popup's parent is a window id (`0`: a document that is no window of the
+// registry's, `rinch::testing`'s mounted app). The chain is the parent
+// relation, not ownership: a popup owned by the main window but anchored in a
+// menu is above that menu.
+
+/// The window whose document is `doc`: the window mounted as it, else the
+/// main window, else `0` (a document that is no registry window).
+pub(crate) fn window_of_doc(doc: u64) -> u64 {
+    with(|r| {
+        r.entries
+            .iter()
+            .find(|e| e.doc == Some(doc))
+            .map(|e| e.id)
+            .or(r.main)
+            .unwrap_or(0)
+    })
+}
+
+/// Whether window `id` can be a popup's parent: open (the main window, any
+/// other, a popup), or `0`.
+pub(crate) fn can_parent(id: u64) -> bool {
+    id == 0 || WindowHandle(id).is_open_untracked()
+}
+
+/// A press (a button, a key, a touch) reached `doc`'s window.
+pub(crate) fn note_press(doc: u64) {
+    let id = window_of_doc(doc);
+    with(|r| {
+        let now = rinch_core::timer::now();
+        r.pressed.retain(|&(p, _)| p != id);
+        r.pressed.push((id, now));
+    });
+}
+
+/// `f` on popup `id`'s entry, if it is an open popup.
+pub(crate) fn with_popup<R>(
+    id: u64,
+    f: impl FnOnce(&mut crate::popup::PopupEntry) -> R,
+) -> Option<R> {
+    with(|r| {
+        r.entries
+            .iter_mut()
+            .find(|e| e.id == id)
+            .and_then(|e| e.popup.as_mut())
+            .map(f)
+    })
+}
+
+/// The open popups, `(id, parent, kind)`, oldest first.
+pub(crate) fn popups() -> Vec<(u64, u64, rinch_core::element::PopupKind)> {
+    with(|r| {
+        r.entries
+            .iter()
+            .filter_map(|e| e.popup.as_ref().map(|p| (e.id, p.parent, p.props.kind)))
+            .collect()
+    })
+}
+
+/// Whether the window `id` or a popup below it in its chain received a
+/// press within [`crate::popup::PRESS_RECENT`]: what a menu's grab names. A
+/// press long ago is no cause (a menu opened from D-Bus a minute after a
+/// click would be refused by the compositor, or name a stale press).
+pub(crate) fn chain_pressed(id: u64) -> bool {
+    let links = popups();
+    let pressed = with(|r| r.pressed.clone());
+    let now = rinch_core::timer::now();
+    let chain = crate::popup::chain::ancestors_and_self(id, &links);
+    pressed.iter().any(|&(w, at)| {
+        chain.contains(&w) && now.saturating_duration_since(at) <= crate::popup::PRESS_RECENT
+    })
+}
+
+/// Record why popup `id` goes, unless a cause is recorded already: the
+/// first cause is the one told.
+pub(crate) fn note_dismissal(id: u64, why: rinch_core::element::Dismissal) {
+    with_popup(id, |p| {
+        if p.dismissal.is_none() {
+            p.dismissal = Some(why);
+        }
+    });
+}
+
+/// Popup `id` goes for `why`: recorded, and closed (with every popup above
+/// it, topmost first).
+pub(crate) fn dismiss(id: u64, why: rinch_core::element::Dismissal) {
+    note_dismissal(id, why);
+    WindowHandle(id).close();
 }
 
 /// Forget every window (a runtime is dropped): tests make several runtimes on
@@ -575,6 +690,7 @@ where
 pub(crate) fn reset() {
     let entries = with(|r| {
         r.pending.clear();
+        r.pressed.clear();
         r.main = None;
         std::mem::take(&mut r.entries)
     });

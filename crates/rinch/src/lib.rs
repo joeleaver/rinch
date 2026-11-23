@@ -139,6 +139,10 @@ pub mod outputs;
 /// Pointer lock and raw pointer motion (#2092); the API is re-exported through
 /// [`window`].
 mod pointer_lock;
+/// Popup windows (#2552): [`open_popup`], [`popups_supported`],
+/// [`PopupProps`], [`PopupAnchor`].
+#[cfg(feature = "windowing")]
+pub mod popup;
 pub mod render_surface;
 #[cfg(any(feature = "windowing", feature = "android"))]
 pub mod shell;
@@ -168,6 +172,8 @@ pub mod window;
 /// [`ExitWhen`] and [`exit`].
 #[cfg(feature = "windowing")]
 mod window_handle;
+#[cfg(feature = "windowing")]
+pub use popup::{PopupAnchor, PopupError, PopupProps, open_popup, popups_supported};
 #[cfg(feature = "windowing")]
 mod window_perf;
 // The request type `rinch::testing` and `rinch::embed` hand out (#2801).
@@ -462,6 +468,8 @@ pub mod prelude {
     pub use rinch_core::element::OutputId;
     // The app's windows (#2416)
     #[cfg(feature = "windowing")]
+    pub use crate::popup::{PopupAnchor, PopupError, PopupProps, open_popup, popups_supported};
+    #[cfg(feature = "windowing")]
     pub use crate::window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
     // Window control functions
     #[cfg(feature = "windowing")]
@@ -583,6 +591,7 @@ pub mod prelude {
 }
 
 // Re-export core types at crate root
+pub use rinch_core::element::{Adjust, Align, Dismissal, Placement, PopupKind, PopupPlaced, Side};
 pub use rinch_core::element::{
     Children, CloseRequestCallback, ContentSizing, Element, INPUT_REGION_ATTRIBUTE, IdleTrim,
     InputRegion, LayerAnchor, LayerAxes, LayerExclusiveZone, LayerKeyboard, LayerMargins,
