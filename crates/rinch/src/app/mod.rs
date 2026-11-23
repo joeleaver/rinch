@@ -294,6 +294,8 @@ mod implicit_focus_tests;
 mod inline_draggable_2233_tests;
 #[cfg(test)]
 mod inline_drop_target_2246_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod spellcheck_menu_tests;
 // A window's input region (#2741): the desktop shell's alone.
 #[cfg(feature = "windowing")]
 pub(crate) mod input_region;
@@ -533,7 +535,9 @@ pub use devtools_keys::{DEVTOOLS_DEFAULT, DEVTOOLS_ENV, set_devtools_default};
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
 pub use smooth_wheel::set_smooth_wheel_scroll_default;
-pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
+pub use text_context_menu::{
+    TextContextMenuPresentation, TextEditAction, TextEditState, TextSpelling,
+};
 pub use title_tooltip::{TITLE_TOOLTIP_DELAY, set_title_tooltips_default};
 
 use std::cell::RefCell;
@@ -1530,6 +1534,12 @@ pub struct RinchApp {
     /// Who presents the text context menu — the runtime's DOM menu, or the
     /// shell through [`AppAction::ShowTextContextMenu`].
     pub(crate) text_menu_presentation: TextContextMenuPresentation,
+    /// The misspelled word the last context gesture landed on, and its
+    /// suggestions (#2862, stage 3): what the menu's spelling rows and
+    /// [`TextEditState::spelling`] show while the word stays selected.
+    pub(crate) text_spell: Option<text_context_menu::SpellTarget>,
+    /// Counts suggestion requests, so a late answer finds its own.
+    pub(crate) text_spell_requests: u64,
     /// The "goal column" (a window-space x) preserved across consecutive vertical
     /// cursor moves (Up/Down) in the focused new editor, so the caret keeps its
     /// horizontal position through short lines instead of drifting to line ends.
@@ -1725,6 +1735,8 @@ impl RinchApp {
             text_menu_dismiss_handle: None,
             text_menu_css_injected: false,
             text_menu_presentation: TextContextMenuPresentation::default(),
+            text_spell: None,
+            text_spell_requests: 0,
             #[cfg(feature = "windowing")]
             editor_goal_x: None,
             hovered_surface: None,

@@ -198,6 +198,8 @@ web-sys = { version = "0.3", features = [
     "MouseEvent", "WheelEvent", "PointerEvent",
     "EventTarget", "AddEventListenerOptions",
     "ResizeObserver", "ResizeObserverEntry", "ResizeObserverSize", "DomRectReadOnly",
+    # `yield_now` posts to a channel instead of a clamped `setTimeout(0)` (#2862).
+    "MessageChannel", "MessagePort",
     # `RenderSurfaceHandle::layout_rect` (#1768): the canvas's client rect.
     "DomRect",
     # `init_logging`'s console output and panic hook (#1773).

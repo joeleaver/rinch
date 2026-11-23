@@ -879,6 +879,21 @@ shell with its own toolbar: `RinchApp::text_edit_state()`,
 `AppAction::ShowTextContextMenu` instead of opening the DOM menu — what the
 Android half of #813 builds on.
 
+**A right press on a misspelled word adds spelling rows above the edit rows**
+(#2862 stage 3; detail in `spellcheck.md`, "The context menu"). The caret rule
+gains one case, Chrome's: a press on a word the spellchecker marked **selects
+the word** (unless it landed inside a wider selection, which is kept and gets no
+spelling rows). The menu then shows the word's suggestions (up to
+`SpellcheckConfig::menu_suggestions`, default 3), a separator, "Add to
+dictionary", a separator, and the edit rows. The seam carries them:
+`TextEditState::spelling` (no longer `Copy`) and
+`TextEditAction::Suggestion(i)` / `AddToDictionary`, which `perform_text_edit`
+runs (a suggestion goes in as `EditCommand::InsertText` / `insert_text`, the
+typing path). The spelling rows are built at the first menu that needs them, so
+a menu over an unmarked word has exactly the panel it had; a row is found by its
+node among the open rows (`text_menu_hit`), since the spelling rows shift the
+edit rows' places. Pins: `app/spellcheck_menu_tests.rs`.
+
 **An open runtime popup owns the input** (#822, the rule for the text menu and
 the native `<select>` popup alike, as a native popup menu holds the pointer and
 the keyboard until it closes). Pointer events and `KeyDown` were already
