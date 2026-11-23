@@ -1458,6 +1458,37 @@ change, as before. (Measured with #2773: next paragraph.) Pin: `crates/rinch/tes
 watch started first scans nothing, then sees an install), beside
 `system_font_watch_2537.rs`.
 
+**The generic families are resolved after the first frame** (#2552 stage
+2, `rinch/src/font_warmup.rs`, `rinch_dom::fonts::warm_generic_families`). A
+glyph the first families of a stack lack (a menu's `✓` or `▸`) makes parley's
+`select_font` walk the generic list family by family until one has it, and
+the first `family(id)` of each is fontique's `family_uncached`, an
+`FcFontSort` over every installed font (1–4 ms each). fontique keeps the
+answers in the `SystemFonts` behind the scan's `Arc<Mutex>`, so they are
+paid once per process, but on the UI thread of whichever document needs
+them first: deskrinch's first panel menu took 80–560 ms to show, 121
+`FcFontSort` calls (counted with a gdb breakpoint) and nothing else of note.
+After the first presented frame of any window (`window_presented`, from the
+`RedrawRequested` arm) a `rinch-font-warmup` thread builds a context as a
+document would and asks `family` for every id of the `sans-serif`,
+`system-ui`, `serif` and `monospace` lists (249 families, 230–550 ms of one
+core on a 578-family host). It never scans (none yet: it answers 0), and
+each lookup takes the lock for itself alone with a 1 ms pause after it: the
+lock is not fair, and without the pause the warm-up took it back at once
+while a tooltip opened at start-up waited 260 ms (seen on RADV). It runs once
+per process; `App::font_warmup(false)` turns it off. A
+refresh (#2486) gives the families new ids and is not warmed again. Pin:
+`rinch-dom/tests/font_warmup_2552.rs`.
+
+What it leaves per document (measured with `perf` and gdb on the popup menu,
+release, about 1.5–3 ms of a 4–6 ms software popup): `SystemFonts::fallback`
+is not cached across collections (a new collection's `data.fallbacks` starts
+empty), so each new document pays an `FcFontMatch` per script it falls back
+for, two for the menu; and each document's `SourceCache` maps the files of
+the fonts its walk opens (about 20 for the menu) and unmaps them when it
+goes. Sharing either across documents would need fontique's shared modes
+(which share registered fonts and generic slots too) or a fork change.
+
 **The text settings read on the shared scan** (#2773). On Linux
 `rinch::text_rasterization` reads the OS's text settings (antialias, hinting,
 hintstyle, rgba, lcdfilter) as fontconfig's match for `sans-serif`. It used to
