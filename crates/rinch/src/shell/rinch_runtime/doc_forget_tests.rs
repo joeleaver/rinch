@@ -372,6 +372,16 @@ fn registries_stay_flat_over_many_windows() {
     let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
     let keys_before = rinch_core::events::app_key_listener_count();
     let editors_before = crate::editor::registry::all_editors().len();
+    // Counted whatever their document: an entry whose document can no
+    // longer be read (its nodes' document is gone) is in no count by
+    // document.
+    let components = || {
+        (
+            rinch_components::dropdown_menu_sub::__registered_count(),
+            rinch_components::sortable::__registered_count(),
+        )
+    };
+    let components_before = components();
     let mut docs = Vec::new();
     for _ in 0..5 {
         let (id, doc) = open_registering(&mut runtime);
@@ -386,6 +396,11 @@ fn registries_stay_flat_over_many_windows() {
             crate::editor::registry::all_editors().len(),
             editors_before,
             "editors after a close"
+        );
+        assert_eq!(
+            components(),
+            components_before,
+            "submenus and sortable lists after a close"
         );
     }
     for doc in docs {

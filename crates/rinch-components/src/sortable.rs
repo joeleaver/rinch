@@ -506,6 +506,14 @@ thread_local! {
     static DRAG_END_HOOKED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// How many lists are registered on this thread, whatever their document:
+/// what a test asserts stays flat as windows open and close (#2797). Not part
+/// of the API.
+#[doc(hidden)]
+pub fn __registered_count() -> usize {
+    LISTS.with(|l| l.len())
+}
+
 fn list_config(token: u64) -> Option<Rc<ListConfig>> {
     LISTS.with(|l| l.iter().find(|l| l.0 == token).map(|l| l.2.clone()))
 }

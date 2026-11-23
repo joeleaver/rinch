@@ -239,6 +239,14 @@ thread_local! {
     static LAST_POINTER: Cell<Option<(f32, f32)>> = const { Cell::new(None) };
 }
 
+/// How many submenus are registered on this thread, whatever their
+/// document: what a test asserts stays flat as windows open and close
+/// (#2797). Not part of the API.
+#[doc(hidden)]
+pub fn __registered_count() -> usize {
+    SUBS.with(|s| s.len())
+}
+
 fn sub_for(node: &NodeHandle) -> Option<Rc<Sub>> {
     let id = node.get_attribute(SUB_ID_ATTR)?.parse::<u64>().ok()?;
     SUBS.with(|s| s.iter().find(|s| s.0 == id).map(|s| s.2.clone()))
