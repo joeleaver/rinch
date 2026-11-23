@@ -207,9 +207,9 @@ fn an_ltr_textarea_keeps_its_direction_on_every_line() {
     );
     let ta = query_selector(&doc.tree, "textarea")[0];
     let mut layout_cx = parley::LayoutContext::new();
-    let node = doc.tree.get(ta).unwrap().clone();
+    let node = doc.tree.get(ta).unwrap();
     let layout = rinch_dom::form_control::field_text_layout(
-        &node,
+        node,
         "abc\n\u{5e9}\u{5dc} 1!",
         1.0,
         None,
