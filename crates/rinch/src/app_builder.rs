@@ -607,15 +607,17 @@ where
 
     /// The app's spellchecking (#2862): `false` turns it off everywhere;
     /// a [`SpellcheckConfig`](crate::spellcheck::SpellcheckConfig) picks the
-    /// dictionaries, languages, personal dictionary, skip rules and the
-    /// pause after typing. On by default, as in Chrome: misspelled words in
-    /// a `<textarea>`, a prose `<input>` (no type, `text`, `search`) and the
-    /// rich-text editor get a red squiggle once the user has focused or
-    /// edited the field, checked against the system's Hunspell dictionaries
+    /// dictionaries, languages, personal dictionary, skip rules, the pause
+    /// after typing, and whether checking waits for the user's interaction
+    /// and a blurred `<input>` hides its marks. On by default, as in Chrome:
+    /// misspelled words in a `<textarea>`, a prose `<input>` (no type,
+    /// `text`, `search`) and the rich-text editor get a red squiggle once the
+    /// user has focused or edited it, checked against the system's Hunspell dictionaries
     /// for the user's locale (none installed: nothing is marked). A
     /// `spellcheck: false` attribute or component prop turns it off for one
     /// field or a subtree. On the web the browser checks, and `false` here
-    /// sets `spellcheck="false"` on the app's root.
+    /// (or a later [`set_enabled(false)`](crate::spellcheck::set_enabled))
+    /// sets `spellcheck="false"` on `<body>`.
     ///
     /// ```ignore
     /// use rinch::spellcheck::SpellcheckConfig;

@@ -41,6 +41,7 @@ fn marks(ranges: &[std::ops::Range<usize>]) -> Option<SpellingMarks> {
     Some(SpellingMarks {
         text: VALUE.to_string(),
         ranges: ranges.to_vec(),
+        show_when_blurred: false,
     })
 }
 
@@ -142,6 +143,7 @@ fn marks_for_another_value_are_not_drawn() {
         Some(SpellingMarks {
             text: "helo wrld".into(),
             ranges: vec![0..4],
+            show_when_blurred: false,
         }),
     );
     assert!(tinted(&mut doc, 0).is_empty());
@@ -159,6 +161,16 @@ fn an_inputs_marks_show_only_while_it_is_focused() {
     );
     doc.set_attribute(c, "data-focused", "true");
     assert!(!tinted(&mut doc, 0).is_empty(), "a focused input drew none");
+
+    // The app's option: shown blurred too.
+    let (mut doc, c) = control("input", "");
+    let mut shown = marks(&[0..4]);
+    shown.as_mut().unwrap().show_when_blurred = true;
+    doc.set_spelling_marks(c.0, shown);
+    assert!(
+        !tinted(&mut doc, 0).is_empty(),
+        "`show_when_blurred` drew nothing"
+    );
 }
 
 /// The colour and the line are the app's, through the cascade:

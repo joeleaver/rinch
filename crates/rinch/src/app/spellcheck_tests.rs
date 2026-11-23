@@ -344,3 +344,158 @@ fn an_unconfigured_app_does_nothing() {
         0
     );
 }
+
+fn set_attr(app: &mut RinchApp, id: u64, name: &str, value: Option<&str>) {
+    {
+        let mut d = app.doc.as_ref().unwrap().borrow_mut();
+        match value {
+            Some(v) => rinch_core::dom::DomDocument::set_attribute(
+                &mut *d,
+                rinch_core::dom::NodeId(id),
+                name,
+                v,
+            ),
+            None => rinch_core::dom::DomDocument::remove_attribute(
+                &mut *d,
+                rinch_core::dom::NodeId(id),
+                name,
+            ),
+        }
+    }
+    app.resolve_and_repaint(800.0, 600.0);
+}
+
+/// Review of #2876: with no dictionary for the locale the session goes away
+/// once the first check loads nothing, and a field whose debounce was
+/// pending must not re-arm a 0 ms timer for ever. Red before: the due
+/// deadline stayed, so every tick armed another timer.
+#[test]
+fn no_dictionary_leaves_nothing_due() {
+    spell::set_inline_jobs(true);
+    spell::set_config(SpellcheckConfig::new().languages(["zz_ZZ"]).debounce_ms(0));
+    let (mut app, field, other) = mount("textarea", "helo", &[], &[]);
+    app.try_focus_input(field);
+    press(&mut app, KeyCode::KeyA, Some("x"));
+    assert!(
+        app.spelling.any_due(),
+        "positive control: the edit armed a check"
+    );
+    click(&mut app, other);
+    app.run_deferred_work();
+    assert!(spell::session().is_none(), "zz_ZZ found a dictionary");
+    app.spell_tick();
+    assert!(
+        !app.spelling.any_due(),
+        "a past deadline stayed: the timer re-arms for ever"
+    );
+}
+
+/// Review of #2876: a result sent before an edit is dropped (the field's
+/// generation moved on); without the guard it would mark the old words'
+/// ranges in the new text.
+#[test]
+fn a_result_sent_before_an_edit_is_dropped() {
+    configure();
+    let (mut app, field, _) = mount("textarea", "helo wrld", &[], &[]);
+    click(&mut app, field);
+    // The press's check is in the inbox, not applied yet; edit first.
+    app.focused_input_state.as_mut().unwrap().selection = rinch_editable::Selection::cursor(0);
+    press(&mut app, KeyCode::KeyA, Some("a"));
+    assert!(
+        marked(&mut app, field).is_empty(),
+        "a stale result was applied"
+    );
+    app.spell_tick();
+    assert_eq!(marked(&mut app, field), ["ahelo", "wrld"]);
+}
+
+/// Review of #2876: `readonly` or `spellcheck="false"` set on a checked
+/// field (or an ancestor) drops its marks, as in Chrome; setting it back
+/// checks it again.
+#[test]
+fn turning_a_field_off_and_on_clears_and_rechecks() {
+    configure();
+    let (mut app, field, _) = mount("textarea", "helo", &[], &[]);
+    click(&mut app, field);
+    assert_eq!(marked(&mut app, field), ["helo"]);
+    set_attr(&mut app, field, "readonly", Some(""));
+    assert!(
+        marked(&mut app, field).is_empty(),
+        "a read-only field kept its marks"
+    );
+    set_attr(&mut app, field, "readonly", None);
+    assert_eq!(marked(&mut app, field), ["helo"]);
+    let parent = app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .tree
+        .get(field)
+        .unwrap()
+        .parent
+        .unwrap();
+    set_attr(&mut app, parent, "spellcheck", Some("false"));
+    assert!(
+        marked(&mut app, field).is_empty(),
+        "spellcheck=false kept the marks"
+    );
+    set_attr(&mut app, parent, "spellcheck", None);
+    assert_eq!(marked(&mut app, field), ["helo"]);
+}
+
+/// Review of #2876: a field removed from the document is forgotten at the
+/// next frame, not only when a result for it arrives.
+#[test]
+fn a_removed_field_is_forgotten() {
+    configure();
+    let (mut app, field, _) = mount("textarea", "helo", &[], &[]);
+    click(&mut app, field);
+    assert!(!app.spelling.is_empty());
+    let parent = app
+        .doc
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .tree
+        .get(field)
+        .unwrap()
+        .parent
+        .unwrap();
+    {
+        let mut d = app.doc.as_ref().unwrap().borrow_mut();
+        rinch_core::dom::DomDocument::remove_child(
+            &mut *d,
+            rinch_core::dom::NodeId(parent),
+            rinch_core::dom::NodeId(field),
+        );
+    }
+    app.resolve_and_repaint(800.0, 600.0);
+    assert!(
+        app.spelling.is_empty(),
+        "the removed field is still remembered"
+    );
+}
+
+/// The app's options (Joe's configurability rule): no interaction needed,
+/// and an `<input>` that shows its marks blurred.
+#[test]
+fn the_interaction_and_blur_rules_are_options() {
+    spell::set_inline_jobs(true);
+    spell::set_config(
+        SpellcheckConfig::new()
+            .checker(HunspellChecker::from_bytes("en_TEST", AFF, DIC).unwrap())
+            .debounce_ms(0)
+            .require_interaction(false)
+            .hide_input_marks_on_blur(false),
+    );
+    let (mut app, field, _) = mount("input", "the cta", &[], &[]);
+    app.resolve_and_repaint(800.0, 600.0);
+    assert_eq!(
+        marked(&mut app, field),
+        ["cta"],
+        "checked without an interaction"
+    );
+    let d = app.doc.as_ref().unwrap().borrow();
+    assert!(d.spelling_marks(field).unwrap().show_when_blurred);
+}

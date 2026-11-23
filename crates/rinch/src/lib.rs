@@ -334,13 +334,14 @@ pub mod time {
 pub mod spellcheck {
     pub use rinch_spell::runtime::{
         DEFAULT_DEBOUNCE_MS, Dictionaries, SpellcheckConfig, attribute_state, clear_config, config,
-        input_type_is_checked, set_enabled,
+        input_type_is_checked, on_config_change, remove_config_listener, set_enabled,
     };
     pub use rinch_spell::*;
 
     /// Replace the app's spellcheck settings while it runs: every mark is
     /// dropped and the fields and editors the user has interacted with are
-    /// checked again under the new settings. Call on the UI thread.
+    /// checked again under the new settings. On the web it updates `<body>`'s
+    /// `spellcheck`. Call on the UI thread.
     pub fn configure(config: impl Into<SpellcheckConfig>) {
         rinch_spell::runtime::set_config(config);
     }

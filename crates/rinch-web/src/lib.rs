@@ -680,17 +680,34 @@ fn apply_title<F>(parts: &rinch::app_builder::WebParts<F>) {
 /// gets `spellcheck="false"`, which every field and editable region on the
 /// page inherits (HTML's rule) unless one sets its own; on, the page is left
 /// to the browser's default (fields checked). The rest of the configuration
-/// (dictionaries, skip rules) is the browser's on the web.
+/// (dictionaries, skip rules, the interaction and blur options) is the
+/// browser's on the web.
+///
+/// It also keeps `<body>` in step with every later
+/// [`rinch::spellcheck::configure`] / [`rinch::spellcheck::set_enabled`].
 #[cfg(target_arch = "wasm32")]
 pub fn apply_spellcheck(config: &rinch::spellcheck::SpellcheckConfig) {
+    thread_local! {
+        static LISTENING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if !LISTENING.with(|l| l.replace(true)) {
+        rinch::spellcheck::on_config_change(sync_body_spellcheck);
+    }
     rinch::spellcheck::configure(config.clone());
+    sync_body_spellcheck();
+}
+
+/// `<body>`'s `spellcheck` for the current configuration.
+#[cfg(target_arch = "wasm32")]
+fn sync_body_spellcheck() {
+    let enabled = rinch::spellcheck::config().is_none_or(|c| c.enabled);
     let Some(body) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.body())
     else {
         return;
     };
-    if config.enabled {
+    if enabled {
         if body.get_attribute("spellcheck").as_deref() == Some("false") {
             let _ = body.remove_attribute("spellcheck");
         }

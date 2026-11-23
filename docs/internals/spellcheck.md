@@ -269,9 +269,23 @@ the control's device-px layout. Colour and line come from the inherited
 custom properties `--rinch-spellcheck-color` (default `#ff0000`) and
 `--rinch-spellcheck-style` (`wavy` / `solid` / `none`).
 
-Known limits: a field whose value the app rewrites while it is unfocused is
-re-checked at the next interaction (until then its stale marks are simply
-not drawn); a removed field's record is dropped at its next result.
+`spell_frame` (called from `resolve_and_repaint`, returning at once while
+no field is remembered and `require_interaction` is on) forgets a field that
+is no longer connected, drops the marks of one that stopped being checked
+(`readonly`, an inherited `spellcheck="false"`: `Field::off`) and re-checks it
+when it is checked again. With `require_interaction(false)` it also walks the
+document's `<input>`/`<textarea>` elements each frame, starts every checked
+one, and treats a value the app wrote as an edit. `hide_input_marks_on_blur`
+reaches paint as `SpellingMarks::show_when_blurred`. When the session goes
+away (off, or the system dictionaries resolved to none) `spell_tick` clears
+every pending deadline and arms nothing (review of #2876: it used to re-arm a
+0 ms timer for a deadline already past, for ever). The edit hook in
+`handle_input_edit_command` asks `runtime::is_active()` (no allocation)
+before cloning the value.
+
+Known limit: with `require_interaction` on, a field whose value the app
+rewrites while it is unfocused is re-checked at the next interaction (until
+then its stale marks are simply not drawn).
 
 ### The editor (`crates/rinch-editor-view/src/spellcheck.rs`)
 
@@ -343,7 +357,9 @@ gap, recorded on #2862).
 
 `rinch-web` never runs the checker: the browser does. `AppExt::run` calls
 `rinch_web::apply_spellcheck`, which puts `spellcheck="false"` on `<body>`
-when the app turned it off; attributes and props pass through as written.
+when the app turned it off and registers a configuration listener that keeps
+`<body>` in step with later `configure` / `set_enabled` calls; attributes and
+props pass through as written.
 
 ### Tests
 

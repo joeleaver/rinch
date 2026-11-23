@@ -279,6 +279,17 @@ mod native {
         pub skip_rules: SkipRules,
         /// How long typing must pause before the edited words are checked.
         pub debounce_ms: u32,
+        /// Check a field only once the user has interacted with it (pressed
+        /// in it, tabbed onto it, typed in it), as Chrome does. Off, every
+        /// checked field on screen is checked as soon as it is laid out, and
+        /// a value the app writes is checked after the debounce, at the cost
+        /// of a walk over the document's controls on each frame that changed
+        /// something.
+        pub require_interaction: bool,
+        /// Hide a single-line `<input>`'s marks while it does not have the
+        /// keyboard, as Chrome does (a `<textarea>` and the editor keep
+        /// theirs). Off, an `<input>` shows its marks blurred too.
+        pub hide_input_marks_on_blur: bool,
     }
 
     impl Default for SpellcheckConfig {
@@ -291,6 +302,8 @@ mod native {
                 },
                 skip_rules: SkipRules::default(),
                 debounce_ms: DEFAULT_DEBOUNCE_MS,
+                require_interaction: true,
+                hide_input_marks_on_blur: true,
             }
         }
     }
@@ -370,6 +383,20 @@ mod native {
         /// The pause after typing before edited words are checked.
         pub fn debounce_ms(mut self, ms: u32) -> Self {
             self.debounce_ms = ms;
+            self
+        }
+
+        /// Whether a field waits for the user's interaction before it is
+        /// checked (default `true`, Chrome's rule).
+        pub fn require_interaction(mut self, on: bool) -> Self {
+            self.require_interaction = on;
+            self
+        }
+
+        /// Whether a blurred `<input>` hides its marks (default `true`, as
+        /// Chrome does).
+        pub fn hide_input_marks_on_blur(mut self, on: bool) -> Self {
+            self.hide_input_marks_on_blur = on;
             self
         }
     }
@@ -476,6 +503,16 @@ mod native {
         LISTENERS.with(|l| l.borrow_mut().retain(|(i, _)| *i != id));
     }
 
+    /// Whether [`session`] would answer `Some`, without building one: the
+    /// cheap test a hot path asks first.
+    pub fn is_active() -> bool {
+        ACTIVE.with(|a| {
+            a.borrow()
+                .as_ref()
+                .is_some_and(|a| a.config.enabled && !matches!(a.checker.get(), Some(None)))
+        })
+    }
+
     /// What checks words for this thread's configuration, `None` when there
     /// is nothing to do: no configuration, checking off, or dictionaries that
     /// turned out to hold nothing (none installed for the locale).
@@ -495,6 +532,8 @@ mod native {
                 dictionaries: a.config.dictionaries.clone(),
                 rules: a.config.skip_rules.clone(),
                 debounce_ms: a.config.debounce_ms,
+                require_interaction: a.config.require_interaction,
+                hide_input_marks_on_blur: a.config.hide_input_marks_on_blur,
             })
         })
     }
@@ -507,6 +546,8 @@ mod native {
         dictionaries: Dictionaries,
         rules: SkipRules,
         debounce_ms: u32,
+        require_interaction: bool,
+        hide_input_marks_on_blur: bool,
     }
 
     impl std::fmt::Debug for Session {
@@ -527,6 +568,16 @@ mod native {
         /// The pause after typing before edited words are checked.
         pub fn debounce_ms(&self) -> u32 {
             self.debounce_ms
+        }
+
+        /// See [`SpellcheckConfig::require_interaction`].
+        pub fn require_interaction(&self) -> bool {
+            self.require_interaction
+        }
+
+        /// See [`SpellcheckConfig::hide_input_marks_on_blur`].
+        pub fn hide_input_marks_on_blur(&self) -> bool {
+            self.hide_input_marks_on_blur
         }
 
         /// The skip rules.
