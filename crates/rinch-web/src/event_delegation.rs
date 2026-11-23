@@ -3698,6 +3698,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                         element_from_point(state.start_x, state.start_y)
                     };
                     if let Some(target) = target {
+                        // The click is the pressed root's code (#2811); the
+                        // rest of the release is no root's.
+                        let _root = crate::root_doc_of(Some(target.as_ref()))
+                            .map(rinch_core::push_dispatching_doc);
                         dispatch_click_at(&target, &browser_doc_for_up, event);
                     }
                 }
@@ -3720,7 +3724,13 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             }
         });
         if let Some(target) = deferred {
-            dispatch_click_at(&target, &browser_doc_for_up, event);
+            {
+                // The tap's click is its root's code (#2811); the drag end
+                // below is no root's, so a drag the handler armed ends.
+                let _root =
+                    crate::root_doc_of(Some(target.as_ref())).map(rinch_core::push_dispatching_doc);
+                dispatch_click_at(&target, &browser_doc_for_up, event);
+            }
             // A `Drag` the handler armed has already seen its release: end it
             // here, at the release, rather than leave it following a finger
             // that has lifted. A control that drags wants `touch-action: none`,

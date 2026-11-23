@@ -380,8 +380,11 @@ fn pointer(el: &web_sys::Element, name: &str, kind: &str) {
 /// the handler's runs.
 fn clearing_clickable(scroller: bool) -> (Root, web_sys::Element, Rc<std::cell::Cell<u32>>) {
     let host = host();
-    host.set_attribute("style", "position: fixed; left: 0px; top: 0px; width: 300px")
-        .unwrap();
+    host.set_attribute(
+        "style",
+        "position: fixed; left: 0px; top: 0px; width: 300px",
+    )
+    .unwrap();
     let runs = Rc::new(std::cell::Cell::new(0u32));
     let seen = runs.clone();
     let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope| {
@@ -425,7 +428,11 @@ fn a_release_click_in_another_root_leaves_the_interceptor(scroller: bool, kind: 
     k.unmount();
     g.unmount();
     assert_eq!(ran, 1, "control: G's handler ran at the release");
-    assert_eq!(heard, ["K:one"], "G's click handler's clear left K's interceptor");
+    assert_eq!(
+        heard,
+        ["K:one"],
+        "G's click handler's clear left K's interceptor"
+    );
 }
 
 #[wasm_bindgen_test]

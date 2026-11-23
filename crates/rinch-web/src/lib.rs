@@ -209,12 +209,18 @@ thread_local! {
     static GLOBAL_INIT: Cell<bool> = const { Cell::new(false) };
     /// Document-level event listeners are installed exactly once per page.
     static DELEGATION_INSTALLED: Cell<bool> = const { Cell::new(false) };
+    /// The document of the root whose build is running, `0` outside one: an
+    /// event during the build whose target is in no mounted root (the root
+    /// being built is not registered yet) is that root's (#2811).
+    static BUILDING_DOC: Cell<u64> = const { Cell::new(0) };
 }
 
 /// The document of the root whose code an event's handlers run as (#2811):
 /// the deepest mounted root whose host contains `target`. An event that
-/// targets no root's tree is the whole-page root's, if there is one, else the
-/// only root's when one is mounted; otherwise no root's (`None`).
+/// targets no root's tree is the root being built, during a build (it is not
+/// registered until the build ends); else the whole-page root's, if there is
+/// one, else the only root's when one is mounted; otherwise no root's
+/// (`None`).
 pub(crate) fn root_doc_of(target: Option<&web_sys::Node>) -> Option<u64> {
     MOUNTED_ROOTS.with(|m| {
         let m = m.try_borrow().ok()?;
@@ -226,6 +232,12 @@ pub(crate) fn root_doc_of(target: Option<&web_sys::Node>) -> Option<u64> {
                 {
                     deepest = Some(r);
                 }
+            }
+        }
+        if deepest.is_none() {
+            let building = BUILDING_DOC.with(Cell::get);
+            if building != 0 {
+                return Some(building);
             }
         }
         deepest
@@ -448,6 +460,14 @@ where
     // document and runs as it later, wherever it is flushed.
     let root = {
         let _doc = rinch_core::push_dispatching_doc(doc_key);
+        let previous = BUILDING_DOC.with(|b| b.replace(doc_key));
+        struct RestoreBuilding(u64);
+        impl Drop for RestoreBuilding {
+            fn drop(&mut self) {
+                let _ = BUILDING_DOC.try_with(|b| b.set(self.0));
+            }
+        }
+        let _building = RestoreBuilding(previous);
         let _owner = scope.borrow().push_owner();
         let mut scope_ref = scope.borrow_mut();
         build(&mut scope_ref)

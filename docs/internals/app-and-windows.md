@@ -770,9 +770,10 @@ document (#2789), from its mount to its close:
   and re-enters it. The delegated listeners push the document of the root an
   event belongs to (`rinch_web::mark_event_root`, `root_doc_of`): the deepest
   mounted root whose host (an island's element, a whole-page root's
-  `#rinch-body`) contains the target; for a target in no root, the
-  whole-page root if there is one, else the only root when one is mounted,
-  else none (nothing is pushed, so a listener run synchronously inside a
+  `#rinch-body`) contains the target; for a target in no root, the root
+  being built during a build (`BUILDING_DOC`: it is not in `MOUNTED_ROOTS`
+  until its build ends), else the whole-page root if there is one, else the
+  only root when one is mounted, else none (nothing is pushed, so a listener run synchronously inside a
   root's code stays that root's). An event on the editor's capture textarea,
   which lives in the page's `<body>`, is the focused editor's root's
   (`editor_input::capture_target_doc`). Marked: `pointerdown` around its
@@ -780,7 +781,10 @@ document (#2789), from its mount to its close:
   Escape drag cancel), `keyup`, `input`, `change`, the focus attribute
   handlers, `paste`, file `drop`, and the editor's `keydown`, `mousedown`,
   `click`, `auxclick`, `contextmenu`, `drop` and capture-textarea listeners.
-  Not marked: the pointer stream after the press (`pointermove`, `pointerup`,
+  The click a release dispatches (a quick press on a `draggable`, a
+  touch/pen tap inside a scroller) is marked as the clicked element's root's
+  around that dispatch alone.
+  Not marked: the rest of the pointer stream after the press (`pointermove`, `pointerup`,
   `pointercancel`, `pointerout`, the editor's `mousemove`/`mouseup`), wheel
   and scroll: a gesture may cross into another root, and a `Drag` armed in
   the press records its root, so a move marked as another root's would be
