@@ -32,6 +32,8 @@ pub(crate) struct FieldSpelling {
     timer: Option<(rinch_core::timer::TimeoutHandle, rinch_core::timer::Instant)>,
     /// The configuration listener, registered at the first interaction.
     pub(super) listener: Option<u64>,
+    /// The [`spell::on_words_accepted`] listener, registered with it.
+    words: Option<u64>,
     /// The last [`Field::generation`] handed out, across all fields, so a
     /// field replaced by a new one never takes a result meant for the old.
     generations: u64,
@@ -85,6 +87,9 @@ impl FieldSpelling {
         }
         if let Some(id) = self.listener.take() {
             spell::remove_config_listener(id);
+        }
+        if let Some(id) = self.words.take() {
+            spell::remove_words_listener(id);
         }
         self.fields.clear();
     }
@@ -347,7 +352,9 @@ impl RinchApp {
         }
     }
 
-    /// Listen for configuration changes (once).
+    /// Listen for configuration changes and for words the checker newly
+    /// accepts (once), and have the checker's reports from other threads
+    /// delivered on this one.
     fn spell_listen(&mut self) {
         if self.spelling.listener.is_some() {
             return;
@@ -356,6 +363,60 @@ impl RinchApp {
         self.spelling.listener = Some(spell::on_config_change(move || {
             sender.send(|app| app.spell_config_changed());
         }));
+        let sender = self.app_work_sender();
+        self.spelling.words = Some(spell::on_words_accepted(move || {
+            sender.send(|app| app.spell_words_accepted());
+        }));
+        static WAKE: std::sync::Once = std::sync::Once::new();
+        WAKE.call_once(|| {
+            spell::set_change_wake(|| {
+                rinch_core::dispatch_main_callback(Box::new(spell::deliver_changes));
+            });
+        });
+    }
+
+    /// The misspelled word of text control `node_id` at byte `offset` (a
+    /// mark that contains it, its ends included), while the control still
+    /// holds `text`, the value its marks were made for. What the text context
+    /// menu asks at a right press (#2862, stage 3).
+    pub(crate) fn spell_misspelling_at(
+        &self,
+        node_id: u64,
+        offset: usize,
+        text: &str,
+    ) -> Option<Range<usize>> {
+        let field = self.spelling.fields.get(&node_id)?;
+        if field.off || field.text != text {
+            return None;
+        }
+        field
+            .marks
+            .iter()
+            .find(|m| m.start <= offset && offset <= m.end)
+            .cloned()
+    }
+
+    /// The checker accepts more words now (a word added to the dictionary):
+    /// drop every field's marks whose word it takes. Asks the loaded checker
+    /// about the marked words only.
+    pub(crate) fn spell_words_accepted(&mut self) {
+        let Some(checker) = spell::session().and_then(|s| s.loaded_checker()) else {
+            return;
+        };
+        let mut changed = Vec::new();
+        for (&id, field) in &mut self.spelling.fields {
+            let before = field.marks.len();
+            let text = &field.text;
+            field
+                .marks
+                .retain(|m| text.get(m.clone()).is_none_or(|w| !checker.check(w)));
+            if field.marks.len() != before {
+                changed.push(id);
+            }
+        }
+        for id in changed {
+            self.spell_write(id);
+        }
     }
 
     /// The app changed its spellcheck configuration: every mark goes, and

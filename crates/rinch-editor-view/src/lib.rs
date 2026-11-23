@@ -63,7 +63,7 @@ pub use rinch_editor_collab::{CollabError, OversizedTable, StickyAssoc, StickyLo
 // [`EditorHandle::collab_sync_diff`]) needs no re-exported engine types: a state vector
 // and a diff are both opaque `Vec<u8>`, and a diff is applied through the same
 // [`EditorHandle::collab_receive`] as a broadcast delta.
-pub use spellcheck::{SPELL_ERROR_CLASS, SPELLCHECK_KEY, SpellcheckPlugin};
+pub use spellcheck::{Misspelling, SPELL_ERROR_CLASS, SPELLCHECK_KEY, SpellcheckPlugin};
 pub use view::RinchDomEditorView;
 
 use std::rc::Rc;
