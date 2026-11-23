@@ -5181,11 +5181,13 @@ impl NodeTree {
                 state.ink = ink;
             }
         }
+        // Before the visits are folded: measuring an IFC root's reach walks
+        // its spans' lines, and those visits belong to this frame.
+        self.record_subtree_reaches(&dirty);
         self.perf.add(
             crate::perf::Counter::InlineSpanLineVisits,
             crate::paint::take_span_line_visits(),
         );
-        self.record_subtree_reaches(&dirty);
         dirty.clear();
         self.paint_dirty_nodes = dirty;
         self.paint_dirty_removed_rects.clear();
