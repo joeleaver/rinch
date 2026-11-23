@@ -207,6 +207,17 @@ impl RinchRuntime {
         }
     }
 
+    /// Window `role`, if it is still open (#2891): a role kept from before
+    /// its window closed (the device-loss rebuild's) names nothing.
+    #[cfg(feature = "gpu-renderer")]
+    fn open_w(&mut self, role: WindowRole) -> Option<&mut ShellWindow> {
+        match role {
+            WindowRole::Main => (!self.main_closed).then_some(&mut self.main),
+            WindowRole::DevTools => self.devtools.as_mut(),
+            WindowRole::Other(id) => self.others.iter_mut().find(|w| w.handle == id),
+        }
+    }
+
     /// The windows that are open: the main one (unless it has closed), then
     /// DevTools, then the others, oldest first.
     fn roles(&self) -> impl Iterator<Item = WindowRole> + use<> {
@@ -252,6 +263,10 @@ struct ShellWindow {
     /// had taken then. A picture that lands later is painted into it again
     /// ([`RinchRuntime::keep_prepared`]). `None` while shown, and from a hide
     /// until the app prepares the window.
+    /// The renderer choice the window was last prepared with (#2633): a
+    /// rebuild after a device loss builds its renderer by it (#2891).
+    #[cfg(feature = "gpu-renderer")]
+    prepared_with: super::renderer::Renderer,
     prepared: Option<(f64, u64)>,
     /// Window title.
     title: String,
@@ -386,6 +401,8 @@ impl ShellWindow {
             parked_renderer: None,
             #[cfg(feature = "gpu-renderer")]
             awaits_gpu: false,
+            #[cfg(feature = "gpu-renderer")]
+            prepared_with: super::renderer::Renderer::Auto,
             prepared: None,
             soft_renderer: None,
             title: title.to_string(),
