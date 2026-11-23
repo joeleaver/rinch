@@ -662,10 +662,40 @@ the listed boxes, which only add to it — and measures them only for an offset
 past that, so a relayout of a long list scrolled anywhere but its end measures
 none of them (`abs_badge_relayout`). An absolute box with no area counts nothing, here and as a child (Chrome
 156: `0x500`, `10x0`, `0x0` boxes scroll nothing). Rows:
-`tests/abs_scroll_range_770_tests.rs`. Still not counted in a scroll
-container's range: an **in-flow** descendant's overflow below the first box
-(#2054), so a box that overflows its `height: 50px` parent scrolls nothing
-where its absolute twin now does.
+`tests/abs_scroll_range_770_tests.rs`.
+
+**In-flow boxes below the first box (#2054).** A box that overflows its own
+parent inside a scroller — a 300px box in a `height: 50px` child — is in the
+range, as in Chrome 158 (it scrolled 0; its absolute twin did since #770):
+`content_extents` joins `scrollbar::deep_overflow` to what the walk over the
+children measured, where it is drawn (no end padding, no margins). The walk
+(`descendant_reach`, shared with `scroll_extents` for a box that does not
+scroll) goes down through every box that neither clips nor is transformed nor
+is collapsed by block virtualization (`estimated_height`: its estimate stands
+for its content); a fixed box, and an absolute one contained above the
+scroller, count nothing; a transformed box is listed and measured where it is
+drawn on each read. **Cost:** the walk is the subtree, so it is kept per
+container (`NodeTree::deep_overflow`, `scrollbar::DeepOverflow`) with a
+`WalkSnap` of every box it met: its box, its lines' extent, and whether it
+clips, is transformed, positioned, displayed or collapsed. Every read first
+checks the boxes pushed paint-dirty, and the parents a subtree left
+(`bar_check_parents`), since the last check, and `consume_paint_dirty` runs
+the same check before it drains those lists. For each such box the entry of
+each container above it is dropped unless the walk recorded that box with
+the same snapshot, or recorded a box between them as a stop (not entered)
+that is itself unchanged: a hover colour keeps the entry; a box toggled to
+`overflow: hidden`, a size changed and changed back between two paints, a
+transform given with no layout, or a box added under one the walk entered
+drops it. (The first version judged "moved" against the last *paint*, with
+`geometry_may_have_moved`, and missed both the `overflow` toggle and the
+change-and-back: review of #2961.) A whole-document restyle drops every
+entry; a removed container's entry is freed. A read in between is a lookup,
+the check of what was pushed since the last one, and a measure of the listed
+transformed boxes. Layout's clamp asks the in-flow range first
+(`content_extents_in_flow` leaves this out, as it leaves out the listed
+absolutes), so a relayout scrolled within it walks nothing. Pins: `tests/geometry_queries_2257_tests.rs`
+(`SCROLLERS`, the walk count `testing::deep_overflow_walks`, and the
+`kept_matches_fresh` scenarios, each against a fresh document).
 
 **A box that does not scroll (#2223).** It has no range for a bar or the
 wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it

@@ -3888,6 +3888,11 @@ pub struct NodeTree {
     /// current geometry (#2116): `content_extents`' memo of the one walk that
     /// reads Taffy's unrounded rects. Boxed for the reason above.
     pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
+    /// Each scroll container's descendants' overflow below its first boxes
+    /// (#2054), kept until something it read under it changes: `content_extents`' memo
+    /// of the walk through every box that does not clip. Boxed for the
+    /// reason above.
+    pub(crate) deep_overflow: Box<crate::paint::scrollbar::DeepOverflow>,
     /// Each inline element's own font's ascent and descent, by font
     /// (`out_of_flow::InlineFontBoxes`, #2257): filled when an IFC is
     /// shaped, for every inline element it flows, so an inline element's
@@ -4657,6 +4662,7 @@ impl NodeTree {
             placed_absolutes: Vec::new(),
             overflow_absolutes: Default::default(),
             exact_flow: Default::default(),
+            deep_overflow: Default::default(),
             inline_font_boxes: Default::default(),
             layout_epoch: 0,
             scroll_epoch: 0,
@@ -5106,6 +5112,9 @@ impl NodeTree {
         // before the lists they are read from are drained (#2719): every
         // shell path drains them before it paints.
         crate::paint::raster_cache::invalidate(self);
+        // The descendant walks the moves since the last paint made stale
+        // (#2054), while the lists that name them are still here.
+        self.deep_overflow.before_paint_consumed(self);
         // The containers whose bars this paint may have moved, asked before
         // the painted boxes below are rewritten (`bar_watch_scrollers` reads
         // `prev_layout`), and their bars recorded after.
