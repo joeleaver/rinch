@@ -203,7 +203,13 @@ impl ShellWindow {
             return;
         };
         if let Some((width, height)) = self.content_size_to_ask(viewport) {
-            self.stage_layer_size(Size::Logical(LogicalSize::new(width as f64, height as f64)));
+            // CSS pixels; winit's logical size is the display's, which the
+            // app's zoom makes larger (#2861), as `follow_content_size` asks.
+            let zoom = crate::zoom::current();
+            self.stage_layer_size(Size::Logical(LogicalSize::new(
+                width as f64 * zoom,
+                height as f64 * zoom,
+            )));
         }
     }
 

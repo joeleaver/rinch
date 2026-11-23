@@ -451,3 +451,53 @@ fn a_turn_without_layer_changes_leaves_the_content_size_to_follow() {
     runtime.follow_content_size(WindowRole::Main, &NoOsLoop);
     assert_eq!(requests(&surface), vec![logical(600.0, 40.0)]);
 }
+
+/// Puts the thread's zoom back for the next test it runs.
+struct ZoomReset;
+impl Drop for ZoomReset {
+    fn drop(&mut self) {
+        crate::zoom::set_zoom(1.0);
+    }
+}
+
+/// Review of #2893 against #2861: at zoom 1.5 the content-sized surface's
+/// size staged with the layer changes is the content's CSS size times the
+/// zoom (winit's logical size is the display's), as `follow_content_size`
+/// asks it. Without the zoom it is 1/1.5 too small and the panel is cut.
+#[test]
+fn a_content_sized_surface_at_a_zoom_asks_its_zoomed_size_with_the_layer_changes() {
+    let _reset = ZoomReset;
+    assert_eq!(crate::zoom::set_zoom(1.5), 1.5);
+    let props = WindowProps {
+        size_to_content: Some(ContentSizing::new()),
+        wayland_layer: Some(top_left(0)),
+        width: 1500,
+        height: 600,
+        ..Default::default()
+    };
+    let mut runtime = super::entry::build_runtime(wrapping_boxes, &props, None, &[]);
+    runtime.main.mount_document_before_window(1.5);
+    // 1500 display px at zoom 1.5 is 1000 CSS px: one row.
+    assert_eq!(runtime.main.start_surface_negotiation(), Some((1000, 20)));
+    let surface = go_live(&mut runtime.main, (1500, 30), 1.0);
+    runtime.window_event_for(
+        WindowRole::Main,
+        &NoOsLoop,
+        WindowEvent::SurfaceResized(PhysicalSize::new(1500, 30)),
+    );
+    ROW.with(|r| {
+        r.borrow()
+            .as_ref()
+            .unwrap()
+            .set_attribute("style", "display: flex; flex-wrap: wrap; max-width: 650px")
+    });
+    runtime.run_native_events(
+        vec![(
+            MAIN,
+            RinchNativeEvent::SetWindowLayer(Box::new(top_left(350))),
+        )],
+        &NoOsLoop,
+    );
+    // 600 x 40 CSS px, at zoom 1.5.
+    assert_eq!(requests(&surface), vec![logical(900.0, 60.0)]);
+}

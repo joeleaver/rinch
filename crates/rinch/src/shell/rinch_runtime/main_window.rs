@@ -938,7 +938,10 @@ impl ShellWindow {
         // window is hidden (#2829), as a size set while hidden is.
         if let Some(size) = staged_size {
             self.saved_geometry.size = Some(size);
-            let logical = size.to_logical::<f64>(self.scale_factor());
+            // In the display's logical pixels, as the window's own readings
+            // (`WindowReading`) and a size set while hidden are published:
+            // the OS scale, not the zoomed one (#2861).
+            let logical = size.to_logical::<f64>(self.os_scale_factor());
             window_geometry::publish_hidden(
                 self.facts_key,
                 None,
