@@ -306,6 +306,14 @@ fn an_overflowing_rtl_value_scrolls_from_the_right() {
     assert_eq!(outside, 0, "clipped to the column");
 
     let (mut app, id, field) = page("input", &[("dir", "rtl")], "", LONG_HEBREW);
+    // Unfocused, the start is in view at the right edge (it stood some 300px
+    // right of the field when the line started at the column's left).
+    near(
+        field.caret_rect_at(0).unwrap().x + rinch_dom::form_control::CARET_WIDTH,
+        CONTENT_RIGHT,
+        0.5,
+        "unfocused: the start at the right edge",
+    );
     focus(&mut app, &field, id);
     key(&mut app, KeyCode::Home);
     near(
