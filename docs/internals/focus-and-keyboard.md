@@ -974,11 +974,15 @@ because the physical key was `Unidentified`. A packet with a nonzero scan code
 would have been handled as the key that code names: a menu chord, a button's
 Space, or `Mod-b`.
 
-A character outside the BMP is still lost. Its two surrogate halves each come
-in their own `VK_PACKET` tap, and winit-win32 finalizes each press with half a
-pair, which is not a valid UTF-16 string, so `text` is `None`. This was
-measured: both halves of an emoji arrived with no text. Fixing that needs a
-change to the winit fork. Pins: the
+A character outside the BMP (an emoji) comes as two `VK_PACKET` taps, one
+per UTF-16 surrogate. Unpatched winit-win32 finalized each press with half a
+pair, which is not a valid UTF-16 string, so both had no text (measured) and
+the character was lost. The pinned fork (#2850, joeleaver/winit-fork#14)
+holds a high surrogate that ends a press's `WM_CHAR` text and puts it in
+front of the low surrogate that starts the next press's: the first press has
+no text, and the second has the whole character in `text` and
+`text_with_all_modifiers`. Any other press, or focus leaving, drops the held
+unit; a lone surrogate gives no text. Pins: the fork's `keyboard::tests`, the
 `winit_input.rs` `text_only_key_translation` tests and
 `shell/rinch_runtime/text_only_key_2848_tests.rs`.
 
