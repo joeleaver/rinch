@@ -170,6 +170,8 @@ pub mod window;
 mod window_handle;
 #[cfg(feature = "windowing")]
 mod window_perf;
+#[cfg(feature = "windowing")]
+mod window_request;
 /// Which window roles the display offers (#2659); the API is re-exported
 /// through [`window`].
 mod window_roles;
