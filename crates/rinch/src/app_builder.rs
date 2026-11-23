@@ -130,6 +130,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`title_tooltips`](App::title_tooltips).
     #[cfg(feature = "windowing")]
     pub(crate) title_tooltips: bool,
+    /// See [`font_warmup`](App::font_warmup).
+    #[cfg(feature = "windowing")]
+    pub(crate) font_warmup: bool,
     /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
     #[cfg(feature = "windowing")]
     pub(crate) smooth_wheel_scroll: bool,
@@ -225,6 +228,8 @@ where
             windowless: false,
             #[cfg(feature = "windowing")]
             title_tooltips: true,
+            #[cfg(feature = "windowing")]
+            font_warmup: true,
             #[cfg(feature = "windowing")]
             smooth_wheel_scroll: true,
             #[cfg(feature = "windowing")]
@@ -457,6 +462,8 @@ where
             #[cfg(feature = "windowing")]
             title_tooltips: self.title_tooltips,
             #[cfg(feature = "windowing")]
+            font_warmup: self.font_warmup,
+            #[cfg(feature = "windowing")]
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             #[cfg(feature = "windowing")]
             devtools: self.devtools,
@@ -585,6 +592,20 @@ where
     #[cfg(feature = "windowing")]
     pub fn title_tooltips(mut self, enabled: bool) -> Self {
         self.title_tooltips = enabled;
+        self
+    }
+
+    /// Whether the system's generic font families (`sans-serif`,
+    /// `system-ui`, `serif`, `monospace`) are looked up on a thread of their
+    /// own once the app has shown its first frame (issue #2552). On by
+    /// default. Text with a glyph the first fonts of its stack lack (a
+    /// menu's `✓`) otherwise looks them up one by one the first time, on the
+    /// UI thread: a panel's first menu took 80–560 ms to show. The look-up
+    /// costs that time once, on another core, after start-up; `false` leaves
+    /// it to the first text that needs it.
+    #[cfg(feature = "windowing")]
+    pub fn font_warmup(mut self, enabled: bool) -> Self {
+        self.font_warmup = enabled;
         self
     }
 
@@ -908,6 +929,7 @@ where
             exit_when: self.exit_when,
             windowless: self.windowless,
             title_tooltips: self.title_tooltips,
+            font_warmup: self.font_warmup,
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             devtools: self.devtools,
             debug_interface: self.debug_interface,
@@ -1048,6 +1070,7 @@ where
             exit_when,
             windowless,
             title_tooltips,
+            font_warmup,
             smooth_wheel_scroll,
             devtools,
             debug_interface,
@@ -1080,6 +1103,7 @@ where
         // (#2774), then sleeps in inotify until something it read changes.
         crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
+        crate::font_warmup::set_enabled(font_warmup);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
         crate::app::set_devtools_default(devtools);
         crate::shell::rinch_runtime::set_debug_interface_default(debug_interface);
@@ -1515,6 +1539,8 @@ pub(crate) struct Startup<F> {
     pub(crate) windowless: bool,
     /// See [`App::title_tooltips`].
     pub(crate) title_tooltips: bool,
+    /// See [`App::font_warmup`].
+    pub(crate) font_warmup: bool,
     /// See [`App::smooth_wheel_scroll`].
     pub(crate) smooth_wheel_scroll: bool,
     /// See [`App::devtools`].
@@ -1767,6 +1793,18 @@ mod tests {
                 .into_startup()
                 .devtools,
             "the last call wins"
+        );
+    }
+
+    /// `font_warmup` reaches the startup (#2552): on unless turned off.
+    #[test]
+    fn font_warmup_is_on_unless_turned_off() {
+        assert!(App::new(component).into_startup().font_warmup);
+        assert!(
+            !App::new(component)
+                .font_warmup(false)
+                .into_startup()
+                .font_warmup
         );
     }
 

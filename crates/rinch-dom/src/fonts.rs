@@ -166,6 +166,56 @@ pub fn system_font_paths_once_scanned(
     template.as_ref().map(Collection::system_font_paths)
 }
 
+/// Resolve, in the shared scan, every family the generic families list
+/// (`sans-serif` first, then `system-ui`, `serif` and `monospace`), and
+/// answer how many were resolved: a warm-up for a thread of its own
+/// (#2552). Never scans: with no scan yet it does nothing and answers 0.
+/// The lists are those of a context [`new_font_context`] builds on the
+/// calling thread.
+///
+/// Why: a glyph the first families of a font stack do not have (a menu's
+/// `✓`, an arrow) makes shaping walk the generic list, family by family,
+/// until one has it, and the first lookup of each family is an `FcFontSort`
+/// over every installed font (about 1–4 ms each). The first menu of a
+/// process paid that for over a hundred families, 80–560 ms before its
+/// first frame. The answers are kept in the scan every font context shares
+/// (fontique keeps them behind one lock), so a family resolved here is free
+/// for every document from then on. Each lookup holds that lock for itself
+/// alone, with a pause after it, so a document that needs a family
+/// meanwhile waits for about one lookup.
+pub fn warm_generic_families() -> usize {
+    use parley::fontique::GenericFamily;
+    if TEMPLATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_none()
+    {
+        return 0;
+    }
+    // The lists as a document's context has them (this thread's defaults
+    // heading `serif` and `sans-serif`), over the shared scan.
+    let mut collection = new_font_context().collection;
+    let mut seen = std::collections::HashSet::new();
+    for generic in [
+        GenericFamily::SansSerif,
+        GenericFamily::SystemUi,
+        GenericFamily::Serif,
+        GenericFamily::Monospace,
+    ] {
+        let ids: Vec<FamilyId> = collection.generic_families(generic).collect();
+        for id in ids {
+            if seen.insert(id) {
+                let _ = collection.family(id);
+                // A pause between lookups: the lock is no fair one, and a
+                // loop that takes it again at once kept a document waiting
+                // on it for 260 ms.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+    seen.len()
+}
+
 /// The system's rendering properties for the family `name` (antialiasing,
 /// hinting, subpixel order, LCD filter), from the configuration the shared
 /// scan was made with (#2773; fontique's `Collection::system_render_properties`,
