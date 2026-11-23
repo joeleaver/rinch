@@ -417,6 +417,11 @@ pub struct ComputedStyle {
     pub overflow_wrap: OverflowWrapValue,
     /// CSS `word-break` (#2388).
     pub word_break: WordBreakValue,
+    /// `word-break` computes `break-word` (#2628): `word_break` is then
+    /// `Normal` and `overflow_wrap` `Anywhere`. Inherited; kept so that a
+    /// child whose own `word-break` a `var()` left invalid inherits it
+    /// (#2870).
+    pub word_break_break_word: bool,
     /// CSS `hyphens: none` (#2621): a soft hyphen is no hyphenation
     /// opportunity, no break and no hyphen. Inherited. `manual` (the initial
     /// value) and `auto` (no dictionary here, as in Chrome without one for
@@ -629,6 +634,7 @@ impl Default for ComputedStyle {
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
             word_break: WordBreakValue::default(),
+            word_break_break_word: false,
             hyphens_none: false,
             line_break: LineBreakValue::default(),
             text_indent: TextIndentValue::default(),
@@ -729,6 +735,7 @@ impl ComputedStyle {
             overflow_wrap: parent.overflow_wrap,
             tab_size: parent.tab_size,
             word_break: parent.word_break,
+            word_break_break_word: parent.word_break_break_word,
             hyphens_none: parent.hyphens_none,
             line_break: parent.line_break,
             text_indent: parent.text_indent,
