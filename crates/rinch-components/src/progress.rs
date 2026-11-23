@@ -2,6 +2,12 @@
 //!
 //! A progress bar indicator showing completion status.
 //!
+//! Like Chrome's `<progress>`: a bar with no `value` (and no `value_fn`) is
+//! indeterminate, and the accessible value (`aria-valuenow`) follows every
+//! change. The range is `0..=max`, with `max` 100 by default (Chrome's
+//! `<progress>` defaults to 1.0; 100 keeps every existing `value` meaning
+//! a percentage).
+//!
 //! # Fine-Grained Reactivity
 //!
 //! For reactive progress value without re-rendering, use the `value_fn` prop:
@@ -22,6 +28,12 @@ use std::rc::Rc;
 
 /// Reactive callback type for f32 values.
 pub type ReactiveF32 = Rc<dyn Fn() -> f32>;
+
+/// Reactive callback type for bool values.
+pub type ReactiveBool = Rc<dyn Fn() -> bool>;
+
+/// The `max` used when none is given (or it is not a positive number).
+pub const DEFAULT_MAX: f32 = 100.0;
 
 /// Progress size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -116,11 +128,24 @@ impl std::str::FromStr for ProgressRadius {
 /// ```
 #[derive(Default)]
 pub struct Progress {
-    /// Progress value (0-100) - static, for initial render or non-reactive use.
+    /// Progress value (`0..=max`) - static, for initial render or
+    /// non-reactive use. `None` with no `value_fn` is an indeterminate bar.
     pub value: Option<f32>,
     /// Reactive progress value getter - use this for fine-grained updates.
-    /// When provided, the progress bar width updates automatically when the signal changes.
+    /// When provided, the progress bar width and `aria-valuenow` update
+    /// automatically when the signal changes.
     pub value_fn: Option<ReactiveF32>,
+    /// The value of a full bar. `None` (or a value that is not a positive
+    /// number) is 100.
+    pub max: Option<f32>,
+    /// Show an indeterminate bar (an animated segment, no `aria-valuenow`)
+    /// whatever `value` says.
+    pub indeterminate: bool,
+    /// Reactive `indeterminate`: the bar switches between indeterminate and
+    /// the value without re-rendering. Wins over `indeterminate`.
+    pub indeterminate_fn: Option<ReactiveBool>,
+    /// The bar's accessible name (`aria-label`). Empty writes none.
+    pub aria_label: String,
     /// Progress bar color.
     pub color: String,
     /// Size (xs, sm, md, lg, xl).
@@ -138,6 +163,13 @@ impl std::fmt::Debug for Progress {
         f.debug_struct("Progress")
             .field("value", &self.value)
             .field("value_fn", &self.value_fn.as_ref().map(|_| "<reactive>"))
+            .field("max", &self.max)
+            .field("indeterminate", &self.indeterminate)
+            .field(
+                "indeterminate_fn",
+                &self.indeterminate_fn.as_ref().map(|_| "<reactive>"),
+            )
+            .field("aria_label", &self.aria_label)
             .field("color", &self.color)
             .field("size", &self.size)
             .field("radius", &self.radius)
@@ -186,62 +218,111 @@ impl Progress {
     }
 }
 
+impl Progress {
+    /// The effective `max`: the prop when it is a positive number, else 100.
+    pub fn effective_max(&self) -> f32 {
+        match self.max {
+            Some(m) if m.is_finite() && m > 0.0 => m,
+            _ => DEFAULT_MAX,
+        }
+    }
+}
+
+/// Writes one state of the bar: indeterminate, or `value` of `max`.
+fn apply(
+    container: &NodeHandle,
+    bar: &NodeHandle,
+    color_style: &str,
+    max: f32,
+    indeterminate: bool,
+    value: f32,
+) {
+    if indeterminate {
+        container.add_class("rinch-progress--indeterminate");
+        container.remove_attribute("aria-valuenow");
+        bar.set_attribute("style", color_style);
+    } else {
+        container.remove_class("rinch-progress--indeterminate");
+        // NaN clamps to NaN; read it as 0, the bar's empty state.
+        let value = if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(0.0, max)
+        };
+        container.set_attribute("aria-valuenow", &value.to_string());
+        // `100 / max` is exactly 1 at the default max, so a percentage value
+        // is written unchanged.
+        let percent = value * (100.0 / max);
+        bar.set_attribute("style", &format!("width: {percent}%;{color_style}"));
+    }
+}
+
 impl Component for Progress {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let class = self.class_string();
         let bar_class = self.bar_class_string();
+        let max = self.effective_max();
 
-        // Determine value - prefer reactive getter if available
-        let current_value = if let Some(ref value_fn) = self.value_fn {
-            value_fn()
+        // Color style
+        let color_style = if self.color.is_empty() {
+            String::new()
         } else {
-            self.value.unwrap_or(0.0)
-        };
-        let value = current_value.clamp(0.0, 100.0);
-
-        // Color style prefix
-        let color_prefix = if self.color.is_empty() {
-            None
-        } else {
-            let c = &self.color;
-            Some(
-                if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                    format!("--rinch-progress-color: {};", c)
-                } else {
-                    format!("--rinch-progress-color: var(--rinch-color-{}-6);", c)
-                },
-            )
+            let t = crate::color_utils::color_tokens(&self.color);
+            format!("--rinch-progress-color: {};", t.base)
         };
 
         let container = rinch_macros::rsx! { div { class: "rinch-progress", role: "progressbar" } };
         container.set_attribute("class", &class);
-        container.set_attribute("aria-valuenow", &value.to_string());
         container.set_attribute("aria-valuemin", "0");
-        container.set_attribute("aria-valuemax", "100");
+        container.set_attribute("aria-valuemax", &max.to_string());
+        if !self.aria_label.is_empty() {
+            container.set_attribute("aria-label", &self.aria_label);
+        }
 
         let bar = rinch_macros::rsx! { div { class: "rinch-progress__bar" } };
         bar.set_attribute("class", &bar_class);
+        container.append_child(&bar);
 
-        // Set the bar style
-        let bar_style = format!(
-            "width: {}%;{}",
-            value,
-            color_prefix.as_deref().unwrap_or("")
-        );
-        bar.set_attribute("style", &bar_style);
+        // Like `<progress>`: no value at all is indeterminate.
+        let static_indeterminate =
+            self.indeterminate || (self.value.is_none() && self.value_fn.is_none());
 
-        // Create reactive effect for value_fn
-        if let Some(ref value_fn) = self.value_fn {
-            let value_fn = value_fn.clone();
-            let bar_clone = bar.clone();
-            let color_style = color_prefix.clone().unwrap_or_default();
-            __scope.create_effect(move || {
-                let v = value_fn().clamp(0.0, 100.0);
-                bar_clone.set_attribute("style", &format!("width: {}%;{}", v, color_style));
-            });
+        if self.value_fn.is_none() && self.indeterminate_fn.is_none() {
+            apply(
+                &container,
+                &bar,
+                &color_style,
+                max,
+                static_indeterminate,
+                self.value.unwrap_or(0.0),
+            );
+            return container;
         }
 
-        container.append_child(&bar);
+        let value_fn = self.value_fn.clone();
+        let static_value = self.value.unwrap_or(0.0);
+        let indeterminate_fn = self.indeterminate_fn.clone();
+        let container_clone = container.clone();
+        let bar_clone = bar.clone();
+        __scope.create_effect(move || {
+            let indeterminate = match &indeterminate_fn {
+                Some(f) => f(),
+                None => static_indeterminate,
+            };
+            let value = match &value_fn {
+                Some(f) => f(),
+                None => static_value,
+            };
+            apply(
+                &container_clone,
+                &bar_clone,
+                &color_style,
+                max,
+                indeterminate,
+                value,
+            );
+        });
+
         container
     }
 }
