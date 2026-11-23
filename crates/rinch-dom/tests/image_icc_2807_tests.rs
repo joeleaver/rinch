@@ -148,11 +148,12 @@ fn a_16_bit_display_p3_gradient_is_converted_at_16_bits() {
 /// its colour at 16 bits.
 #[test]
 fn a_16_bit_rgba_picture_keeps_its_alpha() {
-    // Two pixels: a colour between 8-bit codes at alpha 0x8000, and one at
-    // alpha 0x4040.
+    // Two colours between 8-bit codes, at alphas whose nearest 8-bit value
+    // is not their high byte: 0xFF00 is 254.0 (high byte 255), 0x01C0 is
+    // 1.74 (high byte 1), so rounding and truncating give different answers.
     let samples: Vec<u16> = vec![
-        0x8080, 0x6040, 0x2010, 0x8000, //
-        0xC0C0, 0x3000, 0x9050, 0x4040,
+        0x8080, 0x6040, 0x2010, 0xFF00, //
+        0xC0C0, 0x3000, 0x9050, 0x01C0,
     ];
     let bytes = png16(
         2,
@@ -162,7 +163,7 @@ fn a_16_bit_rgba_picture_keeps_its_alpha() {
         p3_profile(),
     );
     let img = decode_image_bytes(&bytes).unwrap();
-    for (px, alpha) in [(0usize, 128u8), (1, 64)] {
+    for (px, alpha) in [(0usize, 254u8), (1, 2)] {
         let s = &samples[px * 4..px * 4 + 3];
         let want = p3_to_srgb([0, 1, 2].map(|c| f64::from(s[c]) / 65535.0));
         for (c, want) in want.iter().enumerate() {
@@ -173,6 +174,34 @@ fn a_16_bit_rgba_picture_keeps_its_alpha() {
             );
         }
         assert_eq!(img.data[px * 4 + 3], alpha, "pixel {px}: alpha");
+    }
+}
+
+/// A 16-bit grey+alpha PNG with a linear grey profile: the grey goes
+/// through the curve at 16 bits and the alpha is carried through, rounded to
+/// 8 bits (alphas chosen as in `a_16_bit_rgba_picture_keeps_its_alpha`).
+#[test]
+fn a_16_bit_grey_alpha_picture_keeps_its_alpha() {
+    let samples: Vec<u16> = vec![0x0203, 0xFF00, 0x4321, 0x01C0, 0x9000, 0x8000];
+    let bytes = png16(
+        3,
+        1,
+        &samples,
+        image::ExtendedColorType::La16,
+        grey_profile(1.0),
+    );
+    let img = decode_image_bytes(&bytes).unwrap();
+    for (px, alpha) in [(0usize, 254u8), (1, 2), (2, 128)] {
+        let g = samples[px * 2];
+        let want = from_linear(f64::from(g) / 65535.0) * 255.0;
+        let got = &img.data[px * 4..px * 4 + 4];
+        for c in 0..3 {
+            assert!(
+                (f64::from(got[c]) - want).abs() <= 1.0,
+                "pixel {px}: got {got:?}, want {want:.2}"
+            );
+        }
+        assert_eq!(got[3], alpha, "pixel {px}: alpha");
     }
 }
 

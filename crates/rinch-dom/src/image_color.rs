@@ -89,8 +89,10 @@ impl ToSrgb {
 type Cached = Option<Arc<ToSrgb>>;
 
 /// Conversions by profile hash. Bounded: emptied when it reaches
-/// [`MAX_TRANSFORMS`] (a transform is a few lookup tables, tens of KB; a
-/// 16-bit one, once built, a few hundred).
+/// [`MAX_TRANSFORMS`]. An entry is its transforms' lookup tables (tens of KB
+/// for 8 bits, a few hundred once a 16-bit one is built) and the parsed
+/// profile, kept to build the 16-bit transform; a profile with LUT tags
+/// (`A2B`/`B2A`) carries those tables too, which can run to megabytes.
 static TRANSFORMS: LazyLock<Mutex<HashMap<u64, Cached>>> = LazyLock::new(Default::default);
 const MAX_TRANSFORMS: usize = 32;
 
