@@ -491,7 +491,7 @@ fn hit_test_node<P: Probe>(
             // meets outside the lifted pass.
             let mut run_probed = !(check_children
                 && clipped.is_none()
-                && rinch_dom::paint::run_paints_in_phases(tree, node_id));
+                && rinch_dom::paint::run_paints_in_phases(tree, node));
             // The boxes in a relative split inline first (`lifted`).
             for (lifted, (index, entry)) in [true, false]
                 .into_iter()
@@ -724,7 +724,7 @@ fn hit_test_node<P: Probe>(
             // are over every child's background, so after the lifted boxes
             // they answer first, and the plain walk is the backgrounds pass.
             let kids = rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id);
-            let mut run_probed = !rinch_dom::paint::run_paints_in_phases(tree, node_id);
+            let mut run_probed = !rinch_dom::paint::run_paints_in_phases(tree, node);
             for (lifted, &child_id) in [true, false]
                 .into_iter()
                 .flat_map(|pass| kids.iter().rev().map(move |c| (pass, c)))
@@ -794,6 +794,7 @@ fn hit_test_node<P: Probe>(
 /// in reverse, then every float. `None` leaves the point to the backgrounds
 /// pass, the ordinary walk of the children. `kids` are the run's children in
 /// tree order, each with the origin its `hit_test_node` is entered at.
+#[inline(never)]
 fn phased_run_hit<P: Probe>(
     probe: &P,
     tree: &rinch_dom::NodeTree,

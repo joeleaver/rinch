@@ -20,8 +20,8 @@
 //! every block-flow run where nothing overlaps: blocks stacked one under the
 //! next. [`splits`] answers that from each child's in-flow extent (its box,
 //! its lines, and its descendants' extents, the way hit testing's flow extent
-//! is built), memoised per layout ([`PhaseMemo`], keyed on the tree's
-//! `layout_epoch`), so a run splits only where a negative margin, an overflowing
+//! is built), memoised on each node for the tree's current `layout_epoch`
+//! (`Node::phase_extent`, `Node::phase_split`), so a run splits only where a negative margin, an overflowing
 //! line, a float or an overhanging descendant makes one child reach into an
 //! earlier one's extent. A wrong `true` costs two extra walks of that run and
 //! changes no pixel; a `false` paints the run as before #2276.
@@ -36,9 +36,7 @@
 
 use std::cell::Cell;
 
-use std::cell::RefCell;
-
-use crate::node::{Node, NodeTree, RawNodeId};
+use crate::node::{Node, NodeTree};
 use crate::stacking::paints_at_stacking_root;
 
 /// Which part of a box's in-flow paint the walk is drawing.
@@ -149,17 +147,16 @@ fn child_origin(tree: &NodeTree, child: &Node) -> (f32, f32) {
     (child.layout.x + dx, child.layout.y + dy)
 }
 
-/// What `id`'s in-flow paint covers, relative to its border-box origin: its
+/// What `node`'s in-flow paint covers, relative to its border-box origin: its
 /// own box, its lines, and — on an axis it does not clip — its run's
 /// extents. Ink (shadows, outlines, glyph overhang) is left out; a missed
 /// overlap paints as before #2276.
-fn extent(tree: &NodeTree, id: RawNodeId) -> Extent {
-    if let Some(e) = tree.phase_memo.extent(tree, id) {
+fn extent(tree: &NodeTree, node: &Node) -> Extent {
+    let stamp = tree.layout_epoch.wrapping_add(1);
+    let (at, e) = node.phase_extent.get();
+    if at == stamp {
         return e;
     }
-    let Some(node) = tree.get_live(id) else {
-        return EMPTY;
-    };
     let (w, h) = (node.layout.width, node.layout.height);
     // A box with no area paints no background, and `display: contents`
     // generates none.
@@ -191,131 +188,102 @@ fn extent(tree: &NodeTree, id: RawNodeId) -> Extent {
                 grow([ox - sx, oy - sy, ox - sx + lw, oy - sy + lh]);
             }
         }
-        for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
-            let Some(child) = tree.get_live(child_id).filter(|c| in_run(tree, c)) else {
-                continue;
-            };
-            let (cx, cy) = child_origin(tree, child);
-            let c = extent(tree, child.id);
-            if !is_empty(&c) {
-                grow([
-                    cx - sx + c[0],
-                    cy - sy + c[1],
-                    cx - sx + c[2],
-                    cy - sy + c[3],
-                ]);
+        // A paragraph holding only text has no run of its own: its IFC draws
+        // all of it. Asked first, as it is most of a page.
+        let only_text = node.text_layout.is_some()
+            && node
+                .children
+                .iter()
+                .all(|&c| tree.get(c).is_none_or(Node::is_text));
+        if !only_text {
+            for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node.id).iter() {
+                let Some(child) = tree.get_live(child_id).filter(|c| in_run(tree, c)) else {
+                    continue;
+                };
+                let (cx, cy) = child_origin(tree, child);
+                let c = extent(tree, child);
+                if !is_empty(&c) {
+                    grow([
+                        cx - sx + c[0],
+                        cy - sy + c[1],
+                        cx - sx + c[2],
+                        cy - sy + c[3],
+                    ]);
+                }
             }
         }
     }
-    tree.phase_memo.store_extent(id, e);
+    node.phase_extent.set((stamp, e));
     e
 }
 
 /// Whether `id`'s in-flow run must be painted in phases: one of its children
 /// reaches into what an earlier one paints. A flex or grid container's run
 /// never splits: its items are atomic, painted whole in order.
-pub(crate) fn splits(tree: &NodeTree, id: RawNodeId) -> bool {
-    if let Some(s) = tree.phase_memo.splits(tree, id) {
-        return s;
+#[inline]
+pub(crate) fn splits(tree: &NodeTree, node: &Node) -> bool {
+    let stamp = tree.layout_epoch.wrapping_add(1) << 1;
+    let memo = node.phase_split.get();
+    if memo & !1 == stamp {
+        return memo & 1 == 1;
     }
-    let kids = crate::RinchDocument::box_tree_children(&tree.nodes, id);
-    let run = || {
-        kids.iter()
-            .filter_map(|&c| tree.get_live(c))
-            .filter(|c| in_run(tree, c))
+    decide(tree, node, stamp)
+}
+
+/// [`splits`] when the node's memo is not this layout's.
+#[inline(never)]
+fn decide(tree: &NodeTree, node: &Node, stamp: u64) -> bool {
+    let kids = crate::RinchDocument::box_tree_children(&tree.nodes, node.id);
+    let placed = |child: &Node| {
+        let c = extent(tree, child);
+        let (cx, cy) = child_origin(tree, child);
+        (!is_empty(&c)).then(|| [cx + c[0], cy + c[1], cx + c[2], cy + c[3]])
     };
-    // One child cannot reach into an earlier one: no extent is worked out
-    // for a wrapper's only child, nor for a flex or grid container's items.
-    let split = run().nth(1).is_some() && {
-        let mut seen = EMPTY;
-        let mut split = false;
-        for child in run() {
-            if child.is_flex_or_grid_item.get() {
-                split = false;
-                break;
-            }
-            let c = extent(tree, child.id);
-            if is_empty(&c) {
-                continue;
-            }
-            let (cx, cy) = child_origin(tree, child);
-            let c = [cx + c[0], cy + c[1], cx + c[2], cy + c[3]];
-            // An overlap of positive area: boxes stacked one under the next
-            // share an edge, not an area.
-            const EPS: f32 = 1e-3;
-            if c[0].max(seen[0]) + EPS < c[2].min(seen[2])
-                && c[1].max(seen[1]) + EPS < c[3].min(seen[3])
-            {
-                split = true;
-                break;
-            }
-            seen = [
-                seen[0].min(c[0]),
-                seen[1].min(c[1]),
-                seen[2].max(c[2]),
-                seen[3].max(c[3]),
-            ];
+    let mut seen = EMPTY;
+    // The first member waits for a second: one child cannot reach into an
+    // earlier one, so a wrapper's only child has no extent worked out.
+    let mut first: Option<&Node> = None;
+    let mut members = 0usize;
+    let mut split = false;
+    for child in kids
+        .iter()
+        .filter_map(|&c| tree.get_live(c))
+        .filter(|c| in_run(tree, c))
+    {
+        // A flex or grid container's items are atomic.
+        if child.is_flex_or_grid_item.get() {
+            split = false;
+            break;
         }
-        split
-    };
-    tree.phase_memo.store_splits(id, split);
+        members += 1;
+        if members == 1 {
+            first = Some(child);
+            continue;
+        }
+        if let Some(f) = first.take()
+            && let Some(c) = placed(f)
+        {
+            seen = c;
+        }
+        let Some(c) = placed(child) else {
+            continue;
+        };
+        // An overlap of positive area: boxes stacked one under the next
+        // share an edge, not an area.
+        const EPS: f32 = 1e-3;
+        if c[0].max(seen[0]) + EPS < c[2].min(seen[2])
+            && c[1].max(seen[1]) + EPS < c[3].min(seen[3])
+        {
+            split = true;
+            break;
+        }
+        seen = [
+            seen[0].min(c[0]),
+            seen[1].min(c[1]),
+            seen[2].max(c[2]),
+            seen[3].max(c[3]),
+        ];
+    }
+    node.phase_split.set(stamp | split as u64);
     split
-}
-
-/// [`extent`] and [`splits`], memoised for one `layout_epoch`.
-#[derive(Debug, Default)]
-pub(crate) struct PhaseMemo {
-    state: RefCell<MemoState>,
-}
-
-#[derive(Debug, Default)]
-struct MemoState {
-    epoch: Option<u64>,
-    /// By node slot.
-    extents: Vec<Option<Extent>>,
-    /// By node slot.
-    splits: Vec<Option<bool>>,
-}
-
-impl PhaseMemo {
-    /// The state for `tree`'s current layout, cleared when it moved.
-    fn current(&self, tree: &NodeTree) -> std::cell::RefMut<'_, MemoState> {
-        let mut s = self.state.borrow_mut();
-        if s.epoch != Some(tree.layout_epoch) {
-            s.epoch = Some(tree.layout_epoch);
-            s.extents.clear();
-            s.splits.clear();
-        }
-        s
-    }
-
-    fn extent(&self, tree: &NodeTree, id: RawNodeId) -> Option<Extent> {
-        let slot = crate::node_slab::slot_of(id);
-        self.current(tree).extents.get(slot).copied().flatten()
-    }
-
-    /// Store after [`Self::extent`] (or [`Self::splits`]) brought the state
-    /// to the current layout.
-    fn store_extent(&self, id: RawNodeId, e: Extent) {
-        let slot = crate::node_slab::slot_of(id);
-        let mut s = self.state.borrow_mut();
-        if s.extents.len() <= slot {
-            s.extents.resize(slot + 1, None);
-        }
-        s.extents[slot] = Some(e);
-    }
-
-    fn splits(&self, tree: &NodeTree, id: RawNodeId) -> Option<bool> {
-        let slot = crate::node_slab::slot_of(id);
-        self.current(tree).splits.get(slot).copied().flatten()
-    }
-
-    fn store_splits(&self, id: RawNodeId, split: bool) {
-        let slot = crate::node_slab::slot_of(id);
-        let mut s = self.state.borrow_mut();
-        if s.splits.len() <= slot {
-            s.splits.resize(slot + 1, None);
-        }
-        s.splits[slot] = Some(split);
-    }
 }

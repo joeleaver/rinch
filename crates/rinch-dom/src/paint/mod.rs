@@ -21,7 +21,6 @@ mod layer_bounds;
 pub mod painter;
 mod phases;
 use phases::Phase;
-pub(crate) use phases::PhaseMemo;
 pub mod radii;
 pub(crate) mod raster_cache;
 pub use raster_cache::BUDGET_BYTES as RASTER_CACHE_BUDGET_BYTES;
@@ -3282,8 +3281,9 @@ pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// every block background, then the floats, then every line's content —
 /// because one of its children reaches into what an earlier one paints
 /// (#2276). Hit testing asks it to probe such a run in the reverse order.
-pub fn run_paints_in_phases(tree: &NodeTree, id: RawNodeId) -> bool {
-    phases::splits(tree, id)
+#[inline]
+pub fn run_paints_in_phases(tree: &NodeTree, node: &Node) -> bool {
+    phases::splits(tree, node)
 }
 
 /// Whether `node` is a float that floats (a flex or grid item's `float` is
@@ -4675,7 +4675,7 @@ fn paint_children_with_stacking(
         // The in-flow entries (step 2 of the sequence) are the root's
         // in-flow run: painted in Appendix E phases, all of them in each
         // pass, where a child reaches into an earlier one (#2276).
-        let split = phases::current() == Phase::All && phases::splits(tree, node_id);
+        let split = phases::current() == Phase::All && phases::splits(tree, node);
         let mut run_painted = false;
         for position in 0..order.len() {
             let index = grouped.as_ref().map_or(position, |g| g[position] as usize);
@@ -4780,7 +4780,7 @@ fn paint_children_with_stacking(
         // children reach into each other walks three times, one per
         // Appendix E phase (#2276, [`phases`]).
         let phase = phases::current();
-        let split = phase == Phase::All && phases::splits(tree, node_id);
+        let split = phase == Phase::All && phases::splits(tree, node);
         let passes: &[Phase] = if split {
             &Phase::SPLIT
         } else {
