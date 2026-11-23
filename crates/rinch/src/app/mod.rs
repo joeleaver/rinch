@@ -305,6 +305,8 @@ mod inline_ink_damage_1815_tests;
 #[cfg(all(test, software_shell, feature = "windowing", target_os = "linux"))]
 mod inline_menu_spacer_529_tests;
 #[cfg(test)]
+mod inline_tab_stops_2963_tests;
+#[cfg(test)]
 mod input_commit_tests;
 #[cfg(all(test, software_shell))]
 mod input_horizontal_scroll_1721_tests;
@@ -5911,22 +5913,33 @@ impl RinchApp {
             .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
     }
 
-    /// Whether a node has a box the user could reach — a non-zero layout, and
-    /// not `visibility: hidden`/`collapse`.
+    /// Whether a node has a box the user could reach — a non-zero layout (or,
+    /// for a flowed inline element, a place in an inline formatting context),
+    /// and not `visibility: hidden`/`collapse`.
     ///
     /// Shared by the focusable collector and the trap-root search so the two
     /// cannot drift: a closed `Modal`'s root is `display: none`, which is a zero
     /// box, and a trap the collector would find nothing inside must not be
     /// chosen as the root in the first place — that would leave Tab dead for
     /// the rest of the session.
+    ///
+    /// **A flowed inline element** (`<a href>` in a paragraph, a
+    /// `<span tabindex="0">`) owns no Taffy box: its `layout` is a `0x0` ghost
+    /// while its text is painted (issue #2963). It is rendered when it is
+    /// content of an inline formatting context —
+    /// [`rinch_dom::Node::is_flowed_inline_element`], whose `ifc_root` every
+    /// IFC pass recomputes, and which an element under a `display: none`
+    /// ancestor (inline or block) does not keep. Its width does not matter:
+    /// Chrome 158 stops Tab on an empty `<a href></a>`, whose rect is `0x17`.
     fn node_is_visible(node: &rinch_dom::Node) -> bool {
-        node.layout.width > 0.0
-            && node.layout.height > 0.0
-            && !matches!(
-                node.computed_style.visibility,
-                rinch_dom::computed_style::VisibilityValue::Hidden
-                    | rinch_dom::computed_style::VisibilityValue::Collapse
-            )
+        if matches!(
+            node.computed_style.visibility,
+            rinch_dom::computed_style::VisibilityValue::Hidden
+                | rinch_dom::computed_style::VisibilityValue::Collapse
+        ) {
+            return false;
+        }
+        node.is_flowed_inline_element() || (node.layout.width > 0.0 && node.layout.height > 0.0)
     }
 
     /// The live focus trap Tab is confined to, if any (issue #474).
