@@ -1173,7 +1173,7 @@ impl RinchApp {
         );
         let scroll = rinch_dom::form_control::field_scroll(tree, font_cx, layout_cx, node_id);
         let (origin_x, origin_y) =
-            rinch_dom::form_control::field_text_origin(node, layout.height(), scroll);
+            rinch_dom::form_control::field_text_origin(node, &layout, 1.0, scroll);
 
         Some(InputTextLayout {
             layout,
