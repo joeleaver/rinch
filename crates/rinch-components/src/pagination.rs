@@ -208,15 +208,10 @@ impl Component for Pagination {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let mut style_parts = Vec::new();
         if !self.color.is_empty() {
-            let c = &self.color;
-            if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                style_parts.push(format!("--rinch-pagination-color: {}", c));
-            } else {
-                style_parts.push(format!(
-                    "--rinch-pagination-color: var(--rinch-color-{}-6)",
-                    c
-                ));
-            }
+            style_parts.push(crate::color_utils::accent_vars(
+                "--rinch-pagination",
+                &self.color,
+            ));
         }
         if !self.gap.is_empty() {
             style_parts.push(format!("gap: {}", self.gap));

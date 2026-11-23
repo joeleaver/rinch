@@ -44,6 +44,22 @@ pub fn generate_css_variables(theme: &Theme) -> String {
         ));
     }
 
+    // Contrast tokens (#2208): the text colour that reads on each colour's
+    // filled shade (6) and on the primary colour, the same in both schemes
+    // because the filled shades do not flip. Filled components paint their
+    // text with these; an app may set them in its own stylesheet.
+    for color_name in ColorName::all() {
+        css.push_str(&format!(
+            "  --rinch-color-{}-contrast: {};\n",
+            color_name.css_name(),
+            crate::colors::contrast_text(theme.colors.get(*color_name).shade(6).hex())
+        ));
+    }
+    css.push_str(&format!(
+        "  --rinch-primary-color-contrast: {};\n",
+        crate::colors::contrast_text(theme.primary_color_value())
+    ));
+
     // Spacing
     for size in SpacingSize::all() {
         css.push_str(&format!(
@@ -400,6 +416,36 @@ mod tests {
         assert!(css.contains("--rinch-radius-sm"));
         assert!(css.contains("--rinch-font-size-md"));
         assert!(css.contains("--rinch-primary-color"));
+    }
+
+    /// #2208: the primary contrast follows the primary colour *and* shade.
+    #[test]
+    fn primary_contrast_follows_primary_colour_and_shade() {
+        let token = |theme: &Theme| {
+            let css = generate_css_variables(theme);
+            let line = css
+                .lines()
+                .find(|l| {
+                    l.trim_start()
+                        .starts_with("--rinch-primary-color-contrast:")
+                })
+                .expect("the primary contrast token is written")
+                .to_string();
+            line.trim().to_string()
+        };
+        assert_eq!(
+            token(&Theme::default()),
+            "--rinch-primary-color-contrast: white;"
+        );
+        let yellow = Theme::builder().primary_color(ColorName::Yellow).build();
+        assert_eq!(token(&yellow), "--rinch-primary-color-contrast: black;");
+        let pale_blue = Theme::builder().primary_shade(2).build();
+        assert_eq!(token(&pale_blue), "--rinch-primary-color-contrast: black;");
+        let dark = Theme::builder().dark_mode(true).build();
+        assert_eq!(token(&dark), "--rinch-primary-color-contrast: white;");
+        let css = generate_css_variables(&yellow);
+        assert!(css.contains("--rinch-color-lime-contrast: black;"));
+        assert!(css.contains("--rinch-color-red-contrast: white;"));
     }
 
     #[test]

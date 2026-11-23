@@ -30,7 +30,7 @@ pub fn styles() -> String {
 /* Default variant */
 .rinch-navlink--default.rinch-navlink--active {
     background-color: var(--rinch-navlink-color, var(--rinch-primary-color));
-    color: white;
+    color: var(--rinch-navlink-contrast, var(--rinch-primary-color-contrast));
 }
 
 .rinch-navlink--default.rinch-navlink--active:hover {
@@ -50,7 +50,7 @@ pub fn styles() -> String {
 
 .rinch-navlink--filled.rinch-navlink--active {
     background-color: var(--rinch-navlink-color, var(--rinch-primary-color));
-    color: white;
+    color: var(--rinch-navlink-contrast, var(--rinch-primary-color-contrast));
 }
 
 /* Subtle variant */

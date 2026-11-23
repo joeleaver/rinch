@@ -1186,6 +1186,33 @@ pub struct ThemeProviderProps {
     pub dark_mode: bool,
     /// The primary shade index (0-9).
     pub primary_shade: Option<u8>,
+    /// How the component stylesheet joins the cascade (#2208): unlayered as
+    /// before (the default), in cascade layers that any app rule outranks, or
+    /// not at all. Takes effect with the `components` feature.
+    pub component_styles: ComponentStyles,
+}
+
+/// How rinch's component stylesheet joins the cascade
+/// ([`ThemeProviderProps::component_styles`], #2208).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ComponentStyles {
+    /// The theme and component sheets are ordinary author CSS ahead of the
+    /// app's own (the default, and what rinch always did). An app rule
+    /// replaces a component rule when it is at least as specific.
+    #[default]
+    Unlayered,
+    /// The theme sheet is in the cascade layer `rinch-theme` and the
+    /// component sheet in `rinch-components` (declared in that order), so
+    /// **any** unlayered app rule outranks them whatever its specificity, the
+    /// way author CSS outranks a browser's built-in look of its controls.
+    /// Without app CSS it paints what [`Unlayered`](Self::Unlayered) paints.
+    /// The other side of layers: a layered `!important` (the overlays'
+    /// visibility rules) outranks an unlayered app `!important`.
+    Layered,
+    /// No component stylesheet: the components render their markup and
+    /// classes unstyled, for an app that styles them itself. The theme sheet
+    /// (variables and base styles) stays.
+    Off,
 }
 
 /// An item in a For loop with its key and data.

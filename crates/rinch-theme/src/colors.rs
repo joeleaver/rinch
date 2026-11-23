@@ -171,6 +171,57 @@ pub fn with_alpha(color: &str, alpha: f32) -> String {
     color.to_string()
 }
 
+/// The relative luminance above which [`contrast_text`] answers black.
+///
+/// White text on a colour this light reads below about 2.1:1. The value keeps
+/// the default palette's filled components as they were: every shade 6 keeps
+/// white text except yellow and lime (the two Badge already gave black text),
+/// while a light accent of the app's own (a pale primary, a custom palette)
+/// gets black text where white would be unreadable (#2208).
+pub const CONTRAST_LUMINANCE_THRESHOLD: f32 = 0.45;
+
+/// The text colour that reads on a filled `background`: `"white"`, or
+/// `"black"` when the background's relative luminance is above
+/// [`CONTRAST_LUMINANCE_THRESHOLD`]. `background` is `#rgb`, `#rrggbb`
+/// (alpha ignored) or `rgb()` / `rgba()`; anything else answers `"white"`,
+/// what the components painted before the contrast tokens existed.
+///
+/// The theme writes it as `--rinch-color-{name}-contrast` (from shade 6) and
+/// `--rinch-primary-color-contrast` (from the primary shade).
+///
+/// ```
+/// use rinch_theme::contrast_text;
+/// assert_eq!(contrast_text("#228be6"), "white"); // blue-6
+/// assert_eq!(contrast_text("#fab005"), "black"); // yellow-6
+/// assert_eq!(contrast_text("rgb(255, 255, 255)"), "black");
+/// assert_eq!(contrast_text("var(--x)"), "white");
+/// ```
+pub fn contrast_text(background: &str) -> &'static str {
+    let trimmed = background.trim();
+    let rgb = if let Some(hex) = trimmed.strip_prefix('#') {
+        parse_hex(hex)
+    } else {
+        strip_rgb_func(trimmed).and_then(parse_rgb_components)
+    };
+    match rgb {
+        Some((r, g, b)) if relative_luminance(r, g, b) > CONTRAST_LUMINANCE_THRESHOLD => "black",
+        _ => "white",
+    }
+}
+
+/// WCAG relative luminance of an sRGB colour.
+fn relative_luminance(r: u8, g: u8, b: u8) -> f32 {
+    let ch = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+}
+
 fn parse_hex(hex: &str) -> Option<(u8, u8, u8)> {
     fn nibble(c: u8) -> Option<u8> {
         match c {
@@ -254,7 +305,39 @@ fn format_alpha(alpha: f32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::with_alpha;
+    use super::{DEFAULT_COLORS, contrast_text, with_alpha};
+    use crate::ColorName;
+
+    /// The default palette keeps white text on every shade 6 but yellow and
+    /// lime, as the components painted it before #2208 (Badge's black text on
+    /// those two included).
+    #[test]
+    fn default_palette_contrast_is_todays_text() {
+        for name in ColorName::all() {
+            let hex = DEFAULT_COLORS.get(*name).shade(6).hex();
+            let want = match name {
+                ColorName::Yellow | ColorName::Lime => "black",
+                _ => "white",
+            };
+            assert_eq!(contrast_text(hex), want, "{name:?} ({hex})");
+        }
+    }
+
+    #[test]
+    fn light_accents_get_black_text() {
+        // Light shades of every palette colour are light accents.
+        for name in ColorName::all() {
+            if *name == ColorName::Dark {
+                continue;
+            }
+            let hex = DEFAULT_COLORS.get(*name).shade(1).hex();
+            assert_eq!(contrast_text(hex), "black", "{name:?}-1 ({hex})");
+        }
+        assert_eq!(contrast_text("#fff"), "black");
+        assert_eq!(contrast_text("rgba(240, 240, 240, 0.5)"), "black");
+        assert_eq!(contrast_text("#000"), "white");
+        assert_eq!(contrast_text("hsl(0 0% 100%)"), "white");
+    }
 
     #[test]
     fn hex_six() {

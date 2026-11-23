@@ -191,12 +191,7 @@ impl Component for Avatar {
         container.set_attribute("class", &self.class_string());
 
         if !self.color.is_empty() {
-            let c = &self.color;
-            let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                format!("--rinch-avatar-color: {}", c)
-            } else {
-                format!("--rinch-avatar-color: var(--rinch-color-{}-6)", c)
-            };
+            let style = crate::color_utils::accent_vars("--rinch-avatar", &self.color);
             container.set_attribute("style", &style);
         }
 
