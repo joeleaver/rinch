@@ -73,15 +73,19 @@ abc</pre>"#
         // `text-align: end` is the paragraph's end: the right of an `ltr` one.
         (
             "text_align_end",
-            format!(r#"<pre dir=auto style="text-align:end">{a}
-{t}</pre>"#),
+            format!(
+                r#"<pre dir=auto style="text-align:end">{a}
+{t}</pre>"#
+            ),
             &[[372.08, 20.0, 27.92, 20.0]],
         ),
         // Every line of a wrapped `ltr` paragraph after an `rtl` one starts at
         // the left.
         (
             "wrapped_paragraph",
-            format!(r#"<div style="unicode-bidi:plaintext;width:100px">{a}<br>{t} {t} {t} {t}</div>"#),
+            format!(
+                r#"<div style="unicode-bidi:plaintext;width:100px">{a}<br>{t} {t} {t} {t}</div>"#
+            ),
             &[
                 [0.0, 20.0, 27.92, 20.0],
                 [32.42, 20.0, 27.92, 20.0],
