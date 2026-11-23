@@ -20,8 +20,8 @@
 //! every block-flow run where nothing overlaps: blocks stacked one under the
 //! next. [`splits`] answers that from each child's in-flow extent (its box,
 //! its lines, and its descendants' extents, the way hit testing's flow extent
-//! is built), memoised in the tree's [`crate::hit_cache::HitCache`] by its
-//! generation, so a run splits only where a negative margin, an overflowing
+//! is built), memoised per layout ([`PhaseMemo`], keyed on the tree's
+//! `layout_epoch`), so a run splits only where a negative margin, an overflowing
 //! line, a float or an overhanging descendant makes one child reach into an
 //! earlier one's extent. A wrong `true` costs two extra walks of that run and
 //! changes no pixel; a `false` paints the run as before #2276.
@@ -35,6 +35,8 @@
 //! [`Phase::All`] without asking.
 
 use std::cell::Cell;
+
+use std::cell::RefCell;
 
 use crate::node::{Node, NodeTree, RawNodeId};
 use crate::stacking::paints_at_stacking_root;
@@ -152,7 +154,7 @@ fn child_origin(tree: &NodeTree, child: &Node) -> (f32, f32) {
 /// extents. Ink (shadows, outlines, glyph overhang) is left out; a missed
 /// overlap paints as before #2276.
 fn extent(tree: &NodeTree, id: RawNodeId) -> Extent {
-    if let Some(e) = tree.hit_cache.paint_extent(id) {
+    if let Some(e) = tree.phase_memo.extent(tree, id) {
         return e;
     }
     let Some(node) = tree.get_live(id) else {
@@ -205,7 +207,7 @@ fn extent(tree: &NodeTree, id: RawNodeId) -> Extent {
             }
         }
     }
-    tree.hit_cache.store_paint_extent(id, e);
+    tree.phase_memo.store_extent(id, e);
     e
 }
 
@@ -213,7 +215,7 @@ fn extent(tree: &NodeTree, id: RawNodeId) -> Extent {
 /// reaches into what an earlier one paints. A flex or grid container's run
 /// never splits: its items are atomic, painted whole in order.
 pub(crate) fn splits(tree: &NodeTree, id: RawNodeId) -> bool {
-    if let Some(s) = tree.hit_cache.paint_splits(id) {
+    if let Some(s) = tree.phase_memo.splits(tree, id) {
         return s;
     }
     let kids = crate::RinchDocument::box_tree_children(&tree.nodes, id);
@@ -256,6 +258,64 @@ pub(crate) fn splits(tree: &NodeTree, id: RawNodeId) -> bool {
         }
         split
     };
-    tree.hit_cache.store_paint_splits(id, split);
+    tree.phase_memo.store_splits(id, split);
     split
+}
+
+/// [`extent`] and [`splits`], memoised for one `layout_epoch`.
+#[derive(Debug, Default)]
+pub(crate) struct PhaseMemo {
+    state: RefCell<MemoState>,
+}
+
+#[derive(Debug, Default)]
+struct MemoState {
+    epoch: Option<u64>,
+    /// By node slot.
+    extents: Vec<Option<Extent>>,
+    /// By node slot.
+    splits: Vec<Option<bool>>,
+}
+
+impl PhaseMemo {
+    /// The state for `tree`'s current layout, cleared when it moved.
+    fn current(&self, tree: &NodeTree) -> std::cell::RefMut<'_, MemoState> {
+        let mut s = self.state.borrow_mut();
+        if s.epoch != Some(tree.layout_epoch) {
+            s.epoch = Some(tree.layout_epoch);
+            s.extents.clear();
+            s.splits.clear();
+        }
+        s
+    }
+
+    fn extent(&self, tree: &NodeTree, id: RawNodeId) -> Option<Extent> {
+        let slot = crate::node_slab::slot_of(id);
+        self.current(tree).extents.get(slot).copied().flatten()
+    }
+
+    /// Store after [`Self::extent`] (or [`Self::splits`]) brought the state
+    /// to the current layout.
+    fn store_extent(&self, id: RawNodeId, e: Extent) {
+        let slot = crate::node_slab::slot_of(id);
+        let mut s = self.state.borrow_mut();
+        if s.extents.len() <= slot {
+            s.extents.resize(slot + 1, None);
+        }
+        s.extents[slot] = Some(e);
+    }
+
+    fn splits(&self, tree: &NodeTree, id: RawNodeId) -> Option<bool> {
+        let slot = crate::node_slab::slot_of(id);
+        self.current(tree).splits.get(slot).copied().flatten()
+    }
+
+    fn store_splits(&self, id: RawNodeId, split: bool) {
+        let slot = crate::node_slab::slot_of(id);
+        let mut s = self.state.borrow_mut();
+        if s.splits.len() <= slot {
+            s.splits.resize(slot + 1, None);
+        }
+        s.splits[slot] = Some(split);
+    }
 }

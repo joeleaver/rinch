@@ -3882,6 +3882,10 @@ pub struct NodeTree {
     /// current geometry (#2116): `content_extents`' memo of the one walk that
     /// reads Taffy's unrounded rects. Boxed for the reason above.
     pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
+    /// Paint's in-flow extents and Appendix E split decisions (#2276), for
+    /// the current [`Self::layout_epoch`]: not cleared by a restyle, a hover
+    /// or a scroll, which move no box. Boxed for the reason above.
+    pub(crate) phase_memo: Box<crate::paint::PhaseMemo>,
     /// Moved by every layout pass (and a text-only IFC rebuild), by
     /// `out_of_flow::replace_all` and by a subtree's removal: everything that
     /// can move a box's rect, and nothing that only restyles or scrolls. What
@@ -4644,6 +4648,7 @@ impl NodeTree {
             placed_absolutes: Vec::new(),
             overflow_absolutes: Default::default(),
             exact_flow: Default::default(),
+            phase_memo: Default::default(),
             layout_epoch: 0,
             scroll_epoch: 0,
             abs_static_fits: Vec::new(),

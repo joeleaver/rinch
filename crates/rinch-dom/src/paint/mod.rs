@@ -21,6 +21,7 @@ mod layer_bounds;
 pub mod painter;
 mod phases;
 use phases::Phase;
+pub(crate) use phases::PhaseMemo;
 pub mod radii;
 pub(crate) mod raster_cache;
 pub use raster_cache::BUDGET_BYTES as RASTER_CACHE_BUDGET_BYTES;
