@@ -549,7 +549,10 @@ fn with_no_outputs_a_content_sized_window_mounts_at_the_opening_windows_scale() 
     assert_eq!(scale, 3.0, "the display's 2 times the zoom");
     w.mount_before_window(scale);
     w.start_at_surface_scale(true);
-    assert_eq!(w.app.device_pixel_ratio, 3.0, "and its surface starts there");
+    assert_eq!(
+        w.app.device_pixel_ratio, 3.0,
+        "and its surface starts there"
+    );
 }
 
 /// A hidden window is prepared at the size it will be shown at: its saved
