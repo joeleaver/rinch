@@ -15,7 +15,7 @@ const VP: (u32, u32) = (800, 600);
 /// The point `fx` of the way across `#id`'s painted box, 10px down. An
 /// inline span's painted box is empty (#2257): for one, the caret `fx` of
 /// the way through its first text (as a point `fx` across its glyphs is in
-/// Chrome), half a pixel in.
+/// Chrome), a little inside the glyph beside it.
 fn pt(app: &RinchApp, id: &str, fx: f32) -> (f32, f32) {
     let n = node(app, id);
     let d = app.doc.as_ref().unwrap().borrow();
@@ -42,9 +42,23 @@ fn pt(app: &RinchApp, id: &str, fx: f32) -> (f32, f32) {
         .map(|(i, _)| r.flat_start + i)
         .chain([r.flat_end])
         .collect();
-    let at = chars[((chars.len() - 1) as f32 * fx).round() as usize];
-    let (cx, cy, ch) = d.text_caret_window_rect(root, at).unwrap();
-    (cx + 0.5, cy + ch / 2.0)
+    // A point `fx` across a right-to-left root is `1 - fx` into its text.
+    let fx = if d.tree.get(root).unwrap().computed_style.direction_rtl {
+        1.0 - fx
+    } else {
+        fx
+    };
+    let i = ((chars.len() - 1) as f32 * fx).round() as usize;
+    let (cx, cy, ch) = d.text_caret_window_rect(root, chars[i]).unwrap();
+    // A quarter of the way toward the next caret (the previous at the
+    // end): inside the glyph beside it, nearest this caret.
+    let j = if i + 1 < chars.len() {
+        i + 1
+    } else {
+        i.saturating_sub(1)
+    };
+    let (nx, _, _) = d.text_caret_window_rect(root, chars[j]).unwrap();
+    (cx + (nx - cx) * 0.25, cy + ch / 2.0)
 }
 
 fn clicks(app: &mut RinchApp, p: (f32, f32), times: usize) {
@@ -125,6 +139,42 @@ pub(super) fn app_after(html: &'static str, ops: &str) -> RinchApp {
                     VP,
                     1.0,
                 );
+                modifiers(&mut app, Modifiers::default());
+            }
+            "key" => {
+                // `key:Control+Shift+ArrowRight:n`, Playwright's spelling.
+                let mut m = Modifiers::default();
+                let mut code = None;
+                for part in p[1].split('+') {
+                    match part {
+                        "Shift" => m.shift = true,
+                        "Control" => m.ctrl = true,
+                        "Alt" => m.alt = true,
+                        "Meta" => m.meta = true,
+                        "ArrowLeft" => code = Some(KeyCode::ArrowLeft),
+                        "ArrowRight" => code = Some(KeyCode::ArrowRight),
+                        "ArrowUp" => code = Some(KeyCode::ArrowUp),
+                        "ArrowDown" => code = Some(KeyCode::ArrowDown),
+                        "Home" => code = Some(KeyCode::Home),
+                        "End" => code = Some(KeyCode::End),
+                        other => panic!("no key {other}"),
+                    }
+                }
+                let times = p.get(2).map_or(1, |n| n.parse().unwrap());
+                modifiers(&mut app, m);
+                for _ in 0..times {
+                    app.handle_event(
+                        PlatformEvent::KeyDown {
+                            key: code.expect("a key"),
+                            logical_key: None,
+                            text: None,
+                            modifiers: m,
+                            repeat: KeyRepeat::Unknown,
+                        },
+                        VP,
+                        1.0,
+                    );
+                }
                 modifiers(&mut app, Modifiers::default());
             }
             other => panic!("no op {other}"),
