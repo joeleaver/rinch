@@ -421,7 +421,8 @@ makes every notch scroll its whole distance at once, and
 line wheel and it glides there too). Smooth scrolling does not follow the
 reduced-motion preference by itself. An app that wants it to can pass the
 preference to `smooth_wheel_scroll(!rinch::prefers_reduced_motion())`; the
-preference comes from the OS or `App::reduced_motion`, #2209. On the web the browser scrolls,
+preference comes from the OS or `App::reduced_motion`, #2209; the getter is native-only
+(it does not exist in a web build). On the web the browser scrolls,
 with its own smoothing and its own settings, and none of this applies.
 
 ### Pointer moves are coalesced

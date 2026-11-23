@@ -745,7 +745,15 @@ own code, use `rinch::prefers_reduced_motion()`. It is reactive: an effect or a
 p { {|| if rinch::prefers_reduced_motion() { "Still" } else { "Animated" }} }
 ```
 
-In the browser, the browser answers the media query itself.
+In the browser, the browser answers the media query itself, and
+`rinch::prefers_reduced_motion`, `rinch::set_reduced_motion` and
+`App::reduced_motion` do not exist in a web build (they are native-only:
+desktop, Android and embedded); read
+`window.matchMedia("(prefers-reduced-motion: reduce)")` through `web_sys`
+instead.
+
+On desktop only `@media` preludes are answered: a media list on an `@import`
+(`@import url(a.css) (prefers-reduced-motion: reduce);`) is not rewritten.
 
 ## Scrollbars
 

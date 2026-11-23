@@ -266,6 +266,7 @@ impl RinchDocument {
             "every staying sheet is still wanted"
         );
         self.style_element_sheets = sheets;
+        self.forget_dead_motion_sheets();
         self.sheet_invalidations_pending = true;
         self.recompute_bare_focus_rules();
     }

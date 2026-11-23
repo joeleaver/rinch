@@ -252,4 +252,43 @@ mod tests {
         assert!(!mentions("x {}"));
         assert!(mentions("@media (PREFERS-reduced-motion) {}"));
     }
+
+    /// The re-parse list holds only sheets still in the document: a theme
+    /// replaced 50 times leaves one entry, not 50 (the theme names the
+    /// feature by default, so every `set_theme_css` used to keep the old
+    /// sheet and its source alive until the preference changed).
+    #[test]
+    fn a_replaced_theme_sheet_is_forgotten() {
+        use crate::RinchDocument;
+        let mut doc = RinchDocument::new();
+        for i in 0..50 {
+            doc.set_theme_css(&format!(
+                "@media (prefers-reduced-motion: reduce) {{ .t{i} {{ width: 1px }} }}"
+            ));
+        }
+        assert_eq!(doc.motion_sheets.len(), 1);
+    }
+
+    /// The same for a `<style>` whose text keeps changing.
+    #[test]
+    fn a_style_elements_old_sheets_are_forgotten() {
+        use crate::RinchDocument;
+        use rinch_core::dom::DomDocument;
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let style = doc.create_element("style");
+        doc.append_child(body, style);
+        for i in 0..50 {
+            doc.set_text_content(
+                style,
+                &format!("@media (prefers-reduced-motion: reduce) {{ .t{i} {{ width: 1px }} }}"),
+            );
+            doc.resolve_layout(800.0 + i as f32, 600.0);
+        }
+        assert_eq!(doc.motion_sheets.len(), 1);
+        // And a removed `<style>` leaves none.
+        doc.remove_child(body, style);
+        doc.resolve_layout(700.0, 600.0);
+        assert_eq!(doc.motion_sheets.len(), 0);
+    }
 }

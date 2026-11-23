@@ -357,6 +357,26 @@ impl RinchDocument {
         }
     }
 
+    /// Drop the re-parse entries of sheets no longer in the document (#2209):
+    /// a replaced theme sheet, a `<style>` whose text changed or that left.
+    /// Each entry holds its sheet strongly, with its source, so without this
+    /// every `set_theme_css` (whose default CSS names the feature) and every
+    /// change of such a `<style>`'s text kept one more sheet alive.
+    pub(crate) fn forget_dead_motion_sheets(&mut self) {
+        if self.motion_sheets.is_empty() {
+            return;
+        }
+        let theme = &self.theme_stylesheet;
+        let author = &self.author_stylesheets;
+        let elements = &self.style_element_sheets;
+        self.motion_sheets.retain(|(sheet, _)| {
+            let is = |l: &style::stylesheets::DocumentStyleSheet| ServoArc::ptr_eq(&l.0, &sheet.0);
+            theme.iter().any(is)
+                || author.iter().any(is)
+                || elements.iter().filter_map(|e| e.sheet.as_ref()).any(is)
+        });
+    }
+
     /// The reduced-motion preference this document answers
     /// `@media (prefers-reduced-motion)` with (#2209).
     pub fn prefers_reduced_motion(&self) -> bool {
@@ -376,21 +396,7 @@ impl RinchDocument {
         }
         self.reduced_motion = reduce;
 
-        // Only sheets still in the document are re-parsed; the rest are
-        // forgotten.
-        let live: Vec<style::stylesheets::DocumentStyleSheet> = self
-            .theme_stylesheet
-            .iter()
-            .chain(self.author_stylesheets.iter())
-            .chain(
-                self.style_element_sheets
-                    .iter()
-                    .filter_map(|e| e.sheet.as_ref()),
-            )
-            .cloned()
-            .collect();
-        self.motion_sheets
-            .retain(|(sheet, _)| live.iter().any(|l| ServoArc::ptr_eq(&l.0, &sheet.0)));
+        self.forget_dead_motion_sheets();
         if self.motion_sheets.is_empty() {
             return;
         }
@@ -617,6 +623,7 @@ impl RinchDocument {
         drop(guard);
 
         self.theme_stylesheet = Some(new_sheet);
+        self.forget_dead_motion_sheets();
 
         // The old sheet's and the new sheet's rules are both invalidations
         // (#884): replacing the theme restyles what either can reach, with no

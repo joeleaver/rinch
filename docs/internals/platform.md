@@ -1410,8 +1410,15 @@ static array, so it has no hook.
   `StylesheetContents` for a re-parse (same `DocumentStyleSheet`, so the
   cascade order is unchanged), forces the author origin dirty, and restyles
   everything the way a DPR change does (`FullRestyleReason::Stylesheet`).
-  Entries for sheets that left the document are dropped then. A document with
-  no such sheet pays a bool compare.
+  Entries for sheets that left the document are dropped by
+  `forget_dead_motion_sheets`, run there, at the end of `set_theme_css` and at
+  the end of `sync_style_element_sheets`: each entry holds its sheet strongly,
+  and the theme names the feature by default, so before that every theme
+  replacement (and every text change of such a `<style>`) kept one more sheet
+  alive until the preference changed. A document with no such sheet pays a
+  bool compare.
+- **Only `@media` preludes are rewritten.** An `@import`'s media list naming
+  the feature is left as Stylo parses it, which has no such feature.
 - **The process's preference** is `rinch_dom::reduced_motion::prefers_reduced_motion`,
   an atomic that a new document starts from. `rinch::reduced_motion` sets it
   from the app's override, else the OS's setting
