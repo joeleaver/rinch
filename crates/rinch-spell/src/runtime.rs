@@ -337,8 +337,10 @@ mod native {
         }
     }
 
-    /// The app's spellcheck settings. [`Default`] is Chrome's: on, the system
-    /// dictionaries for the user's locales, [`SkipRules::default`] (which
+    /// The app's spellcheck settings. [`Default`] is Chrome's: on, the
+    /// system's spellchecking for the user's languages (the platform's
+    /// checker on macOS and Windows, Hunspell dictionaries elsewhere:
+    /// [`Backend::Auto`]), [`SkipRules::default`] (which
     /// skips URLs, emails, words with digits and all-caps words, a deliberate
     /// exception to Chrome), and a [`DEFAULT_DEBOUNCE_MS`] pause after typing.
     /// `SpellcheckConfig::from(false)` turns it off.
@@ -440,7 +442,7 @@ mod native {
     }
 
     impl SpellcheckConfig {
-        /// The default (on, system dictionaries).
+        /// The default (on, the system's spellchecking).
         pub fn new() -> Self {
             Self::default()
         }
@@ -451,7 +453,8 @@ mod native {
             self
         }
 
-        /// The system dictionaries for these locales instead of the user's.
+        /// The system's spellchecking for these languages instead of the
+        /// user's (the platform checker's, or the Hunspell dictionaries).
         pub fn languages<I, S>(mut self, locales: I) -> Self
         where
             I: IntoIterator<Item = S>,

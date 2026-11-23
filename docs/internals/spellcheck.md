@@ -5,7 +5,8 @@ the stages of #2862 that build on it (marking misspelled words in fields and
 the editor, the context menu's suggestions, platform backends). Stage 1 is
 the engine; stage 2 marks misspelled words in text fields ("Marking text
 fields" below); stage 3 puts suggestions and "Add to dictionary" in the text
-context menu ("The context menu" below). `rinch` re-exports the crate as `rinch::spellcheck`.
+context menu ("The context menu" below); stage 4 adds the platform
+spellcheckers of macOS and Windows ("Platform backends" below). `rinch` re-exports the crate as `rinch::spellcheck`.
 
 ## Shape
 
@@ -23,6 +24,12 @@ the core path never touches the filesystem.
 - `src/unicode.rs`: scripts (`icu_properties`), marks, NFC (`icu_normalizer`),
   and deriving a dictionary's scripts. Both ICU crates were already in the
   graph (rinch-dom, parley, url) with compiled data.
+- `src/locale.rs`: `normalize_locale` (always compiled; `system` re-exports it).
+- `src/platform/`: `PlatformChecker` (`mod.rs`, target-independent logic and
+  the language/script tables), `mac.rs` (`NSSpellChecker`), `windows.rs`
+  (`ISpellChecker`). The bindings are target-specific optional dependencies
+  behind the `platform` feature (default on), so Linux, Android and wasm32
+  build none of them.
 - `src/system.rs`: installed-dictionary discovery by locale. Compiled only with
   the `system-dictionaries` feature (default) and never on wasm32.
 
@@ -43,9 +50,17 @@ The trait checks single words; segmentation is `words()`'s job.
 `spellbook::Dictionary` (0.4.2) is `Send + Sync`: the type that holds a raw pointer,
 `UmbraSlice`, has `unsafe impl Send/Sync`, and the rest is `hashbrown` maps
 and vectors. `tests/hunspell.rs` `checker_is_send_and_sync` asserts it for
-every public type and checks from a spawned thread. Platform backends (stage 4)
-whose native API is main-thread-only will need a forwarding wrapper to meet
-the bound.
+every public type and checks from a spawned thread. The platform backends
+meet the bound by forwarding every native call to the one thread that may
+make it ("Platform backends" below).
+
+Two defaulted methods serve those backends: `check_batch(&[&str]) ->
+Vec<bool>` (default: `check` per word), which `Session::check_ranges` uses
+for all the words of a check at once, so an engine that must hop threads
+answers many words per hop; and `suggest_on_calling_thread()` (default
+`false`), which makes `runtime::suggest` run the request on the calling (UI)
+thread instead of the `rinch-spell-suggest` thread (bumping the supersede
+counter first, so queued older requests are still dropped).
 
 ## Checking a word (`HunspellChecker::check`)
 
@@ -579,3 +594,162 @@ and `rinch-editor-view` `spellcheck::tests::add_to_dictionary_drops_the_word_in_
   it runs it on the rich-text editor when the app supplied dictionaries.
 - The context menu (stage 3) calls `suggest(word, menu_suggestions)` and
   `runtime::add_to_dictionary` (see "The context menu" above).
+
+## Platform backends (stage 4)
+
+### Choice
+
+`SpellcheckConfig::backend` (`Backend::Auto` default, `Hunspell`,
+`Platform`) decides what `Dictionaries::System` resolves to;
+`Backend::engine(platform, hunspell)` is the pure table
+(`runtime::tests::backends_resolve_to_engines`): Auto is the platform where
+`platform::AVAILABLE` (macOS or Windows with the `platform` feature), else
+Hunspell when `system-dictionaries` is compiled; `Hunspell` never the
+platform; `Platform` nothing where there is none. `set_config` settles
+`Engine::Nothing` to "no checker" at once (as it did for wasm), so a forced
+platform on Linux does no work. `Dictionaries::Checker` (the app's own) is
+untouched by the choice. `load_platform` builds `PlatformChecker::new()` (or
+`with_languages(locales)`), shares the configured personal dictionary and
+applies `add_to_system_dictionary` (default `true`).
+
+### `PlatformChecker` (`platform/mod.rs`)
+
+Engine-independent, over an internal `Native` trait (`languages() ->
+Option<Vec<String>>`, `check_words`, `suggest`, `learn`, `unlearn`, `ignore`,
+`clear_ignored`, `suggest_on_calling_thread`). `platform/tests.rs` drives it
+with a fake engine on any host. In order, a word is correct when:
+
+1. it has no letter in a script of the checked languages (`covers`). The
+   languages come from the engine; `language_scripts(tag)` maps them (a
+   hand table: Latin for the usual European and other Latin-script
+   languages, Cyrillic, Greek, Arabic, Hebrew, the Indic scripts, Thai, Han,
+   kana, Hangul, …). A language not in the table turns the rule off (every
+   word goes to the engine), and so does an engine that could not name its
+   languages yet; the answer is cached only once the engine answered (macOS
+   can time out, below);
+2. the session ignore list or the personal dictionary accepts it (NFC, the
+   casing rule);
+3. the engine accepts it. `check_batch` sends only the words 1 and 2 left, in
+   one `check_words` call.
+
+"Add to dictionary" is `PersonalDictionary::add`; the checker's listener on
+the personal dictionary forwards `Added` to `Native::learn` and `Removed` to
+`unlearn` while `add_to_system_dictionary` is on, then reports
+`SpellChange::Personal` as the Hunspell checker does. So the app's own
+`add`/`remove` reach the system too, words loaded with `with_words`/`extend`
+(no notification) never do, and the app's listener fires either way.
+Chrome's choice is the same on both platforms (`spellcheck_platform::AddWord`
+→ `learnWord:`; `WindowsSpellChecker::AddWordForAllLanguages`), with its own
+custom dictionary file kept beside it. A word in the system dictionary but
+not the personal one is accepted (by the engine) and not listed.
+
+Ignore is rinch's list (so `clear_ignored` works and the listeners hear
+it); on macOS it is also handed to `ignoreWord:inSpellDocumentWithTag:` with
+the checker's own document tag and cleared with `setIgnoredWords:@[]`.
+Windows' `ISpellChecker::Ignore` has no undo, so it is not called.
+
+Language tags: `to_mac_language` / `from_mac_language` are Chromium's
+`ConvertLanguageCodeToMac` / `FromMac` (`en_US` ↔ `en`, `pt_PT` ↔ `pt`,
+`pl` ↔ `pl_PL`) in rinch's underscore form; `to_bcp47` for Windows;
+`choose_languages(wanted, supported)` matches a wanted tag to an installed
+spellchecker exactly, else to the first of the same language (`ko` →
+`ko-KR`, `fr-CA` → `fr-FR`). Suggestions from several languages are
+interleaved (`interleave_suggestions`, Chromium's `FillSuggestions`).
+
+### macOS (`platform/mac.rs`)
+
+**Threading: the main thread.** Chromium makes every `NSSpellChecker` call
+on the browser UI thread (the main thread on macOS):
+`SpellCheckHostChromeImpl::CheckSpelling` and `FillSuggestionList`
+(`chrome/browser/spellchecker/spell_check_host_chrome_impl.cc`, whose other
+entry points `CHECK_CURRENTLY_ON(BrowserThread::UI)`) call
+`spellcheck_platform::CheckSpelling` in
+`components/spellcheck/browser/spellcheck_platform_mac.mm`, which also posts
+panel work with `performSelectorOnMainThread`. Apple's header does not mark
+the class main-actor (objc2-app-kit 0.3's generated `NSSpellChecker` is not
+`MainThreadOnly`; only its panels take a `MainThreadMarker`), but rinch
+follows Chromium rather than rely on undocumented thread safety.
+
+`on_main(f)`: on the main thread (`MainThreadMarker::new()`), `f` runs at
+once; elsewhere it is queued with `DispatchQueue::main().exec_async` and the
+caller waits on a channel for at most `MAIN_THREAD_WAIT` (2 s). Not
+`exec_sync`: a main thread that never drains the main queue (no run loop, a
+test harness) or that is itself blocked on the caller would deadlock it; with
+the timeout the words count as correct (unmarked) and the late answer is
+dropped. `f` runs under `catch_unwind` (a panic must not unwind into
+libdispatch). rinch's UI thread is the main thread on macOS, so the menu's
+suggestions (`suggest_on_calling_thread() == true`), "Add to dictionary"
+and a check under `set_inline_jobs` all run directly. The checking thread's
+`check_words` is sliced: each hop checks words until `MAIN_THREAD_SLICE`
+(3 ms, the web editor's slice budget) has passed, then returns, so the UI
+draws between slices. Constructing `MacSpeller` touches no AppKit (the
+checking thread builds it inside the session's `OnceLock`; nothing on the UI
+thread waits on that lock today, and this keeps it so).
+
+Calls: `checkSpellingOfString:startingAt:0 language:<lang or nil>
+wrap:NO inSpellDocumentWithTag:wordCount:NULL`, correct when the range's
+length is 0 (Chromium's `CheckSpelling`); `guessesForWordRange:inString:
+language:inSpellDocumentWithTag:` (Chromium passes `[checker language]`);
+`learnWord:`, `unlearnWord:`; `uniqueSpellDocumentTag` on first use,
+`closeSpellDocumentWithTag:` on drop. Languages: with no app list, `language:
+nil` (the system's choice, with automatic identification when the user has
+it on), and `languages()` reports `userPreferredLanguages` (or `[language]`
+when automatic identification is off) for the script rule; with an app list,
+each tag maps to a code in `availableLanguages` (exact, else the first of
+the same language) and a word is correct if any accepts it (none available:
+nothing is marked).
+
+**Known limit:** `+sharedSpellChecker` can raise an Objective-C exception
+(Chromium wraps it in `@try`, citing pasteboard state). objc2's `exception`
+feature compiles a C helper, which the Linux cross-check of `check-macos`
+cannot build, so rinch does not catch it.
+
+### Windows (`platform/windows.rs`)
+
+**Threading: one MTA thread of its own.** Chromium keeps every call on one
+COM task runner (`windows_spell_checker.cc`, `BackgroundHelper`: "All
+invocations of these methods must be posted to the same COM
+SingleThreadTaskRunner", and it asserts an STA there). rinch keeps the one
+thread, `rinch-spell-windows`, but joins the **multithreaded** apartment: the
+factory's registration says `ThreadingModel = Free`
+(`HKCR\CLSID\{7AB36653-1796-484B-BDFA-E74F1DB7C1DC}\InprocServer32`,
+`MsSpellCheckingFacility.dll`; read on nico-top, Windows 11), so in the MTA its
+objects are called directly, with no proxy and no message pump (an STA
+client would get a proxy into the MTA). The UI thread is an STA (winit's
+OLE drag and drop) and must not use the objects itself. Callers post a
+`Request` over an `mpsc` channel and wait for the reply; the COM thread waits
+on nobody, so nothing deadlocks. `WindowsSpeller::new` waits for the thread
+to create the factory (`None` if it cannot: no spellchecking service).
+
+Calls: `CoCreateInstance(SpellCheckerFactory)`; languages by default from
+`HKCU\Control Panel\International\User Profile\Languages` (the Settings
+language list; `en-US\0ko` on nico-top), else `GetUserPreferredUILanguages`,
+matched against `SupportedLanguages` (`choose_languages`; nico-top has no
+Korean spellchecker, so it checks `en_US`); `CreateSpellChecker` per language;
+`Check` per word, misspelled only when every language reports an error whose
+`CorrectiveAction` is `GET_SUGGESTIONS` or `REPLACE` (Chromium's
+`RequestTextCheckForAllLanguages`; `DELETE` is a repeated word); `Suggest`
+per language, interleaved; `Add` and `ISpellChecker2::Remove` on every
+language, answered (so a check right after sees it).
+
+### What ran where
+
+- Linux (CI and here): `platform/tests.rs` (the logic over a fake engine,
+  the tag and script tables) and the runtime tests (`backends_resolve_to_engines`,
+  `a_forced_platform_backend_without_a_platform_does_nothing`,
+  `a_check_asks_one_batch`, `a_main_thread_checker_suggests_on_the_calling_thread`).
+- **Windows, for real** (2026-11-23, nico-top, Windows 11 with `en-US` and
+  `ko` in its language list): the crate's unit tests cross-built for
+  `x86_64-pc-windows-gnu` in WSL (mingw-w64) and run as a Windows `.exe`
+  from `C:\…\Temp` (WSL interop refuses an `.exe` on the Linux file system,
+  "Invalid argument"): `platform::windows::tests` (`hello` correct, `helo`
+  and `wrld` not, suggestions for `helo` `hello, halo, helot, hele, help`,
+  four threads at once, `Add` reaching the system dictionary as seen by a
+  second checker and `Remove` taking it out, the default configuration
+  marking through `Session::check_ranges`), plus every other unit test and
+  `tests/hunspell.rs`. (`tests/system.rs` fails there only because its
+  fixtures path is the Linux one, `CARGO_MANIFEST_DIR` baked at build time.)
+- **macOS: compiled only** (`cargo clippy -p rinch-spell --all-targets
+  --target {aarch64,x86_64}-apple-darwin`, and CI's `check-macos`). Nothing of
+  `mac.rs` has run on a Mac.
+
