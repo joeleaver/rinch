@@ -619,6 +619,10 @@ radio, switch, slider, select, tree, the menu bar, …) say
 selectable text; a rule of yours that is more specific, or as specific and
 later, overrides that.
 
+An element with `draggable="true"` is `user-select: none`, as in Chrome, so
+a selection across a draggable inline leaves its text out; a `user-select`
+of yours on the element overrides that.
+
 A press in selectable text starts a selection and a drag extends it into
 any selectable paragraph it reaches, every paragraph between included;
 dragging into the space beside, between or below text extends it to the

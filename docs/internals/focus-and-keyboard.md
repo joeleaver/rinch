@@ -996,7 +996,7 @@ so UA, component, app and inline declarations all count, with specificity and
 child that declares nothing, where Chrome's `getComputedStyle` reports the
 inherited value); `auto` is resolved from the nearest ancestor that is not
 `auto` where selection asks (`resolved_user_select`), which gives the same
-selection. rinch's UA sheet makes `code, kbd, samp, pre` `text`. Before #2231
+selection. rinch's UA sheet makes `code, kbd, samp, pre` `text`, and `[draggable="true" i]` `none` as Chrome does (#2247). Before #2231
 only the inline `style` attribute was read and the code default was patched on
 by tag after the cascade. A press in
 `user-select` text starts `RinchApp::text_selection` (`app/text_selection.rs`):
