@@ -938,6 +938,76 @@ pub fn unmoved_point(inline: &crate::node::InlineLayout, x: f32, y: f32) -> (f32
     best.map_or((x, y), |(_, (dx, dy))| (x - dx, y - dy))
 }
 
+/// What of `span` — a `position: relative` inline element that paints in its
+/// own entry of a stacking sequence (#2819, `paint::paints_in_own_entry`) —
+/// point `(x, y)` may be over, in the space of that entry's
+/// `offset_x`/`offset_y` (its IFC root's scrolled border-box origin, as paint
+/// reads it): `Some(true)` over its drawn text, `Some(false)` when it holds
+/// no text (only atomic inlines, [`layered_span_boxes`]), `None` when the
+/// point is off its text, or `span` is no such element. Its text is its byte
+/// range's selection rects, one per line piece, moved by its offset and
+/// those of the relative spans around it, as [`unmoved_point`] reads a
+/// fragment. Hit testing asks this at the span's place in the sequence, so a
+/// span painted over a box is tapped over it too.
+pub fn layered_span_at(
+    tree: &crate::node::NodeTree,
+    span: &crate::node::Node,
+    offset_x: f32,
+    offset_y: f32,
+    x: f32,
+    y: f32,
+) -> Option<bool> {
+    if !crate::paint::paints_in_own_entry(span) {
+        return None;
+    }
+    let root = span.ifc_root.and_then(|r| tree.get_live(r))?;
+    let inline = root.text_layout.as_ref()?;
+    let range = inline
+        .relative_spans
+        .iter()
+        .chain(&inline.relative_spans_resting)
+        .find(|s| s.owner == span.id)?;
+    if range.start == range.end {
+        return Some(false);
+    }
+    let (ox, oy) = crate::paint::ifc_root_content_origin(root);
+    let (dx, dy) = inline.relative_offset_at(range.start);
+    let (lx, ly) = (x - offset_x - ox - dx, y - offset_y - oy - dy);
+    selection_rects_impl(&inline.layout, range.start, range.end, None)
+        .into_iter()
+        .any(|(rx, ry, w, h)| (rx..rx + w).contains(&lx) && (ry..ry + h).contains(&ly))
+        .then_some(true)
+}
+
+/// The atomic inlines (`inline-block`s, images) that `span`'s entry paints
+/// (#2819): those of its IFC whose innermost layered span is `span`, in
+/// line order. Hit testing tries them over the span's text, as paint draws
+/// them over it. Empty for anything but a span that
+/// `paint::paints_in_own_entry`.
+pub fn layered_span_boxes(
+    tree: &crate::node::NodeTree,
+    span: &crate::node::Node,
+) -> Vec<crate::node::RawNodeId> {
+    if !crate::paint::paints_in_own_entry(span) {
+        return Vec::new();
+    }
+    let Some(root) = span.ifc_root.and_then(|r| tree.get_live(r)) else {
+        return Vec::new();
+    };
+    let Some(inline) = root.text_layout.as_ref() else {
+        return Vec::new();
+    };
+    let Some(spans) = crate::paint::LayeredSpans::of(tree, inline) else {
+        return Vec::new();
+    };
+    inline
+        .child_positions
+        .iter()
+        .map(|&(id, _)| id)
+        .filter(|&id| spans.owner_of(tree, root.id, id) == Some(span.id))
+        .collect()
+}
+
 /// The text a **text leaf** (a flex or grid container's own text, laid out
 /// on its own as `cached_text_parley`, in no IFC root) was shaped from: its
 /// text node's text with its white space processed by its element's

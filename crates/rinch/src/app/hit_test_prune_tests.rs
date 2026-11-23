@@ -907,6 +907,59 @@ fn reference_hit_test_node(
                 if is_stretched_ifc_text(child) {
                     continue;
                 }
+                // A relative inline element: its atomic inlines, then its
+                // drawn text, which answers its IFC root (#2819).
+                if rinch_dom::paint::paints_in_own_entry(child) {
+                    let inside = check_children
+                        && clipped.is_none()
+                        && order
+                            .clips_for(entry)
+                            .iter()
+                            .all(|c| c.contains(x as f64, y as f64));
+                    let over = inside
+                        .then(|| {
+                            rinch_dom::text_query::layered_span_at(
+                                tree,
+                                child,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                            )
+                        })
+                        .flatten();
+                    if inside {
+                        for id in rinch_dom::text_query::layered_span_boxes(tree, child)
+                            .into_iter()
+                            .rev()
+                        {
+                            if let Some(hit) = reference_hit_test_node(
+                                tree,
+                                id,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                                vx,
+                                vy,
+                                None,
+                            ) {
+                                return Some(hit);
+                            }
+                        }
+                    }
+                    if over == Some(true)
+                        && !rinch_dom::visibility::hides_own(tree, child)
+                        && !matches!(
+                            child.computed_style.pointer_events,
+                            rinch_dom::computed_style::PointerEventsValue::None
+                        )
+                        && let Some(root) = child.ifc_root
+                    {
+                        return Some(root);
+                    }
+                    continue;
+                }
                 // The clipping ancestors this entry was hoisted past. Since
                 // #324 an `overflow` box is not a stacking context, so the
                 // walk went straight through them and the `check_children`

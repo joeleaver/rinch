@@ -392,6 +392,84 @@ scrolls it past its insets that is Chrome's answer too, and where a scroll
 would push it rinch's does not stick (sticky offsets are applied to boxes).
 Pinned in `tests/relative_inline_offset_2346_tests.rs`
 (layout, paint, pixels, Chrome 156) and `rinch/src/app/relative_inline_hit_2346_tests.rs`.
+
+**A relative inline element paints as a positioned box** (#2819, CSS 2.1
+Appendix E step 8): its background, border, text, decorations and the atomic
+inlines in it are drawn in its own entry of the stacking context's sequence,
+in tree order with the other positioned boxes, or at its `z-index` (with
+`opacity`, as one group). It always was an entry
+(`stacking::paints_at_stacking_root`), but paint skipped it
+(`drawn_by_its_ifc`) and its IFC root drew its runs with the in-flow content,
+so an earlier `position: absolute` sibling covered it whatever the `z-index`
+(Braynard's HUD: an absolute outline layer over a relative fill layer). Now
+`paint_sequence_entry` draws such an entry (`paint::paints_in_own_entry`: a
+flowed inline element with `position: relative`) through
+`paint_layered_span`, which calls `paint_inline_layout` with `only:
+Some(span)`, and the root's own paint leaves it out: `InlineScope` (built from
+the IFC's `relative_spans` and `relative_spans_resting`, so a change of
+`position`, which rebuilds the lines, keeps it current) decides per text
+range, inline background and atomic inline which paint draws it, by the
+innermost layered span that is or holds the node (`LayeredSpans::owner_of`),
+and goes into every mask the IFC paint builds (`TextMask`, `ShadowGroup`,
+`TextFragment`). A span's entry draws nothing of the root's own (uncovered
+bytes, the ellipsis, the highlights) nor of a layered span nested in it, which
+paints in its own entry (a stacking-context span's sequence holds its nested
+ones, `paint_children_with_stacking`). The entry's offset is the root's
+scrolled border-box origin, since a flowed inline element's `layout` is zeroed;
+the root's content origin is added to it. Hit testing walks the same entry:
+a point on the span's moved text (`text_query::layered_span_at`, its
+selection rects at its offset) answers the IFC root, as a hit on any of its
+text does, before the boxes below the span in the sequence. Pinned in
+`tests/positioned_inline_paint_2819_tests.rs` (Chrome 158 pixels, both clip
+routes; selection, highlight and drag-ghost twins) and
+`relative_inline_hit_2346_tests.rs`. **A static inline element
+that is a stacking context** (#2869: a `filter`, an `opacity` below 1, a
+`mask-image`; `ifc::is_static_inline_layer`) paints in its own entry the same
+way: its byte range is recorded with the relative ones in
+`relative_spans_resting`, at a zero offset (`resolve_relative_spans` resolves
+no insets for it), whether it is one is compared by
+`same_relative_offset_inputs` and an `opacity` tick that makes it one rebuilds
+the lines (`settle_ticked_text`). Its `filter` is drawn by
+`filter::paint_filtered_span`: everything its entry draws, every line's
+fragment, into one offscreen raster covering `text::layered_span_extent` (its
+lines' boxes at its offset, with `inline_ink_past_lines` and a margin of its
+`font-size`) grown by the list's reach, the whole list applied there (the
+colour functions too: a span has no box for the overlays a block uses), then
+composited at its `opacity`; a list of `drop-shadow()`s alone draws the
+shadows from the raster and the span again over them. A relative span's
+filter goes the same way. Hit testing is unchanged by the filter (Chrome: a
+filter does not affect hit testing): the span's text and atomic inlines are
+hit at its entry, and its shadow is not hit. Damage: a span has no box, so
+its change damages its IFC root's rect and ink (`compute_damage`'s box-less
+inline branch), grown by the span's own filter reach now and as it was painted
+(`PaintedState::filter_reach`), so a filter added, removed or changed repaints
+the shadow past the root (review of #2895: a hover glow on a link in a
+shrink-wrapped label); a change inside the span is grown by the span's reach
+as an ancestor's (`filter::ancestor_reach`). Pinned in
+`tests/inline_filter_damage_2869_tests.rs` (partial frame against a fresh full
+paint, static and relative spans). The raster is not cached, and a
+positioned box inside a filtered span reaching past the span's lines is cut
+at the raster's edge. Pinned in `tests/inline_filter_gradient_2869_tests.rs`
+(Chrome 158 pixels: a shadow under a span's box and its text, `invert()`, a
+wrapped span, a relative one, Braynard's HUD numeral: a relative gold
+`background-clip: text` gradient under a `drop-shadow`) and
+`relative_inline_hit_2346_tests.rs`. Not Chrome's yet: a `sticky` inline is
+still drawn with the root's runs (no byte range is recorded for it); an
+absolute box **inside** a relative span is a unit of its host (#591), so it
+is ordered after every positioned descendant of the span, where Chrome puts it
+at its tree position (a relative span after it inside the same span is drawn
+under it, not over); an atomic inline that is itself positioned is still drawn
+by its IFC (`drawn_by_its_ifc`'s own note); the span's `opacity` group is
+unbounded (its extent is its lines', which no box records).
+**Highlights:** the root draws its read-only selection and the editor's held
+highlight boxes (#2666) under its text, and the span's entry, drawn after,
+draws them again over its own opaque background, clipped to it
+(`paint::text::layered_background_path`, the boxes replayed from
+`PAINTED_HIGHLIGHTS`), so a selection shows over a relative span's background
+as over a static one's. **Snapshots:** in a `paint_subtree` (a drag ghost) a
+span whose entry is held by a stacking context outside the snapshot (a plain
+dragged box holding it) is drawn by its IFC root, as before #2819
+(`layered_entry_is_painted`).
 A pointer on moved **text** is mapped to the character drawn under it
 (#2404): `text_query::unmoved_point` finds the innermost relative span whose
 moved fragment (its selection rects, one per line piece, moved by every

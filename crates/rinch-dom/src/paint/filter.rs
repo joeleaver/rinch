@@ -174,7 +174,7 @@ pub(crate) fn list_outsets(list: &[FilterOp]) -> [f32; 4] {
 }
 
 /// The lengths of `t`'s columns: how far it stretches each axis.
-fn axis_scales(t: Affine) -> (f64, f64) {
+pub(super) fn axis_scales(t: Affine) -> (f64, f64) {
     let c = t.as_coeffs();
     (c[0].hypot(c[1]), c[2].hypot(c[3]))
 }
@@ -572,6 +572,106 @@ pub(super) fn paint_filtered(
     }
     if keep {
         super::raster_cache::store(tree, node_id, node, Kind::Filter, key, image, cx0, cy0);
+    }
+}
+
+/// Paint layered inline span `span_id` (#2869, `paints_in_own_entry`), whose
+/// `filter` is not `none`, through an offscreen raster, as [`paint_filtered`]
+/// paints a box: everything its entry draws, every line's fragment, is drawn
+/// once into the raster by `plain` (its entry, painted again with
+/// [`is_filtering`] answering `true`), the list applied to it, and the
+/// result composited at the span's `opacity`. A list of `drop-shadow()`s
+/// alone at full opacity draws only the shadows from the raster and the span
+/// again over them with `painter`.
+///
+/// Unlike a box's, every function of the list is applied in the raster,
+/// the colour ones too: a span has no box for the colour overlays to cover.
+/// `extent` is what the span draws ([`super::text::layered_span_extent`]),
+/// in the device space before `transform`. Nothing is cached: a span is in
+/// no raster cache.
+#[cfg(feature = "filter-raster")]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_filtered_span(
+    tree: &NodeTree,
+    span_id: RawNodeId,
+    list: &[FilterOp],
+    opacity: f32,
+    painter: &mut dyn Painter,
+    scale: f64,
+    transform: Affine,
+    extent: Rect,
+    plain: &mut dyn FnMut(&mut dyn Painter),
+) {
+    use super::skia_painter::TinySkiaPainter;
+
+    // `plain` with the span's filter off, and its opacity too when `drop`.
+    let mut plain_as = |painter: &mut dyn Painter, drop: bool| {
+        let prev = FILTERING.with(|f| f.replace(Some((span_id, drop))));
+        plain(painter);
+        FILTERING.with(|f| f.set(prev));
+    };
+    let ops = device_ops(list, scale, transform);
+    let [ol, ot, or, ob] = device_outsets(&ops);
+    let m = ol.max(ot).max(or).max(ob).max(0) as f64;
+    // What the span and its filter can draw, and of that what can show now.
+    let content = transform.transform_rect_bbox(extent).inflate(m, m);
+    let shows = visible_now(true).map_or(content, |v| v.intersect(content));
+    if !(shows.width() > 0.0 && shows.height() > 0.0) {
+        return;
+    }
+    let canvas = shows
+        .inflate(m, m)
+        .intersect(content.inflate(1.0, 1.0))
+        .expand();
+    let (cx0, cy0) = (canvas.x0 as i32, canvas.y0 as i32);
+    let (cw, ch) = (
+        canvas.width().max(0.0) as u32,
+        canvas.height().max(0.0) as u32,
+    );
+    if cw == 0 || ch == 0 {
+        return;
+    }
+    if cw as u64 * ch as u64 > MAX_RASTER_PIXELS {
+        plain_as(painter, false);
+        return;
+    }
+    tree.perf.bump(crate::perf::Counter::FilterRasters);
+    tree.perf.add(
+        crate::perf::Counter::FilterRasterPixels,
+        cw as u64 * ch as u64,
+    );
+    let mut raster = TinySkiaPainter::new(cw, ch);
+    // Composited, as a layer is: grey text, as on the GPU (#2286 stage 3).
+    raster.set_subpixel_text(false);
+    {
+        let _cull = CullScope::enter(m, canvas);
+        let mut shifted = Shifted {
+            inner: &mut raster,
+            shift: Affine::translate((-(cx0 as f64), -(cy0 as f64))),
+        };
+        let _floor = super::FixedFloor::here();
+        let mut tracking =
+            super::ClipTrackingPainter::new(&mut shifted, super::INK_MARGIN_CSS_PX * scale);
+        plain_as(&mut tracking, true);
+    }
+    let mut pixels = raster.take_pixels();
+    let shadows_only = opacity >= 1.0 && ops.iter().all(|op| matches!(op, DeviceOp::Shadow { .. }));
+    if shadows_only {
+        let image = RasterImage {
+            pixels: shadow_layer(&pixels, cw as usize, ch as usize, &ops).into(),
+            width: cw,
+            height: ch,
+        };
+        painter.draw_raster(&image, cx0, cy0, 1.0);
+        plain_as(painter, false);
+    } else {
+        apply(&mut pixels, cw as usize, ch as usize, &ops, Edge::Decal);
+        let image = RasterImage {
+            pixels: pixels.into(),
+            width: cw,
+            height: ch,
+        };
+        painter.draw_raster(&image, cx0, cy0, opacity.min(1.0));
     }
 }
 

@@ -524,6 +524,69 @@ fn hit_test_node<P: Probe>(
                 if in_relative_split_inline(tree, child) != lifted {
                     continue;
                 }
+                // A `position: relative` inline element is painted here, in
+                // its place among the positioned boxes (#2819), so its text is
+                // tapped here too: the hit is its IFC root's, as for any text
+                // in its lines, and the target is found from there. It has no
+                // box, so nothing below would find it.
+                if rinch_dom::paint::paints_in_own_entry(child) {
+                    let inside = check_children
+                        && clipped.is_none()
+                        && order
+                            .clips_for(entry)
+                            .iter()
+                            .all(|c| c.contains(x as f64, y as f64));
+                    let over = inside
+                        .then(|| {
+                            rinch_dom::text_query::layered_span_at(
+                                tree,
+                                child,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                            )
+                        })
+                        .flatten();
+                    // Its atomic inlines first, drawn over its text; placed
+                    // from the root's scrolled origin, as the root's own walk
+                    // places them. Wherever the point is, not only over its
+                    // text: an inline-block beside the span's text is off
+                    // that text, and only this entry draws it (#2869).
+                    if inside {
+                        for id in rinch_dom::text_query::layered_span_boxes(tree, child)
+                            .into_iter()
+                            .rev()
+                        {
+                            if let Some(hit) = hit_test_node(
+                                probe,
+                                tree,
+                                id,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                                vx,
+                                vy,
+                                None,
+                            ) {
+                                return Some(hit);
+                            }
+                        }
+                    }
+                    if over == Some(true)
+                        && !hides_own_hit(tree, child)
+                        && !matches!(
+                            child.computed_style.pointer_events,
+                            rinch_dom::computed_style::PointerEventsValue::None
+                        )
+                        && let Some(root) = child.ifc_root
+                        && probe.accepts(tree, root)
+                    {
+                        return Some(root);
+                    }
+                    continue;
+                }
                 // A box entered as an ordinary node — in flow, or positioned
                 // with `z-index: auto` — can be skipped outright when its
                 // flow subtree reaches nowhere near the point. A stacking
