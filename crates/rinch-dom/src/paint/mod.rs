@@ -417,17 +417,34 @@ fn compute_damage_impl(
                 ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get_live(id)),
                 scale,
             );
+            // A span's own `filter` (#2869, drawn in its own entry through
+            // `filter::paint_filtered_span`) spreads what it draws by its
+            // reach, now and as it was painted: a filter added, removed or
+            // changed damages the root's ink grown by the larger of the two.
+            // The span's fragments are inside that ink.
+            let own_reach = {
+                let now = if node.computed_style.filter.is_empty() {
+                    0.0
+                } else {
+                    filter::list_outsets(&node.computed_style.filter)
+                        .into_iter()
+                        .fold(0.0_f32, f32::max)
+                };
+                let (sx, sy) = filter::axis_scales(rt);
+                now.max(old_filter_reach) as f64 * scale * sx.max(sy)
+            };
             if rw > 0.0
                 && rh > 0.0
                 && add(
-                    rt.transform_rect_bbox(root_ink.grow(Rect::new(rx, ry, rx + rw, ry + rh))),
+                    rt.transform_rect_bbox(root_ink.grow(Rect::new(rx, ry, rx + rw, ry + rh)))
+                        .inflate(own_reach, own_reach),
                     clip_now(root_id),
                 )
             {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
             if let Some(r) = painted_rect_with(tree, root_id, scale, Outsets::ZERO)
-                && add(r, clip_then(root_id))
+                && add(r.inflate(own_reach, own_reach), clip_then(root_id))
             {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
@@ -4752,7 +4769,8 @@ fn paint_sequence_entry(
     if let Some(child) = child
         && drawn_by_its_ifc(tree, child)
     {
-        // A `position: relative` inline element is drawn here, in its place
+        // A `position: relative` inline element, or a static one that is a
+        // stacking context (#2869), is drawn here, in its place
         // among the positioned boxes, not with its IFC's lines (#2819).
         if paints_in_own_entry(child) {
             switch_clip_chain(order, entry.clips, open, painter, node_transform);
@@ -4897,8 +4915,9 @@ fn paint_sequence_entry(
     }
 }
 
-/// Paint `span_id`, a `position: relative` inline element
-/// ([`paints_in_own_entry`]), as its entry of a stacking sequence (#2819):
+/// Paint `span_id`, a `position: relative` inline element or a static one
+/// that is a stacking context ([`paints_in_own_entry`], #2869), as its entry
+/// of a stacking sequence (#2819), through its `filter` when it has one:
 /// its IFC root's backgrounds, borders, text, decorations and atomic inlines
 /// that belong to it ([`InlineScope::Span`]), then, when it is a stacking
 /// context itself (a `z-index`, an `opacity`), the entries of its own
@@ -4934,6 +4953,38 @@ fn paint_layered_span(
     let (off_x, off_y) = ifc_root_content_origin(root);
     let content_x = offset_x + off_x as f64 * scale;
     let content_y = offset_y + off_y as f64 * scale;
+    // A `filter` (#2869): all of the span, every line's fragment, drawn
+    // through one offscreen raster the list is applied to, which paints the
+    // span again through here.
+    #[cfg(feature = "filter-raster")]
+    if !span.computed_style.filter.is_empty()
+        && !span.computed_style.filter.iter().all(|f| f.is_identity())
+        && !filter::is_filtering(span_id)
+        && let Some(extent) = text::layered_span_extent(
+            |id| tree.get(id),
+            inline_layout,
+            span_id,
+            span.computed_style.font_size as f64,
+            scale,
+        )
+    {
+        filter::paint_filtered_span(
+            tree,
+            span_id,
+            &span.computed_style.filter,
+            span.computed_style.opacity,
+            painter,
+            scale,
+            transform,
+            extent + peniko::kurbo::Vec2::new(content_x, content_y),
+            &mut |p| {
+                paint_layered_span(
+                    tree, span_id, p, scale, offset_x, offset_y, font_cx, layout_cx, transform,
+                )
+            },
+        );
+        return;
+    }
     // `opacity` makes the span a stacking context, composited as one group.
     // Its extent is its lines', which no box records: the layer is unbounded,
     // as a box whose extent is unknown gets.

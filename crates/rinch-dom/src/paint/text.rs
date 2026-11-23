@@ -359,6 +359,13 @@ fn paint_ellipsis(
 /// something to clip. The background covers the border box; the border is
 /// drawn in its style by the block border painter, its left and right sides
 /// on the fragments that close them (#1426, #2396).
+///
+/// An element with an image layer (a gradient, a `url()`, #2884) is drawn by
+/// the block background painter, fragment by fragment, each fragment the
+/// painting area and the positioning area the fragments laid side by side on
+/// one line, in line order (`box-decoration-break: slice`, Chrome's default):
+/// the second line's fragment continues the gradient where the first's
+/// stopped.
 #[allow(clippy::too_many_arguments)]
 fn paint_inline_backgrounds(
     tree: &NodeTree,
@@ -374,6 +381,33 @@ fn paint_inline_backgrounds(
     use peniko::kurbo::RoundedRect;
 
     let transform = css_transform * Affine::translate((parent_x, parent_y));
+    // The widths of the fragments of each element with an image layer, in
+    // line order (#2884): where its layer is laid out from. Empty — no walk —
+    // when no element has one.
+    let mut slices: std::collections::HashMap<RawNodeId, (Vec<f64>, usize)> =
+        std::collections::HashMap::new();
+    let imaged = |id: RawNodeId| {
+        tree.get(id)
+            .is_some_and(|o| crate::ifc::has_inline_image(&o.computed_style))
+    };
+    if inline_layout
+        .background_spans
+        .iter()
+        .any(|s| touches(scope.window(), s.start, s.end) && imaged(s.owner))
+    {
+        inline_background_rects(
+            |id| tree.get(id),
+            inline_layout,
+            scale,
+            scope.window(),
+            |frag| {
+                if imaged(frag.span.owner) {
+                    let widths = &mut slices.entry(frag.span.owner).or_default().0;
+                    widths.push(frag.rect.width());
+                }
+            },
+        );
+    }
     inline_background_rects(
         |id| tree.get(id),
         inline_layout,
@@ -387,19 +421,57 @@ fn paint_inline_backgrounds(
                 return;
             }
             let rect = frag.rect;
-            if bg_span.color.components[3] > 0.0 {
-                let brush = Brush::Solid(bg_span.color);
-                let shape: super::painter::PaintShape = if bg_span.border_radius > 0.0 {
+            // `background-clip: text` (#2719): the element's own text
+            // (its byte range, descendants' included) cuts it.
+            let clips_text = tree
+                .get(bg_span.owner)
+                .is_some_and(|o| o.computed_style.background_clip_text.last() == Some(&true));
+            let shape_of = |rect: Rect| -> super::painter::PaintShape {
+                if bg_span.border_radius > 0.0 {
                     let r = bg_span.border_radius as f64 * scale;
                     RoundedRect::from_rect(rect, r).into()
                 } else {
                     rect.into()
+                }
+            };
+            if let Some((widths, next)) = slices.get_mut(&bg_span.owner)
+                && let Some(owner) = tree.get(bg_span.owner)
+            {
+                // The fragments side by side, this one at its place: the
+                // positioning area it takes its piece of the layer from.
+                let before: f64 = widths[..(*next).min(widths.len())].iter().sum();
+                let total: f64 = widths.iter().sum();
+                *next += 1;
+                let x0 = rect.x0 - before;
+                let area = Rect::new(x0, rect.y0, x0 + total.max(rect.width()), rect.y1);
+                let shape = shape_of(rect);
+                let only = TextMask::only(bg_span.start, bg_span.end);
+                let black = Brush::Solid(peniko::Color::BLACK);
+                let mut mask = |p: &mut dyn Painter| {
+                    super::text_clip::draw_text_mask(
+                        p,
+                        text,
+                        transform,
+                        scale,
+                        &only,
+                        &black,
+                        inline_layout,
+                    )
                 };
-                // `background-clip: text` (#2719): the element's own text
-                // (its byte range, descendants' included) cuts it.
-                let clips_text = tree
-                    .get(bg_span.owner)
-                    .is_some_and(|o| o.computed_style.background_clip_text.last() == Some(&true));
+                super::background::paint_background(
+                    painter,
+                    tree,
+                    &owner.computed_style,
+                    scale,
+                    area,
+                    Fill::NonZero,
+                    &shape,
+                    transform,
+                    clips_text.then_some(&mut mask as super::background::TextClip<'_>),
+                );
+            } else if bg_span.color.components[3] > 0.0 {
+                let brush = Brush::Solid(bg_span.color);
+                let shape = shape_of(rect);
                 if clips_text {
                     let only = TextMask::only(bg_span.start, bg_span.end);
                     let black = Brush::Solid(peniko::Color::BLACK);
@@ -1993,7 +2065,10 @@ impl<'a> TextFragment<'a> {
 
 /// Whether `node` is an inline element painted in its **own** entry of a
 /// stacking sequence rather than with its IFC root's in-flow content (#2819):
-/// a flowed (boxless) `display: inline` element with `position: relative`.
+/// a flowed (boxless) `display: inline` element with `position: relative`,
+/// or a static one that is a stacking context (#2869: a `filter`, an
+/// `opacity`, a mask, `ifc::is_static_inline_layer`), which its
+/// entry draws as one group, its filter applied to all its fragments at once.
 ///
 /// CSS 2.1 Appendix E paints a positioned inline element at step 8 (or at its
 /// `z-index`), in tree order with the other positioned boxes, its background,
@@ -2005,11 +2080,64 @@ impl<'a> TextFragment<'a> {
 /// rebuilds (`same_relative_offset_inputs`).
 ///
 /// Not a `sticky` inline, which the walk records no range for: it is still
-/// drawn with the root's runs (a known difference, #2819). Nor a static
-/// inline with `opacity` (a stacking context too): likewise.
+/// drawn with the root's runs (a known difference, #2819). A static
+/// stacking-context span's range is recorded with the relative ones, at a
+/// zero offset (`InlineLayout::relative_spans_resting`); a change of whether
+/// it is one rebuilds the lines (`same_relative_offset_inputs`), and so does
+/// an `opacity` tick that makes it one (`settle_ticked_text`).
 pub fn paints_in_own_entry(node: &Node) -> bool {
     node.is_flowed_inline_element()
-        && node.box_position() == crate::computed_style::PositionValue::Relative
+        && (node.box_position() == crate::computed_style::PositionValue::Relative
+            || crate::ifc::is_static_inline_layer(&node.computed_style))
+}
+
+/// What layered span `span` draws (#2869), in device px relative to its IFC
+/// root's content origin, or `None` when it is none of the IFC's: the boxes
+/// of the lines its bytes are on, as wide as each line reaches, moved by the
+/// relative offset it is drawn at, with what the root draws past its lines
+/// ([`inline_ink_past_lines`]: backgrounds' padding and borders, overflowing
+/// glyphs) and a margin of `margin` CSS px all round for what is measured by
+/// neither (a glyph's outline past its font's ascent, a text shadow).
+///
+/// What a filter on the span is drawn through: its offscreen raster covers
+/// this, grown by the filter's reach.
+pub(crate) fn layered_span_extent<'a>(
+    get: impl Fn(RawNodeId) -> Option<&'a Node> + Copy,
+    inline_layout: &crate::node::InlineLayout,
+    span: RawNodeId,
+    margin: f64,
+    scale: f64,
+) -> Option<Rect> {
+    let s = inline_layout
+        .relative_spans
+        .iter()
+        .chain(&inline_layout.relative_spans_resting)
+        .find(|s| s.owner == span)?;
+    let layout = &inline_layout.layout;
+    let ranges: Vec<std::ops::Range<usize>> = FragmentLines::of_lines(inline_layout, 0..0).ranges;
+    let (dx, dy) = inline_layout.relative_offset_at(s.start);
+    let (dx, dy) = (dx as f64, dy as f64);
+    let mut ink: Option<Rect> = None;
+    for line in lines_of_span(&ranges, s.start, s.end, true).filter_map(|i| layout.get(i)) {
+        let m = line.metrics();
+        let top = m.block_min_coord.min(m.content_block_min_coord) as f64;
+        let bottom = m.block_max_coord.max(m.content_block_max_coord) as f64;
+        let (x0, x1) = line_reach(m);
+        let r = Rect::new(
+            (x0 + dx) * scale,
+            (top + dy) * scale,
+            (x1 + dx) * scale,
+            (bottom + dy) * scale,
+        );
+        ink = Some(ink.map_or(r, |i| i.union(r)));
+    }
+    let ink = ink?;
+    let ink = match inline_ink_past_lines(get, inline_layout, scale) {
+        Some(past) => ink.union(past),
+        None => ink,
+    };
+    let m = margin * scale;
+    Some(ink.inflate(m, m))
 }
 
 /// The inline elements of one IFC that [`paints_in_own_entry`] (#2819), each

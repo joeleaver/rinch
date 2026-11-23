@@ -221,3 +221,52 @@ fn a_relative_span_over_an_earlier_absolute_box_is_hit_over_it() {
         "a moved span is hit where it is drawn"
     );
 }
+
+/// A `filter` on a static inline span (#2869) makes it a stacking context
+/// painted in its own entry, but does not change what a point hits (Chrome
+/// 158: filters do not affect hit testing): the inline-block in it is hit at
+/// its box, and the span's shadow 30px under it is the container's, as with
+/// no filter.
+#[test]
+fn a_filtered_span_is_hit_as_without_its_filter() {
+    let place = |filter: &str| {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let c = doc.create_element("div");
+        doc.set_attribute(
+            c,
+            "style",
+            "position: absolute; left: 100px; top: 50px; width: 300px; height: 100px; \
+             font: 16px/20px sans-serif",
+        );
+        doc.append_child(body, c);
+        doc.set_inner_html(
+            c,
+            &format!(
+                r#"lead <span style="{filter}">text <span id="ib" style="display: inline-block; width: 30px; height: 20px"></span></span>"#
+            ),
+        );
+        doc.resolve_layout(800.0, 600.0);
+        let ib = rinch_dom::testing::query_selector(&doc.tree, "#ib")[0];
+        (doc, c, NodeId(ib))
+    };
+    for filter in ["", "filter: drop-shadow(0 30px 0 red)"] {
+        let (doc, c, ib) = place(filter);
+        assert_eq!(
+            rinch_dom::paint::paints_in_own_entry(
+                doc.tree
+                    .get(doc.tree.get(ib.0).unwrap().parent.unwrap())
+                    .unwrap()
+            ),
+            !filter.is_empty(),
+            "the filtered span paints in its own entry"
+        );
+        let (x, y) = center(&doc, ib);
+        assert_eq!(hit_test(&doc.tree, x, y), Some(ib.0), "{filter:?}: the box");
+        assert_eq!(
+            hit_test(&doc.tree, x, y + 30.0),
+            Some(c.0),
+            "{filter:?}: the shadow is not the span's"
+        );
+    }
+}

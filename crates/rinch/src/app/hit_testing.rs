@@ -530,27 +530,30 @@ fn hit_test_node<P: Probe>(
                 // in its lines, and the target is found from there. It has no
                 // box, so nothing below would find it.
                 if rinch_dom::paint::paints_in_own_entry(child) {
-                    let over = (check_children
+                    let inside = check_children
                         && clipped.is_none()
                         && order
                             .clips_for(entry)
                             .iter()
-                            .all(|c| c.contains(x as f64, y as f64)))
-                    .then(|| {
-                        rinch_dom::text_query::layered_span_at(
-                            tree,
-                            child,
-                            entry.offset_x as f32,
-                            entry.offset_y as f32,
-                            x,
-                            y,
-                        )
-                    })
-                    .flatten();
+                            .all(|c| c.contains(x as f64, y as f64));
+                    let over = inside
+                        .then(|| {
+                            rinch_dom::text_query::layered_span_at(
+                                tree,
+                                child,
+                                entry.offset_x as f32,
+                                entry.offset_y as f32,
+                                x,
+                                y,
+                            )
+                        })
+                        .flatten();
                     // Its atomic inlines first, drawn over its text; placed
                     // from the root's scrolled origin, as the root's own walk
-                    // places them.
-                    if over.is_some() {
+                    // places them. Wherever the point is, not only over its
+                    // text: an inline-block beside the span's text is off
+                    // that text, and only this entry draws it (#2869).
+                    if inside {
                         for id in rinch_dom::text_query::layered_span_boxes(tree, child)
                             .into_iter()
                             .rev()
