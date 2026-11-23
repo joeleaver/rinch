@@ -321,8 +321,9 @@ What your app sees:
   device comes by then, the startup rule decides: an app that chose the GPU or configured the
   device itself (`Renderer::Gpu`, `App::gpu_config`, `App::external_gpu`) panics with the error,
   and any other presents with the software renderer for the rest of the session (the listener
-  hears `None`). A window shown or opened in those 5 seconds (a tray app's window, DevTools) waits
-  with the others instead of taking that rule at once.
+  hears `None`). A window shown or opened in those 5 seconds (a tray app's window, DevTools), or prepared
+  then with `prepare_current_window`, waits with the others instead of taking that rule at once;
+  a prepared window is prepared again on the new device.
 - **Textures registered with `GpuTextureRegistrar::set_texture_source` are dropped** (they belong
   to the dead device). Make your resources again on the new device and register the texture again,
   from the listener or when your render thread sees the generation move. A render thread that

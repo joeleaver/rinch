@@ -1321,8 +1321,7 @@ impl ShellWindow {
         scale: f64,
         size: (u32, u32),
     ) -> bool {
-        use super::desktop::GpuStartError;
-        use super::renderer::{OnGpuFailure, on_gpu_failure, tries_gpu};
+        use super::renderer::tries_gpu;
         let configured = super::desktop::gpu_init_installed();
         if !tries_gpu(choice, configured) {
             return false;
@@ -1333,17 +1332,18 @@ impl ShellWindow {
         );
         let mut renderer = match self.parked_renderer.take() {
             Some(renderer) => renderer,
-            None => match WgpuRenderer::try_new_offscreen(physical.0, physical.1, choice) {
-                Ok(renderer) => {
+            None => match self.start_offscreen_with(
+                std::time::Instant::now(),
+                choice,
+                configured,
+                |_| WgpuRenderer::try_new_offscreen(physical.0, physical.1, choice),
+            ) {
+                OffscreenStart::Built(renderer) => {
                     self.note_renderer_built(true);
                     renderer
                 }
-                Err(GpuStartError::DeclinedCpuAdapter(_)) => return false,
-                Err(e) => {
-                    tracing::warn!("rinch: the GPU renderer could not be prepared ({e})");
-                    // Where the show would panic, it says so then.
-                    return on_gpu_failure(choice, configured) == OnGpuFailure::Panic;
-                }
+                OffscreenStart::Software => return false,
+                OffscreenStart::Nothing | OffscreenStart::Waits => return true,
             },
         };
         renderer.size_detached(physical.0, physical.1);
@@ -1354,6 +1354,45 @@ impl ShellWindow {
             tracing::warn!("rinch: preparing the hidden window failed: {e}");
         }
         true
+    }
+
+    /// The renderer [`Self::prepare_gpu`] builds for a hidden window with no
+    /// renderer parked, made by `build`, and what the preparation does when
+    /// the GPU will not start: within a device loss's recovery (#2824, as
+    /// [`Self::start_renderer_with`] for a show), the window waits for the
+    /// rebuild ([`Self::awaits_gpu`]), which builds its renderer on the new
+    /// device and prepares it again; otherwise the startup rule decides: it
+    /// prepares with software where the show would fall back to it, and
+    /// prepares nothing where the show would panic (the show says so then).
+    #[cfg(feature = "gpu-renderer")]
+    pub(super) fn start_offscreen_with<R>(
+        &mut self,
+        now: std::time::Instant,
+        choice: super::renderer::Renderer,
+        configured: bool,
+        build: impl FnOnce(&mut Self) -> Result<R, super::desktop::GpuStartError>,
+    ) -> OffscreenStart<R> {
+        use super::desktop::GpuStartError;
+        use super::renderer::{OnGpuFailure, on_gpu_failure};
+        match build(self) {
+            Ok(renderer) => OffscreenStart::Built(renderer),
+            Err(GpuStartError::DeclinedCpuAdapter(_)) => OffscreenStart::Software,
+            Err(e) if super::device_loss::gpu_recovering(now) => {
+                tracing::info!(
+                    "rinch: no GPU renderer yet after the device loss ({e}); the prepared window \
+                     waits for the device"
+                );
+                self.awaits_gpu = true;
+                OffscreenStart::Waits
+            }
+            Err(e) => {
+                tracing::warn!("rinch: the GPU renderer could not be prepared ({e})");
+                match on_gpu_failure(choice, configured) {
+                    OnGpuFailure::FallBack => OffscreenStart::Software,
+                    OnGpuFailure::Panic => OffscreenStart::Nothing,
+                }
+            }
+        }
     }
 
     /// The GPU renderer for `window` ([`start_gpu_renderer`]): the one kept
@@ -1671,6 +1710,22 @@ mod hidden_start_tests {
 }
 
 // ── Renderer choice ──────────────────────────────────────────────────────────
+
+/// What a hidden window's preparation does for a GPU renderer it has none of
+/// ([`ShellWindow::start_offscreen_with`]).
+#[cfg(feature = "gpu-renderer")]
+#[derive(Debug, PartialEq)]
+pub(super) enum OffscreenStart<R> {
+    /// The renderer, built: the frame is prepared with it.
+    Built(R),
+    /// Prepare with the software renderer.
+    Software,
+    /// Prepare nothing: the show would panic, and says so then.
+    Nothing,
+    /// Prepare nothing yet: within a device loss's recovery the window waits
+    /// for the rebuild, which prepares it on the new device (#2824).
+    Waits,
+}
 
 /// How soon the loop looks again for Vello's counters of a frame the GPU has
 /// not finished (#2071): half a 60 Hz frame. A window that overflowed is drawn
