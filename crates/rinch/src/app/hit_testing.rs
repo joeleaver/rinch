@@ -489,9 +489,17 @@ fn hit_test_node<P: Probe>(
             // in Appendix E phases (#2276), their lines and floats answer
             // before any entry's background, at the first of them the walk
             // meets outside the lifted pass.
-            let mut run_probed = !(check_children
+            let probe_at = if check_children
                 && clipped.is_none()
-                && rinch_dom::paint::run_paints_in_phases(tree, node));
+                && rinch_dom::paint::run_paints_in_phases(tree, node)
+            {
+                order
+                    .iter()
+                    .rposition(|e| e.kind == rinch_dom::stacking::PaintKind::InFlow)
+                    .unwrap_or(usize::MAX)
+            } else {
+                usize::MAX
+            };
             // The boxes in a relative split inline first (`lifted`).
             for (lifted, (index, entry)) in [true, false]
                 .into_iter()
@@ -531,9 +539,9 @@ fn hit_test_node<P: Probe>(
                 if in_relative_split_inline(tree, child) != lifted {
                     continue;
                 }
-                if !run_probed && !lifted && entry.kind == rinch_dom::stacking::PaintKind::InFlow {
-                    run_probed = true;
-                    if let Some(hit) = phased_run_hit(
+                if index == probe_at
+                    && !lifted
+                    && let Some(hit) = phased_run_hit(
                         probe,
                         tree,
                         order
@@ -544,9 +552,9 @@ fn hit_test_node<P: Probe>(
                         y,
                         vx,
                         vy,
-                    ) {
-                        return Some(hit);
-                    }
+                    )
+                {
+                    return Some(hit);
                 }
                 // A `position: relative` inline element is painted here, in
                 // its place among the positioned boxes (#2819), so its text is
@@ -724,14 +732,11 @@ fn hit_test_node<P: Probe>(
             // are over every child's background, so after the lifted boxes
             // they answer first, and the plain walk is the backgrounds pass.
             let kids = rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id);
-            let mut run_probed = !rinch_dom::paint::run_paints_in_phases(tree, node);
-            for (lifted, &child_id) in [true, false]
-                .into_iter()
-                .flat_map(|pass| kids.iter().rev().map(move |c| (pass, c)))
-            {
-                if !run_probed && !lifted {
-                    run_probed = true;
-                    if let Some(hit) = phased_run_hit(
+            let phased = rinch_dom::paint::run_paints_in_phases(tree, node);
+            for lifted in [true, false] {
+                if phased
+                    && !lifted
+                    && let Some(hit) = phased_run_hit(
                         probe,
                         tree,
                         kids.iter().map(|&id| (id, nx - sx, ny - sy)),
@@ -739,26 +744,28 @@ fn hit_test_node<P: Probe>(
                         y,
                         vx,
                         vy,
-                    ) {
-                        return Some(hit);
-                    }
-                }
-                let Some(child) = tree.get_live(child_id) else {
-                    continue;
-                };
-                if paints_at_stacking_root(child)
-                    || is_stretched_ifc_text(child)
-                    || in_relative_split_inline(tree, child) != lifted
-                {
-                    continue;
-                }
-                if !flow_subtree_may_contain(tree, child, nx - sx, ny - sy, x, y) {
-                    continue;
-                }
-                if let Some(hit) =
-                    hit_test_node(probe, tree, child_id, nx - sx, ny - sy, x, y, vx, vy, None)
+                    )
                 {
                     return Some(hit);
+                }
+                for &child_id in kids.iter().rev() {
+                    let Some(child) = tree.get_live(child_id) else {
+                        continue;
+                    };
+                    if paints_at_stacking_root(child)
+                        || is_stretched_ifc_text(child)
+                        || in_relative_split_inline(tree, child) != lifted
+                    {
+                        continue;
+                    }
+                    if !flow_subtree_may_contain(tree, child, nx - sx, ny - sy, x, y) {
+                        continue;
+                    }
+                    if let Some(hit) =
+                        hit_test_node(probe, tree, child_id, nx - sx, ny - sy, x, y, vx, vy, None)
+                    {
+                        return Some(hit);
+                    }
                 }
             }
         }

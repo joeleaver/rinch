@@ -34,7 +34,7 @@
 //! inline drawn by its IFC, a filter's raster, a held highlight — enters in
 //! [`Phase::All`] without asking.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use crate::node::{Node, NodeTree};
 use crate::stacking::paints_at_stacking_root;
@@ -222,18 +222,47 @@ fn extent(tree: &NodeTree, node: &Node) -> Extent {
 /// never splits: its items are atomic, painted whole in order.
 #[inline]
 pub(crate) fn splits(tree: &NodeTree, node: &Node) -> bool {
-    let stamp = tree.layout_epoch.wrapping_add(1) << 1;
-    let memo = node.phase_split.get();
-    if memo & !1 == stamp {
-        return memo & 1 == 1;
+    match memoised(tree, node) {
+        Some(split) => split,
+        None => decide(tree, node, tree.layout_epoch.wrapping_add(1) << 1),
     }
-    decide(tree, node, stamp)
 }
 
 /// [`splits`] when the node's memo is not this layout's.
 #[inline(never)]
 fn decide(tree: &NodeTree, node: &Node, stamp: u64) -> bool {
+    debug_assert_eq!(stamp, tree.layout_epoch.wrapping_add(1) << 1);
     let kids = crate::RinchDocument::box_tree_children(&tree.nodes, node.id);
+    let split = overlap(
+        tree,
+        kids.iter()
+            .filter_map(|&c| tree.get_live(c))
+            .filter(|c| in_run(tree, c)),
+    );
+    memoise(tree, node, split);
+    split
+}
+
+/// The memoised [`splits`] answer for this layout, if one was worked out.
+#[inline]
+pub(crate) fn memoised(tree: &NodeTree, node: &Node) -> Option<bool> {
+    let stamp = tree.layout_epoch.wrapping_add(1) << 1;
+    let memo = node.phase_split.get();
+    (memo & !1 == stamp).then_some(memo & 1 == 1)
+}
+
+/// Record `split` as `node`'s [`splits`] answer for this layout: paint
+/// worked it out over every member of the run.
+pub(crate) fn memoise(tree: &NodeTree, node: &Node, split: bool) {
+    let stamp = tree.layout_epoch.wrapping_add(1) << 1;
+    node.phase_split.set(stamp | split as u64);
+}
+
+/// Whether one of `run` (members of a run, in tree order) reaches into what
+/// an earlier one paints. Paint asks it of the members it is about to draw:
+/// two members outside the damage cannot change a pixel inside it, whatever
+/// their order.
+pub(crate) fn overlap<'a>(tree: &NodeTree, run: impl Iterator<Item = &'a Node>) -> bool {
     let placed = |child: &Node| {
         let c = extent(tree, child);
         let (cx, cy) = child_origin(tree, child);
@@ -244,16 +273,10 @@ fn decide(tree: &NodeTree, node: &Node, stamp: u64) -> bool {
     // earlier one, so a wrapper's only child has no extent worked out.
     let mut first: Option<&Node> = None;
     let mut members = 0usize;
-    let mut split = false;
-    for child in kids
-        .iter()
-        .filter_map(|&c| tree.get_live(c))
-        .filter(|c| in_run(tree, c))
-    {
+    for child in run {
         // A flex or grid container's items are atomic.
         if child.is_flex_or_grid_item.get() {
-            split = false;
-            break;
+            return false;
         }
         members += 1;
         if members == 1 {
@@ -274,8 +297,7 @@ fn decide(tree: &NodeTree, node: &Node, stamp: u64) -> bool {
         if c[0].max(seen[0]) + EPS < c[2].min(seen[2])
             && c[1].max(seen[1]) + EPS < c[3].min(seen[3])
         {
-            split = true;
-            break;
+            return true;
         }
         seen = [
             seen[0].min(c[0]),
@@ -284,6 +306,40 @@ fn decide(tree: &NodeTree, node: &Node, stamp: u64) -> bool {
             seen[3].max(c[3]),
         ];
     }
-    node.phase_split.set(stamp | split as u64);
-    split
+    false
+}
+
+thread_local! {
+    /// The members of the runs being painted, nested: each
+    /// `paint_children_with_stacking` pushes the members it will draw above
+    /// its caller's and truncates back after (#2958's perf round: no
+    /// allocation per run).
+    static VISIBLE: RefCell<Vec<crate::node::RawNodeId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A run's members on the [`VISIBLE`] stack, popped on drop.
+pub(crate) struct Members(usize);
+
+impl Members {
+    pub(crate) fn begin() -> Self {
+        Members(VISIBLE.with(|v| v.borrow().len()))
+    }
+
+    pub(crate) fn push(&self, id: crate::node::RawNodeId) {
+        VISIBLE.with(|v| v.borrow_mut().push(id));
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        VISIBLE.with(|v| v.borrow().len()) - self.0
+    }
+
+    pub(crate) fn get(&self, i: usize) -> crate::node::RawNodeId {
+        VISIBLE.with(|v| v.borrow()[self.0 + i])
+    }
+}
+
+impl Drop for Members {
+    fn drop(&mut self) {
+        VISIBLE.with(|v| v.borrow_mut().truncate(self.0));
+    }
 }
