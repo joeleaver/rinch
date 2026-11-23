@@ -262,8 +262,8 @@ fn rtl(doc: &RinchDocument, id: &str) -> bool {
 const LIST: &str = "<ul style=margin:0><li>x</li></ul>";
 
 /// The direction follows the text as it changes, at the same viewport: a
-/// write of the text, a child inserted, and a `dir` set on a descendant,
-/// which hides its text. Chrome 158, the first: the list's item moves from
+/// write of the text, a child inserted, a `dir` set on a descendant, which
+/// hides its text, and a child removed. Chrome 158, the first: the list's item moves from
 /// x 40 to 0 when `abc` becomes `א`.
 #[test]
 fn dir_auto_follows_its_text_as_it_changes() {
@@ -306,6 +306,13 @@ fn dir_auto_follows_its_text_as_it_changes() {
     doc.set_attribute(s, "dir", "nonsense");
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(li_x(&doc), 0.0, "a `dir` in no state hides nothing");
+
+    // Removing the child that held the Hebrew: the first strong letter is
+    // the `a` after it.
+    let d = by_id(&doc, "d");
+    doc.remove_child(d, s);
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(li_x(&doc), 40.0, "ltr once the Hebrew is removed");
 }
 
 /// A text field's `dir=auto` reads its value (Chrome 158: `<input dir=auto

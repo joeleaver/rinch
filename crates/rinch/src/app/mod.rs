@@ -128,6 +128,8 @@ mod content_size;
 #[cfg(test)]
 mod device_pixel_ratio_tests;
 #[cfg(test)]
+mod dir_auto_field_2272_tests;
+#[cfg(test)]
 mod disabled_input_tests;
 #[cfg(test)]
 mod dnd_teardown_tests;
@@ -5381,6 +5383,10 @@ impl RinchApp {
             d.tree.paint_dirty_nodes.push(node_id);
         }
         d.tree.dirty_nodes.insert(node_id);
+        // A `dir=auto` field takes its direction from the value (#2272).
+        if !keeps_value {
+            d.note_field_value_changed(node_id);
+        }
         // A field scrolls its caret into view at the move that put it there
         // — an `<input>` horizontally (#1721), a `<textarea>` vertically
         // (#827) — so a run of keys between two frames scrolls as they would
@@ -5413,6 +5419,7 @@ impl RinchApp {
         {
             node.attributes
                 .insert("value".to_string(), state.document.to_text());
+            d.note_field_value_changed(node_id);
         }
     }
 
@@ -7809,6 +7816,7 @@ impl RinchApp {
                 }
                 d.tree.paint_dirty_nodes.push(node_id);
                 d.tree.dirty_nodes.insert(node_id);
+                d.note_field_value_changed(node_id);
             }
         }
     }
