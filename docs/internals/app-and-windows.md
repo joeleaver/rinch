@@ -1698,27 +1698,42 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   as one `layer_shell::LayerTurn`, one request to the fork and so one
   commit: `request_surface_size` for a size alone,
   `set_layer_shell_changes_and_size` (joeleaver/winit-fork#12) for changes
-  with or without a size. A size applied at once comes back from it and is
+  with or without a size. A content-sized surface's size in a changed
+  configuration is staged then too (#2829, "Windows sized by their
+  content"). A size applied at once comes back from it and is
   handed to the window's resize path as a `SurfaceResized`, as an at-once
   resize is; a held one comes as winit's own `SurfaceResized`. Nothing is
-  sent before the drain ends, so a paint inside the drain (a debug
-  screenshot) commits none of it, and `paint`/`paint_window` no longer
-  flush (they used to, when a staged `set_size` was already on the surface
-  and a frame's commit would have split it from the changes). Before, the order of the
+  sent before the drain ends but for a debug screenshot taken inside it:
+  `ready_for_screenshot` sends what the turn staged so far first (one
+  commit), so a `SetWindowSize` before it in the same drain is the size it
+  is painted at (#2829), and the drain's end sends what later events stage.
+  `paint`/`paint_window` do not flush (they used to, when a staged
+  `set_size` was already on the surface and a frame's commit would have
+  split it from the changes). Before, the order of the
   calls decided the commits: size then layer was one (the size waited for
   the layer change's commit), layer then size two (the layer change
   committed at once, the size with the next frame), and a position was
   already two (`set_layer_shell_anchor`, then `set_layer_shell_margins`,
   each a commit). `hide_window` drops what is staged: the props and the
   saved geometry already hold it for the surface `show_window` makes, and a
-  staged size is put in the saved geometry. A
+  staged size is put in the saved geometry and published
+  (`publish_hidden`), so `current_window_size()` reports it while the window
+  is hidden (#2829). A
   move gesture still places the surface at once (`place_layer`), since it
   is not a native event. Pinned live (`#[ignore]`d) by
   `crates/rinch/tests/layer_one_commit_2464.rs`, which counts the commits
   that carry layer state in `WAYLAND_DEBUG=client` output, in both orders,
   for a panel and an overlay, and by `main_window::layer_commit_2464_tests`,
   which pin without a compositor that a turn's changes and size, in either
-  order, are taken as one `LayerTurn` (one request) and nothing is left.
+  order, are taken as one `LayerTurn` (one request) and nothing is left,
+  and `rinch_runtime::layer_drain_2829_tests`, which run the drain
+  (`RinchRuntime::run_native_events`, the half of `drain_native_events`
+  past the shared queue) on a live layer surface with a stand-in OS window
+  that applies each size request at once: a turn's sizes are one request
+  at the drain's end, its at-once size reaches the resize path, a
+  screenshot in the drain is at the size asked before it, a content-sized
+  surface's size goes with the layer changes, and a hidden staged size is
+  published.
   No CI job runs the live tests (they need a compositor with
   wlr-layer-shell): run them under `scripts/isolated-session.sh --kwin`
   after any change to this path or any move of the winit pin.
@@ -2140,7 +2155,11 @@ guide's "A window sized by its content" has what an app sees; here is how.
   so R0's limit rule applies.
 - **A change of the layer configuration** (`set_current_window_layer`'s
   `Apply` path) calls `restart_content_size`: a new negotiation at the new
-  largest size, asked for at the turn's end. **A change of the outputs**
+  largest size. Its size is staged with the configuration's changes when
+  the drain sends them (`ShellWindow::stage_content_size_for_layer_turn`,
+  from `flush_layer_turn`, #2829), so the new configuration and its size are
+  one commit; asked by `follow_content_size` after the drain, as it was, the
+  size was a commit of its own after the changes'. **A change of the outputs**
   (`monitors_changed`) calls `follow_outputs`, which starts one only when
   this window's own largest size changed (its output, that output's size, or
   its margins), so a change of another output leaves a limited dimension

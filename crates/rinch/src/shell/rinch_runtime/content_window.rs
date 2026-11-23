@@ -176,12 +176,40 @@ impl ShellWindow {
 
     /// A new negotiation on the live surface, its layer configuration having
     /// changed: free again at the new largest size, and the content's size
-    /// there asked for at the next turn's end
-    /// ([`RinchRuntime::follow_content_size`]). Nothing for any other window.
+    /// there staged with the changes when the drain sends them
+    /// ([`Self::stage_content_size_for_layer_turn`]). Nothing for any other
+    /// window.
     pub(super) fn restart_content_size(&mut self) {
         if let Some(max) = self.content_max() {
             self.app.restart_content_limit(max);
             self.app.remeasure_content();
+        }
+    }
+
+    /// A content-sized layer surface whose configuration this turn changed
+    /// (staged layer changes, [`Self::restart_content_size`]): its content's
+    /// size in the new configuration, staged with the changes, so the
+    /// drain's one request carries both and the compositor sees the new
+    /// configuration at its new size in one commit (#2829). Asked by
+    /// [`RinchRuntime::follow_content_size`] after the drain instead, it was
+    /// a commit of its own (the fork commits a layer surface's size request
+    /// when it is made). Nothing for any other window, nor for a turn that
+    /// changed no layer state.
+    pub(super) fn stage_content_size_for_layer_turn(&mut self) {
+        if self.pending_layer.is_empty() || !self.app.is_content_sized() {
+            return;
+        }
+        let Some(viewport) = self.window.as_ref().map(|w| w.logical_size()) else {
+            return;
+        };
+        if let Some((width, height)) = self.content_size_to_ask(viewport) {
+            // CSS pixels; winit's logical size is the display's, which the
+            // app's zoom makes larger (#2861), as `follow_content_size` asks.
+            let zoom = crate::zoom::current();
+            self.stage_layer_size(Size::Logical(LogicalSize::new(
+                width as f64 * zoom,
+                height as f64 * zoom,
+            )));
         }
     }
 
