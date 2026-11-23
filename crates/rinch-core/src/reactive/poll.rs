@@ -155,9 +155,9 @@ where
             interval_ms: rate.interval_ms(),
             // Start `last_fired` in the past so the first frame fires immediately
             // if the source has already changed before paint runs.
-            last_fired: Instant::now()
+            last_fired: crate::timer::now()
                 .checked_sub(std::time::Duration::from_secs(1))
-                .unwrap_or_else(Instant::now),
+                .unwrap_or_else(crate::timer::now),
             run: Box::new(run),
             alive: Box::new(move || signal.is_alive()),
         });
@@ -197,7 +197,7 @@ pub fn next_poll_due() -> Option<std::time::Duration> {
     if !is_main_thread() {
         return None;
     }
-    let now = Instant::now();
+    let now = crate::timer::now();
     POLL_REGISTRY.with(|reg| {
         reg.borrow()
             .iter()
@@ -230,7 +230,7 @@ pub fn drain_polls() {
     if !is_main_thread() {
         return;
     }
-    let now = Instant::now();
+    let now = crate::timer::now();
 
     /// Returns the drained entries to `POLL_REGISTRY` on the way out — including
     /// while unwinding from a panicking source. Without this the moved-out

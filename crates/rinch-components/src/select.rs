@@ -500,8 +500,9 @@ impl Component for Select {
             let prefix_live = {
                 let t = typed.borrow();
                 !t.0.is_empty()
-                    && t.1
-                        .is_some_and(|at| Instant::now().duration_since(at) <= TYPEAHEAD_RESET)
+                    && t.1.is_some_and(|at| {
+                        rinch_core::timer::now().duration_since(at) <= TYPEAHEAD_RESET
+                    })
             };
             let key = if key == " " && !prefix_live {
                 "Enter"
@@ -522,7 +523,7 @@ impl Component for Select {
                     false
                 }
                 key if key.chars().count() == 1 && key.chars().all(|c| !c.is_control()) => {
-                    let now = Instant::now();
+                    let now = rinch_core::timer::now();
                     let query = {
                         let mut t = typed.borrow_mut();
                         if t.1

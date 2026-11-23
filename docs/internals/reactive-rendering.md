@@ -968,9 +968,9 @@ declaration was dropped, #1581). Pins: `crates/rinch-dom/tests/easing_steps_line
 **One clock, which a test can pin** (#2267). Every time a transition or an
 animation reads — the start a cascade stamps (`apply_stylo_styles_to_taffy`),
 and the sample `RinchDocument::tick_transitions` and `tick_animations` take —
-comes from `RinchDocument::animation_now_ms`: the wall clock (epoch
-milliseconds, through `web_time`), unless `set_animation_clock_ms(Some(t))`
-pinned it, after which time moves only by `advance_animation_clock_ms`. The shell
+comes from `RinchDocument::animation_now_ms`: rinch's clock,
+`rinch_core::timer::now()` (#2842), as epoch milliseconds, unless
+`set_animation_clock_ms(Some(t))` pinned it, after which time moves only by `advance_animation_clock_ms`. The shell
 never pins it. The free functions `animation::tick_animations(tree, now)` and
 `transition::tick_transitions(tree, now)` take an explicit time and read no
 clock, but they skip the document wrappers' pre- and post-passes (the text
@@ -982,6 +982,15 @@ runner read 58.6px against 55 in `finished_animation_no_fill_783_tests`. The
 rinch-dom animation and transition tests pin the clock at `1_000_000.0` before
 their first cascade and assert exact samples; a test that needs real time to
 pass calls `advance_animation_clock_ms`, never `sleep`.
+
+`now()` is an `Instant`, so `dom_impl::clock_epoch_ms` maps it onto epoch
+milliseconds with an origin fixed for the process at first use (`SystemTime`'s
+epoch ms then, paired with `Instant::now()` then): two readings differ by
+exactly the time between their instants. In an app that is the wall clock, now
+monotonic (a system clock set back no longer jumps a transition); under
+`TestApp` it is the virtual clock, so `advance_time` moves transitions,
+animations and the wheel glide (`smooth_wheel` reads the same clock) and
+nothing else does. Pin: `rinch/tests/ui_clock_2842.rs`.
 
 **The 3D transform functions are drawn flat** (#405; they used to compute to the
 identity, `translate3d` aside). A list holding any of them is composed as 4×4

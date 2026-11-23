@@ -712,7 +712,7 @@ impl RinchApp {
     /// label starts with it (case-insensitive). A single repeated letter cycles
     /// through the options that start with that letter.
     fn select_typeahead(&mut self, ch: &str, vp_w: f32, vp_h: f32) {
-        let now = Instant::now();
+        let now = rinch_core::timer::now();
         let Some(open) = self.open_select.as_mut() else {
             return;
         };

@@ -306,17 +306,18 @@ thread_local! {
     static WHEEL_CLOCK: Cell<Option<(Instant, u64)>> = const { Cell::new(None) };
 }
 
-/// The canvas wheel's clock: the wall clock, or the test clock.
+/// The canvas wheel's clock: rinch's clock ([`rinch_core::timer::now`],
+/// virtual under the test harness; #2842), or the test clock.
 fn wheel_now() -> Instant {
     match WHEEL_CLOCK.with(Cell::get) {
         Some((epoch, ms)) => epoch + Duration::from_millis(ms),
-        None => Instant::now(),
+        None => rinch_core::timer::now(),
     }
 }
 
 /// Test-only: stop the canvas wheel's gesture clock at `ms` milliseconds
 /// past a fixed epoch (the first call's instant), so a test says exactly how
-/// far apart two wheels are; `None` goes back to the wall clock. Per thread.
+/// far apart two wheels are; `None` goes back to rinch's clock. Per thread.
 #[doc(hidden)]
 pub fn __set_wheel_clock(ms: Option<u64>) {
     WHEEL_CLOCK.with(|c| {
@@ -1018,6 +1019,27 @@ mod wheel_tests {
     /// once.
     fn canvas_wheel(v: &View, w: &WheelEvent) -> bool {
         WheelGesture::new(None).wheel(v, w, Instant::now())
+    }
+
+    /// #2842: with no test clock set, the gesture clock is rinch's, which the
+    /// test harness's virtual clock drives: it moves by exactly what the
+    /// harness advances, and not with the wall clock.
+    #[test]
+    fn the_gesture_clock_follows_the_virtual_clock_2842() {
+        use rinch_core::timer::virtual_time;
+        struct Uninstall;
+        impl Drop for Uninstall {
+            fn drop(&mut self) {
+                virtual_time::uninstall();
+            }
+        }
+        virtual_time::install();
+        let _clock = Uninstall;
+        let t0 = wheel_now();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(wheel_now() - t0, Duration::ZERO, "the wall clock moved it");
+        virtual_time::advance_to(WHEEL_GESTURE_GAP);
+        assert_eq!(wheel_now() - t0, WHEEL_GESTURE_GAP);
     }
 
     fn mods(ctrl: bool, meta: bool, shift: bool) -> ModifierState {

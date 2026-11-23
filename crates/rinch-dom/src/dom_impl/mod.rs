@@ -105,6 +105,34 @@ pub(crate) fn build_device(width: f32, height: f32, params: &DeviceParams) -> De
     device
 }
 
+/// `at`, an instant on rinch's clock ([`rinch_core::timer::now`]), as
+/// milliseconds since the UNIX epoch: the scale CSS transitions and
+/// animations keep their times on (#2842).
+///
+/// The mapping is fixed for the process at its first use: the wall clock's
+/// epoch milliseconds then, plus the time between that first instant and
+/// `at`. So two readings differ by exactly the time between their instants
+/// (the virtual time advanced, under the test harness), and the answer stays
+/// close to `SystemTime`'s epoch milliseconds in an app. An instant from
+/// before the first use (a virtual clock installed earlier) maps below it.
+pub(crate) fn clock_epoch_ms(at: rinch_core::timer::Instant) -> f64 {
+    use rinch_core::timer::Instant;
+    use web_time::SystemTime;
+    static ORIGIN: std::sync::OnceLock<(Instant, f64)> = std::sync::OnceLock::new();
+    let &(origin, origin_ms) = ORIGIN.get_or_init(|| {
+        let epoch_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0;
+        (Instant::now(), epoch_ms)
+    });
+    match at.checked_duration_since(origin) {
+        Some(after) => origin_ms + after.as_secs_f64() * 1000.0,
+        None => origin_ms - origin.duration_since(at).as_secs_f64() * 1000.0,
+    }
+}
+
 /// The primary document type for rinch-dom.
 ///
 /// Implements [`DomDocument`](rinch_core::dom::DomDocument) using a slab-allocated node tree.
@@ -115,9 +143,9 @@ pub struct RinchDocument {
     /// per-node-id state in thread-local registries so two documents on one
     /// thread never collide (issue #134).
     pub(crate) doc_key: u64,
-    /// A pinned animation clock (#2267), read in place of the wall clock by
+    /// A pinned animation clock (#2267), read in place of rinch's clock by
     /// [`Self::animation_now_ms`]. `None` — the default, and the only state
-    /// the shell ever leaves it in — reads the wall clock. See
+    /// the shell ever leaves it in — reads rinch's clock. See
     /// [`Self::set_animation_clock_ms`].
     animation_clock_ms: Option<f64>,
     /// The node tree.
@@ -1274,21 +1302,20 @@ impl RinchDocument {
     /// when one starts (the cascade), and when [`Self::tick_transitions`] and
     /// [`Self::tick_animations`] sample it.
     ///
-    /// The wall clock (milliseconds since the UNIX epoch), unless a clock was
-    /// pinned with [`Self::set_animation_clock_ms`].
+    /// Milliseconds since the UNIX epoch on rinch's clock,
+    /// [`rinch_core::timer::now`] (#2842), unless a clock was pinned with
+    /// [`Self::set_animation_clock_ms`]. That is the wall clock in an app, and
+    /// the virtual clock under the test harness (`rinch::testing::TestApp`),
+    /// which only `TestApp::advance_time` moves: a transition there is at its
+    /// midpoint when half its duration has been advanced, on every run.
     pub fn animation_now_ms(&self) -> f64 {
         if let Some(now) = self.animation_clock_ms {
             return now;
         }
-        use web_time::SystemTime;
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-            * 1000.0
+        clock_epoch_ms(rinch_core::timer::now())
     }
 
-    /// Pin the animation clock at `now_ms`, or give it back to the wall clock
+    /// Pin the animation clock at `now_ms`, or give it back to rinch's clock
     /// with `None` (#2267).
     ///
     /// While it is pinned, time stands still for this document's transitions
