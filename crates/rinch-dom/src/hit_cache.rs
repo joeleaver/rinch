@@ -150,6 +150,13 @@ struct State {
     escaping_fixed: Vec<Option<bool>>,
     escaping_fixed_paints: Vec<Option<bool>>,
     escaping_absolute: Vec<Option<bool>>,
+    /// Paint's in-flow extents (`paint::phases`, #2276): relative to the
+    /// node's own origin, like `extents`, and kept by a scroll the same way.
+    paint_extents: Vec<Option<Extent>>,
+    /// Whether a node's in-flow run paints in Appendix E phases
+    /// (`paint::phases::splits`). Relative geometry only, like
+    /// `paint_extents`.
+    paint_splits: Vec<Option<bool>>,
     orders: HashMap<OrderKey, Rc<PaintOrder>>,
 }
 
@@ -218,6 +225,8 @@ impl HitCache {
             s.escaping_fixed.clear();
             s.escaping_fixed_paints.clear();
             s.escaping_absolute.clear();
+            s.paint_extents.clear();
+            s.paint_splits.clear();
             s.orders.clear();
         }
         s
@@ -402,6 +411,48 @@ impl HitCache {
             s.escaping_absolute.resize(id + 1, None);
         }
         s.escaping_absolute[id] = Some(escapes);
+    }
+
+    /// Paint's memoised in-flow extent of `id` (`paint::phases`, #2276).
+    #[inline]
+    pub fn paint_extent(&self, id: RawNodeId) -> Option<Extent> {
+        self.state()
+            .paint_extents
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
+    }
+
+    /// Store `id`'s paint in-flow extent for the current generation.
+    pub fn store_paint_extent(&self, id: RawNodeId, extent: Extent) {
+        let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
+        if s.paint_extents.len() <= id {
+            s.paint_extents.resize(id + 1, None);
+        }
+        s.paint_extents[id] = Some(extent);
+    }
+
+    /// Paint's memoised answer to whether `id`'s in-flow run splits into
+    /// Appendix E phases (`paint::phases::splits`, #2276).
+    #[inline]
+    pub fn paint_splits(&self, id: RawNodeId) -> Option<bool> {
+        self.state()
+            .paint_splits
+            .get(crate::node_slab::slot_of(id))
+            .copied()
+            .flatten()
+    }
+
+    /// Store whether `id`'s in-flow run splits into phases, for the current
+    /// generation.
+    pub fn store_paint_splits(&self, id: RawNodeId, splits: bool) {
+        let mut s = self.state();
+        let id = crate::node_slab::slot_of(id);
+        if s.paint_splits.len() <= id {
+            s.paint_splits.resize(id + 1, None);
+        }
+        s.paint_splits[id] = Some(splits);
     }
 
     /// Store `id`'s extent for the current generation.
