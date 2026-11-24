@@ -265,8 +265,8 @@ impl Alert {
         Some(format!(
             "--rinch-alert-color: {}; --rinch-alert-light: {}; \
              --rinch-alert-light-text: {}; --rinch-alert-light-strong: {}; \
-             --rinch-alert-filled-text: white; --rinch-alert-outline-text: {};",
-            t.base, t.light, t.light_text, t.light_strong, t.base
+             --rinch-alert-filled-text: {}; --rinch-alert-outline-text: {};",
+            t.base, t.light, t.light_text, t.light_strong, t.contrast, t.base
         ))
     }
 }

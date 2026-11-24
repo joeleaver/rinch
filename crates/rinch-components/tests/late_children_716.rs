@@ -434,6 +434,7 @@ fn a_row_with_its_own_icon_keeps_it_across_a_move() {
         let text = scope.create_text("One");
         let item = ListItem {
             icon: Some(TablerIcon::Home),
+            ..Default::default()
         }
         .render(scope, &[text]);
         let first = List {

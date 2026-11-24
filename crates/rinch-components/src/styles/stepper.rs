@@ -82,14 +82,14 @@ pub fn styles() -> String {
    filled icon (issue #2195). */
 .rinch-stepper__step--completed .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
-    color: var(--rinch-stepper-icon-text, white);
+    color: var(--rinch-stepper-icon-text, var(--rinch-stepper-contrast, var(--rinch-primary-color-contrast, white)));
 }
 
 /* Progress (current) step. `--rinch-stepper-ring` replaces the focus ring
    around it (a `box-shadow` value; `none` drops it). */
 .rinch-stepper__step--progress .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
-    color: var(--rinch-stepper-icon-text, white);
+    color: var(--rinch-stepper-icon-text, var(--rinch-stepper-contrast, var(--rinch-primary-color-contrast, white)));
     box-shadow: var(--rinch-stepper-ring, 0 0 0 4px color-mix(in srgb, var(--rinch-stepper-color, var(--rinch-primary-color)) 20%, transparent));
 }
 

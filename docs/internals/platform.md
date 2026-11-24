@@ -1420,6 +1420,66 @@ Enable with `features = ["notifications"]` (off by default, no windowing needed;
 
 Enable with `features = ["global-hotkeys"]` (implies `windowing`, not `desktop`, #2435; off by default, adds no package to `Cargo.lock` — `hotkey::tests::the_backends_add_no_package_to_the_lock`). `rinch::hotkey::register(spec, |ev: &HotkeyEvent| …) -> Result<Hotkey, HotkeyError>` gives **press and release** of a system-wide shortcut on the main thread (one `batch` each, through `rinch_core::dispatch_main_callback`); `Hotkey::rebind`, drop unregisters, and a hotkey registered during a render dies with its component (the #183 menu rule: owner captured at registration, `on_cleanup` unregisters, a dead owner's report is dropped). Shortcut strings read their key through the menu's table (`menu::key_spelling_code`, shared — `every_menu_key_spelling_names_the_same_key_here` pins it) and add sided modifiers (`RightCtrl`), modifier-only bindings (last token a modifier), `Super` distinct from Ctrl, and any W3C `code`. `HotkeyCapture` turns the app's own key events into a shortcut for a settings field. Backends (`crates/rinch/src/hotkey/backend/`): Windows = a `WH_KEYBOARD_LL` hook whose proc only `PostThreadMessageW`s to its own pump thread (`LowLevelHooksTimeout`), plus `RegisterHotKey` to reserve (and swallow) plain chords and report `ERROR_HOTKEY_ALREADY_REGISTERED` as `Conflict`; each key-down first drops keys `GetAsyncKeyState` says are up (`Matcher::key_reconciled`) and a 100 ms poll runs while any key is believed down, so a key-up the hook missed (UIPI) neither strands a binding nor refuses the next chord. macOS = Carbon `RegisterEventHotKey` for plain chords (no permission), a listen-only `CGEventTap` started only for a modifier-only or sided binding (Input Monitoring; `permission()` / `request_permission()`); the tap reconciles modifiers against each event's flag bits and does not feed Caps Lock. Lock keys never count as a held key. X11 = `XGrabKey` to reserve chords (`BadAccess` → `Conflict`) + XInput2 raw key events for press/release; while our own grab is active the server sends core `KeyPress`/`KeyRelease` instead, which feed the same `Matcher`, with XKB detectable auto-repeat on (else a held chord was ~25 Released/Pressed pairs a second). Wayland = the GlobalShortcuts portal over raw zbus on a private thread inside a current-thread tokio runtime (not `ashpd`, which refuses to build with both its runtime features, and the workspace has one crate on each; zbus builds with both and then needs a tokio runtime, which the runtime gives either way). The app first names itself with `org.freedesktop.host.portal.Registry.Register` (KDE refuses an app with no id; the id needs an installed `.desktop` entry; `hotkey::set_app_id`, default the window's app id). When Register answers "App info not found", rinch writes a `NoDisplay=true` stub to `$XDG_DATA_HOME/applications/<id>.desktop` (`shell::rinch_runtime::ensure_desktop_entry`: skipped if a system or user entry exists, `create_new` so nothing is overwritten) and retries for up to 2 s; `hotkey::set_write_desktop_entry(false)` opts out. Combining `system-tray` and `file-dialogs` already puts zbus in tokio mode under rfd (#1526). The user binds in a system dialog, so `register` answers `Binding::Pending` and the outcome arrives as `Binding::SystemChosen`/`Declined` through `on_binding_change`. One session for the backend's life; commands queued in one turn are one BindShortcuts; a portal that will not re-bind gets a new session after everything held is released; a rebind opens ConfigureShortcuts on v2. A rebind bumps the entry's generation, which rides in the backend key (`backend_key`, bits 40+), so a report queued for the old binding is dropped. `HotkeyEvent::chorded` marks a `Released` after another key went down during the hold (toggle apps ignore it). Guide: `docs/src/guide/platform.md#global-hotkeys`. Example: `examples/global-hotkey-demo`.
 
+### Reduced motion (#2209)
+
+Stylo's servo build has no `prefers-reduced-motion` media feature: it is in
+Gecko's table only (`stylo/gecko/media_features.rs`; servo's ends at
+`prefers-color-scheme`). A query naming it failed to parse and became `not
+all`, so the theme's reduced-motion rule never applied on desktop, and
+`no-preference` and `not (… reduce)` never matched either. The table is a
+static array, so it has no hook.
+
+- **The answer is written into the sheet.** `rinch_dom::reduced_motion::rewrite`
+  runs on every author sheet in `parse_author_stylesheet`, after
+  `webkit_box::rewrite`. In each `@media` prelude it replaces
+  `(prefers-reduced-motion)`, `(… reduce)` and `(… no-preference)` with
+  `(min-width: 0px)`, which always matches, or `(scan)`, which servo never
+  matches. Any other value is left as the parse error it also is in Chrome.
+  Comments and strings are skipped.
+- **A change re-parses.** Each sheet whose source names the feature is kept
+  with that source (`RinchDocument::motion_sheets`).
+  `RinchDocument::set_prefers_reduced_motion` swaps each live one's
+  `StylesheetContents` for a re-parse (same `DocumentStyleSheet`, so the
+  cascade order is unchanged), forces the author origin dirty, and restyles
+  everything the way a DPR change does (`FullRestyleReason::Stylesheet`).
+  Entries for sheets that left the document are dropped by
+  `forget_dead_motion_sheets`, run there, at the end of `set_theme_css` and at
+  the end of `sync_style_element_sheets`: each entry holds its sheet strongly,
+  and the theme names the feature by default, so before that every theme
+  replacement (and every text change of such a `<style>`) kept one more sheet
+  alive until the preference changed. A document with no such sheet pays a
+  bool compare.
+- **Only `@media` preludes are rewritten.** An `@import`'s media list naming
+  the feature is left as Stylo parses it, which has no such feature.
+- **The process's preference** is `rinch_dom::reduced_motion::prefers_reduced_motion`,
+  an atomic that a new document starts from. `rinch::reduced_motion` sets it
+  from the app's override, else the OS's setting
+  (`effective_of(override, system)`). Each window's
+  `App::reduced_motion_owed` compares its document against it, in both "is
+  there anything to do?" predicates. `App::adopt_reduced_motion` applies it at
+  the top of `resolve_and_repaint`, before the short-circuit, as system fonts
+  are adopted.
+- **The OS read** (`rinch::reduced_motion::refresh_from_os`): at `App::run`, and
+  on every `WindowEvent::Focused(true)`, since the change is made in another
+  window.
+  - Linux: KDE's `kdeglobals` when `XDG_CURRENT_DESKTOP` names KDE; otherwise
+    `gsettings get org.gnome.desktop.interface enable-animations`, then GTK 3's
+    `settings.ini`. Linux reads on a short-lived thread, one at a time.
+  - Windows: `SPI_GETCLIENTAREAANIMATION`, inline.
+  - macOS: `NSWorkspace.accessibilityDisplayShouldReduceMotion`, inline.
+
+  A change is published through `dispatch_main_callback`, which wakes the loop
+  and bumps the signal behind the reactive `rinch::prefers_reduced_motion`.
+- **Not here:** rinch-web, where the browser evaluates the query. Smooth wheel
+  scrolling does not follow the preference by itself.
+
+Tests: `rinch-dom/tests/reduced_motion_2209_tests.rs` (every form with either
+preference, a change restyling `load_css`, theme and `<style>` sheets, and the
+theme rule's 0.01ms transitions), the rewrite's unit tests,
+`rinch/tests/reduced_motion_2209.rs` (the override restyling a running window
+and waking the getter; its own binary because the preference is
+process-wide), and the parsers' unit tests in `rinch/src/reduced_motion.rs`.
+
 ### Theme System (optional)
 
 Enable with `features = ["theme"]` for the theme system inspired by Mantine.
@@ -1475,6 +1535,41 @@ onto them changes nothing there: `crates/rinch/tests/light_variants_dark_scheme_
 compares every light-scheme sample with a swatch of the old shade, and checks the
 dark scheme's fills are dark, its text reads (4.5:1) and rest, hover and active
 stay three colours.
+
+**Text on a filled colour is a contrast token, not `white`** (#2208).
+`generate_css_variables` writes `--rinch-color-{name}-contrast` (from shade 6)
+and `--rinch-primary-color-contrast` (from the primary shade), each
+`rinch_theme::contrast_text` of the hex: black above relative luminance 0.45,
+else white. The threshold was picked so the default palette keeps today's
+text (white everywhere but yellow and lime, Badge's old `#000`); Chrome's own
+midpoint (~0.2) would have flipped blue. A component with a `color` prop writes
+`{prefix}-color` and `{prefix}-contrast` inline through
+`color_utils::accent_vars` (Button through `style_string`'s
+`--rinch-button-color-contrast`), and its rule reads
+`var({prefix}-contrast, var(--rinch-primary-color-contrast))`. Alert's yellow
+keeps its `yellow-9` text. Each use carries a literal fallback (`var(--rinch-primary-color-contrast, white)`, `black` for Badge's yellow/lime), so a document with the component sheet and no theme paints what it painted before (the `css_hook_760`, `decorative_pseudo_773` and `overlay_animation_audit` shell tests load it that way). Pinned by `crates/rinch/tests/filled_contrast_2208.rs`
+(yellow primary reads 4.5:1 in both schemes; the default theme still paints
+white).
+
+**The component sheet can be layered or left out** (#2208).
+`ThemeProviderProps::component_styles` (`rinch_core::ComponentStyles`) reaches
+`generate_theme_css_string`, which hands the theme CSS to
+`rinch_components::compose_theme_and_component_css`: `Unlayered` concatenates
+(the default, unchanged), `Layered` wraps the theme in `@layer rinch-theme` and
+the components in `@layer rinch-components` after a `@layer rinch-theme,
+rinch-components;` statement, `Off` returns the theme plus
+`styles::generate_chrome_styles` (menu bar, borderless window, context menu:
+the shell reserves `MENU_BAR_HEIGHT` from the bar's rules). The bare-focus scan
+(`rules_have_bare_focus`, `style_resolution/mod.rs`) recurses into every rule
+with children (`CssRule::children`), so the theme's `:focus-visible` ring
+inside `@layer rinch-theme` still makes nodes focus-sensitive; it used to look
+only inside `@media` and `@supports`, and under `Layered` no ring painted. Stylo 0.22's servo
+build parses and cascades `@layer` (see `crates/rinch-dom/tests/style_sheet_order_2694_tests.rs`).
+The base styles must be layered with the components: their unlayered
+`button, input, select, textarea { color: inherit }` would otherwise outrank
+every layered component colour. Pinned by `crates/rinch/tests/component_layers_2208.rs`
+(layered paints like unlayered; a `button` rule outranks only the layered sheet;
+`Off` has no fill).
 
 **Generic font families are repaired on Android** (`crates/rinch-dom/src/fonts.rs`,
 issue #322). fontique maps the `monospace` slot to the literal name `"monospace"`,

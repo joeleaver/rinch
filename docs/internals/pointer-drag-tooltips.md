@@ -755,8 +755,9 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   wheel to the animating scroller); once it has landed there, the next notch
   chains as a direct one does.
 - **Not here**: the web (the browser scrolls, and smooths, by itself) and
-  Android (its wheels are touch pans and flings, pixels). The OS's
-  reduced-motion setting is not read (#2209); the app passes it.
+  Android (its wheels are touch pans and flings, pixels). The
+  reduced-motion preference (`rinch::prefers_reduced_motion`, #2209) does not
+  turn the glide off; an app passes it to `smooth_wheel_scroll`.
 - **Keyboard scrolls** (#2977) ride it too, on `CurveKind::Keyboard`: see
   `docs/internals/focus-and-keyboard.md`, "Keyboard scrolling".
 - **Programmatic scrolls** (#2291) ride the same machinery: see "Smooth

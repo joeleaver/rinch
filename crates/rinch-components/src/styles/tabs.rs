@@ -170,7 +170,7 @@ pub fn styles() -> String {
 .rinch-tabs--pills > .rinch-tabs__list > .rinch-tabs__tab[data-active="true"],
 .rinch-tabs--pills > .rinch-tabs__list > .rinch-tabs__tab--active {
     background-color: var(--rinch-tabs-color, var(--rinch-primary-color));
-    color: white;
+    color: var(--rinch-tabs-contrast, var(--rinch-primary-color-contrast, white));
 }
 
 /* Tab sections */

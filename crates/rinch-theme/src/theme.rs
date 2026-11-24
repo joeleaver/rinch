@@ -54,7 +54,10 @@ pub struct Theme {
     pub dark_mode: bool,
     /// Primary shade index (0-9) for filled components.
     pub primary_shade: usize,
-    /// Whether to respect system color scheme preference.
+    /// Whether to emit the `@media (prefers-reduced-motion: reduce)` rule that
+    /// shortens every transition and animation to 0.01ms. The preference comes
+    /// from the OS or `App::reduced_motion` on desktop, from the browser on
+    /// the web (#2209).
     pub respect_reduced_motion: bool,
     /// Cursor type for interactive elements.
     pub cursor_type: CursorType,

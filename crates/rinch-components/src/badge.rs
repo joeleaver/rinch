@@ -94,8 +94,9 @@ const BUILTIN_COLORS: [&str; 14] = [
 /// A small status indicator badge.
 ///
 /// `color` takes a theme palette name, `primary`, or a raw CSS colour
-/// (`#7048e8`, `rgb(…)`, `hsl(…)`). The filled variant's text is white
-/// (black on `lime` and `yellow`); `--rinch-badge-text` changes it.
+/// (`#7048e8`, `rgb(…)`, `hsl(…)`). The filled variant's text is the
+/// colour's contrast (`--rinch-color-{name}-contrast`, or white or black
+/// computed from a raw colour; #2208); `--rinch-badge-text` changes it.
 #[derive(Default)]
 pub struct Badge {
     /// Badge variant (filled, light, outline, dot).
@@ -181,8 +182,8 @@ impl Badge {
         let t = crate::color_utils::color_tokens(&self.color);
         Some(format!(
             "--rinch-badge-color: {}; --rinch-badge-light: {}; \
-             --rinch-badge-light-color: {}; --rinch-badge-text: white;",
-            t.base, t.light, t.light_color
+             --rinch-badge-light-color: {}; --rinch-badge-text: {};",
+            t.base, t.light, t.light_color, t.contrast
         ))
     }
 }

@@ -685,6 +685,43 @@ mod tests {
     /// `line-height` from `body` (1.55) and the bar came out ~31px against 28px
     /// of reserved space. The label now pins `line-height`, making the two
     /// agree by construction. This asserts they still do.
+    /// #2208 review: under `ComponentStyles::Off` and `Layered` the menu bar
+    /// keeps its own rules (rinch's chrome, not a component), so it still
+    /// measures the space the shell reserves for it.
+    #[test]
+    fn menu_bar_is_menu_bar_height_under_every_component_styles() {
+        use rinch_core::ComponentStyles;
+        for mode in [
+            ComponentStyles::Unlayered,
+            ComponentStyles::Layered,
+            ComponentStyles::Off,
+        ] {
+            let mut doc = RinchDocument::new();
+            let body = doc.body();
+            let style = doc.create_element("style");
+            let css = doc.create_text(&rinch_components::compose_theme_and_component_css(
+                &rinch_theme::css::generate_theme_css(&rinch_theme::Theme::default()),
+                mode,
+            ));
+            doc.append_child(style, css);
+            doc.append_child(body, style);
+            let bar = doc.create_element("div");
+            doc.set_attribute(bar, "class", "rinch-app-menu-bar");
+            doc.append_child(body, bar);
+            let item = doc.create_element("div");
+            doc.set_attribute(item, "class", "rinch-app-menu-item");
+            doc.append_child(bar, item);
+            let label = doc.create_element("div");
+            doc.set_attribute(label, "class", "rinch-app-menu-item__label");
+            doc.append_child(item, label);
+            let text = doc.create_text("File");
+            doc.append_child(label, text);
+            doc.resolve_layout(800.0, 600.0);
+            let height = doc.tree.get(bar.0).unwrap().layout.height;
+            assert_eq!(height, MENU_BAR_HEIGHT as f32, "{mode:?}");
+        }
+    }
+
     #[test]
     fn menu_bar_renders_exactly_menu_bar_height() {
         let mut doc = RinchDocument::new();

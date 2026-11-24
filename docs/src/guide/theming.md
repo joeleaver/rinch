@@ -38,6 +38,7 @@ Omit `.theme(...)` to get the default theme (blue primary, light mode, small rad
 | `font_family` | `Option<String>` | System fonts | Primary font stack |
 | `font_family_monospace` | `Option<String>` | System mono | Monospace font stack |
 | `dark_mode` | `bool` | `false` | Dark mode |
+| `component_styles` | `ComponentStyles` | `Unlayered` | How the component sheet joins the cascade: `Unlayered`, `Layered` or `Off` ([Layering and unstyled components](#layering-and-unstyled-components)) |
 
 ## CSS Variables
 
@@ -110,6 +111,36 @@ var(--rinch-primary-color-light)           /* The same six for the primary; its 
 The components' `light` variants paint these: Button and ActionIcon (`light` fills
 and the hover/active fills of `outline` and `subtle`), Badge, Alert, inline Code and
 the `light` Avatar. Use them for your own tinted surfaces and they follow the scheme.
+
+### Contrast Colors
+
+The text color that reads on a color's filled shade, for every palette color
+(from its shade 6) and for the primary (from the primary shade). It is the same
+in both schemes, because the filled shades do not flip.
+
+```css
+var(--rinch-color-blue-contrast)    /* Text on a filled blue-6: white */
+var(--rinch-color-yellow-contrast)  /* Text on a filled yellow-6: black */
+var(--rinch-primary-color-contrast) /* Text on the filled primary */
+```
+
+The theme picks white, or black when white would read below about 2.1:1 (the
+color's relative luminance is above 0.45, `rinch_theme::contrast_text`). With
+the default palette that keeps white text on every color but yellow and lime,
+which is what the components painted before; a pale primary (`primary_shade: 2`)
+or a light palette of your own gets black text. The filled components paint it:
+filled Button, ActionIcon, Badge and Avatar, Pagination's active page, Tabs'
+active pill, Stepper's completed and current step, NavLink's active link,
+Checkbox's check and filled Alert. A component's own `color` prop carries its
+color's contrast with it (`white`/`black` computed from a raw `#…`/`rgb(…)`
+color, white for any other raw color).
+
+Set it in your own stylesheet to choose the color yourself; the theme sheet
+comes before the app's, so your `:root` wins:
+
+```css
+:root { --rinch-primary-color-contrast: #1a1b1e; }
+```
 
 ### Spacing
 
@@ -712,6 +743,38 @@ let css = rinch_theme::generate_theme_css(&theme);
 
 Or ignore the theme system entirely and write your own CSS variables, your own classes, your own inline styles. Rinch components read from `--rinch-*` variables. If those variables exist, components use them. If they don't, components fall back to hardcoded defaults. You're never locked in.
 
+### Layering and unstyled components
+
+By default the theme and component sheets are ordinary author CSS ahead of the
+app's own: an app rule replaces a component rule only when it is at least as
+specific, and some active states take three classes to beat
+(`.rinch-tabs--pills > .rinch-tabs__list > .rinch-tabs__tab--active`).
+`component_styles` changes that:
+
+```rust
+let theme = ThemeProviderProps {
+    component_styles: ComponentStyles::Layered,
+    ..Default::default()
+};
+```
+
+| `ComponentStyles` | What the components get |
+|---|---|
+| `Unlayered` (default) | The theme sheet, then the component sheet, unlayered, as rinch always did |
+| `Layered` | The theme sheet in `@layer rinch-theme` and the component sheet in `@layer rinch-components` (declared in that order). **Any** unlayered app rule outranks them whatever its specificity, the way author CSS outranks a browser's built-in look of its controls: `button { background: … }` restyles a `Button`. With no app CSS it paints what `Unlayered` paints. |
+| `Off` | No component sheet: the components render their markup and `rinch-*` classes unstyled, for an app that styles them itself. The theme sheet (variables and base styles) stays, and so does rinch's own window chrome (the DOM menu bar, the borderless window frame, the text context menu: `rinch_components::styles::generate_chrome_styles`), whose sizes the shell relies on. |
+
+Under `Layered` an app's unlayered rules also outrank the theme's base styles
+(the `body` font and colour, headings' margins, links, the default focus
+ring), which sit in `rinch-theme`. A generic app rule now reaches the components too (`* { margin: 0 }`
+or `div { display: flex }` restyles them), so it suits an app that writes its
+CSS knowing that. The other side of cascade layers: a layered `!important` (the
+overlays' visibility rules in Modal, Drawer and Notification) outranks an
+unlayered app `!important`. An app can put its own CSS in layers after these
+(`@layer rinch-theme, rinch-components, app;`). The setting takes effect with
+the `components` feature; `rinch_components::compose_theme_and_component_css`
+builds the same string for a document you load yourself.
+
 ## Dark Mode
 
 ```rust
@@ -727,6 +790,51 @@ In dark mode, semantic colors flip:
 - Component backgrounds, borders, and hover states all adjust
 
 For dynamic dark mode toggling (e.g., a switch in your app), use `dark_mode_fn` on WASM or re-create the theme and call `update_theme()` on desktop.
+
+## Reduced motion
+
+`@media (prefers-reduced-motion: reduce)` and `(prefers-reduced-motion:
+no-preference)` work in your stylesheets on every platform. The theme uses the
+first one (`Theme::respect_reduced_motion`, on by default) to shorten every
+transition and animation to 0.01ms, so spinners, collapses and fades stop moving
+when the user asks for less motion.
+
+On desktop the preference follows the OS setting, as Chrome does:
+
+- GNOME: Settings › Accessibility › Reduce Animation
+  (`org.gnome.desktop.interface enable-animations`).
+- KDE: the animation speed slider set to "Instant" (`AnimationDurationFactor=0`).
+- Windows: "Show animations in Windows".
+- macOS: Accessibility › Display › Reduce motion.
+
+The setting is read when the app starts and again whenever one of its windows
+gains focus, so a change made in the system settings applies when you come back
+to the app.
+
+To decide for the app instead, use `App::reduced_motion`:
+
+```rust
+App::new(app).reduced_motion(Some(true))   // always reduce
+App::new(app).reduced_motion(None)         // follow the OS (the default)
+```
+
+`rinch::set_reduced_motion` changes it while the app runs. To read it from your
+own code, use `rinch::prefers_reduced_motion()`. It is reactive: an effect or a
+`{|| …}` closure that reads it runs again when it changes.
+
+```rust
+p { {|| if rinch::prefers_reduced_motion() { "Still" } else { "Animated" }} }
+```
+
+In the browser, the browser answers the media query itself, and
+`rinch::prefers_reduced_motion`, `rinch::set_reduced_motion` and
+`App::reduced_motion` do not exist in a web build (they are native-only:
+desktop, Android and embedded); read
+`window.matchMedia("(prefers-reduced-motion: reduce)")` through `web_sys`
+instead.
+
+On desktop only `@media` preludes are answered: a media list on an `@import`
+(`@import url(a.css) (prefers-reduced-motion: reduce);`) is not rewritten.
 
 ## Scrollbars
 

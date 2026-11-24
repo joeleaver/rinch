@@ -16,12 +16,17 @@ pub fn styles() -> String {
         var(--rinch-color-default) 100%
     );
     background-size: 200% 100%;
-    animation: rinch-skeleton-pulse 1.5s ease-in-out infinite;
+    animation: rinch-skeleton-pulse var(--rinch-skeleton-duration, 1.5s) ease-in-out infinite;
 }
 
 @keyframes rinch-skeleton-pulse {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
+}
+
+/* A loaded Skeleton's children: the wrapper generates no box. */
+.rinch-skeleton__content {
+    display: contents;
 }
 
 /* Skeleton circle */

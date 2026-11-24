@@ -26,7 +26,7 @@ pub fn styles() -> String {
 
 /* Avatar variants */
 .rinch-avatar--filled {
-    color: white;
+    color: var(--rinch-avatar-contrast, var(--rinch-primary-color-contrast, white));
 }
 
 .rinch-avatar--light {

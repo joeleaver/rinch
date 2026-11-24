@@ -77,7 +77,8 @@ pub fn styles() -> String {
      --rinch-alert-light         light background
      --rinch-alert-light-text    text on the light background
      --rinch-alert-light-strong  title on the light background
-     --rinch-alert-filled-text   text on the filled background (white)
+     --rinch-alert-filled-text   text on the filled background (the
+                                 colour's contrast token, #2208)
      --rinch-alert-outline-text  text of the outline variant (the colour)
    Each colour sets all six, so an Alert nested in another never inherits the
    outer one's values. */
@@ -86,7 +87,7 @@ pub fn styles() -> String {
     --rinch-alert-light: var(--rinch-color-blue-light);
     --rinch-alert-light-text: var(--rinch-color-blue-light-text);
     --rinch-alert-light-strong: var(--rinch-color-blue-light-color-strong);
-    --rinch-alert-filled-text: white;
+    --rinch-alert-filled-text: var(--rinch-color-blue-contrast, white);
     --rinch-alert-outline-text: var(--rinch-color-blue-6);
 }
 .rinch-alert--green {
@@ -94,7 +95,7 @@ pub fn styles() -> String {
     --rinch-alert-light: var(--rinch-color-green-light);
     --rinch-alert-light-text: var(--rinch-color-green-light-text);
     --rinch-alert-light-strong: var(--rinch-color-green-light-color-strong);
-    --rinch-alert-filled-text: white;
+    --rinch-alert-filled-text: var(--rinch-color-green-contrast, white);
     --rinch-alert-outline-text: var(--rinch-color-green-6);
 }
 .rinch-alert--yellow {
@@ -110,7 +111,7 @@ pub fn styles() -> String {
     --rinch-alert-light: var(--rinch-color-red-light);
     --rinch-alert-light-text: var(--rinch-color-red-light-text);
     --rinch-alert-light-strong: var(--rinch-color-red-light-color-strong);
-    --rinch-alert-filled-text: white;
+    --rinch-alert-filled-text: var(--rinch-color-red-contrast, white);
     --rinch-alert-outline-text: var(--rinch-color-red-6);
 }
 .rinch-alert--gray {
@@ -118,7 +119,7 @@ pub fn styles() -> String {
     --rinch-alert-light: var(--rinch-color-filled);
     --rinch-alert-light-text: var(--rinch-color-text);
     --rinch-alert-light-strong: var(--rinch-color-gray-light-color-strong);
-    --rinch-alert-filled-text: white;
+    --rinch-alert-filled-text: var(--rinch-color-gray-contrast, white);
     --rinch-alert-outline-text: var(--rinch-color-gray-6);
 }
 .rinch-alert--primary {
@@ -126,7 +127,7 @@ pub fn styles() -> String {
     --rinch-alert-light: var(--rinch-primary-color-light);
     --rinch-alert-light-text: var(--rinch-primary-color-light-text);
     --rinch-alert-light-strong: var(--rinch-primary-color-light-color-strong);
-    --rinch-alert-filled-text: white;
+    --rinch-alert-filled-text: var(--rinch-primary-color-contrast, white);
     --rinch-alert-outline-text: var(--rinch-primary-color);
 }
 

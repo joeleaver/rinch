@@ -2777,6 +2777,21 @@ crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
 `dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
 bump.
 
+**Features: winit's defaults, with skrifa-drawn decoration titles (#2434).**
+rinch depends on winit with `default-features = false` and names `x11`,
+`wayland`, `wayland-dlopen` and `wayland-csd-adwaita-skrifa`. winit's
+`default` has `wayland-csd-adwaita` in that last place, and it draws the
+client-side decorations' title text (sctk-adwaita, used on compositors without
+server-side decorations, such as GNOME) with `ab_glyph`, which brings in
+`owned_ttf_parser` and `ttf-parser`. `ttf-parser` is unmaintained
+(RUSTSEC-2026-0192), and every app on rinch with `desktop` got the advisory.
+The skrifa flavour draws the same titled decorations with skrifa 0.44, the
+version parley already links, so it adds no crate. The lockfile lost those
+three crates and `ab_glyph_rasterizer`. Keep the four flags in step with the
+fork's `default` on a bump. The other advisory the issue names,
+`proc-macro-error` (RUSTSEC-2024-0370, through muda's gtk-rs 0.18 on Linux),
+is still in the graph.
+
 On a winit bump: rebase the branch's commits onto the new tag on a new branch
 (apps on the old one keep building), move the rev here, and read upstream's
 changelog for API breaks (beta.3 made most public enums `#[non_exhaustive]`;

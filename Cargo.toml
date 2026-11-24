@@ -137,7 +137,13 @@ wgpu = "30"
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "debcf476b05eb00181f8dc23219fdf7d3c96ed53" }
+# winit's default features, with the Wayland client-side decorations' titles
+# drawn by skrifa (`wayland-csd-adwaita-skrifa`, the skrifa 0.44 parley already
+# links) in place of the default ab_glyph flavour: ab_glyph brings ttf-parser,
+# an unmaintained crate (RUSTSEC-2026-0192), into every app's graph (#2434).
+# The decorations look the same; GNOME, which has no server-side decorations,
+# still gets titled ones. Keep the four flags in step with winit's `default`.
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "debcf476b05eb00181f8dc23219fdf7d3c96ed53", default-features = false, features = ["x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-skrifa"] }
 
 # Menus
 muda = "0.15"

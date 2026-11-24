@@ -604,7 +604,7 @@ fn the_active_page_text_colour_is_a_custom_property() {
     assert!(
         decls
             .iter()
-            .any(|d| d == "color: var(--rinch-pagination-active-text, white)"),
+            .any(|d| d == "color: var(--rinch-pagination-active-text, var(--rinch-pagination-contrast, var(--rinch-primary-color-contrast, white)))"),
         "{decls:?}"
     );
 }

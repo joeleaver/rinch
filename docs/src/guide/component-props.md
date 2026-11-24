@@ -85,6 +85,18 @@ Auto-layout grid.
 | `spacing` | `String` | `""` | Gap between items (xs, sm, md, lg, xl or CSS value) |
 | `vertical_spacing` | `String` | `""` | Vertical gap (xs, sm, md, lg, xl or CSS value); falls back to `spacing` |
 
+The props write only custom properties on the grid's inline style
+(`--rinch-simple-grid-cols`, `--rinch-simple-grid-template` for
+`min_child_width`, `--rinch-simple-grid-gap`, `--rinch-simple-grid-row-gap`),
+each only when set. The grid itself (`display: grid`, the template, the gaps) is
+the `.rinch-simple-grid` rule, which reads them with the defaults above as
+fallbacks. So an app stylesheet can change the layout, for example per
+breakpoint: `@media (max-width: 600px) { .my-grid.rinch-simple-grid {
+grid-template-columns: 1fr; } }` (the second class outranks the component's
+rule), or set the variables on the grid when the prop is unset. The variables
+stop at the grid's children, so a nested SimpleGrid keeps its own defaults.
+There is no `breakpoints` prop.
+
 ### Container
 
 Centered max-width wrapper.
@@ -612,9 +624,11 @@ when alpha must be externally drivable.
 |------|------|---------|-------------|
 | `size` | `String` | `""` | xs, sm, md, lg, xl |
 | `weight` | `String` | `""` | CSS font-weight |
-| `color` | `String` | `""` | Theme color or "dimmed" |
+| `color` | `String` | `""` | `primary`, `dimmed`, `inherit` or a theme palette name (a class, palette shade 6); a shade as `name.N` (`"blue.3"`); a custom palette name (`"brand"`, falling back to the name itself as a CSS colour, so `"crimson"` works); or any CSS colour (`#hex`, `rgb(…)`, `var(…)`). All but the first group go through `--rinch-text-color` (`.rinch-text--custom-color`) |
 | `align` | `String` | `""` | CSS text-align |
 | `inline` | `bool` | `false` | Use `<span>` instead of `<p>` |
+| `truncate` | `bool` | `false` | One line ending in "…" (`.rinch-text--truncate`, a block) |
+| `line_clamp` | `Option<u32>` | `None` | Clamp to this many lines, the last ending in "…" (`.rinch-text--line-clamp`, reading `--rinch-text-line-clamp`) |
 
 ### Title
 
@@ -622,7 +636,7 @@ when alpha must be externally drivable.
 |------|------|---------|-------------|
 | `order` | `Option<u8>` | `None` | Heading level 1-6 |
 | `align` | `String` | `""` | CSS text-align |
-| `size` | `String` | `""` | Override size independent of order |
+| `size` | `String` | `""` | Font size independent of `order` (which keeps the tag, weight and line height): `"1"`–`"6"` or `"h1"`–`"h6"` for a level's size, `"xs"`–`"xl"` for the theme's text sizes, or any CSS font size (`"40px"`). The last two go through `--rinch-title-size` (`.rinch-title--custom-size`) |
 
 ### Code
 
@@ -653,9 +667,13 @@ when alpha must be externally drivable.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `cite` | `String` | `""` | Citation source |
+| `cite_node` | `Option<SectionRenderer>` | `None` | A custom citation node, drawn in the `<cite>` in place of `cite`. Pass `Some(renderer)` |
 | `icon` | `Option<TablerIcon>` | `None` | |
 | `color` | `String` | `""` | |
 | `radius` | `String` | `""` | |
+
+The children go in a `<div class="rinch-blockquote__body">` (a `<p>` until
+#2207, which could not hold block children).
 
 ### Mark
 
@@ -670,9 +688,11 @@ Custom Default: `ignore_case` defaults to `true`.
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `text` | `String` | `""` | Full text to display |
-| `highlight` | `String` | `""` | Substring(s) to highlight |
+| `highlight` | `String` | `""` | A substring to highlight |
+| `highlights` | `Vec<String>` | `[]` | More substrings to highlight, with `highlight`. Where two match at one place the longer wins; matches never overlap |
 | `color` | `String` | `""` | Highlight color. Unset, it is `--rinch-color-mark`, which follows the scheme |
-| `ignore_case` | `bool` | **`true`** | Case-insensitive matching |
+| `ignore_case` | `bool` | **`true`** | Case-insensitive matching, per character by full Unicode lowercase; the text is marked as written |
+| `match_class` | `String` | `""` | Extra class(es) on each `<mark>`, beside `rinch-highlight__match` |
 
 ---
 
@@ -714,7 +734,8 @@ A badge with a section wraps its children in `span.rinch-badge__label`; one
 without keeps them directly in the badge. Every variant reads
 `--rinch-badge-color` (the solid colour), `--rinch-badge-light`,
 `--rinch-badge-light-color` and `--rinch-badge-text` (the filled variant's
-text, white, black on `lime` and `yellow`). Every badge sets all four itself,
+text: the colour's contrast token `--rinch-color-{name}-contrast`, or white or
+black computed from a raw colour, #2208). Every badge sets all four itself,
 so an app rule that changes one targets the badge (`.my-badge.rinch-badge`),
 not an ancestor (#2201).
 
@@ -745,6 +766,7 @@ not an ancestor (#2201).
 | `orientation` | `String` | `""` | "horizontal" or "vertical" |
 | `size` | `String` | `""` | |
 | `label` | `String` | `""` | Text label in the divider |
+| `label_node` | `Option<SectionRenderer>` | `None` | A custom label node (an icon, ...) in the `.rinch-divider__label` span, in place of `label`. Pass `Some(renderer)` |
 | `label_position` | `String` | `""` | "left", "center", "right" |
 
 ### Fieldset
@@ -786,10 +808,12 @@ Any `<img>` can take a load failure itself: `img { src: …, onerror: move || �
 | `spacing` | `String` | `""` | |
 | `center` | `bool` | `false` | Center items with icons |
 | `icon` | `Option<TablerIcon>` | `None` | Default icon for this list's items that set none (#707); a `ListItem`'s own `icon` wins, and an item that arrives later, or moves in from another list, takes it as it lands (#716) |
+| `icon_node` | `Option<SectionRenderer>` | `None` | A custom default marker node, in place of `icon` (which it wins over), applied exactly as `icon` is; the renderer runs once per item. Pass `Some(renderer)` |
 | `with_padding` | `bool` | `false` | |
 
 **ListItem:** `icon: Option<TablerIcon>` — per-item icon override, which beats
-`List::icon`.
+`List::icon`; and `icon_node: Option<SectionRenderer>` — a per-item marker node,
+which beats the item's `icon` and both of the list's defaults.
 
 A `List` renders *after* its items, so its default cannot reach them as a prop:
 it finds each item that built no icon layout of its own and rebuilds that item
@@ -890,7 +914,8 @@ this stepper wrote its `data-step` rather than the caller.
 
 Every variant reads `--rinch-alert-color` (filled background, outline),
 `--rinch-alert-light`, `--rinch-alert-light-text`, `--rinch-alert-light-strong`
-(the light title), `--rinch-alert-filled-text` (white) and
+(the light title), `--rinch-alert-filled-text` (the colour's contrast token,
+`--rinch-color-{name}-contrast`; yellow-9 on `yellow`; #2208) and
 `--rinch-alert-outline-text`; a built-in colour's class sets all of them, any
 other colour sets all of them inline (#2200), so a nested Alert inherits none. `--rinch-alert-close-hover` is the close
 button's hover background.
@@ -951,7 +976,8 @@ Custom Default: `animate` and `visible` default to `true`.
 | `radius` | `String` | `""` | |
 | `circle` | `bool` | `false` | |
 | `animate` | `bool` | **`true`** | |
-| `visible` | `bool` | **`true`** | |
+| `duration` | `String` | `""` | One sweep of the animation (`"800ms"`); empty is `1.5s`. Written to `--rinch-skeleton-duration` |
+| `visible` | `bool` | **`true`** | `false` renders the children instead, in a `<span class="rinch-skeleton__content">` with `display: contents`, so they lay out as the parent's own (a flex or grid parent sees each child) |
 
 ---
 
@@ -1543,7 +1569,9 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `render_item` | `Option<PaginationItemRenderer>` | `None` | Escape hatch: `Rc<dyn Fn(&mut RenderScope, u32, bool) -> NodeHandle>`, called with the page and whether it is active; draws the page button's content, the button (classes, `aria-current`, click) stays the component's. Pass it as `Some(Rc::new(...))` |
 
 The active page carries `aria-current="page"` (#2194). Its text colour is
-`--rinch-pagination-active-text` (default `white`).
+`--rinch-pagination-active-text`; unset, it is the text colour for the
+active fill (`--rinch-pagination-contrast` from `color`, else
+`--rinch-primary-color-contrast`, else `white`; #2208).
 
 ### NavLink
 
@@ -1625,7 +1653,9 @@ region with `.rinch-stepper__content` and the shown content with
 `.rinch-stepper__content > .rinch-stepper__step-content` (padded
 `--rinch-spacing-md` on top; a step with no children shows nothing).
 
-The filled icons' glyph colour is `--rinch-stepper-icon-text` (default `white`)
+The filled icons' glyph colour is `--rinch-stepper-icon-text` (default: the
+`color` prop's contrast, `--rinch-stepper-contrast`, else the theme's
+`--rinch-primary-color-contrast`; #2208)
 and the progress step's ring is `--rinch-stepper-ring` (a `box-shadow` value;
 `none` drops it).
 

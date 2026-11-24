@@ -265,10 +265,10 @@ fn a_badges_built_in_colours_render_as_before() {
 fn every_badge_variant_reads_the_colour_variables() {
     let css = css();
     for rule in [
-        "background-color: var(--rinch-badge-color, var(--rinch-primary-color)); color: var(--rinch-badge-text, white);",
+        "background-color: var(--rinch-badge-color, var(--rinch-primary-color)); color: var(--rinch-badge-text, var(--rinch-primary-color-contrast, white));",
         "background-color: var(--rinch-badge-light, var(--rinch-primary-color-light)); color: var(--rinch-badge-light-color, var(--rinch-primary-color-light-color));",
         "color: var(--rinch-badge-color, var(--rinch-primary-color)); border: 1px solid var(--rinch-badge-color, var(--rinch-primary-color));",
-        ".rinch-badge[data-color=\"yellow\"] { --rinch-badge-color: var(--rinch-color-yellow-6); --rinch-badge-light: var(--rinch-color-yellow-light); --rinch-badge-light-color: var(--rinch-color-yellow-light-color); --rinch-badge-text: #000; }",
+        ".rinch-badge[data-color=\"yellow\"] { --rinch-badge-color: var(--rinch-color-yellow-6); --rinch-badge-light: var(--rinch-color-yellow-light); --rinch-badge-light-color: var(--rinch-color-yellow-light-color); --rinch-badge-text: var(--rinch-color-yellow-contrast, black); }",
     ] {
         assert!(css.contains(rule), "missing: {rule}");
     }
@@ -465,4 +465,45 @@ fn the_indeterminate_bar_animates_and_the_width_transition_is_a_variable() {
         css.contains("transition: var(--rinch-progress-transition, width 200ms ease);"),
         "the width transition Progress always had, with `none` as the escape hatch"
     );
+}
+
+/// A colour the stylesheet has no rule for writes its contrast as the filled
+/// text (#2208 on top of #2200's inline variables): computed from a raw
+/// colour, the theme's token for a name, the primary token for `primary`.
+#[test]
+fn an_inline_colour_writes_its_contrast_as_the_filled_text() {
+    for (color, want) in [
+        ("#ffe066", "black"),
+        ("#1864ab", "white"),
+        ("violet", "var(--rinch-color-violet-contrast, white)"),
+        ("primary", "var(--rinch-primary-color-contrast, white)"),
+    ] {
+        let alert = mount(Alert {
+            color: color.into(),
+            variant: "filled".into(),
+            ..Default::default()
+        });
+        if color != "primary" {
+            let s = style(&alert.root);
+            assert!(
+                s.contains(&format!("--rinch-alert-filled-text: {want};")),
+                "alert {color}: {s:?}"
+            );
+        }
+        let badge = mount(Badge {
+            color: color.into(),
+            ..Default::default()
+        });
+        if color != "violet" {
+            let s = style(&badge.root);
+            assert!(
+                s.contains(&format!("--rinch-badge-text: {want};")),
+                "badge {color}: {s:?}"
+            );
+        }
+    }
+    let css = css();
+    assert!(css.contains("--rinch-alert-filled-text: var(--rinch-primary-color-contrast, white);"));
+    assert!(css.contains("--rinch-alert-filled-text: var(--rinch-color-red-contrast, white);"));
+    assert!(css.contains("--rinch-badge-text: var(--rinch-primary-color-contrast, white);"));
 }

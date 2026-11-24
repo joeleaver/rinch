@@ -712,6 +712,22 @@ where
         self
     }
 
+    /// Force the reduced-motion preference (issue #2209): `Some(true)` makes
+    /// `@media (prefers-reduced-motion: reduce)` match in every window,
+    /// `Some(false)` makes `no-preference` match, and `None` (the default)
+    /// follows the OS's setting, as Chrome does. The theme's reduced-motion
+    /// rule (`Theme::respect_reduced_motion`, on by default) then shortens
+    /// every transition and animation to 0.01ms.
+    ///
+    /// The same as [`rinch::set_reduced_motion`](crate::reduced_motion::set_reduced_motion),
+    /// which it calls and which also changes it while the app runs; read it
+    /// reactively with [`rinch::prefers_reduced_motion`](crate::reduced_motion::prefers_reduced_motion).
+    #[cfg(any(feature = "windowing", feature = "android"))]
+    pub fn reduced_motion(self, value: Option<bool>) -> Self {
+        crate::reduced_motion::set_reduced_motion(value);
+        self
+    }
+
     /// Choose how text is rendered (issue #2286). Every field of the default
     /// [`TextRasterization`](crate::text_rasterization::TextRasterization) is `Auto`,
     /// which follows the OS's text settings
@@ -1104,6 +1120,9 @@ where
         // The app's text rasterization; the OS's settings it follows are read
         // when the first glyph run is painted (#2286, #2773).
         crate::text_rasterization::set_text_rasterization(text_rasterization);
+        // The OS's reduced-motion setting (#2209), read again whenever a
+        // window gains focus.
+        crate::reduced_motion::refresh_from_os();
         // The app's spellcheck settings, for its text fields and editors
         // (#2862). Installing them loads nothing: the dictionaries are read
         // on the checking thread when the user first edits or focuses a field.

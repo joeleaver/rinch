@@ -145,6 +145,11 @@ mod pointer_lock;
 /// [`PopupProps`], [`PopupAnchor`].
 #[cfg(feature = "windowing")]
 pub mod popup;
+/// Reduced motion (#2209): the OS's setting, the app's override
+/// ([`App::reduced_motion`]) and the reactive
+/// [`prefers_reduced_motion`].
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
+pub mod reduced_motion;
 pub mod render_surface;
 #[cfg(any(feature = "windowing", feature = "android"))]
 pub mod shell;
@@ -157,6 +162,8 @@ pub(crate) mod split_frame;
 /// The system font watch behind [`font::watch_system_fonts`] (#2486, #2537).
 #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 mod system_font_watch;
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
+pub use reduced_motion::{prefers_reduced_motion, set_reduced_motion};
 /// Text rasterization: the app's choice ([`App::text_rasterization`](app_builder::App::text_rasterization))
 /// and the OS's text settings it follows (#2286).
 #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
@@ -598,9 +605,10 @@ pub mod prelude {
 // Re-export core types at crate root
 pub use rinch_core::element::{Adjust, Align, Dismissal, Placement, PopupKind, PopupPlaced, Side};
 pub use rinch_core::element::{
-    Children, CloseRequestCallback, ContentSizing, Element, INPUT_REGION_ATTRIBUTE, IdleTrim,
-    InputRegion, LayerAnchor, LayerAxes, LayerExclusiveZone, LayerKeyboard, LayerMargins,
-    LayerShellLayer, LayerSurface, OutputId, ThemeProviderProps, WindowLevel, WindowProps,
+    Children, CloseRequestCallback, ComponentStyles, ContentSizing, Element,
+    INPUT_REGION_ATTRIBUTE, IdleTrim, InputRegion, LayerAnchor, LayerAxes, LayerExclusiveZone,
+    LayerKeyboard, LayerMargins, LayerShellLayer, LayerSurface, OutputId, ThemeProviderProps,
+    WindowLevel, WindowProps,
 };
 // `Owner` / `current_owner` / `unowned` sit at the crate root rather than in the
 // prelude, alongside `Effect`, for the same reason: they are advanced tools, and
@@ -716,7 +724,7 @@ pub fn generate_theme_css_string(props: &ThemeProviderProps) -> String {
     let css = generate_theme_css(&theme);
 
     #[cfg(feature = "components")]
-    let css = css + &rinch_components::generate_component_css();
+    let css = rinch_components::compose_theme_and_component_css(&css, props.component_styles);
 
     css
 }

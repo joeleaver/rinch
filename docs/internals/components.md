@@ -8,6 +8,8 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 
 There is **one** icon system: the **`TablerIcon` enum** in `rinch-tabler-icons`, which is also what every component's icon prop takes (`Option<TablerIcon>`). There is no `Icon` enum in the workspace — an older curated `rinch-core` `Icon` enum was removed, so treat any doc comment or snippet still showing `Icon::CheckCircle` as stale.
 
+**The chrome glyphs the components draw themselves** (the close X, the chevrons, the check: `icons.rs`'s `close_icon_dom`, `close_icon_lines_dom`, `chevron_*_dom`, `chevrons_*_dom`, `check_dom`) are replaceable app-wide through the `IconSet` context (#2208). Each of those helpers first asks `replaced`, which reads `try_use_context::<IconSet>()` once, at render, and runs the slot's closure under `rinch_core::untracked_handler`; with no set or an empty slot it draws the built-in SVG as before. Where the built-in carried `width`/`height` (`close_icon_dom`) the replacement root is given them, and Accordion's gets the `rinch-accordion__chevron` class its rotation targets. A component's own icon prop is checked before the helper is called, so it still wins. `IconSet::tabler` drops Tabler's inline `1em` size so component CSS sizes the svg. Pinned by `crates/rinch-components/tests/chrome_glyphs_2208.rs`.
+
 `TablerIcon` is **not** in the `rinch` prelude — the facade doesn't depend on `rinch-tabler-icons`. Any crate that names an icon variant (including one just passing `icon:` to a component) must depend on it directly.
 
 **Add to Cargo.toml:**
@@ -86,6 +88,8 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 | `Tab` | `left_section`, `right_section` | `tabs.rs:397`, `:399` |
 
 The `Tree` component takes its icons through data rather than a prop: `TreeNodeData::icon` (`tree.rs:56`), set with the `with_icon(TablerIcon)` builder.
+
+`List` and `ListItem` also take `icon_node: Option<SectionRenderer>` (#2207), a marker node of the app's own (pass `Some(renderer)`), which wins over `icon` on the same component. Both reach the item through one private `Marker` enum (`list.rs`), so the default-icon patch below treats a list's node exactly as its Tabler default: once per item at render and again for late items, the renderer called once per item, an item's own `icon` or `icon_node` winning, and a defaulted item (`data-list-icon`) taking a new list's marker when it moves.
 
 **`List::icon` and the two `Stepper` icons are container *defaults*, and they
 work by patching the rendered children** (#707). A parent component renders

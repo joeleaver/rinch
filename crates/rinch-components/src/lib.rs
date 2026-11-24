@@ -218,6 +218,7 @@ pub use fieldset::Fieldset;
 pub use floating_panel::FloatingPanel;
 pub use group::Group;
 pub use highlight::Highlight;
+pub use icons::IconSet;
 pub use image::Image;
 pub use kbd::Kbd;
 pub use list::{List, ListItem};
@@ -276,4 +277,33 @@ pub use rinch_core::Component;
 /// Generate all component CSS classes.
 pub fn generate_component_css() -> String {
     styles::generate_all_component_styles()
+}
+
+/// The cascade layer [`ComponentStyles::Layered`](rinch_core::ComponentStyles::Layered)
+/// puts the theme sheet in.
+pub const THEME_LAYER: &str = "rinch-theme";
+
+/// The cascade layer [`ComponentStyles::Layered`](rinch_core::ComponentStyles::Layered)
+/// puts the component sheet in.
+pub const COMPONENTS_LAYER: &str = "rinch-components";
+
+/// The theme sheet followed by the component sheet, joined to the cascade the
+/// way `mode` says (#2208): concatenated as before, each in its cascade layer
+/// (theme first) so any unlayered app rule outranks them, or the theme with
+/// only rinch's window chrome ([`styles::generate_chrome_styles`]).
+pub fn compose_theme_and_component_css(
+    theme_css: &str,
+    mode: rinch_core::ComponentStyles,
+) -> String {
+    use rinch_core::ComponentStyles;
+    match mode {
+        ComponentStyles::Unlayered => format!("{theme_css}{}", generate_component_css()),
+        ComponentStyles::Layered => format!(
+            "@layer {THEME_LAYER}, {COMPONENTS_LAYER};\n\
+             @layer {THEME_LAYER} {{\n{theme_css}\n}}\n\
+             @layer {COMPONENTS_LAYER} {{\n{}\n}}\n",
+            generate_component_css()
+        ),
+        ComponentStyles::Off => format!("{theme_css}{}", styles::generate_chrome_styles()),
+    }
 }

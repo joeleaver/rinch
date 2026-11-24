@@ -105,7 +105,10 @@ pub mod theme;
 pub mod typography;
 
 // Re-export main types at crate root
-pub use colors::{Color, ColorName, ColorPalette, ColorPalettes, DEFAULT_COLORS, with_alpha};
+pub use colors::{
+    CONTRAST_LUMINANCE_THRESHOLD, Color, ColorName, ColorPalette, ColorPalettes, DEFAULT_COLORS,
+    contrast_text, with_alpha,
+};
 pub use css::{generate_base_styles, generate_css_variables, generate_theme_css};
 pub use radius::{DEFAULT_RADIUS, RadiusScale, RadiusSize};
 pub use shadows::{DEFAULT_SHADOWS, ShadowScale, ShadowSize};
