@@ -433,7 +433,9 @@ fn r846_a_focusing_checkbox_click_does_not_yank_to_the_old_caret() {
         false,
         800.0,
     );
-    // Make the first paragraph a task item via the markdown input rule.
+    // Make the first paragraph a task item via the markdown input rule
+    // (opt-in since #2210).
+    assert!(r.handle.set_markdown_shortcuts(true));
     r.handle.set_selection(Selection::cursor(Pos(1)));
     for c in ["[", " ", "]", " "] {
         assert!(r.handle.insert_text(c));

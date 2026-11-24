@@ -193,6 +193,8 @@ const STARTER: &str = "<h1>Welcome to the Markdown Editor</h1>\
 #[component]
 fn app() -> NodeHandle {
     let editor = create_editor();
+    // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
+    editor.set_markdown_shortcuts(true);
 
     rsx! {
         Fragment {

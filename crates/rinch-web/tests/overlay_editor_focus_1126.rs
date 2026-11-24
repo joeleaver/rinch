@@ -279,13 +279,15 @@ async fn unmounting_the_open_modal_hands_the_keyboard_from_its_editor_to_the_ope
     purge();
 }
 
-/// Tab inside a trap stays the editor's: its keymap binds Tab (to
-/// `sinkListItem`) and consumes it even where that does nothing, so the trap's
-/// own Tab handling never sees a Tab from a focused editor and needs no reading
-/// of the capture field. This pins that premise; if the editor ever lets Tab
-/// go, the trap must learn to count the capture field as the editor too.
+/// Tab from an editor inside a trap moves within the trap (#2210). The
+/// editor used to keep every Tab (its keymap's `sinkListItem` was consumed even
+/// where it did nothing), and this test pinned that premise; since #2210 a Tab
+/// the editor has no use for — here, in a plain paragraph — moves the focus,
+/// and it does so from the editor's place in the page and inside the trap
+/// (`tab_from_editor`, the read-only editor's path, #833), never from the
+/// capture field at the end of `<body>`.
 #[wasm_bindgen_test]
-async fn tab_in_an_editor_inside_a_trap_stays_with_the_editor() {
+async fn tab_in_an_editor_inside_a_trap_moves_within_the_trap() {
     let h = host("h3");
     let open = Signal::new(false);
     let m = editor("<p>modal</p>");
@@ -305,9 +307,18 @@ async fn tab_in_an_editor_inside_a_trap_stays_with_the_editor() {
     open.set(true);
     press_editor("h3");
     tab(false);
-    assert!(capture_active(), "Tab moved to {}", active_desc());
+    assert_eq!(
+        active_desc(),
+        "after",
+        "Tab goes on to the trap's next stop"
+    );
+    press_editor("h3");
     tab(true);
-    assert!(capture_active(), "Shift+Tab moved to {}", active_desc());
+    assert_eq!(
+        active_desc(),
+        "before",
+        "Shift+Tab goes back to the previous one"
+    );
     open.set(false);
     root.unmount();
     purge();

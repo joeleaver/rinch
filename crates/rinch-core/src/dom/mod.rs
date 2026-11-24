@@ -1135,6 +1135,33 @@ impl NodeHandle {
         }
     }
 
+    /// Take the inline declaration of `property` off this element, as CSSOM's
+    /// `removeProperty` does: afterwards its inline style does not name it, so
+    /// a stylesheet rule decides it (#2210). Only that exact (normalised) name
+    /// goes: removing `margin-left` leaves a `margin` shorthand standing. A
+    /// no-op, writing nothing, when the inline style does not declare it.
+    ///
+    /// Unlike `set_style(property, "")`, which leaves a literal empty
+    /// declaration for the parser to throw away, the attribute is rewritten
+    /// without it.
+    pub fn remove_style(&self, property: &str) {
+        let Some(style) = self.get_attribute("style") else {
+            return;
+        };
+        let property = normalize_property_name(property);
+        let mut decls = inline_style::split_declarations_keeping_duplicates(&style);
+        let before = decls.len();
+        decls.retain(|(k, _)| normalize_property_name(k) != property);
+        if decls.len() == before {
+            return;
+        }
+        if decls.is_empty() {
+            self.remove_attribute("style");
+        } else {
+            self.set_attribute("style", &serialize_declarations(&decls));
+        }
+    }
+
     /// Paint this positioned box as a highlight of `owner`'s content: over its
     /// backgrounds, under its text ([`DomDocument::set_highlight_owner`],
     /// #2666). `None` returns it to its own place in the stacking order.

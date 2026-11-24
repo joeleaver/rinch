@@ -17,7 +17,7 @@ use rinch_editor_core::*;
 use std::rc::Rc;
 
 /// The commands as they were before #1200 — one step per row or per cell —
-/// copied from `src/commands/table_ops.rs` with the registration stripped.
+/// copied from `src/commands/table_ops` with the registration stripped.
 #[allow(dead_code, clippy::all)]
 mod reference {
     use super::*;
