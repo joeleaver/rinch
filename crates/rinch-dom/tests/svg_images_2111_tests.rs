@@ -508,10 +508,10 @@ fn an_svg_file_from_the_loader_decodes() {
 }
 
 /// At a fractional device size the raster is a whole pixel larger, not
-/// smaller: a 16px square at 1.3x covers 20.8 device pixels from 13, so
-/// column 33 is 80% covered and must be drawn (a raster cut to 20 pixels
-/// would drop it). The expected values are the geometry's, off the
-/// whole-pixel fixed point the reference page sits on.
+/// smaller: a 16px square at 1.3x covers 20.8 device pixels from 13, to 33.8.
+/// The image's box is drawn on whole device pixels (#2368, as Chrome's
+/// replaced content is), 13..34, so column 33 is fully drawn (a raster cut to
+/// 20 pixels would drop it, and the unsnapped geometry would blend it 80%).
 #[test]
 fn a_fractional_device_size_keeps_its_last_column() {
     let square = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><rect width="16" height="16" fill="#f00"/></svg>"##;
@@ -524,9 +524,9 @@ fn a_fractional_device_size_keeps_its_last_column() {
             ((12, 20), WH),
             ((13, 20), R),
             ((32, 20), R),
-            ((33, 20), [255, 51, 51]),
+            ((33, 20), R),
             ((34, 20), WH),
-            ((20, 33), [255, 51, 51]),
+            ((20, 33), R),
             ((20, 34), WH),
         ],
         40,

@@ -429,6 +429,15 @@ This never changes layout geometry: 1 CSS px stays 1 layout unit, and paint
 applies the scale. One visible consequence: `border: 0.5px` on a 2x display
 renders as a real hairline instead of being snapped up to 1px.
 
+At a fractional scale paint draws each box on whole device pixels, as Chrome
+does: a box at `left: 13px` is at 16.25 device px at 125%, and its background,
+borders, shadows, outline and `overflow` clip start at 16, a hard edge rather
+than a one-pixel blend. Each edge rounds to the nearest device pixel (a tie,
+19.5 at 150%, up) from the box's own position, so boxes that touch still touch
+and a nested box is not moved by its parent's rounding. Text is not moved, and
+a CSS `transform` is applied after the snap, so `translateX(0.4px)` still
+moves the box a fraction of a pixel.
+
 #### Generic font families on Android
 
 `monospace`, `ui-monospace`, `ui-sans-serif` and `ui-serif` resolve to a real
