@@ -339,7 +339,9 @@ when empty. `WindowControlsLayout::platform()` is read once per process
 gsettings, settings_ini)` — `gsettings get org.gnome.desktop.wm.preferences
 button-layout` when `$XDG_CURRENT_DESKTOP` names GNOME, Unity, Budgie or
 Pantheon (on GNOME the XSettings daemon overrides `settings.ini`, so GTK apps
-follow gsettings there), else `gtk-decoration-layout` from
+follow gsettings there; `gsettings` is a closure, so the process is spawned
+only on such a desktop, and the module is
+`borderless_window/controls_layout.rs`), else `gtk-decoration-layout` from
 `$XDG_CONFIG_HOME/gtk-3.0/settings.ini` (KDE Plasma's kde-gtk-config writes the
 KWin button order there), else `windows()`; every other target `windows()`.
 The rounded-corner rule follows the outer control at each end
