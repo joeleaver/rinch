@@ -31,8 +31,9 @@ rinch = { version = "…", default-features = false, features = ["desktop"] }
 
 A software-only build is the opt-out for a small tool: it leaves out the GPU
 shell, `rinch-renderer`, tokio and the wgpu code only the GPU renderer reaches
-(measured 2026-11-24 on `hello-rinch-dom`, release, stripped: 31.4 MB against
-39.3 MB, and about a third more release build time), and opens no GPU device at
+(measured 2026-11-24 on `hello-rinch-dom`, release, stripped: the software-only
+binary is 31.4 MB against 39.3 MB with the GPU renderer, and the GPU build's
+release build took about 276 s longer), and opens no GPU device at
 run time. It still compiles wgpu and Vello: `rinch-dom` depends on `vello`
 unconditionally (its `Scene` is the display list), and Vello's default
 features bring wgpu. A GPU build stays

@@ -525,10 +525,13 @@ where
     ///
     /// To leave the GPU renderer out of the build altogether, depend on rinch
     /// with `default-features = false, features = ["desktop"]` (or
-    /// `["windowing"]`): the binary is smaller, the build shorter, and the app
+    /// `["windowing"]`): the binary is smaller and the build shorter than the
+    /// GPU build's (`hello-rinch-dom`, release, stripped: 31.4 MB against
+    /// 39.3 MB, and about 276 s less release build time), and the app
     /// never opens a GPU device or holds its memory, which suits a small tool.
     /// Such a build has only the software renderer, whatever this asks for;
-    /// `Renderer::Gpu` there logs a warning.
+    /// `Renderer::Gpu` (or `RINCH_RENDERER=gpu`) there logs a warning that
+    /// names the feature to enable.
     ///
     /// An app that configures the GPU device itself
     /// ([`gpu_config`](App::gpu_config), [`external_gpu`](App::external_gpu))

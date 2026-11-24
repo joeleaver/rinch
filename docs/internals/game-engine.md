@@ -611,8 +611,9 @@ open several blocks, none larger than 8 MiB).
 Your game owns the window and wgpu device. Rinch runs headless — you feed it events, it produces a Vello scene.
 
 **Enable it — the module is feature-gated and the gate is not `desktop`.** `rinch::embed` is
-`#[cfg(any(feature = "gpu-renderer", feature = "embed"))]` (`crates/rinch/src/lib.rs`; `gpu` implies `gpu-renderer`), so on default
-features every type below is a compile error rather than the documented behaviour. Use
+`#[cfg(any(feature = "gpu-renderer", feature = "embed"))]` (`crates/rinch/src/lib.rs`; `gpu` implies `gpu-renderer`).
+The default features include `gpu`, so it is there by default; on `default-features = false,
+features = ["desktop"]` every type below is a compile error rather than the documented behaviour. Use
 `features = ["embed"]` for the headless case this section describes — it pulls in `rinch-dom`,
 `parley`, `peniko`, `vello` and `wgpu` without the desktop shell — or nothing extra if you already
 build with `"gpu"` or `"gpu-renderer"`.

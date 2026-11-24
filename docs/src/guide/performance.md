@@ -556,7 +556,7 @@ Run the shell scenarios with CI's feature set as well. The theme-toggle and
 `gpu` scenarios compile only with `theme` and with `gpu-renderer` (which `gpu` implies) or `embed`:
 
 ```text
-cargo test -p rinch --features desktop,embed,theme,clipboard,debug --lib perf_regression
+cargo test -p rinch --no-default-features --features desktop,embed,theme,clipboard,debug --lib perf_regression
 ```
 
 ### Reading a frame

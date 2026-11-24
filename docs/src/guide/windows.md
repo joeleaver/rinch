@@ -2321,8 +2321,9 @@ renderer.
 
 **Why leave the GPU renderer out.** A small tool (a tray helper, a dialog, a
 panel) gains little from it and pays for it: it makes a release binary about
-8 MB larger (31 MB against 39 MB, stripped, for a hello-world window) and the
-build longer, and at run time opening a GPU device costs startup time and GPU
+8 MB larger (39.3 MB against 31.4 MB, stripped, for a hello-world window) and
+its release build about 276 s (four and a half minutes) longer than the
+software-only build's (both measured on `hello-rinch-dom`), and at run time opening a GPU device costs startup time and GPU
 and driver memory that the software renderer does not. Without rebuilding, `RINCH_RENDERER=software` or
 `App::renderer(Renderer::Software)` keeps a GPU build off the GPU (below), but
 the GPU renderer is still compiled in.
