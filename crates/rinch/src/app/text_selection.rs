@@ -54,6 +54,7 @@ impl TextSelection {
             anchor_side: EndSide::default(),
             focus_side: EndSide::default(),
             unit: None,
+            goal_x: None,
         }
     }
 
@@ -64,7 +65,7 @@ impl TextSelection {
 
     /// The document's selectable roots for this layout, built when there
     /// are none or they are stale.
-    fn cache(&mut self, tree: &rinch_dom::NodeTree) -> &RootsCache {
+    pub(crate) fn cache(&mut self, tree: &rinch_dom::NodeTree) -> &RootsCache {
         if !self.cache.as_ref().is_some_and(|c| c.current(tree)) {
             self.cache = Some(Box::new(RootsCache::build(tree)));
         }
@@ -235,7 +236,7 @@ impl Lines {
 /// Every node in root `root`'s lines (its children's subtrees, an
 /// anonymous box's run members'), each with where it stands in the root's
 /// text. Empty for a text leaf, which holds nothing.
-fn line_offsets(tree: &rinch_dom::NodeTree, root: u64) -> HashMap<u64, usize> {
+pub(crate) fn line_offsets(tree: &rinch_dom::NodeTree, root: u64) -> HashMap<u64, usize> {
     let mut out = HashMap::new();
     let Some(n) = tree.get(root) else {
         return out;
@@ -270,7 +271,7 @@ fn line_offsets(tree: &rinch_dom::NodeTree, root: u64) -> HashMap<u64, usize> {
 
 /// The roots whose lines hold root `id` (the paragraph an `inline-block`
 /// stands in, and so on out), innermost first.
-fn outer_roots(tree: &rinch_dom::NodeTree, id: u64) -> Vec<u64> {
+pub(crate) fn outer_roots(tree: &rinch_dom::NodeTree, id: u64) -> Vec<u64> {
     let node = super::text_selection_copy::root_node(tree, id);
     let mut out = Vec::new();
     let mut at = Some(node);
@@ -295,7 +296,7 @@ fn outer_roots(tree: &rinch_dom::NodeTree, id: u64) -> Vec<u64> {
 
 /// Whether root `inner` stands in root `outer`'s lines inside a float or
 /// positioned box (on no line: an end takes it only when it says so).
-fn floats_in(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> bool {
+pub(crate) fn floats_in(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> bool {
     let mut at = Some(super::text_selection_copy::root_node(tree, inner));
     while let Some(i) = at {
         if i == outer {
@@ -878,6 +879,7 @@ impl RinchApp {
             sel.focus_side = side;
             sel.focus_node = node;
             sel.focus_offset = offset;
+            sel.goal_x = None;
         }
         self.paint_text_selection();
     }
@@ -898,6 +900,7 @@ impl RinchApp {
     ) {
         if shift && let Some(sel) = &mut self.text_selection {
             sel.press = press;
+            sel.goal_x = None;
             sel.dragged = true;
             if let Some(doc) = &self.doc {
                 let d = doc.borrow();
@@ -997,6 +1000,7 @@ impl RinchApp {
             sel.dragged = true;
             // A Shift+click after it extends by characters again (Chrome 158).
             sel.unit = None;
+            sel.goal_x = None;
             // Its ends are outside the paragraphs: every box is in.
             sel.anchor_side = EndSide {
                 after_inline: false,
