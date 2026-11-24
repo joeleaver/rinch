@@ -2,6 +2,7 @@
 //!
 //! Displays a message with contextual feedback (info, success, warning, error).
 
+use crate::borderless_window::SectionRenderer;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{Callback, Component};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
@@ -133,6 +134,12 @@ impl std::str::FromStr for AlertRadius {
 ///
 /// Displays contextual information to users with different severity levels.
 ///
+/// `color` takes any theme palette name (`violet`, `teal`, …), `primary`, the
+/// semantic names (`info`, `success`, `warning`, `error`), or a raw CSS colour
+/// (`#7048e8`, `rgb(…)`, `hsl(…)`). The root carries `role="alert"`, as
+/// Mantine's does; `role` replaces it (`"status"` for a polite live region,
+/// `"none"` for no live region).
+///
 /// # Example
 ///
 /// ```ignore
@@ -147,16 +154,25 @@ impl std::str::FromStr for AlertRadius {
 /// ```
 #[derive(Default)]
 pub struct Alert {
-    /// Alert color (blue, green, yellow, red, gray, primary).
+    /// Alert color: a palette name, `primary`, a semantic name (`info`,
+    /// `success`, `warning`, `error`), or a raw CSS colour. Empty is blue.
     pub color: String,
     /// Alert variant (light, filled, outline).
     pub variant: String,
     /// Alert title (optional).
     pub title: String,
+    /// The title as nodes, in place of the `title` text: rendered inside
+    /// `.rinch-alert__title`. Wins over `title` when both are set.
+    pub title_section: Option<SectionRenderer>,
+    /// The root's ARIA `role`. Empty (the default) is `"alert"`.
+    pub role: String,
     /// Border radius (xs, sm, md, lg, xl).
     pub radius: String,
     /// Whether to show a close button.
     pub with_close_button: bool,
+    /// The close button's accessible name (`aria-label`). Empty (the default)
+    /// is `"Close"`.
+    pub close_button_label: String,
     /// Icon to display (optional).
     pub icon: Option<TablerIcon>,
     /// Callback when close button is clicked.
@@ -169,8 +185,14 @@ impl std::fmt::Debug for Alert {
             .field("color", &self.color)
             .field("variant", &self.variant)
             .field("title", &self.title)
+            .field(
+                "title_section",
+                &self.title_section.as_ref().map(|_| "<renderer>"),
+            )
+            .field("role", &self.role)
             .field("radius", &self.radius)
             .field("with_close_button", &self.with_close_button)
+            .field("close_button_label", &self.close_button_label)
             .field("icon", &self.icon)
             .field("onclose", &self.onclose.as_ref().map(|_| "<callback>"))
             .finish()
@@ -190,13 +212,12 @@ impl Alert {
         };
         classes.push(variant.class_name());
 
-        // Color class
-        let color: AlertColor = if self.color.is_empty() {
-            AlertColor::default()
-        } else {
-            self.color.parse().unwrap_or_default()
-        };
-        classes.push(color.class_name());
+        // Color class: a built-in name's class sets the colour variables; any
+        // other colour sets them inline (`style_string`).
+        match self.builtin_color() {
+            Some(color) => classes.push(color.class_name()),
+            None => classes.push("rinch-alert--colored"),
+        }
 
         // Radius class (only if non-default)
         if !self.radius.is_empty() {
@@ -206,7 +227,7 @@ impl Alert {
         }
 
         // With title
-        if !self.title.is_empty() {
+        if self.has_title() {
             classes.push("rinch-alert--with-title");
         }
 
@@ -217,12 +238,52 @@ impl Alert {
 
         classes.join(" ")
     }
+
+    /// The built-in colour `color` names, or `None` for any other colour
+    /// (another palette name, an app's token family, a raw CSS colour).
+    fn builtin_color(&self) -> Option<AlertColor> {
+        if self.color.is_empty() {
+            Some(AlertColor::default())
+        } else {
+            self.color.parse().ok()
+        }
+    }
+
+    fn has_title(&self) -> bool {
+        self.title_section.is_some() || !self.title.is_empty()
+    }
+
+    /// The inline colour variables for a colour that is not one of the
+    /// built-in names (`None` for those: their class sets the variables).
+    /// It sets every variable, so nothing is inherited from an enclosing
+    /// Alert.
+    pub fn style_string(&self) -> Option<String> {
+        if self.builtin_color().is_some() {
+            return None;
+        }
+        let t = crate::color_utils::color_tokens(&self.color);
+        Some(format!(
+            "--rinch-alert-color: {}; --rinch-alert-light: {}; \
+             --rinch-alert-light-text: {}; --rinch-alert-light-strong: {}; \
+             --rinch-alert-filled-text: white; --rinch-alert-outline-text: {};",
+            t.base, t.light, t.light_text, t.light_strong, t.base
+        ))
+    }
 }
 
 impl Component for Alert {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         let container = rinch_macros::rsx! { div { class: "rinch-alert" } };
         container.set_attribute("class", &self.class_string());
+        if let Some(style) = self.style_string() {
+            container.set_attribute("style", &style);
+        }
+        let role = if self.role.is_empty() {
+            "alert"
+        } else {
+            &self.role
+        };
+        container.set_attribute("role", role);
 
         // Icon
         if let Some(icon) = &self.icon {
@@ -236,7 +297,11 @@ impl Component for Alert {
         let wrapper = rinch_macros::rsx! { div { class: "rinch-alert__wrapper" } };
 
         // Title
-        if !self.title.is_empty() {
+        if let Some(render) = &self.title_section {
+            let title_div = rinch_macros::rsx! { div { class: "rinch-alert__title" } };
+            title_div.append_child(&render(__scope));
+            wrapper.append_child(&title_div);
+        } else if !self.title.is_empty() {
             let title_div =
                 rinch_macros::rsx! { div { class: "rinch-alert__title", {self.title.clone()} } };
             wrapper.append_child(&title_div);
@@ -255,7 +320,12 @@ impl Component for Alert {
         if self.with_close_button {
             let btn =
                 rinch_macros::rsx! { button { class: "rinch-alert__close", r#type: "button" } };
-            btn.set_attribute("aria-label", "Close");
+            let label = if self.close_button_label.is_empty() {
+                crate::close_button::DEFAULT_CLOSE_LABEL
+            } else {
+                &self.close_button_label
+            };
+            btn.set_attribute("aria-label", label);
             let close_icon = crate::icons::close_icon_dom(__scope, "14");
             btn.append_child(&close_icon);
 

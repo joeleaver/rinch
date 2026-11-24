@@ -387,8 +387,9 @@ jobs:
           # across the loss remounting with a fresh target, and a late
           # registration of the old device's texture dropped (7), and #2891's
           # hidden prepared window prepared again on the renderer the rebuild
-          # built it (1).
-          run 134 -p rinch --features gpu,video --lib -- \
+          # built it (1), and #2552's closed popup's renderer kept for the
+          # next popup (1).
+          run 135 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
             --skip probe_2688 --test-threads=1
           # #2688's limit on the embed overlay's frames in flight (1; the
@@ -469,6 +470,10 @@ jobs:
           # #2321's rounded corners (clips, nested clips, backgrounds, borders,
           # a scaled clip) against Chrome's pixels and the area, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_rounded_corners_2321 -- \
+            --ignored --test-threads=1
+          # #2368's box edges, borders and clips on whole device pixels (and a
+          # transform that is not snapped) against Chrome's pixels, at 1.25x and 1.5x.
+          run 1 -p rinch --features gpu,video --test gpu_box_snap_2368 -- \
             --ignored --test-threads=1
           # #2335's <img> shadows, outline and background image, #2375's
           # four-colour rounded border, #2396's inline border styles (and its

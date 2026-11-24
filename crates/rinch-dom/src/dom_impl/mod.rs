@@ -377,11 +377,12 @@ impl RinchDocument {
             /* The `dir` attribute (HTML's rendering section, #2588): an
                explicit `ltr`/`rtl` sets `direction`, and every `dir`
                isolates its element, as do `<bdi>` and `<output>`; `<bdo>`
-               overrides. `dir=auto` takes the direction from the content's
-               first strong letter, which rinch does as `plaintext` (FSI … PDI
-               on an inline, a first-strong paragraph on a block) where
-               Chrome's computed value is `isolate`; so is a `<bdi>` with no
-               `dir`, whose `dir` is `auto`. (HTML also isolates `div`, `p`
+               overrides. `dir=auto` (and a `<bdi>` with no `dir`) takes its
+               `direction` from its text's first strong letter, which is not
+               a rule: the cascade maps it as a presentational hint
+               (`legacy_hints::auto_direction`, #2272). A `<textarea>` or
+               `<pre>` with `dir=auto` is `plaintext`, as in Chrome, so each
+               of its paragraphs takes its own. (HTML also isolates `div`, `p`
                and the other block elements; that only shows when one is made
                `display: inline`, and is left out.) */
             [dir=ltr i] {
@@ -393,7 +394,7 @@ impl RinchDocument {
             bdi, output, [dir] {
                 unicode-bidi: isolate;
             }
-            [dir=auto i], bdi:not([dir]) {
+            textarea[dir=auto i], pre[dir=auto i] {
                 unicode-bidi: plaintext;
             }
             bdo, bdo[dir] {
@@ -871,6 +872,19 @@ impl RinchDocument {
                only an inline style could beat). */
             code, kbd, samp, pre {
                 user-select: text;
+            }
+
+            /* A draggable element is not selectable, as in Chrome 158
+               (measured, #2247): `<span draggable="true">` inside
+               `user-select: text` computes `none`, and so does its
+               descendants' `auto`; `draggable="TRUE"` too (an enumerated
+               attribute, ASCII case-insensitive), while `draggable=""`,
+               `"false"` and `"auto"` stay `text`. An author's `user-select`
+               on the element wins, as it does in Chrome, so this is a UA rule
+               (#2231). A selection dragged across a draggable inline in
+               selectable text leaves its text out. */
+            [draggable="true" i] {
+                user-select: none;
             }
 
             /* `<hr>` rendered *nothing* before this (issue #674): the
@@ -1885,6 +1899,9 @@ impl RinchDocument {
     /// immediately. Otherwise kicks off an async load on a background thread.
     pub(crate) fn request_image_load_for_node(&mut self, node_id: RawNodeId, src: &str) {
         if src.is_empty() {
+            // `src=""` names nothing to load, and the browser fires `error`
+            // for it (a missing `src` fires nothing, and never reaches here).
+            self.tree.queue_img_error(node_id);
             return;
         }
 
@@ -1964,6 +1981,14 @@ impl RinchDocument {
 
         // If already loading, don't re-request
         if self.tree.image_cache.contains(src) {
+            // A picture already known to have failed — another element's
+            // earlier load, or a malformed `data:` URL just decoded in place —
+            // fails for this element too: the browser fires `error` at every
+            // `<img>` naming it (#2202/#2203). A failure listed among the
+            // newly failed is queued again by the drain; the queue keeps one.
+            if self.tree.image_cache.is_failed(src) {
+                self.tree.queue_img_error(node_id);
+            }
             return;
         }
 
@@ -2097,6 +2122,28 @@ impl RinchDocument {
         self.tree.pending_background_urls = kept;
     }
 
+    /// The `<img>` elements whose picture failed to load since the last call
+    /// (#2202/#2203): what the browser fires `error` at. The facade fires
+    /// each one's `onerror` (`data-onerror`) after layout. Each element is
+    /// listed once per call, and only while it still names a picture that
+    /// failed, or an empty `src` (which the browser fails too): one whose `src`
+    /// was rewritten to a good picture since is left out.
+    pub fn drain_img_errors(&mut self) -> Vec<rinch_core::dom::NodeId> {
+        let queued = std::mem::take(&mut self.tree.pending_img_errors);
+        queued
+            .into_iter()
+            .filter(|&id| {
+                self.tree.nodes.get(id).is_some_and(|n| {
+                    n.tag() == Some("img")
+                        && n.attributes
+                            .get("src")
+                            .is_some_and(|s| s.is_empty() || self.tree.image_cache.shows_failure(s))
+                })
+            })
+            .map(rinch_core::dom::NodeId)
+            .collect()
+    }
+
     /// Drain completed image loads and update Taffy nodes with intrinsic dimensions.
     ///
     /// Called before layout to pick up newly decoded images.
@@ -2159,6 +2206,9 @@ impl RinchDocument {
             for node_id in node_ids {
                 layout_changed |= self.sync_img_placeholder(node_id);
                 self.push_dirty_flags(node_id, DirtyFlags::PAINT);
+                // Its `error` event (#2202/#2203), fired by the facade after
+                // layout (`drain_img_errors`).
+                self.tree.queue_img_error(node_id);
             }
         }
         if newly_decoded.is_empty() {

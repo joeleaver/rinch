@@ -557,6 +557,15 @@ impl RinchApp {
             actions.push(AppAction::RequestRedraw);
         }
 
+        // Where a keyboard scroll starts while nothing has focus (#2977): the
+        // node the last press, of any button, landed on.
+        if let PlatformEvent::MouseDown { x, y, .. } = event {
+            self.keyboard_scroll_anchor = self.doc.as_ref().and_then(|doc| {
+                let d = doc.borrow();
+                self.shared_target(&d, x, y)
+            });
+        }
+
         // An open runtime popup's resize, file drag and composition (#822).
         if self.runtime_popup_intercept(&event, vp_w, vp_h, &mut actions) {
             return actions;
@@ -605,7 +614,7 @@ impl RinchApp {
                 // One hit test per move, shared by the `data-onmousemove`
                 // dispatch, the drop-target search and hover (update-path
                 // audit F2.1). A handler that mutates the document bumps the
-                // hit cache's generation, and `move_hit` re-tests after that,
+                // hit cache's generation, and `shared_hit` re-tests after that,
                 // so sharing never answers from a tree a handler changed.
 
                 // Additive: fire data-onmousemove before any drag/scroll/hover
@@ -2037,21 +2046,21 @@ impl RinchApp {
                                 });
                             if offered.is_some_and(|k| handle.offer_key(&k)) {
                                 // The app's `on_key` took it.
-                            } else if key == KeyCode::Tab
-                                && !ctrl
-                                && !alt
-                                && !modifiers.meta
-                                && handle.refuses_edits()
-                            {
-                                // #833: a read-only editor is a `readonly` field
-                                // to Tab. Its keymap's `Tab` / `Shift-Tab`
-                                // (sink / lift a list item) are refused, and a
-                                // matched binding is consumed even so, which
-                                // left a keyboard user who came in with no way
-                                // out. Tab and Shift+Tab go to the next and the
-                                // previous Tab stop instead, from the editor's
-                                // place in the document (`handle_tab`).
-                                self.handle_tab(shift);
+                            } else if key == KeyCode::Tab && !ctrl && !alt && !modifiers.meta {
+                                // Tab and Shift+Tab are offered to the editor
+                                // (`tab_key`: a table cell, a list binding that
+                                // applies, per its `TabBehavior`), and when it
+                                // has no use for them they go to the next and
+                                // the previous Tab stop, from the editor's place
+                                // in the document (`handle_tab`). A read-only
+                                // editor never uses them (#833), nor one set to
+                                // `MoveFocus`. Before #2210 a Tab in a plain
+                                // paragraph ran the keymap's `sinkListItem`,
+                                // which did nothing, and the matched binding was
+                                // consumed anyway: a keyboard trap.
+                                if !handle.tab_key(shift) {
+                                    self.handle_tab(shift);
+                                }
                             } else {
                                 self.dispatch_new_editor_key(
                                     &handle,
@@ -2449,9 +2458,11 @@ impl RinchApp {
                     actions.push(AppAction::RequestRedraw);
                 }
                 if let Some(doc) = &self.doc {
+                    // From the inline element under the point, as the
+                    // element-drag drop target is found (#2246).
                     let hit_id = {
                         let d = doc.borrow();
-                        self.shared_hit(&d, x, y)
+                        self.shared_event_target(&d, x, y)
                     };
                     if let Some(hit_id) = hit_id {
                         let target = Self::find_file_drop_target(&doc.borrow().tree, hit_id);
@@ -2482,9 +2493,10 @@ impl RinchApp {
                 let (x, y) = (position.0 as f32, position.1 as f32);
                 if let Some(doc) = self.doc.clone() {
                     let doc = &doc;
+                    // From the inline element under the point (#2246).
                     let hit_id = {
                         let d = doc.borrow();
-                        self.shared_hit(&d, x, y)
+                        self.shared_event_target(&d, x, y)
                     };
                     // An editor that takes pictures itself gets a drop of image
                     // files first; anything else is the app's file-drop handler's.
@@ -2744,6 +2756,21 @@ impl RinchApp {
         // Alt+I: toggle inspect mode
         if devtools && key == KeyCode::KeyI && alt && !ctrl && !shift {
             actions.push(AppAction::ToggleInspectMode);
+            return true;
+        }
+
+        // Keyboard scrolling (#2977): with no text field holding the keyboard,
+        // an arrow, Page Up / Down, Home / End or Space scrolls, as Chrome's
+        // default action does, after every handler has had the key. Space on
+        // a focused activation target keeps its activation below (a focused
+        // box that is not one scrolls, as in Chrome), and a focused
+        // `<select>` keeps its keys.
+        if !(key == KeyCode::Space && self.focused_node_activates())
+            && !self.focused_node_is_select()
+            && self.live_focused_input_handler().is_none()
+            && self.keyboard_scroll(key, modifiers)
+        {
+            actions.push(AppAction::RequestRedraw);
             return true;
         }
 
@@ -3115,8 +3142,21 @@ impl RinchApp {
         let Some((x, y)) = self.active_dnd.as_ref().map(|drag| drag.cursor) else {
             return;
         };
-        // Hit test for drop targets — check both DOM elements and surfaces
-        let hit_id = self.move_hit(x, y);
+        // Hit test for drop targets — check both DOM elements and surfaces.
+        // A render surface is found from the hit; the DOM drop-target walk
+        // starts where the click walk does (#2246): an IFC's text is hit as
+        // its root, so a `data-ondrop` on an inline `<span>` inside a
+        // paragraph was never reached from its text.
+        let (hit_id, drop_from) = match self.doc.as_ref() {
+            Some(doc) => {
+                let d = doc.borrow();
+                (
+                    self.shared_hit(&d, x, y),
+                    self.shared_event_target(&d, x, y),
+                )
+            }
+            None => (None, None),
+        };
         // Kept for the frame's auto-scroll tick, which asks the same point.
         self.drag_hit_memo = self.hit_memo.get();
         let Some(drag) = self.active_dnd.as_mut() else {
@@ -3171,7 +3211,7 @@ impl RinchApp {
             }
         } else {
             // Not over a surface — use DOM drop target system
-            let new_target = hit_id.and_then(|hid| {
+            let new_target = drop_from.and_then(|hid| {
                 self.doc.as_ref().and_then(|doc| {
                     let d = doc.borrow();
                     Self::find_drop_target(&d.tree, hid)
@@ -4082,7 +4122,9 @@ impl RinchApp {
         self.shared_target(&doc.borrow(), x, y)
     }
 
-    /// [`Self::shared_hit`] against this app's own document.
+    /// [`Self::shared_hit`] against this app's own document (only the
+    /// software-shell damage tests use it).
+    #[cfg(all(test, software_shell))]
     pub(super) fn move_hit(&self, x: f32, y: f32) -> Option<u64> {
         let doc = self.doc.as_ref()?;
         self.shared_hit(&doc.borrow(), x, y)
@@ -4767,10 +4809,10 @@ impl RinchApp {
             };
             return self.move_editor(handle, motion, extend);
         }
-        // 2. Tab: navigate table cells when in a table (shared handle method); otherwise
-        //    fall through to the keymap, which binds `Tab`→sinkListItem /
-        //    `Shift-Tab`→liftListItem. Consumed either way — no editor focus traversal
-        //    (a read-only editor's Tab never gets here: its caller moves the focus, #833).
+        // 2. A modified Tab (Ctrl/Alt/Meta held): navigate table cells when in a
+        //    table; otherwise on to the keymap. A plain Tab or Shift+Tab never gets
+        //    here: its caller offers it to `EditorHandle::tab_key` and moves the
+        //    focus when the editor has no use for it (#833, #2210).
         if matches!(key, KeyCode::Tab) && handle.tab_cell(shift) {
             return true;
         }

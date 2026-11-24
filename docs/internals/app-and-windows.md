@@ -311,7 +311,10 @@ fn app() -> NodeHandle {
 **Props:**
 | Prop | Type | Description |
 |------|------|-------------|
-| `title` | `String` | Window title displayed in titlebar (empty = not set) |
+| `title` | `String` | Window title displayed in titlebar, as plain text (empty = not set) |
+| `title_section` | `Option<SectionRenderer>` | Renders the title as nodes in place of `title` |
+| `controls_layout` | `Option<WindowControlsLayout>` | Which controls go at which end; `None` follows the platform |
+| `titlebar_height` | `u32` | Titlebar height in px (default 36) |
 | `radius` | `String` | Corner radius: none, xs, sm, md, lg, xl (empty = default `md`) |
 | `show_minimize` | `bool` | Show minimize button (default: true) |
 | `show_maximize` | `bool` | Show maximize button (default: true) |
@@ -322,8 +325,38 @@ fn app() -> NodeHandle {
 | `on_maximize` | `Option<Callback>` | Callback for maximize button |
 | `on_close` | `Option<Callback>` | Callback for close button |
 
+**Title, controls and height (#2196).** The title is plain text in
+`--rinch-titlebar-text` in both layouts. In the inline layout it used to be a
+fixed six-colour rainbow pill, one inline-styled span per character (demo
+branding from UI Zoo that leaked into the component; UI Zoo now draws it
+through `title_section`). The window controls are built per
+`WindowControlsLayout`, a `left` and a `right` list:
+`.rinch-borderlesswindow__controls--left` opens the titlebar row (in the inline
+layout it opens the menu row instead, since that row is drawn over the
+titlebar's left end) and `--right` closes it; the right box is rendered even
+when empty. `WindowControlsLayout::platform()` is read once per process
+(`OnceLock`): macOS `macos()`; Linux `WindowControlsLayout::linux(desktop,
+gsettings, settings_ini)` — `gsettings get org.gnome.desktop.wm.preferences
+button-layout` when `$XDG_CURRENT_DESKTOP` names GNOME, Unity, Budgie or
+Pantheon (on GNOME the XSettings daemon overrides `settings.ini`, so GTK apps
+follow gsettings there; `gsettings` is a closure, so the process is spawned
+only on such a desktop, and the module is
+`borderless_window/controls_layout.rs`), else `gtk-decoration-layout` from
+`$XDG_CONFIG_HOME/gtk-3.0/settings.ini` (KDE Plasma's kde-gtk-config writes the
+KWin button order there), else `windows()`; every other target `windows()`.
+The rounded-corner rule follows the outer control at each end
+(`--right > :last-child`, `--left > :first-child`), no longer the close button.
+The height is the `titlebar_height` prop, written as `--rinch-titlebar-height`
+on the window; the titlebar, the control buttons and
+`.rinch-app-menu-bar__inline-row` read it (36px fallback), and the same number
+goes into `--rinch-window-top-inset`. The shell builds the below-titlebar menu
+bar with the default 36 (`app_builder`), so `BorderlessWindow` sets that bar's
+`top` to its own height. Not done (still open on #2196): localized control
+labels, a restore glyph while maximized, double-click to maximize, a
+`draggable` prop.
+
 **With `WindowProps::menu_in_titlebar` (Linux in-app menu bar)** the menu row —
-`left_section`, the branded `title` and the top-level labels — is an absolutely
+`left_section`, the `title` and the top-level labels — is an absolutely
 positioned layer drawn over the titlebar, and an empty
 `.rinch-borderlesswindow__menu-spacer` in the titlebar's flex row holds that
 space open for the right section and the controls. The spacer is sized from the
@@ -2293,8 +2326,10 @@ switch at once.
     goes with its first frame (`send_input_region(false)`).
   - `[PERF] window N popup: kind=… parent=…` after the `opened` line
     (`window_perf::popup_opened`; the harness prints it too) and
-    `[PERF] window N first frame: … ms after open_popup` after its first
-    paint (`ShellWindow::popup_first_frame`).
+    `[PERF] window N first frame: … ms after open_popup (queued …, mount …,
+    measure …, create …, renderer …, size …, to frame …, paint …)` after its
+    first paint (`ShellWindow::popup_first_frame`, a
+    `window_perf::PopupTimeline` marked as each step ends: stage 2).
 - **`keyboard_via_parent`** (`raise_parent_keyboard`): only for the first
   menu of a chain from a layer surface without the keyboard
   (`app.window_focused` false) whose interactivity is not `exclusive`: the
@@ -2360,6 +2395,76 @@ switch at once.
   through the runtime without an event loop: the bar closing, keys, a press,
   `popup_done`, a replaced chain waiting a turn), `testing/popup_tests.rs`
   (the harness: every dismissal cause, sizes, perf line).
+
+### The cost of opening a popup (#2552 stage 2)
+
+Measured with `scripts/popup-measure.sh` (the popup-menu example in a nested
+sway or KWin, a virtual pointer and keyboard from `scripts/popup-input`,
+release builds) from the `first frame` line's steps. The figures and the
+table are in the stage 2 PR; what they showed:
+
+- **Not the compositor.** `create` (`event_loop.create_window`, winit's
+  popup and its first commit) is 0.2–0.3 ms on sway and KWin: the fork does
+  not wait for the first configure, and the size comes from the measurement,
+  so nothing blocks on a roundtrip.
+- **The first menu of a process** was 80–560 ms, almost all of it in
+  `mount` (the layout's text measurement): resolving the generic font
+  families for glyphs the first fonts lack, once per process (see
+  `platform.md`, "The generic families are resolved after the first frame").
+  Not idle-related: a menu after 5 s and after 60 s idle costs what the
+  tenth does, and the idle trim (#2843) touches only the bar's buffers.
+- **The GPU renderer per popup.** Each popup built a `WgpuRenderer`
+  (Vello's pipelines): 5 ms on RADV, 55–85 ms on llvmpipe. A popup's
+  renderer is now kept when it closes (`popups::keep_spare_renderer`, from
+  `ShellWindow::close`): its surface goes (`detach_surface`), and the next
+  popup's `create_popup_window` takes it as its parked renderer
+  (`take_spare_renderer`), so `start_gpu_renderer` only attaches a surface
+  (`attach_window`, about 2 ms on RADV, the surface's configure and its
+  error scopes). Up to `App::popup_renderers_kept` are kept (3 by
+  default, `popup::DEFAULT_RENDERERS_KEPT`: a chain three deep), the last
+  closed given first; only the first menu and submenu of a process build
+  theirs. The pool (`SparePool`) goes all at once when the closing popup's
+  idle period (`WindowProps::idle_trim`, 2 s by default; `Never` keeps
+  them) has passed with nothing kept: `keep_spare_renderer` arms a
+  no-op timer, and the wake's `proxy_wake_up` calls
+  `trim_spare_renderers` (`[PERF] popup renderers trimmed: N`). Measured on
+  RADV: each kept renderer holds about 8 MB of GTT (two kept: 59.8 MB GTT
+  against 43.4 MB once trimmed) and no VRAM or RSS that a trim gives back. One that holds anything of its document beyond its next
+  full frame (`holds_document_state`: split slices, surface frames, layers)
+  is dropped. A device replacement drops it with the rest
+  (`replace_gpu_device`, `drop_spare_renderers`). The pool
+  (`SparePool`) never drops what it holds as a thread-local: a renderer
+  dropped while the thread's locals are destroyed touched others already
+  gone and aborted a test process on lavapipe, so what is left at the
+  thread's end is let go. Pins:
+  `gpu_a_closed_popups_renderer_is_kept_for_the_next_2552`,
+  `the_spare_pool_keeps_the_last_few_until_idle_2552`. The runtime drains
+  the pool in `shutdown`, while the thread's locals live (the abort was
+  wgpu-core reading a destroyed thread-local in a `Queue`'s drop); the
+  forget is only for a runtime that never shut down.
+- **labwc and a fractional scale.** `popup-measure.sh` also runs a
+  headless labwc 0.9 (`COMPOSITOR=labwc`, scale 1: no output-management
+  client here sets another) and sway at 1.5 (`SWAY_SCALE=1.5`,
+  `BAR_Y=440`): the same figures as sway at 1 (software 3–8 ms, RADV
+  12–17 ms, first popups included), menus placed at fractional logical
+  positions. On labwc, as on sway, keys reach a menu only through
+  `keyboard_via_parent`.
+- **KWin, driven live.** KWin offers `org_kde_kwin_fake_input` only to an
+  executable a desktop file grants it to
+  (`X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input`, `Exec` its absolute
+  path) in `$XDG_DATA_HOME/applications` before KWin starts;
+  `popup-measure.sh` installs one for `popup-input`. With it the menu,
+  submenu and press-outside paths run on KWin 6.6 as on sway, and Escape
+  reaches the grabbing submenu with nothing raised (the bar's keyboard
+  interactivity stays `none`, no `keyboard_via_parent`).
+- **What is left** is the document: about 4–8 ms software and 7–19 ms on
+  RADV from `open_popup` to the first presented frame (the first menu and
+  submenu of a process build their renderer, 5–7 ms of it; on llvmpipe that
+  build is 55–75 ms, the one case over two frames), of which `mount` is
+  3–6 ms (style, layout, text; per-document font state, see `platform.md`)
+  and the GPU's first paint and present 2–3 ms. The bench `popup_open`
+  (`rinch-bench`) counts a menu document's mount, layout and first software
+  paint beside a bar's, so the Perf workflow sees it move.
 
 ### winit Fork
 

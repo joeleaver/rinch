@@ -263,7 +263,17 @@ impl RinchApp {
             TextSelAction::Keep
         } else {
             let d = doc.borrow();
-            if let Some(hit_id) = self.shared_hit(&d, x, y) {
+            // A press on a picture starts no selection: Chrome drags the
+            // image from there, selecting nothing (#2259).
+            let on_picture = |hit: u64| {
+                !self.modifier_state().shift
+                    && d.tree
+                        .get(hit)
+                        .is_some_and(|n| matches!(n.tag(), Some("img")))
+            };
+            if let Some(hit_id) = self.shared_hit(&d, x, y)
+                && !on_picture(hit_id)
+            {
                 if let Some(ifc_node_id) = Self::selectable_at(&d.tree, hit_id, x, y) {
                     let offset = Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y);
                     TextSelAction::StartSelection {
@@ -1163,7 +1173,7 @@ impl RinchApp {
         );
         let scroll = rinch_dom::form_control::field_scroll(tree, font_cx, layout_cx, node_id);
         let (origin_x, origin_y) =
-            rinch_dom::form_control::field_text_origin(node, layout.height(), scroll);
+            rinch_dom::form_control::field_text_origin(node, &layout, 1.0, scroll);
 
         Some(InputTextLayout {
             layout,

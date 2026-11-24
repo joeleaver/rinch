@@ -13,7 +13,11 @@
 //! CSS 2.1 Appendix E order, back to front:
 //!
 //! 1. **Negative-`z-index` stacking contexts**, ascending `z`, then tree order.
-//! 2. **In-flow, non-positioned, non-stacking-context children**, in tree order.
+//! 2. **In-flow, non-positioned, non-stacking-context children**, in tree order:
+//!    the root's in-flow run. Paint walks it in Appendix E's own phases (block
+//!    backgrounds, floats, line content) where one child reaches into an
+//!    earlier one (`paint::phases`, #2276), and hit testing probes it in the
+//!    reverse; the sequence holds each child once either way.
 //! 3. **The `z == 0` level**, in tree order: positioned descendants with
 //!    `z-index: auto` (Appendix E step 8 — the step Rinch had no phase for at
 //!    all), interleaved with stacking contexts whose `z-index` is `auto` or an

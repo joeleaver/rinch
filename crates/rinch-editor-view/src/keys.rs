@@ -33,3 +33,30 @@ pub struct EditorKey<'a> {
     /// The press is the operating system's auto-repeat of a held key.
     pub repeat: bool,
 }
+
+/// What Tab and Shift+Tab do in an editable editor — see
+/// [`EditorHandle::set_tab_behavior`](crate::EditorHandle::set_tab_behavior)
+/// (#2210).
+///
+/// In Chrome a `contenteditable` never keeps Tab: it moves the focus to the
+/// next (previous) Tab stop, list or not. A document editor's convention is to
+/// indent with it (Google Docs), and that is the default here, a deliberate
+/// difference from Chrome; [`TabBehavior::MoveFocus`] is Chrome's. Under
+/// either, a Tab the editor has no use for moves the focus on rather than
+/// being swallowed, so a keyboard user can always leave (WCAG 2.1.2). A
+/// read-only editor's Tab always moves the focus (#833).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabBehavior {
+    /// In a table cell, Tab and Shift+Tab move to the next and previous cell
+    /// (Tab in the last cell adds a row); in a list item they run the keymap's
+    /// `Tab` / `Shift-Tab` bindings (`sinkListItem` / `liftListItem` by
+    /// default, or whatever a plugin bound in their place). When that does
+    /// nothing — a paragraph outside any list, a first item that cannot sink —
+    /// the key moves the focus, as `MoveFocus` does.
+    #[default]
+    IndentInListsAndTables,
+    /// Tab and Shift+Tab always move the focus to the next and previous Tab
+    /// stop, as in a Chrome `contenteditable`. Lists are indented with the
+    /// toolbar or the `sinkListItem` / `liftListItem` commands instead.
+    MoveFocus,
+}

@@ -485,6 +485,21 @@ fn hit_test_node<P: Probe>(
             let order = cached_paint_order::<P>(tree, node_id, (nx - sx) as f64, (ny - sy) as f64);
             let _deferred = probe.bars().map(|s| DeferredScope::enter(s, &order.bars));
             let mut next_bar = order.bars.len();
+            // The in-flow entries are the root's in-flow run: in a run painted
+            // in Appendix E phases (#2276), their lines and floats answer
+            // before any entry's background, at the first of them the walk
+            // meets outside the lifted pass.
+            let probe_at = if check_children
+                && clipped.is_none()
+                && rinch_dom::paint::run_paints_in_phases(tree, node)
+            {
+                order
+                    .iter()
+                    .rposition(|e| e.kind == rinch_dom::stacking::PaintKind::InFlow)
+                    .unwrap_or(usize::MAX)
+            } else {
+                usize::MAX
+            };
             // The boxes in a relative split inline first (`lifted`).
             for (lifted, (index, entry)) in [true, false]
                 .into_iter()
@@ -523,6 +538,23 @@ fn hit_test_node<P: Probe>(
                 };
                 if in_relative_split_inline(tree, child) != lifted {
                     continue;
+                }
+                if index == probe_at
+                    && !lifted
+                    && let Some(hit) = phased_run_hit(
+                        probe,
+                        tree,
+                        order
+                            .iter()
+                            .filter(|e| e.kind == rinch_dom::stacking::PaintKind::InFlow)
+                            .map(|e| (e.node_id, e.offset_x as f32, e.offset_y as f32)),
+                        x,
+                        y,
+                        vx,
+                        vy,
+                    )
+                {
+                    return Some(hit);
                 }
                 // A `position: relative` inline element is painted here, in
                 // its place among the positioned boxes (#2819), so its text is
@@ -695,27 +727,45 @@ fn hit_test_node<P: Probe>(
             // the plain bounds gate.
             //
             // The boxes in a relative split inline first (`lifted`).
+            //
+            // A run painted in Appendix E phases (#2276): its lines and floats
+            // are over every child's background, so after the lifted boxes
+            // they answer first, and the plain walk is the backgrounds pass.
             let kids = rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id);
-            for (lifted, &child_id) in [true, false]
-                .into_iter()
-                .flat_map(|pass| kids.iter().rev().map(move |c| (pass, c)))
-            {
-                let Some(child) = tree.get_live(child_id) else {
-                    continue;
-                };
-                if paints_at_stacking_root(child)
-                    || is_stretched_ifc_text(child)
-                    || in_relative_split_inline(tree, child) != lifted
-                {
-                    continue;
-                }
-                if !flow_subtree_may_contain(tree, child, nx - sx, ny - sy, x, y) {
-                    continue;
-                }
-                if let Some(hit) =
-                    hit_test_node(probe, tree, child_id, nx - sx, ny - sy, x, y, vx, vy, None)
+            let phased = rinch_dom::paint::run_paints_in_phases(tree, node);
+            for lifted in [true, false] {
+                if phased
+                    && !lifted
+                    && let Some(hit) = phased_run_hit(
+                        probe,
+                        tree,
+                        kids.iter().map(|&id| (id, nx - sx, ny - sy)),
+                        x,
+                        y,
+                        vx,
+                        vy,
+                    )
                 {
                     return Some(hit);
+                }
+                for &child_id in kids.iter().rev() {
+                    let Some(child) = tree.get_live(child_id) else {
+                        continue;
+                    };
+                    if paints_at_stacking_root(child)
+                        || is_stretched_ifc_text(child)
+                        || in_relative_split_inline(tree, child) != lifted
+                    {
+                        continue;
+                    }
+                    if !flow_subtree_may_contain(tree, child, nx - sx, ny - sy, x, y) {
+                        continue;
+                    }
+                    if let Some(hit) =
+                        hit_test_node(probe, tree, child_id, nx - sx, ny - sy, x, y, vx, vy, None)
+                    {
+                        return Some(hit);
+                    }
                 }
             }
         }
@@ -743,6 +793,141 @@ fn hit_test_node<P: Probe>(
     }
 
     probe.accepts(tree, node_id).then_some(node_id)
+}
+
+/// What the content and float passes of a run painted in Appendix E phases
+/// (#2276) draw at `(x, y)`, topmost first: every line, atomic inline and
+/// flex or grid item of the run's children (deep, through in-flow blocks),
+/// in reverse, then every float. `None` leaves the point to the backgrounds
+/// pass, the ordinary walk of the children. `kids` are the run's children in
+/// tree order, each with the origin its `hit_test_node` is entered at.
+#[inline(never)]
+fn phased_run_hit<P: Probe>(
+    probe: &P,
+    tree: &rinch_dom::NodeTree,
+    kids: impl DoubleEndedIterator<Item = (u64, f32, f32)> + Clone,
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+) -> Option<u64> {
+    let enter =
+        |id: u64, ox: f32, oy: f32| hit_test_node(probe, tree, id, ox, oy, x, y, vx, vy, None);
+    let accepts = |id: u64| probe.accepts(tree, id);
+    phased_run_hit_with(tree, kids, x, y, &enter, &accepts)
+}
+
+/// [`phased_run_hit`] with the walk it enters a box by, and the probe's
+/// acceptance, given: the oracle of the prune tests runs the same passes
+/// with its own walk.
+pub(super) fn phased_run_hit_with(
+    tree: &rinch_dom::NodeTree,
+    kids: impl DoubleEndedIterator<Item = (u64, f32, f32)> + Clone,
+    x: f32,
+    y: f32,
+    enter: &dyn Fn(u64, f32, f32) -> Option<u64>,
+    accepts: &dyn Fn(u64) -> bool,
+) -> Option<u64> {
+    let run = PhasedRun {
+        tree,
+        x,
+        y,
+        enter,
+        accepts,
+    };
+    for floats in [false, true] {
+        for (id, ox, oy) in kids.clone().rev() {
+            if let Some(hit) = run.member(id, ox, oy, floats) {
+                return Some(hit);
+            }
+        }
+    }
+    None
+}
+
+/// The point a phased run is probed at, and how a box is entered.
+struct PhasedRun<'a> {
+    tree: &'a rinch_dom::NodeTree,
+    x: f32,
+    y: f32,
+    enter: &'a dyn Fn(u64, f32, f32) -> Option<u64>,
+    accepts: &'a dyn Fn(u64) -> bool,
+}
+
+impl PhasedRun<'_> {
+    /// One member of the run, entered at `(ox, oy)`, and its in-flow block
+    /// descendants: their line content (`floats == false`) or their floats.
+    fn member(&self, id: u64, ox: f32, oy: f32, floats: bool) -> Option<u64> {
+        let (tree, x, y) = (self.tree, self.x, self.y);
+        let node = tree.get_live(id)?;
+        if paints_at_stacking_root(node) || (node.is_text() && node.ifc_root.is_some()) {
+            return None;
+        }
+        // Atomic units are hit whole, in the pass that paints them.
+        if node.is_flex_or_grid_item.get() {
+            return if floats {
+                None
+            } else {
+                (self.enter)(id, ox, oy)
+            };
+        }
+        if rinch_dom::paint::is_float_box(node) {
+            return if floats {
+                (self.enter)(id, ox, oy)
+            } else {
+                None
+            };
+        }
+        let (dx, dy) = rinch_dom::paint::ifc_content_box_offset(tree, node);
+        let (nx, ny) = (ox + node.layout.x + dx, oy + node.layout.y + dy);
+        let (clip_x, clip_y) = node.clip_axes();
+        if clip_x || clip_y {
+            let (w, h) = (node.layout.width, node.layout.height);
+            let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(node);
+            if (clip_x && !(x >= nx + left && x <= nx + w - right))
+                || (clip_y && !(y >= ny + top && y <= ny + h - bottom))
+            {
+                return None;
+            }
+        }
+        let (ix, iy) = (
+            nx - node.scroll_offset.0 as f32,
+            ny - node.scroll_offset.1 as f32,
+        );
+        let kids = rinch_dom::RinchDocument::box_tree_children(&tree.nodes, id);
+        for &child in kids.iter().rev() {
+            let Some(c) = tree.get_live(child) else {
+                continue;
+            };
+            if rinch_dom::paint::drawn_by_its_ifc(tree, c) {
+                // An atomic inline is its line's content, hit whole.
+                if !floats
+                    && c.display_mode.is_atomic_inline()
+                    && !paints_at_stacking_root(c)
+                    && let Some(hit) = (self.enter)(child, ix, iy)
+                {
+                    return Some(hit);
+                }
+                continue;
+            }
+            if let Some(hit) = self.member(child, ix, iy, floats) {
+                return Some(hit);
+            }
+        }
+        // The box's own lines: the text under the point is its block's, or
+        // its inline element's — the walk into the box finds which — wherever
+        // the line is, inside the box or overflowing it, as Chrome 158 hits
+        // it.
+        if !floats && node.text_layout.is_some() && visible_text_at(tree, node, x - nx, y - ny) {
+            if let Some(hit) = (self.enter)(id, ox, oy) {
+                return Some(hit);
+            }
+            if takes_pointer(node) && (self.accepts)(id) {
+                return Some(id);
+            }
+        }
+        None
+    }
 }
 
 /// Whether box `child` stands inside a `position: relative` split inline
@@ -911,6 +1096,27 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
         e[1] = e[1].min(r1 + oy - sy);
         e[2] = e[2].max(r2 + ox - sx);
         e[3] = e[3].max(r3 + oy - sy);
+    }
+    // An IFC root's lines, which a run painted in Appendix E phases hits
+    // where they overflow the box (#2276, `PhasedRun::member`).
+    // Lines no larger than the box are taken to be inside it (the common
+    // case, asked first so a page of paragraphs pays a compare each); a line
+    // pushed past the box by its padding alone is missed by the prune.
+    if !clip_x
+        && !clip_y
+        && let Some(inline) = node.text_layout.as_ref()
+        && (inline.layout.width() > node.layout.width
+            || inline.layout.height() > node.layout.height)
+    {
+        let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
+        let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
+        let (lw, lh) = (inline.layout.width(), inline.layout.height());
+        if lw > 0.0 && lh > 0.0 {
+            e[0] = e[0].min(ox - sx);
+            e[1] = e[1].min(oy - sy);
+            e[2] = e[2].max(ox - sx + lw);
+            e[3] = e[3].max(oy - sy + lh);
+        }
     }
     if !clip_x || !clip_y {
         let sx = node.scroll_offset.0 as f32;
@@ -1687,6 +1893,10 @@ mod scrollbar_paint_order_1727_tests;
 #[cfg(test)]
 #[path = "hidden_ancestor_hit_843_tests.rs"]
 mod hidden_ancestor_hit_843_tests;
+
+#[cfg(test)]
+#[path = "paint_phases_hit_2276_tests.rs"]
+mod paint_phases_hit_2276_tests;
 
 #[cfg(test)]
 #[path = "relative_inline_hit_2346_tests.rs"]

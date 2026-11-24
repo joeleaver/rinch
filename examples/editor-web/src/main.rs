@@ -17,6 +17,8 @@ fn app() -> NodeHandle {
     // One handle drives both the toolbar and the mounted editor. EditorHandle is cheap
     // to clone (an Rc); one clone per closure.
     let editor = create_editor();
+    // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
+    editor.set_markdown_shortcuts(true);
     let ed_bold = editor.clone();
     let ed_italic = editor.clone();
     let ed_underline = editor.clone();

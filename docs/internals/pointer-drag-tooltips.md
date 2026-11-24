@@ -34,7 +34,9 @@ section).
 - **rinch-web** drives this suite from Pointer Events and branches on the pointer kind, so activation differs by input and touch does not hijack scrolling. **Mouse:** past `WEB_DRAG_THRESHOLD`, 5 CSS px. **Touch / pen:** a short **long-press** hold, `TOUCH_LONG_PRESS_MS` = 350ms, while the contact stays within `TOUCH_MOVE_SLOP`; moving before the hold completes is a scroll/pan and the drag is abandoned. That is the standard mobile reorder gesture, and it lives in `rinch-web/src/event_delegation.rs`.
 - **Desktop has no such branch.** `event_dispatch.rs` applies one flat `DRAG_THRESHOLD` (5px, `app/mod.rs`) to every pointer alike — the shell folds touch into a plain left-click and discards winit's device kind. Desktop's own touch translation is a *different* machine (`shell/touch_gesture.rs`): a finger that moves past `SCROLL_THRESHOLD` becomes a **scroll** and emits `PointerCancel` first, a finger that lifts while still is a **tap**, and one held past `LONG_PRESS_TIMEOUT` (**500ms**, not 350) becomes a **context menu** — a right-button press/release. So the mobile reorder gesture described above is a web behaviour; do not assume a touch drag of this suite behaves the same way on desktop, and treat its reachability there as unestablished rather than as working.
 - **A press that never becomes a drag clicks what was pressed, on release** (both backends; rinch-web since #2133). Desktop keeps `PendingDrag::mousedown_pos` and on release runs `handle_click` there, which hit-tests the press point again. rinch-web keeps the pressed element (`WebDragState::pressed`) and clicks it, so a `data-rid` on a descendant of the draggable runs (a `Tree` row's chevron, a card inside a `SortableItem`) and only that one, as on any other press. If a re-render took the pressed element out of the document before the release, rinch-web clicks `elementFromPoint` at the press point, as desktop does. Before #2133 rinch-web walked up from the draggable, so the row's handler ran instead of the child's. Pinned by `rinch-web/tests/draggable_child_click_2133.rs`.
-- **An inline draggable in a paragraph drags** (desktop, #2233). An IFC's text is hit as its root (its text nodes stretch over the line box and are skipped), so the left `MouseDown` arm starts `find_draggable`'s walk where the click walk starts, at `hit_testing::event_target_at` (the text node under the glyphs, or the nearest element above it that takes pointer events), not at the hit. A `<span draggable>` or `<a draggable>` pressed on its text starts its drag, a `pointer-events: none` one does not, and a `draggable` link in selectable text drags rather than selecting, all as Chrome 156 does. A link without `draggable` still selects on a drag (#2229; Chrome would drag its URL). The `data-onmousedown`, `data-oncontextmenu` and drop-target walks still start at the hit. Pins: `app/inline_draggable_2233_tests.rs`.
+- **An inline draggable in a paragraph drags** (desktop, #2233). An IFC's text is hit as its root (its text nodes stretch over the line box and are skipped), so the left `MouseDown` arm starts `find_draggable`'s walk where the click walk starts, at `hit_testing::event_target_at` (the text node under the glyphs, or the nearest element above it that takes pointer events), not at the hit. A `<span draggable>` or `<a draggable>` pressed on its text starts its drag, a `pointer-events: none` one does not, and a `draggable` link in selectable text drags rather than selecting, all as Chrome 156 does. A link without `draggable` still selects on a drag (#2229; Chrome would drag its URL). The `data-onmousedown` and `data-oncontextmenu` walks start at the inline element too (#2648, `RinchApp::shared_target`). Pins: `app/inline_draggable_2233_tests.rs`.
+- **An inline drop target in a paragraph takes the drop** (desktop, #2246). `track_drag_pointer` starts `find_drop_target`'s walk at `RinchApp::shared_event_target` (the click walk's start) rather than at the hit, so `data-ondragenter`/`data-ondragover`/`data-ondrop` on an inline `<span>` hear an element dragged over its text; the OS file-drag arms (`FileHoverEnter`/`FileDragMoved` for `data-onfiledragenter`/`leave`, `FileDropped` for `data-onfiledrop`/`data-ondropfiles`) start there too. A `pointer-events: none` inline passes the drop to the block around it, as Chrome's `elementFromPoint` does. A render surface under a drag is still found from the hit (its node is never an inline's text). Pins: `app/inline_drop_target_2246_tests.rs`.
+- **A `draggable="true"` element is `user-select: none`** (desktop, #2247), a UA rule `[draggable="true" i] { user-select: none }` as Chrome 158 computes it (`draggable=""`, `"false"`, `"auto"` stay selectable; an author `user-select` on the element wins). A selection across selectable text leaves a draggable inline's text out of the highlight and the copy. rinch-web gets this from the browser. Pins: `app/draggable_user_select_2247_tests.rs`.
 
 **A touch `data-rid` click waits for the release where the finger could pan** (rinch-web, #1582, #1588): a touch or pen press dispatches on `pointerup`, and is dropped by a move past the slop or a `pointercancel`, when the element or an ancestor scrolls **or the page does** (`has_scrollable_ancestor` asks the scrolling element under the viewport's `overflow`, `<html>`'s or the propagated `<body>`'s; `<html>` itself computes `visible`) — unless `touch-action: none` sits on the element or between it and that scroller, where the click stays on the press so a handler can arm a `Drag` (`Slider`, `ColorPicker`'s areas, `FloatingPanel`'s header and resize handle carry it; a control that drags needs it). A `Drag` armed by a deferred click is ended at the release. The deferred `pointerdown` is `preventDefault`ed like the eager one (not for a form control, which the browser focuses), or Chrome sends a compatibility `mousedown` after the tap to whatever the handler put under the finger, which blurred a `Modal`'s field. Real touches are pinned by `rinch-web/tests/real_touch_1582_1588.rs` through `tests/support/run_real_keys.sh` (CDP `Input.dispatchTouchEvent`); synthetic ones by `touch_deferral_1582_1588.rs`.
 
@@ -754,8 +756,47 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   chains as a direct one does.
 - **Not here**: the web (the browser scrolls, and smooths, by itself) and
   Android (its wheels are touch pans and flings, pixels). The OS's
-  reduced-motion setting is not read (#2209); the app passes it. CSS
-  `scroll-behavior` for programmatic and keyboard scrolls is not modelled.
+  reduced-motion setting is not read (#2209); the app passes it.
+- **Keyboard scrolls** (#2977) ride it too, on `CurveKind::Keyboard`: see
+  `docs/internals/focus-and-keyboard.md`, "Keyboard scrolling".
+- **Programmatic scrolls** (#2291) ride the same machinery: see "Smooth
+  programmatic scrolls" below.
+
+**Smooth programmatic scrolls** (#2291). CSS `scroll-behavior: smooth` is read
+(`ComputedStyle::scroll_behavior_smooth`; Stylo parses it behind
+`layout.unimplemented`). `NodeTree::scroll_behavior_smooth` answers for a box,
+and for the page scroller (`<body>`) from `<html>`'s **Stylo** style, because
+`<html>`'s `computed_style` is not kept current (its rem code reads it the same
+way). Every scroll write goes through `DomDocument::scroll_to_with(node, left,
+top, ScrollBehavior)` (`set_scroll_top`/`set_scroll_left` call it with `Auto`;
+`NodeHandle::scroll_to` passes one): a smooth write does not move the offset but
+queues a `SmoothScrollRequest` (target, and the animation clock's time of the
+write) in `NodeTree::smooth_scroll_requests`, newest per box and axis; an
+instant write drops a pending one. `scroll_into_view::reveal` works out every
+scroller's offset as if it jumped (an outer scroller is placed for the inner
+ones' *final* offsets), then puts each smooth one back and queues its new
+offset. `tick_wheel_scroll` starts the queued requests first
+(`SmoothWheelState::animate_to`): a curve of `CurveKind::Programmatic` that
+starts at the write's time (Chrome starts at the write, not the next frame), or
+a retarget of whatever runs there, a wheel glide included. From there it is a
+glide like a notch's — the same frames, the same "something else moved it"
+cancel — except that the wheel switch does not apply (the page asked for it;
+`set_smooth_programmatic_scroll` is its own switch, for #2209) and a
+`lock_scroll` does not stop it (it keeps gestures off, not the app's writes).
+`wheel_scroll_animating` is true while a request waits, so an embedder's
+`needs_update` keeps turning. The curve was measured in Chrome 158 (headless, a
+smooth `scrollTop` write, `scrollTop` sampled every rAF over CDP): 40 / 400 /
+2500 px took 100 / 317 / 818 ms and 10 000 and 25 000 px both 1.48 s, so the
+duration is `sqrt(|delta|)` frames of 60 Hz capped at 1.5 s; the ease is
+`cubic-bezier(0.42, 0, 0, 1)` (1.1% RMS of the distance over the three runs;
+CSS `ease` is 5.4%, the wheel's `ease-in-out` 24%), from the write. A typing
+caret reveal in a smooth scroller animates in Chrome too (1800 px over about
+700 ms), so the editor's goes the same way. rinch-web needs none of it:
+`scroll_to_with` is `Element::scrollTo({behavior})` and the browser animates.
+Pins: `rinch/tests/smooth_scroll_2291.rs` (the curve frame by frame, `auto`
+unchanged, the duration cap, the explicit behaviours both ways, a retarget, the
+switch, the root element's value for the page, a nested scroll-into-view) and
+the curve's unit tests in `smooth_wheel.rs` (Chrome's samples within 4%, the widest 3.5%).
 
 Tests: `rinch/src/app/smooth_wheel_2287_tests.rs` (the sampled curve at
 100 Hz and idle after, `onscroll` per frame, a retarget keeping its speed,

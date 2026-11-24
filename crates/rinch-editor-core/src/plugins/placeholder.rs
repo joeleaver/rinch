@@ -7,34 +7,52 @@
 //! placeholder appears and disappears purely as a function of `state.doc`.
 //!
 //! This plugin is **not** in [`default_plugins`](crate::default_plugins): the
-//! prompt text is per-editor, so the desktop view (M5.7) constructs it from the
-//! `Editor { placeholder: … }` prop.
+//! prompt text is per-editor. The view crate installs one from the
+//! `Editor { placeholder: … }` prop or `EditorHandle::set_placeholder`.
+//!
+//! The text can change after the plugin is installed ([`PlaceholderPlugin::set_text`],
+//! #2210), as a `<textarea placeholder>` attribute can: clones share it, so the
+//! handle that keeps one changes what the installed one shows, and the view picks
+//! the new text up on its next decoration diff. Empty text shows nothing.
 
 use crate::decoration::{Decoration, DecorationSet, Widget};
 use crate::model::Node;
 use crate::plugin::{Plugin, PluginKey};
 use crate::pos::Pos;
 use crate::state::EditorState;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// The stable key for the placeholder plugin's slot.
 pub const PLACEHOLDER_KEY: PluginKey = PluginKey("placeholder");
 
 /// Shows a dimmed prompt while the editor is empty (design A8).
+///
+/// A clone shares its text with the original: [`Self::set_text`] on either
+/// changes what both show.
 #[derive(Debug, Clone)]
 pub struct PlaceholderPlugin {
-    text: Rc<str>,
+    text: Rc<RefCell<Rc<str>>>,
 }
 
 impl PlaceholderPlugin {
     /// A placeholder showing `text` when the document is empty.
     pub fn new(text: impl Into<Rc<str>>) -> PlaceholderPlugin {
-        PlaceholderPlugin { text: text.into() }
+        PlaceholderPlugin {
+            text: Rc::new(RefCell::new(text.into())),
+        }
     }
 
     /// The configured prompt text.
-    pub fn text(&self) -> &str {
-        &self.text
+    pub fn text(&self) -> Rc<str> {
+        self.text.borrow().clone()
+    }
+
+    /// Change the prompt text (#2210); empty shows none. The decorations of
+    /// every state this plugin is installed in change with it, so whoever
+    /// projects one diffs them again (`EditorHandle::set_placeholder` does).
+    pub fn set_text(&self, text: impl Into<Rc<str>>) {
+        *self.text.borrow_mut() = text.into();
     }
 }
 
@@ -44,13 +62,14 @@ impl Plugin for PlaceholderPlugin {
     }
 
     fn decorations(&self, state: &EditorState) -> DecorationSet {
-        if doc_is_empty(&state.doc) {
+        let text = self.text();
+        if !text.is_empty() && doc_is_empty(&state.doc) {
             // The single empty textblock is `doc.child(0)`; its inline content
             // begins at position 1 (just inside its opening boundary).
             DecorationSet::new(vec![Decoration::widget(
                 Pos(1),
                 0,
-                Widget::Placeholder(self.text.clone()),
+                Widget::Placeholder(text),
             )])
         } else {
             DecorationSet::empty()

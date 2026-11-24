@@ -6,6 +6,7 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 
 use crate::create_editor;
 use crate::handle::EditorHandle;
+use crate::keys::TabBehavior;
 
 /// A rich-text editor placed declaratively in `rsx!`.
 ///
@@ -82,6 +83,22 @@ pub struct Editor {
     /// unless something above (or the app) turns it off. Written as the
     /// container's `spellcheck` attribute.
     pub spellcheck: Option<bool>,
+    /// The prompt shown while the editor is empty, as a `<textarea
+    /// placeholder>` (#2210). Empty (the default) leaves the handle as it is:
+    /// none, for a fresh one. Set at mount through
+    /// [`EditorHandle::set_placeholder`], which is also how to change or clear
+    /// it afterwards without a re-mount.
+    pub placeholder: String,
+    /// Markdown shortcuts (#2210): `Some(true)` turns on the input rules that
+    /// rewrite `- `, `# `, `*x*` and the rest as they are typed;
+    /// `Some(false)` turns them off; `None` (the default) leaves the handle as
+    /// it is — off, for a fresh one, as a Chrome `contenteditable` inserts
+    /// what is typed literally. See [`EditorHandle::set_markdown_shortcuts`].
+    pub markdown_shortcuts: Option<bool>,
+    /// What Tab does (#2210): `None` (the default) leaves the handle as it is
+    /// ([`TabBehavior::IndentInListsAndTables`] for a fresh one). See
+    /// [`EditorHandle::set_tab_behavior`].
+    pub tab_behavior: Option<TabBehavior>,
 }
 
 impl Component for Editor {
@@ -99,6 +116,18 @@ impl Component for Editor {
         if self.read_only {
             handle.set_read_only(true);
         }
+        // Plugins first: installing one rebuilds the state, which the content
+        // load below would otherwise have to survive (it does, but its undo
+        // history would not).
+        if let Some(on) = self.markdown_shortcuts {
+            handle.set_markdown_shortcuts(on);
+        }
+        if !self.placeholder.is_empty() {
+            handle.set_placeholder(&self.placeholder);
+        }
+        if let Some(behavior) = self.tab_behavior {
+            handle.set_tab_behavior(behavior);
+        }
         // Load initial content *before* mounting so the view's first build renders
         // it directly (no empty→content diff). A no-op for empty content; on an
         // already-loaded external handle, the `content` prop wins.
@@ -111,7 +140,6 @@ impl Component for Editor {
         if let Some(on) = self.spellcheck {
             container.set_attribute("spellcheck", if on { "true" } else { "false" });
         }
-        #[cfg(not(target_family = "wasm"))]
         handle.refresh_spellcheck();
         if !children.is_empty() {
             container.append_child(&overlay_slot(scope, children));

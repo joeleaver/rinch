@@ -78,17 +78,19 @@ pub fn styles() -> String {
     display: none;
 }
 
-/* Completed step */
+/* Completed step. `--rinch-stepper-icon-text` recolours the glyph on the
+   filled icon (issue #2195). */
 .rinch-stepper__step--completed .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
-    color: white;
+    color: var(--rinch-stepper-icon-text, white);
 }
 
-/* Progress (current) step */
+/* Progress (current) step. `--rinch-stepper-ring` replaces the focus ring
+   around it (a `box-shadow` value; `none` drops it). */
 .rinch-stepper__step--progress .rinch-stepper__step-icon {
     background-color: var(--rinch-stepper-color, var(--rinch-primary-color));
-    color: white;
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--rinch-stepper-color, var(--rinch-primary-color)) 20%, transparent);
+    color: var(--rinch-stepper-icon-text, white);
+    box-shadow: var(--rinch-stepper-ring, 0 0 0 4px color-mix(in srgb, var(--rinch-stepper-color, var(--rinch-primary-color)) 20%, transparent));
 }
 
 /* Step body */
@@ -99,10 +101,15 @@ pub fn styles() -> String {
     margin-top: var(--rinch-spacing-xs);
 }
 
+/* A vertical step's body takes the row's width beside the icon, so content
+   shown in it (`content_for_active_only: false`) has the room a timeline
+   entry has, not just its label's. */
 .rinch-stepper--vertical .rinch-stepper__step-body {
     text-align: left;
     margin-top: 0;
     padding-top: 0.25rem;
+    flex: 1;
+    min-width: 0;
 }
 
 /* Step label */
@@ -123,8 +130,41 @@ pub fn styles() -> String {
     margin-top: 0.125rem;
 }
 
-/* Step content (optional content for each step) */
+/* Step content: the last child of the step's body. Hidden inside its step;
+   the Stepper moves the active step's content into `.rinch-stepper__content`,
+   below the steps, where it shows (issue #2195, Mantine's layout).
+
+   With `content_for_active_only: false` the stepper carries
+   `--content-in-steps`, moves nothing, and every step shows its content in
+   place, under its label: in a vertical stepper beside the icon and its
+   connector (a timeline), in a horizontal one in the step's centred column,
+   which is then at least as wide as the content. The choice travels as a custom property each stepper sets for its own
+   subtree, so a stepper nested in another's step content follows its own
+   setting, not the outer one's (a descendant selector would reach into it). */
+.rinch-stepper {
+    --rinch-stepper-step-content-display: none;
+}
+
+.rinch-stepper--content-in-steps {
+    --rinch-stepper-step-content-display: block;
+}
+
 .rinch-stepper__step-content {
+    display: var(--rinch-stepper-step-content-display, none);
+}
+
+.rinch-stepper__content > .rinch-stepper__step-content {
+    display: block;
+    padding-top: var(--rinch-spacing-md);
+}
+
+.rinch-stepper__step-body > .rinch-stepper__step-content {
+    margin-top: var(--rinch-spacing-xs);
+}
+
+/* A step with no children has nothing to show and takes no room, in the
+   region or in its step. After the region's rule, which it must win. */
+.rinch-stepper__step-content:empty {
     display: none;
 }
 
@@ -188,17 +228,20 @@ pub fn styles() -> String {
 }
 
 .rinch-stepper__loader {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 60%;
     height: 60%;
-    border: 2px solid var(--rinch-stepper-color, var(--rinch-primary-color));
-    border-top-color: transparent;
-    border-radius: 50%;
-    animation: rinch-stepper-spin 0.6s linear infinite;
+    color: var(--rinch-stepper-color, var(--rinch-primary-color));
 }
-
-@keyframes rinch-stepper-spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+.rinch-stepper__loader .rinch-loader {
+    width: 100%;
+    height: 100%;
+    color: inherit;
+}
+.rinch-stepper__loader .rinch-loader__oval {
+    border-width: 2px;
 }
 
 /* Size variants */
@@ -222,10 +265,22 @@ pub fn styles() -> String {
 .rinch-stepper--radius-lg .rinch-stepper__step-icon { border-radius: var(--rinch-radius-lg); }
 .rinch-stepper--radius-xl .rinch-stepper__step-icon { border-radius: var(--rinch-radius-xl); }
 
-/* Completed state content */
+/* Completed state content (issue #2195). The Stepper moves it into
+   `.rinch-stepper__content`, where it is hidden until `active` is past the
+   last step and the region carries `--completed`. Outside a Stepper it shows
+   as is. */
 .rinch-stepper__completed {
     padding: var(--rinch-spacing-md);
     text-align: center;
+}
+
+.rinch-stepper__steps .rinch-stepper__completed,
+.rinch-stepper__content > .rinch-stepper__completed {
+    display: none;
+}
+
+.rinch-stepper__content--completed > .rinch-stepper__completed {
+    display: block;
 }
 "#.to_string()
 }

@@ -199,7 +199,9 @@ pub use anchor::Anchor;
 pub use avatar::Avatar;
 pub use badge::Badge;
 pub use blockquote::Blockquote;
-pub use borderless_window::{BorderlessWindow, SectionRenderer, WindowRadius};
+pub use borderless_window::{
+    BorderlessWindow, SectionRenderer, WindowControl, WindowControlsLayout, WindowRadius,
+};
 pub use breadcrumbs::{Breadcrumbs, BreadcrumbsItem};
 pub use button::Button;
 pub use card::{Card, CardSection};
@@ -219,11 +221,11 @@ pub use highlight::Highlight;
 pub use image::Image;
 pub use kbd::Kbd;
 pub use list::{List, ListItem};
-pub use loader::Loader;
+pub use loader::{Loader, LoaderDefaults};
 pub use mark::Mark;
 pub use navlink::NavLink;
 pub use number_input::NumberInput;
-pub use pagination::Pagination;
+pub use pagination::{Pagination, PaginationItemRenderer};
 pub use paper::Paper;
 pub use password_input::PasswordInput;
 pub use progress::Progress;

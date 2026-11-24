@@ -158,8 +158,8 @@ pub use rinch_editor_view::{
     CaretAffinity, CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, ImageInput,
     ImageInputSource, LinkClick, LinkHover, LinkSpan, MarginAnchor, MarginAssoc, MarginAt,
     MarginLine, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration, NodeViewRender, NodeViewSpec,
-    OVERLAY_SLOT_ATTR, ScrollAlign, SelectionAnchor, clear_image_source, create_editor,
-    history_now_ms, set_image_source,
+    OVERLAY_SLOT_ATTR, ScrollAlign, SelectionAnchor, TabBehavior, clear_image_source,
+    create_editor, history_now_ms, set_image_source,
 };
 
 // Collaborative editing (M9), behind the `collaboration` feature. The collab methods
@@ -737,8 +737,10 @@ pub trait AppExt {
     ///   fonts from the page's CSS (`@font-face`).
     /// - [`spellcheck`](rinch::App::spellcheck): the browser checks the
     ///   fields; `false` puts `spellcheck="false"` on `<body>` (see
-    ///   [`apply_spellcheck`]). The dictionaries and skip rules are the
-    ///   browser's.
+    ///   [`apply_spellcheck`]). The rich-text editor is checked by rinch,
+    ///   with the configuration's dictionaries, only when the app supplied
+    ///   some (`SpellcheckConfig::checker`); a field's dictionaries and skip
+    ///   rules are the browser's.
     /// - The GPU configuration (`gpu_config`, `external_gpu`, `renderer`): does
     ///   not exist on a web build — the browser composites, and a
     ///   `RenderSurface` app owns its own canvas context.
@@ -756,12 +758,15 @@ fn apply_title<F>(parts: &rinch::app_builder::WebParts<F>) {
 }
 
 /// The app's spellcheck switch on the web (#2862): the browser checks the
-/// page's fields itself, so rinch's checker never runs here. Off, `<body>`
+/// page's fields itself, and rinch's checker never runs on them. Off, `<body>`
 /// gets `spellcheck="false"`, which every field and editable region on the
 /// page inherits (HTML's rule) unless one sets its own; on, the page is left
-/// to the browser's default (fields checked). The rest of the configuration
-/// (dictionaries, skip rules, the interaction and blur options) is the
-/// browser's on the web.
+/// to the browser's default (fields checked). For fields the rest of the
+/// configuration (skip rules, the interaction and blur options) is the
+/// browser's. The rich-text editor, which the browser cannot check, is
+/// checked by rinch with the configuration (switch, dictionaries, skip rules,
+/// debounce, slices) when it holds the app's own dictionaries; with none it
+/// is not checked.
 ///
 /// It also keeps `<body>` in step with every later
 /// [`rinch::spellcheck::configure`] / [`rinch::spellcheck::set_enabled`].

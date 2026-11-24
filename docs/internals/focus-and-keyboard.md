@@ -296,6 +296,19 @@ lock stops the page and no scroll container inside it.) The rules are one functi
 which one a reader uses, so every desktop reader pins it
 (`data-backdrop`'s on both backends).
 
+**What counts as rendered** for Tab, the trap-root search and a parked
+focus (`RinchApp::node_is_visible`): not `visibility: hidden`/`collapse`, and
+either a non-zero layout box or a place in an inline formatting context
+(`Node::is_flowed_inline_element`, #2963). A flowed inline element owns no
+Taffy box, its `layout` is a `0x0` ghost, and the box test alone skipped every
+`<a href>` in a paragraph and every `<span tabindex="0">`. Its `ifc_root` is
+recomputed by each IFC pass and is not kept under a `display: none` ancestor,
+inline or block, so membership is the rendered-ness test; width is not
+consulted, since Chrome 158 stops Tab on an empty `<a href></a>` (a `0x17`
+rect). Pins: `rinch/src/app/inline_tab_stops_2963_tests.rs` (Chrome-measured
+order). The `:focus-visible` outline of an inline element is drawn round its
+line fragments (#2973; `paint-and-damage.md`, "Outlines of inline elements").
+
 A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
 only the node from the Tab order, not its subtree. A **mouse press claims
@@ -620,8 +633,10 @@ its content-box height (#1367): a caret in a scroller below the fold of a
 scrolling page was scrolled into its scroller and left off screen. Not
 modelled: the containing-block chain (an `absolute` box is walked through its
 DOM ancestors, so a scroller between it and its containing block is moved
-although it cannot move the box), and smooth scrolling (neither backend
-animates it). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
+although it cannot move the box), and `overflow: hidden` scrollers (above). A
+scroller whose `scroll-behavior` is `smooth` animates its part from the next
+frame (#2291; `docs/internals/pointer-drag-tooltips.md`, "Smooth programmatic
+scrolls"). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
 two and three levels of padded, bordered scrollers in a scrolling page, both
 axes, a placed target, a scroller taller than the window, a fixed boundary,
 #1367's padded rows), `app/mod.rs` `scroll_into_view_tests` (transforms), and
@@ -877,6 +892,21 @@ shell with its own toolbar: `RinchApp::text_edit_state()`,
 `AppAction::ShowTextContextMenu` instead of opening the DOM menu — what the
 Android half of #813 builds on.
 
+**A right press on a misspelled word adds spelling rows above the edit rows**
+(#2862 stage 3; detail in `spellcheck.md`, "The context menu"). The caret rule
+gains one case, Chrome's: a press on a word the spellchecker marked **selects
+the word** (unless it landed inside a wider selection, which is kept and gets no
+spelling rows). The menu then shows the word's suggestions (up to
+`SpellcheckConfig::menu_suggestions`, default 3), a separator, "Add to
+dictionary", a separator, and the edit rows. The seam carries them:
+`TextEditState::spelling` (no longer `Copy`) and
+`TextEditAction::Suggestion(i)` / `AddToDictionary`, which `perform_text_edit`
+runs (a suggestion goes in as `EditCommand::InsertText` / `insert_text`, the
+typing path). The spelling rows are built at the first menu that needs them, so
+a menu over an unmarked word has exactly the panel it had; a row is found by its
+node among the open rows (`text_menu_hit`), since the spelling rows shift the
+edit rows' places. Pins: `app/spellcheck_menu_tests.rs`.
+
 **An open runtime popup owns the input** (#822, the rule for the text menu and
 the native `<select>` popup alike, as a native popup menu holds the pointer and
 the keyboard until it closes). Pointer events and `KeyDown` were already
@@ -996,12 +1026,19 @@ so UA, component, app and inline declarations all count, with specificity and
 child that declares nothing, where Chrome's `getComputedStyle` reports the
 inherited value); `auto` is resolved from the nearest ancestor that is not
 `auto` where selection asks (`resolved_user_select`), which gives the same
-selection. rinch's UA sheet makes `code, kbd, samp, pre` `text`. Before #2231
+selection. rinch's UA sheet makes `code, kbd, samp, pre` `text`, and `[draggable="true" i]` `none` as Chrome does (#2247). Before #2231
 only the inline `style` attribute was read and the code default was patched on
 by tag after the cascade. A press in
 `user-select` text starts `RinchApp::text_selection` (`app/text_selection.rs`):
 an anchor and a focus, each an IFC root and a byte offset. `TextSelection::runs`
-gives every selectable root between them in document order with its part. The
+gives every selectable root between them with its part, the ends ordered
+where they stand (`text_selection_copy::before`, as the copy orders them):
+a root holding an end is covered from (or to) where the root holding that
+end stands in it (`box_offset`), and a root in an end root's lines (an
+`inline-block` in the paragraph) only when the part reaches past where it
+stands, by the end's side at its offset (#2245). Only those roots, and the
+roots holding an end, are looked at; the rest between the two ends in root
+order are whole, so a drag's move stays linear in the roots it covers. The
 roots come from `RootsCache` (`app/text_selection_text.rs`, one build per
 hit-cache generation), which marks the roots with text (`has_content`: something
 drawn, not only the white space its lines drop; a `<br>` and a no-break space
@@ -1031,26 +1068,78 @@ fallback for a drag over no text) is not drawn to them.
   where it stands: a box before the part's start or after its end is passed.
   What holds the last root is never passed, and leaving it ends the walk.
   A walk that starts inside an `inline-block` writes the rest of each root
-  it is inside, up to the selection's end. The highlight still follows
-  `runs`, so near a box it can disagree with the copy (#2245).
+  it is inside, up to the selection's end. The highlight (`runs`) covers
+  the same roots since #2245. `selectable_roots` descends into an
+  anonymous box's run members, so an `inline-block` in a run is a root.
 - An offset where a box stands cannot say which side of the box an end is
   on, so each end carries its side (`TextSelection::anchor_side` and
   `focus_side`, an `EndSide`), set where the end is made, as Chrome 156
   decides it: a point past the middle of an in-flow atomic inline hit-tests
   to after it (`side_at`), so a drag past a line's last inline-block takes
   it and one from the padding before a leading inline-block takes that. A
-  float or positioned box is on no line, so only an end outside the
-  paragraph takes one (Select All's), never a press, drag or triple click.
-  A triple click takes its paragraph's edge inline-blocks, a double click
-  leaves out the boxes beside its word, and the anchor keeps its side when
-  Shift+click or a drag moves the focus. A start takes the boxes at its
+  float or positioned box is on no line, so a press or drag never takes
+  one at its end; Select All's ends and a double click's word through one
+  do. The anchor keeps its side when a Shift+click or a drag moves the
+  focus. A start takes the boxes at its
   offset when it is before them, an end when it is after them. Select All
   ends at the end of the outermost root holding the last selectable one
   (`outermost_root`), not inside an inline-block in the last paragraph.
-  `side_at` reads a box's right edge as its after side, as
-  `inline_box_caret` does (left to right). Known gaps: a triple click
-  inside an inline-block, its trailing line breaks and a paragraph-wise
-  Shift+click after it (#2256).
+  `side_at` takes a box's after edge from `inline_box_caret`: its right
+  edge left to right, its left on a right-to-left line (#2259).
+- A double click (`word_unit`) selects the word around the press in its
+  root's text (an atomic inline adds no character there, so `foo<ib>word`
+  is one word already) and runs on into a box touching the word's start or
+  end (`line_boxes`: the last box at the start's offset, the first at the
+  end's) when it is an `inline-block`, `inline-flex` or float whose drawn
+  text touches the word with a word character: to the break inside the box
+  (an end in the box's root), or through the whole box (an end in the
+  paragraph that takes the boxes and floats there). A picture or an inline
+  table ends the word (Chrome 158).
+- A triple click (`paragraph_unit`) selects a paragraph of the outermost
+  root holding the pressed one (`outermost_root`, not above the selection
+  host), so a triple click inside an `inline-block` selects the paragraph
+  the box stands in. A paragraph starts after a `<br>` or at a float before
+  the press (a float is block-level: a paragraph edge in Chrome), else at
+  the root's start, taking the in-flow boxes there. It ends after the next
+  `<br>`, at the next float (`te<float>xt` copies `te`), or else at offset
+  0 of the next root with text that is not in its lines, as Chrome's
+  selection ends at the next paragraph's start: its copy then ends with the
+  paragraph's line breaks (`text\n\n` for a `<p>`, `text\n` for a `<div>`).
+  The last paragraph of all ends at its own end, taking its edge boxes.
+- Each multi-click records its unit (`TextSelection::unit`, a
+  `SelectionUnit`). A Shift+click after it extends by that unit: before the
+  unit's start, from the unit's end to the start of the clicked word or
+  paragraph; else from the unit's start to the clicked unit's end. A later
+  Shift+click extends from the same first unit (Chrome 158 on Linux; a
+  drag's selection keeps its anchor). A drag after a multi-click still
+  extends by characters, where Chrome extends by the unit.
+- A press on an `<img>` (without Shift) starts no selection and clears the
+  one there is: Chrome starts an image drag from it (#2259).
+- The keys extend a selection (`app/text_selection_keys.rs`, #2953), from
+  `handle_text_key`: a Shift chord of the text keymap, with no field holding
+  the keyboard (`live_focused_input_handler` is `None`; the editor's keys
+  never reach it), and only a selection that selects something (a click
+  leaves no caret in read-only text: Chrome extends nothing from one). The
+  focus moves, the anchor stays, the multi-click unit is dropped.
+  Shift+Left/Right step a grapheme, logically by the focus root's
+  direction (Left is forward in an RTL root, as Blink's
+  `ModifyExtendingLeft` reads the enclosing block); a root's edge to the
+  next root (`next_root`/`prev_root`, outermost for a previous paragraph)
+  is one step, and an in-flow `inline-block`'s text is stepped through
+  (entering and leaving it costs nothing: its edges are the same place as
+  the offset it stands at, the focus's side saying which side of it the
+  focus is on). The word chord (`text_key_action`'s: Ctrl, Option on
+  macOS) goes to `rinch_words::text_word_boundary` in the root's text, a
+  root's edge stepping on first; Alt on Windows/Linux extends nothing
+  (Chrome 158). Shift+Up/Down go to the line above or below at a window x
+  kept across a run (`TextSelection::goal_x`), past margins into the next
+  or previous root's nearest line, and from the first or last line of all
+  to the text's start or end. Shift+Home/End go to the visual line's
+  edges (`visual_line_edge`; a wrapped line's end before its hung space);
+  the document keys to the first or last selectable text. Not modelled: a
+  word motion through an `inline-block`'s text (it stays in the root's own
+  text), and Windows' word-right to the next word's start (rinch's text
+  fields do the same).
 - Atomic inlines count as drawn for the white space a root's lines drop
   (`InlineLayout::atomic_inline_offsets`): the space between two
   `inline-block` columns, or two pictures, is copied, as Chrome copies it.
@@ -1075,8 +1164,8 @@ fallback for a drag over no text) is not drawn to them.
 - Generated content (`::before`/`::after`, list markers) is neither copied
   nor highlighted (`left_out` reads `is_pseudo_element`; #2040 pins it,
   `text_selection_leaf_tests.rs`).
-- An inline table writes a space before it (unless at a line's start) and
-  one after it, besides its rows' line breaks.
+- An inline table writes a space before it (unless at a line's start, or
+  it cannot be selected) and one after it, besides its rows' line breaks.
 - Entering or leaving a block (a block container, table or row, but not a cell,
   inline-level box, float, absolutely positioned box or picture) writes a line
   break, unless the last thing written was one. Leaving a `<p>` with height
@@ -1084,12 +1173,66 @@ fallback for a drag over no text) is not drawn to them.
 - Each cell but its row's first gets a tab, whatever it holds.
 - An `<img>` or `<iframe>` is written as nothing, but counts as written, so its
   block ends with a line break. An `<svg>`, `<canvas>`, `<video>` or hidden
-  picture is not written.
+  picture is not written, nor one that cannot be selected (#2256).
 - Pins: `app/text_selection_chrome_tests.rs`, `app/text_selection_copy_tests.rs`
   and `app/text_selection_copy_boxes_tests.rs` (each case with Chrome's
-  string; the last selects as `setBaseAndExtent(#a, 0, #b, end)` does).
+  string; the last selects as `setBaseAndExtent(#a, 0, #b, end)` does);
+  gestures in `app/text_selection_copy_gesture_tests.rs` and
+  `app/text_selection_2256_tests.rs` (Playwright's mouse in Chrome 158; an
+  inline span's point is a caret in its text, its painted box being empty).
 - Each text's own element gives its `white-space` (a `pre` span in a root
   that collapses keeps its spaces), and a cell that cannot be selected has no
   tab.
 - The walk runs only on copy; a drag's move reads `runs` and the roots
   cache, never the walk.
+
+## Keyboard scrolling (#2977)
+
+`app/keyboard_scroll.rs`. `handle_unclaimed_key_fallback` asks
+`keyboard_scroll` first, so after the registered widget's `on_key`, the
+element key handlers and the app-wide listeners, and only when no text field
+holds the keyboard (`live_focused_input_handler`), the focus is not a
+`<select>` (its arrows are its own) and, for Space, the focused node does not
+activate (`focused_node_activates`: its own `data-rid`, or a `<button>`,
+`<input>`, `<select>`, `<textarea>`, `<summary>` or `<option>`; measured in
+Chrome 158, Space on a focused link, `role="button"` box, plain `tabindex` box
+or box inside an element with a click handler scrolls the page and fires no
+click, so an ancestor's `data-rid` does not count; review of #2987). The rich-text editor's keys
+never get here. A key that scrolls asks for a redraw and is consumed; one that
+finds nothing to scroll falls through to the text keys as before.
+
+- **Bindings** (`key_scroll`): Standard: bare arrows (vertical and
+  horizontal), Page Up / Page Down (Shift allowed), Home / End (Ctrl
+  allowed), Space / Shift+Space. macOS: the same, plus Cmd+Up / Cmd+Down to
+  the edges and Option+Up / Option+Down by a page. Shift+arrows are left to
+  the read-only selection (#2953).
+- **Which scroller** (`keyboard_scroller`): from the focused node, else
+  `keyboard_scroll_anchor` (the node the last press of any button landed on,
+  recorded at the top of `handle_event` before any intercept), else
+  `<body>`: the nearest box that overflows on the axis, is not
+  `scroll_locked_out`, and can still move that way. "Can move" reads the
+  running animation's target (`SmoothWheelState::heading_to`) when one
+  runs, so a key pressed while a scroll is headed for the end goes to the
+  scroller around it. At a `position: fixed` box the walk goes straight to `<body>`, as Chrome
+  hands a fixed header's key to the viewport and rinch's wheel walk does
+  (review of #2987: it used to stop there, so nothing scrolled).
+- **Amounts**: an arrow 40 px (`kPixelsPerLineStep`), a page 0.875 of the
+  scroller's client height (`kMinFractionToStepWhenPaging`), Home / End the
+  range's ends.
+- **Motion**: with the smooth switch on (`set_smooth_wheel_scroll`, the one
+  user-scroll switch), `animate_by` / `animate_to` with `CurveKind::Keyboard`:
+  150 ms whatever the distance, `ease-in-out`, a repeat adding to the target.
+  Off, one `scroll_vertically_by` / `scroll_horizontally_by` write and its
+  `onscroll`. A `lock_scroll` taken mid-scroll stops it (a user scroll, as a
+  wheel glide).
+
+Measured in Chrome 158 (headless; a focused 200x300 `tabindex` scroller at
+5000 px; `Input.dispatchKeyEvent` over CDP; `scrollTop` every rAF): ArrowDown
+40 px, PageDown and Space 262 px, End 24 700 px, each landing about 150 ms
+after the key on `ease-in-out` (0.8% RMS of the distance over the four runs).
+Not modelled: Chrome's keyboard scroll from a focused `<input>` (Page Up /
+Page Down in a single-line field scroll the page there; here the field keeps
+every key), and the editor's own Page Up / Page Down (#2020), which still
+jumps (its caret placement reads the scrolled offset at once). Pins:
+`rinch/tests/keyboard_scroll_2977.rs`.
+

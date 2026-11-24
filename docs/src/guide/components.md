@@ -108,10 +108,13 @@ Button { size: "xl", "Extra Large" }
 // Button colors
 Button { color: "red", "Delete" }
 Button { color: "green", "Success" }
+Button { color: "#7c3aed", "Raw colour" }
 
 // Button states
 Button { disabled: true, "Disabled" }
-Button { loading: true, "Loading..." }
+Button { loading: true, "Saving" }            // label hidden, Loader drawn over it
+Button { loading: true, loader_type: "dots", "Saving" }
+Button { r#type: "button", "Not a submit" }   // empty type = HTML's submit
 Button { full_width: true, "Full Width" }
 
 // With click handler
@@ -288,6 +291,7 @@ Group { gap: "xs",
 // Anchor (link)
 Anchor { href: "https://example.com", "Visit site" }
 Anchor { href: "#", underline: true, "Always underlined" }
+Anchor { href: "/settings", onclick: move || route.set(Route::Settings), "Settings" }  // in-app routing
 
 // Blockquote
 Blockquote { cite: "— Albert Einstein",
@@ -327,9 +331,11 @@ Loader {}
 Loader { size: "lg", color: "cyan" }
 
 // Progress
-Progress { color: "blue" }
-Progress { color: "green", striped: true }
-Progress { striped: true, animated: true }
+Progress { value: 40.0, color: "blue" }
+Progress { value: 60.0, color: "green", striped: true }
+Progress { value: 80.0, striped: true, animated: true }
+Progress {}                        // no value: indeterminate, as <progress>
+Progress { value: 0.3, max: 1.0 }
 
 // Skeleton (loading placeholders)
 Skeleton { height: "12px", width: "80%" }
@@ -419,7 +425,8 @@ keeps the old text).
 // Avatar
 Avatar { name: "John Doe" }  // Shows "JD"
 Avatar { size: "lg", color: "cyan", name: "Jane Smith" }
-Avatar { src: "https://example.com/photo.jpg" }
+Avatar { src: "https://example.com/photo.jpg", name: "Jo Ng" }  // "JN" if the image fails
+Avatar { "?" }  // children are the placeholder
 
 // Badge
 Badge { "New" }
@@ -458,6 +465,7 @@ Image {
     height: "150",
     fit: "cover",
     radius: "md",
+    fallback_src: "missing.png",  // shown if `src` fails to load
 }
 
 // Avatar with image
@@ -695,29 +703,42 @@ Accordion {
     }
 }
 
-// Breadcrumbs
+// Breadcrumbs. An item with `href` is a link, one with `onclick` routes by
+// callback, and one with neither is the current page (`aria-current="page"`).
+// The separator is any text, a Tabler icon (`separator_icon`) or a renderer
+// (`separator_fn`).
 Breadcrumbs {
-    BreadcrumbsItem { "Home" }
-    BreadcrumbsItem { "Products" }
+    BreadcrumbsItem { href: "/", "Home" }
+    BreadcrumbsItem { onclick: move || navigate("/products"), "Products" }
     BreadcrumbsItem { "Component" }
 }
-Breadcrumbs { separator: ">",
-    BreadcrumbsItem { "Docs" }
+Breadcrumbs { separator: "›",
+    BreadcrumbsItem { href: "/docs", "Docs" }
     BreadcrumbsItem { "API" }
 }
 
-// Pagination
+// Pagination. Controls are labelled "First page", "Previous page", ...;
+// translate them with `first_label`, `previous_label`, `next_label`,
+// `last_label`, and the `<nav>` with `aria_label`.
 Pagination {}
-Pagination { with_edges: true }
+Pagination { with_edges: true, previous_label: "Page précédente", next_label: "Page suivante" }
 
 // NavLink
 NavLink { label: "Dashboard", active: true }
 NavLink { label: "Settings", description: "App configuration" }
 NavLink { label: "Disabled", disabled: true }
 NavLink { label: "With handler", onclick: move || navigate("/page") }
+// With children, a click opens and closes them; `opened_fn` +
+// `on_opened_change` make it controlled.
+NavLink { label: "Projects", default_opened: true,
+    NavLink { label: "Rinch" }
+    NavLink { label: "Pimble" }
+}
 
 // Stepper. Each step's state follows its position against `active`, and
-// `{|| …}` makes the whole stepper follow the signal.
+// `{|| …}` makes the whole stepper follow the signal. A step's children are its
+// content, shown below the steps while it is active (`content_for_active_only:
+// false` keeps every step's content inside its step instead).
 let step = Signal::new(1u32);
 Stepper { active: {|| step.get()},
     StepperStep { label: "Account", description: "Create account" }
@@ -1010,7 +1031,10 @@ The component provides:
 - Window control buttons with hover effects
 - Left/right custom sections for menu buttons or additional controls
 - Proper theming via CSS variables
-- `--rinch-window-top-inset` published for overlays (36px for the titlebar, plus
+- Window controls placed by the platform's convention (macOS on the left, the
+  desktop's own layout on Linux, the right elsewhere), or by `controls_layout`
+- A titlebar height you set with `titlebar_height` (default 36px)
+- `--rinch-window-top-inset` published for overlays (the titlebar height, plus
   the menu bar height when one sits below it)
 
 The titlebar is an in-flow element, so your content sits below it automatically.
@@ -1474,7 +1498,9 @@ write `icon: TablerIcon::Check`, not `icon: Some(TablerIcon::Check)`.
 | `ListItem` | `icon` |
 | `Stepper` | `completed_icon`, `progress_icon` |
 | `StepperStep` | `icon`, `completed_icon`, `progress_icon` |
-| `NavLink` | `left_section`, `right_section` |
+| `NavLink` | `left_section`, `right_section`, `chevron_icon` |
+| `Breadcrumbs` | `separator_icon` |
+| `Pagination` | `first_icon`, `previous_icon`, `next_icon`, `last_icon` |
 | `DropdownMenuItem` | `left_section`, `right_section` |
 | `Tab` | `left_section`, `right_section` |
 
@@ -1612,6 +1638,7 @@ rsx! {
 | `Radio` | `checked_fn` | Toggle checked class reactively |
 | `TextInput` | `value_fn` | Reactive value binding |
 | `NavLink` | `active_fn` | Toggle active class reactively |
+| `NavLink` | `opened_fn` | Open/close nested links reactively (controlled) |
 | `Progress` | `value_fn` | Update progress bar width reactively |
 | `Modal` | `opened_fn` | Show/hide modal reactively |
 | `Drawer` | `opened_fn` | Show/hide drawer reactively |

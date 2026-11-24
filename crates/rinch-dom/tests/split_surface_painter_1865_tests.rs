@@ -591,14 +591,15 @@ fn a_box_touching_r_from_the_right_stays_in_below() {
 
 /// A box whose left edge is fractional, half a pixel right of R: Vello's
 /// antialiasing of that edge may reach the pixel left of it, inside R, so it
-/// is routed across R.
+/// is routed across R. The half pixel is a transform's: a box's own edges are
+/// drawn on whole device pixels (#2368), a transform is not snapped.
 #[test]
 fn a_box_with_a_fractional_left_edge_by_r_is_routed_across_it() {
     let mut doc = document("", "", &[]);
     after(
         &mut doc,
-        "position: absolute; left: 60.5px; top: 20px; width: 20px; height: 10px; \
-         background: rgb(0, 0, 0)",
+        "position: absolute; left: 60px; top: 20px; width: 20px; height: 10px; \
+         background: rgb(0, 0, 0); transform: translateX(0.5px)",
     );
     let on = paint(&mut doc, true);
     let above = on.slices[0]
@@ -747,9 +748,11 @@ fn a_second_split_reopens_the_inverse_clip_with_its_hole() {
 /// A surface whose left edge is fractional: its region takes the pixel left
 /// of the one the edge falls in, where Vello's antialiasing of that edge may
 /// reach; a whole-pixel edge takes none (`a_plain_surface_leaves_the_scene`).
+/// The half pixel is a transform's: a box's own edges are drawn on whole
+/// device pixels (#2368), a transform is not snapped.
 #[test]
 fn a_fractional_left_edge_takes_the_pixel_left_of_it() {
-    let mut doc = document("left: 20.5px", "", &[]);
+    let mut doc = document("transform: translateX(0.5px)", "", &[]);
     doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
     let on = paint(&mut doc, true);
     assert_eq!(on.slices.len(), 1);

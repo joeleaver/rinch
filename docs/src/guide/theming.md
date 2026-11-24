@@ -186,7 +186,8 @@ own declaration beats:
 | `small`, `sub`, `sup` | `font-size: smaller` |
 | `hr` | `color: gray`, a 1px `inset` border, `margin-block: 0.5em`, `margin-inline: auto`, `height: 0`, `overflow: hidden` |
 | `[dir=rtl]`, `[dir=ltr]` | that `direction`, and `unicode-bidi: isolate` (so do `bdi`, `output` and any `[dir]`) |
-| `[dir=auto]`, `bdi` without `dir` | `unicode-bidi: plaintext` — the content isolated in the direction of its first strong letter, as Chrome lays it out (whose computed value is `isolate` with a direction from the content) |
+| `[dir=auto]`, `bdi` without `dir` | `unicode-bidi: isolate`, and the `direction` of the first strong letter of the element's text (a text field's: its value), `ltr` when there is none, as in Chrome. Text in a `bdi`, `script`, `style`, `textarea` or an element with its own `dir` does not count. The direction is a presentational hint, so an author `direction` beats it, and it follows the text as it changes (#2272) |
+| `textarea[dir=auto]`, `pre[dir=auto]` | `unicode-bidi: plaintext`, as in Chrome |
 | `bdo` | `unicode-bidi: isolate-override` — its letters in its `direction`'s order |
 
 Before this an `<hr>` rendered **nothing at all** — the UA sheet's own
@@ -342,10 +343,9 @@ as it includes any generated box (#1629); `query_selector`, structural selectors
 (`:first-child`, `:nth-child`) and copying a selection skip it. Still not Chrome's: a number is drawn without Chrome's
 tabular digits (its far edge is up to 3px in); an `inside` disc's glyph sits
 about 0.12em right of Chrome's shape; a marker whose own line is taller
-than the first line it sits on does not push the item's content down; and a
-later block's background pulled up over the item (a negative margin) hides the
-marker, as it hides any earlier text in rinch, where Chrome paints inline
-content above in-flow backgrounds (#2276). The
+than the first line it sits on does not push the item's content down. A later
+block's background pulled up over the item (a negative margin) is painted
+under the marker, as under any earlier line content, as in Chrome (#2276). The
 rich-text editor's task-list checkbox is a `::before` hung against the item's
 left edge the same way (#1246).
 
@@ -428,6 +428,15 @@ This never changes layout geometry: 1 CSS px stays 1 layout unit, and paint
 applies the scale. One visible consequence: `border: 0.5px` on a 2x display
 renders as a real hairline instead of being snapped up to 1px.
 
+At a fractional scale paint draws each box on whole device pixels, as Chrome
+does: a box at `left: 13px` is at 16.25 device px at 125%, and its background,
+borders, shadows, outline and `overflow` clip start at 16, a hard edge rather
+than a one-pixel blend. Each edge rounds to the nearest device pixel (a tie,
+19.5 at 150%, up) from the box's own position, so boxes that touch still touch
+and a nested box is not moved by its parent's rounding. Text is not moved, and
+a CSS `transform` is applied after the snap, so `translateX(0.4px)` still
+moves the box a fraction of a pixel.
+
 #### Generic font families on Android
 
 `monospace`, `ui-monospace`, `ui-sans-serif` and `ui-serif` resolve to a real
@@ -461,7 +470,7 @@ var(--rinch-window-top-inset)  /* Height of the chrome rinch draws above your co
 
 Rinch sometimes draws window chrome itself: the DOM menu bar (28px — on Linux,
 and on the web under `rinch_web::mount_with_menu_bar`) and the
-`BorderlessWindow` titlebar (36px). That chrome reserves space with
+`BorderlessWindow` titlebar (its `titlebar_height`, 36px by default). That chrome reserves space with
 in-document padding, so **normal flow content clears it automatically**.
 
 A `position: fixed` element does not. Fixed elements resolve against the real
@@ -619,15 +628,28 @@ radio, switch, slider, select, tree, the menu bar, …) say
 selectable text; a rule of yours that is more specific, or as specific and
 later, overrides that.
 
+An element with `draggable="true"` is `user-select: none`, as in Chrome, so
+a selection across a draggable inline leaves its text out; a `user-select`
+of yours on the element overrides that.
+
 A press in selectable text starts a selection and a drag extends it into
 any selectable paragraph it reaches, every paragraph between included;
 dragging into the space beside, between or below text extends it to the
 nearest selectable text anywhere in the window, as a browser does. A double
-click selects a word, a triple click the paragraph, Shift+click extends the
-selection, and Ctrl+A (Cmd+A) with no field focused selects all the text the
-selection is in. A `user-select: all` element is selected whole. Text inside
-that is `user-select: none` or `visibility: hidden` is neither highlighted
-nor copied. A press on a link in selectable text follows it on release, and
+click selects a word (running on into an `inline-block` or float glued to
+it, as Chrome's does), a triple click the paragraph up to the start of the
+next one (so its copy ends with the paragraph's line breaks; a `<br>` or a
+float ends a paragraph, and a triple click in an `inline-block` selects the
+paragraph the box stands in), Shift+click extends the selection (by words
+or paragraphs after a double or triple click), and Ctrl+A (Cmd+A) with no
+field focused selects all the text the selection is in. A `user-select: all`
+element is selected whole. Text inside that is `user-select: none` or
+`visibility: hidden` is neither highlighted nor copied. A press on an
+`<img>` starts no selection. With no field focused, Shift+Arrow extends
+the selection by a character (by the paragraph's direction on a
+right-to-left line), Ctrl+Shift+Arrow (Option+Shift on macOS) by a word,
+Shift+Up/Down by a line and Shift+Home/End to the line's edges, as Chrome
+extends one; a plain arrow leaves it. A press on a link in selectable text follows it on release, and
 a drag across it selects it instead.
 
 Ctrl+C (Cmd+C) copies what Chrome's `getSelection().toString()` gives for
@@ -635,10 +657,11 @@ the same markup:
 - a tab before each cell but a row's first, even an empty one;
 - a line break between blocks and rows, and a blank line after a `<p>`;
 - a line of its own for a `<br>`, or for an `<img>` or `<iframe>` between
-  blocks;
+  blocks (not for one that cannot be selected);
 - the text of an `inline-block`, `inline-flex`, float, inline table or
   positioned box where it stands in its line (`before mid after`), and only
-  when the selection reaches it; a space before and after an inline table;
+  when the selection reaches it; a space before and after an inline table
+  (only the one after it when the table cannot be selected);
 - the text of a flex or grid container, even text placed directly in one
   (an `inline-flex` button's label);
 - no list bullets or other generated content.
