@@ -261,10 +261,18 @@ where
         }
     }
 
+    // An exit sent from another thread since `App::try_run` looked (while
+    // the display was connected to and the app mounted, #3015), now queued
+    // for this runtime, ends the run here, before its first window is made.
+    // One sent from here on is the running loop's. When the run ends, what
+    // it left queued is dropped with it.
+    //
     // The runtime is dropped inside `run_app` whichever way it ends (its
     // `Drop` is the shutdown: windows closed, documents disposed), so an
     // error here finds nothing of the app left to clean up.
-    crate::shell::run_error::run_result(event_loop.run_app(runtime))
+    run_unless_exit_asked(runtime, |runtime| {
+        crate::shell::run_error::run_result(event_loop.run_app(runtime))
+    })
 }
 
 /// [`App::debug_interface`](crate::App::debug_interface), stored before the

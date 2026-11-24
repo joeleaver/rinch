@@ -699,11 +699,21 @@ re-render or debug command goes on as before. Requests are kept in a
 `doc_keyed!` `DocMap<Vec<WindowRequest>>`, so they go with the context's
 document. `RinchContext::take_window_requests` takes them. `set_window_title`
 from a context's code is kept there too (`capture_title`) and not put in
-`STORED_TITLE`. Then, in a process where no `RinchRuntime` was ever made
-(`wake::RUNTIME_MADE`, set by `RinchRuntime::with_app`, never cleared), the
-event is dropped with a `tracing::debug!` rather than queued, since nothing
-would drain it. The crate's own unit tests drive the queue with no runtime,
-so they count as drained (`cfg!(test)`). `WindowRequest` lives in
+`STORED_TITLE`. Then `NativeEventQueue::push` (`wake/queue.rs`) decides by
+what will drain the queue (`Drainer`, #3015): `RinchContext::new` calls
+`wake::note_embed_host` from `window_requests::mounting`, and in a process
+where no `RinchRuntime` was made yet that makes it an embed host
+(`Drainer::EmbedHost`): what was kept for a runtime is dropped, and so is
+every later request from outside a context, with a `tracing::debug!`, since
+nothing would drain it, except one `Exit`: an app may render offscreen through
+a context and then run, and an exit asked for before or after the context
+must still end that run (#3015). The queue holds at most that one exit, so an
+embed-only process cannot grow it, and nothing acts on it but a run's start
+(`take_exit`): no runtime drains it and no wake is sent. A runtime made later still takes over
+(`note_runtime_made`, from `RinchRuntime::with_app`). Before either, events
+are kept for the runtime to come (see `app-and-windows.md`, "An exit before
+the run"). The crate's own unit tests drive the queue with no runtime, so its
+static starts at `Drainer::Runtime` there (`cfg!(test)`). `WindowRequest` lives in
 `window_request.rs` (`windowing`); `rinch::testing` and `rinch::embed` both
 re-export it. Pins: `rinch/tests/embed_window_requests_2801.rs` (its own
 process, so no runtime is ever made there).
