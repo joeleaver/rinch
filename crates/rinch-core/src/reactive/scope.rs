@@ -853,6 +853,29 @@ impl Owner {
     pub fn owned_counts(&self) -> Option<OwnedCounts> {
         self.0.upgrade().map(|inner| inner.owned.borrow().counts())
     }
+
+    /// Everything the referenced scope holds that code run under it can add
+    /// to — owned resources, adopted effects, child scopes and cleanups (a
+    /// spawned task registers one) — or `None` if it is gone. Two equal
+    /// footprints taken around some code mean it created nothing under this
+    /// owner (issue #3030).
+    pub(in crate::reactive) fn footprint(&self) -> Option<Footprint> {
+        self.0.upgrade().map(|inner| Footprint {
+            owned: inner.owned.borrow().counts(),
+            effects: inner.effects.borrow().len(),
+            children: inner.children.borrow().len(),
+            cleanups: inner.cleanups.borrow().len(),
+        })
+    }
+}
+
+/// What [`Owner::footprint`] answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::reactive) struct Footprint {
+    owned: OwnedCounts,
+    effects: usize,
+    children: usize,
+    cleanups: usize,
 }
 
 impl PartialEq for Owner {

@@ -31,8 +31,12 @@ pub struct InputCallback(pub Rc<dyn Fn(String)>);
 
 impl InputCallback {
     /// Create a new input callback from a function.
+    ///
+    /// Bound to the ambient owner, as [`Callback`](crate::element::Callback)
+    /// is (issue #3027).
     pub fn new<F: Fn(String) + 'static>(f: F) -> Self {
-        Self(Rc::new(f))
+        let owner = crate::reactive::CreatorOwner::capture();
+        Self(Rc::new(move |value| owner.run(|| f(value))))
     }
 
     /// Invoke the callback with the input value.
@@ -76,8 +80,12 @@ pub struct FileDropCallback(pub Rc<dyn Fn(Vec<PathBuf>)>);
 
 impl FileDropCallback {
     /// Create a new file-drop callback from a function.
+    ///
+    /// Bound to the ambient owner, as [`Callback`](crate::element::Callback)
+    /// is (issue #3027).
     pub fn new<F: Fn(Vec<PathBuf>) + 'static>(f: F) -> Self {
-        Self(Rc::new(f))
+        let owner = crate::reactive::CreatorOwner::capture();
+        Self(Rc::new(move |paths| owner.run(|| f(paths))))
     }
 
     /// Invoke the callback with the dropped file paths.
@@ -159,8 +167,12 @@ pub struct ScrollCallback(pub Rc<dyn Fn(ScrollEvent)>);
 
 impl ScrollCallback {
     /// Create a new scroll callback from a function.
+    ///
+    /// Bound to the ambient owner, as [`Callback`](crate::element::Callback)
+    /// is (issue #3027).
     pub fn new<F: Fn(ScrollEvent) + 'static>(f: F) -> Self {
-        Self(Rc::new(f))
+        let owner = crate::reactive::CreatorOwner::capture();
+        Self(Rc::new(move |event| owner.run(|| f(event))))
     }
 
     /// Invoke the callback with the container's current scroll offsets.

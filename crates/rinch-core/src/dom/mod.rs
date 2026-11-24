@@ -1904,6 +1904,30 @@ pub fn reactive_component_dom<R>(
 where
     R: Fn(&mut RenderScope) -> NodeHandle + 'static,
 {
+    // The owner of the code placing this component: each render's handler
+    // props are built under it, not under that render's scope (issue #3027).
+    let caller_owner = crate::reactive::CreatorOwner::capture();
+    reactive_component_dom_for_caller(scope, parent, caller_owner, render_fn)
+}
+
+/// [`reactive_component_dom`] with the caller's owner given rather than
+/// captured: what each render's
+/// [`RenderScope::caller_owner`](RenderScope::caller_owner) answers.
+///
+/// `rsx!` passes one for a re-rendering component nested among the children of
+/// another (issue #3030): that code is built inside the outer component's
+/// render, whose scope is the ambient owner there, but the caller of the outer
+/// component wrote it, so the inner one's handler props are that caller's too.
+#[doc(hidden)]
+pub fn reactive_component_dom_for_caller<R>(
+    scope: &mut RenderScope,
+    parent: &NodeHandle,
+    caller_owner: crate::reactive::CreatorOwner,
+    render_fn: R,
+) -> NodeHandle
+where
+    R: Fn(&mut RenderScope) -> NodeHandle + 'static,
+{
     let marker = scope.create_comment("component");
     parent.append_child(&marker);
 
@@ -1968,6 +1992,7 @@ where
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {
             let mut child_scope = RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
+            child_scope.set_caller_owner(caller_owner.clone());
             // The component's own resources belong to its own scope, not to the
             // effect that re-renders it (issue #141). This is the deepest reach
             // of the ambient owner: `render_fn` runs arbitrary user
