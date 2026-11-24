@@ -860,26 +860,29 @@ fn a_completed_block_between_the_steps_is_not_a_position_and_does_not_stop_the_c
     // against the first of those.
     let tree = stepper_around_a_completed_block(1, 1, 1, 1);
 
+    // Document order is lead step, trailing step, held step: the stepper moves
+    // its completed block into the content region below the steps (#2195), so
+    // the held step now comes last.
     assert_eq!(
         indices(&tree),
-        vec![Some("0".to_string()), None, Some("1".to_string())],
+        vec![Some("0".to_string()), Some("1".to_string()), None],
         "#741: the block is not a position, so the count runs straight across \
          it — but the step it *holds* is not a position either, and keeps the \
          absent `data-step` it rendered with"
     );
     assert_eq!(
         states(&tree),
-        vec!["completed", "inactive", "progress"],
+        vec!["completed", "progress", "inactive"],
         "the two real positions are 0 and 1 against `active: 1`; the held step \
          keeps the state it rendered itself with"
     );
     assert_eq!(
         numbers(&tree),
-        vec!["", "1", "2"],
+        vec!["", "2", "1"],
         "position 0 is completed, so it draws the built-in tick rather than a \
-         number; the held step still draws the `1` it rendered; and the \
-         trailing step draws `2`, which is the reading that fails under both \
-         wrong walks"
+         number; the trailing step draws `2`, which is the reading that fails \
+         under both wrong walks; and the held step still draws the `1` it \
+         rendered"
     );
 }
 

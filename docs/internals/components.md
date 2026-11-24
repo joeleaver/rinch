@@ -265,6 +265,39 @@ The pieces that follow from it:
   own `state` keeps none. A **removal** runs the same pass for the same
   reason, through `on_child_removed` (issue #745): a step that goes moves every
   step behind it backwards, which renumbers it and can restate it.
+- **The content region (issue #2195).** `Stepper` renders a
+  `.rinch-stepper__content` region after `.rinch-stepper__steps`, and every
+  pass ends with `settle_content`: the active step's
+  `.rinch-stepper__step-content` is **moved** into the region (its children are
+  live nodes, so never copied), remembered with its step and its place in the
+  step's `.rinch-stepper__step-body` (its last child, under the label), and
+  moved back as soon as another step is at `active` or its step
+  is no longer in the list — so a removed step carries its content away. A
+  step that was **discarded** (a `for` row discards the step it built) is asked
+  with `NodeHandle::is_retired`, and its shown content is discarded too: the
+  step's recursive discard cannot reach content that sits in the region, and
+  putting it back into a retired step left it alive and attached to nothing.
+  Content something else took out of the region is forgotten (neither put back
+  nor discarded: it is the app's). `content_for_active_only: false` skips the
+  move altogether, and each step shows its content where it renders it, in its
+  body: under the label, so a vertical stepper reads as a timeline (the content
+  beside the icon and connector, not a third column right of the label, which
+  it was while the wrapper was the body's sibling in the step's row) and a
+  horizontal step's centred column grows to the content's width. The stepper
+  then carries `rinch-stepper--content-in-steps`,
+  which sets `--rinch-stepper-step-content-display: block` for its own subtree
+  (each stepper sets the property, so a nested one follows its own setting,
+  which a descendant selector would not). `StepperCompleted` blocks
+  are moved into the region on every pass whatever `active` is, and shown only by
+  `rinch-stepper__content--completed`, set while `active >= steps.len()`: left
+  among the steps a block would be the last step's sibling, and that step would
+  stop being `:last-child` (and draw its separator). A step content's move is
+  out of and back into its step, a boundary the stepper's late-child observers
+  decline; a completed block's move out of the steps container happens either
+  in `render`, before those observers are registered, or inside one of their
+  callbacks, where late-child dispatch is suppressed. An empty step content is `:empty` and hidden
+  in the region too. Pins: `tests/stepper_content_2195.rs`, and the real
+  stylesheet in `rinch/src/app/stepper_window_2195_tests.rs`.
 - **A `StepperCompleted` is not a position, and neither is anything inside it**
   (issue #741). The step walk skips that block: it is what a stepper shows
   *instead of* its steps once they are all done. It used to walk straight into
@@ -291,7 +324,9 @@ The pieces that follow from it:
   every step behind it otherwise (three writes each when only renumbered).
   Counted on `MockDomDocument`, appending to a 40-step stepper went from 1005
   attribute reads and 126 attribute writes to 142 and 4, and growing one from 0
-  to 40 steps from 2650 writes to 238. Growing or shrinking one step at a time
+  to 40 steps from 2650 writes to 238 (239 since #2195: the step that makes
+  `active: 3` a real step takes the content region out of `--completed`, one
+  class write). Growing or shrinking one step at a time
   is still quadratic in the three reads, and a `for` row edited in place still
   renumbers the steps behind it twice (an insertion, then a removal).
   `crates/rinch-components/tests/stepper_cost_748.rs` pins the per-step
