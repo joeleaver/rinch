@@ -1020,7 +1020,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`13ed23fde60cd8e97eff08f3a5e24904fabf4d3f`, branch `rinch-2944` on `a95d7806` of branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
+(`a663241ddd8b86ae37e45fe8652b06e3b7cfc0b5`, branch `rinch-2944` on `a95d7806` of branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
 (items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17) and #15 (item 18); item 19 is on `rinch-2944`, fork PR #18): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
@@ -1369,7 +1369,7 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `the_config_default_substitution_is_found_where_fontconfig_has_it`.
 19. **A line holding only zero-advance atoms ends at a soft wrap opportunity, and a `<wbr>`
     after an overflow stays on the line or starts the next by its own `white-space`**
-    (`27603cfd`, `c109b113` and `13ed23fd`, `parley/src/layout/line_break.rs`,
+    (`27603cfd`, `c109b113`, `13ed23fd` and `a8f903b7`, `parley/src/layout/line_break.rs`,
     `parley/src/tests/test_wbr.rs`; #2944). The breaker took no opportunity while the line's
     advance was 0 (the guard against an overflowing atom making consecutive empty lines), so a
     line holding only a ZERO WIDTH SPACE (a `<wbr>`, `ifc::WBR_TEXT`) never ended at its
@@ -1393,7 +1393,9 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     - Under `overflow-wrap: anywhere | break-word`, Blink's retry that breaks anywhere gives an
       opportunity before a `<wbr>` that does not wrap.
     - An inline box that overflows at a line's start no longer ends the line at once, so the
-      `<wbr>`s that stay go on its line.
+      `<wbr>`s that stay go on its line. Nothing else joins it: a space that would hang starts
+      the next line, as in Chrome 125 (`LineState::ends_after_box`;
+      `tests/overflowing_box_line_end_1081_tests.rs`).
 
     The empty line needs an opportunity between two ZWSPs, which rinch's `ifc::chrome_break`
     adds. `27603cfd` first let a zero-advance atom past an overflow hang in wrapping text. That
