@@ -1,4 +1,8 @@
-use super::probe::{PlainHit, Probe};
+// `PlainHit` names the probe only `plain_paint_order` asks for, and that
+// function exists only with `windowing`.
+#[cfg(feature = "windowing")]
+use super::probe::PlainHit;
+use super::probe::Probe;
 use super::targets::{takes_pointer, visible_text_at};
 use super::walk::hit_test_node;
 use std::rc::Rc;

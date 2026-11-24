@@ -490,19 +490,29 @@ Every variant's rule reads the component's custom properties
 - **any other colour** sets them inline through `style_string()`, from
   `color_utils::color_tokens`: a raw CSS colour (`is_raw_css_color`) is the
   solid colour with a 10% `color-mix` tint for the light background, `primary`
-  reads `--rinch-primary-color…`, and any other name reads
-  `--rinch-color-{name}-6` / `-light…`, so an app's own token family named that
-  way works too. An unknown Alert name used to fall back to blue; it now reads
-  undefined tokens and paints no fill, as Button's does.
+  reads `--rinch-primary-color` and its `-light…` tokens, and any other name
+  reads `--rinch-color-{name}-6` / `-light…`, so an app's own token family
+  named that way works too. Its `contrast` (the text on the solid colour,
+  Alert's `-filled-text` and Badge's `-text`) is `white` or `black` computed
+  from a raw colour, and a name's family token with a `white` fallback
+  (`var(--rinch-color-{name}-contrast, white)`,
+  `var(--rinch-primary-color-contrast, white)`). It and `contrast_for`
+  (Button, and `accent_vars` for Stepper, Tabs and the rest) share one rule,
+  `contrast_value`; `contrast_for` writes the token with no fallback (#3020).
+  An unknown Alert name used to fall back to blue; it now reads undefined
+  tokens and paints no fill, as Button's does.
 
 **Every colour sets every variable** (review of #2960). Custom properties
 inherit, so a variable one colour left unset came from the enclosing
 component: a filled blue Alert inside a yellow one took the yellow's
 `--rinch-alert-filled-text` (yellow-9), and a colourless Badge in a coloured
 Badge's section took that badge's colour. Each Alert colour class and
-`Alert::style_string` set all six (white included); `.rinch-badge` itself sets
-the primary defaults, and each `[data-color]` rule and `Badge::style_string`
-set all four. An app overrides one on the component (`.my-alert.rinch-alert`),
+`Alert::style_string` set all six, `-filled-text` included (the colour's
+contrast token with a `white` fallback; yellow's is `yellow-9`);
+`.rinch-badge` itself sets the primary defaults, and each `[data-color]` rule
+and `Badge::style_string` set all four. A filled Alert with no colour class
+(hand-written markup only) falls back to the primary fill and
+`--rinch-primary-color-contrast`, as `.rinch-badge--filled` does (#3020). An app overrides one on the component (`.my-alert.rinch-alert`),
 not on an ancestor. Pin:
 `component_colors_2200.rs::a_nested_component_does_not_inherit_the_outer_ones_colours`.
 

@@ -57,18 +57,15 @@ jobs:
           npm install
           npx playwright install --with-deps chromium
 
-      # Same cache key shape as ci.yml, so this job does not rebuild the whole
-      # workspace from cold on every dispatch.
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Dependency artifacts only, as in ci.yml (#3017; docs/internals/ci.md,
+      # "The cargo caches"): a whole cached `target/` can hold workspace crates
+      # that cargo takes for fresh although they were built from another commit.
+      # Only a run on `main` writes the entry; this workflow is dispatch-only.
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-visual-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-visual-
+          shared-key: visual
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # One invocation: the two packages share almost all their dependencies, so
       # building them separately pays for the resolve and link twice.

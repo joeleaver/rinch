@@ -139,13 +139,14 @@ pub fn styles() -> String {
 }
 .rinch-alert--light .rinch-alert__title { color: var(--rinch-alert-light-strong); }
 
-/* Filled variant */
+/* Filled variant. With no colour class (hand-written markup) it falls back
+   to the primary fill and its contrast token, as a filled Badge does. */
 .rinch-alert--filled {
-    background-color: var(--rinch-alert-color);
-    color: var(--rinch-alert-filled-text, white);
+    background-color: var(--rinch-alert-color, var(--rinch-primary-color));
+    color: var(--rinch-alert-filled-text, var(--rinch-primary-color-contrast, white));
 }
-.rinch-alert--filled .rinch-alert__title { color: var(--rinch-alert-filled-text, white); }
-.rinch-alert--filled .rinch-alert__close { color: var(--rinch-alert-filled-text, white); }
+.rinch-alert--filled .rinch-alert__title { color: var(--rinch-alert-filled-text, var(--rinch-primary-color-contrast, white)); }
+.rinch-alert--filled .rinch-alert__close { color: var(--rinch-alert-filled-text, var(--rinch-primary-color-contrast, white)); }
 .rinch-alert--filled .rinch-alert__close:hover {
     background-color: var(--rinch-alert-close-hover, rgba(255, 255, 255, 0.15));
 }

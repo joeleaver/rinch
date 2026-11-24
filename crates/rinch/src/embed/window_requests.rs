@@ -28,6 +28,9 @@ thread_local! {
 /// Run `build` (a context's mount) with what its code asks for kept, then
 /// make the document `build` answers a context, holding those requests.
 pub(super) fn mounting(build: impl FnOnce() -> u64) {
+    // A context with no desktop runtime made: an embed host, whose requests
+    // from outside a context nothing will drain (#2801, #3015).
+    crate::shell::rinch_runtime::note_embed_host();
     let outer = MOUNTING.with(|m| m.borrow_mut().replace(Vec::new()));
     let doc = build();
     let early = MOUNTING

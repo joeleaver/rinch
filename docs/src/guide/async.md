@@ -123,6 +123,60 @@ Effect::new(move || {
 });
 ```
 
+A task spawned from an **event handler** belongs to the component that wrote
+the handler. A handler passed to a component as a prop is the caller's, even
+when that component re-renders: in
+
+```rust
+Button {
+    loading: {|| busy.get()},
+    onclick: move || {
+        busy.set(true);
+        spawn_local(async move { send().await; busy.set(false) });
+    },
+    "Send"
+}
+```
+
+the click's `busy.set(true)` rebuilds the `Button`, and the task runs on; it is
+dropped when the component containing this `rsx!` unmounts, or when the `for`
+row, `if` branch or `match` arm it is written in goes. The same holds for a
+handler written among the **children** of a component that re-renders — an
+element's `onclick`, or another component's `on*` prop:
+
+```rust
+Paper {
+    shadow: {|| if busy.get() { "md".into() } else { "sm".into() }},
+    button {
+        onclick: move || {
+            busy.set(true);
+            spawn_local(async move { send().await; busy.set(false) });
+        },
+        "Send"
+    }
+}
+```
+
+Every callback (`Callback`, `ValueCallback`, …) runs under the owner it was
+created under, so the same holds for a timer it sets or a signal it creates.
+
+One exception keeps a task from outliving what it reads: a handler whose own
+expression creates something, such as `onclick: { let n = Signal::new(0); move
+|| … }` on a component that re-renders, is rebuilt with a fresh `n` by every
+render, and the next render frees the old one. Such a handler belongs to that
+render, so a task it spawns ends at the re-render. Create the signal outside
+the re-rendering component (above the `rsx!`) to keep both.
+
+Two more cases keep the render's lifetime. A handler written in a `for` row,
+`if` branch or `match` arm *inside* a re-rendering component's children
+belongs to that row, branch or arm, and the re-render rebuilds it. So in
+`Paper { shadow: {|| …busy…}, if show.get() { button { onclick: … } } }` the
+task ends when `busy` changes. The same happens with a handler in a helper
+function called among those children (`{row(__scope)}`), because that helper
+has its own `rsx!`. To keep the task, put the `if` (or the helper's call)
+outside the re-rendering component, or start the task from a handler that is
+not inside one.
+
 `TaskHandle::abort()` stops a task early; `is_finished()` says whether it has
 completed, been aborted, panicked, or been dropped with its component. Dropping
 the handle does not stop the task. Call both on the UI thread: the handle is

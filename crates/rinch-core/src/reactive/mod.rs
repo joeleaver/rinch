@@ -72,6 +72,9 @@
 //! ```
 
 mod bounds;
+mod caller_owner;
+#[cfg(test)]
+mod caller_owner_tests;
 mod effect;
 mod memo;
 #[cfg(test)]
@@ -89,6 +92,7 @@ mod signal;
 pub use bounds::{
     ElementBounds, register_bounds_signal, registered_bounds_nodes, update_bounds_signals,
 };
+pub use caller_owner::{CallerHandler, CreatorOwner};
 pub use effect::Effect;
 pub use memo::Memo;
 pub use poll::{

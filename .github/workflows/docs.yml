@@ -141,10 +141,12 @@ jobs:
       # item the PR had just added. A re-run, checked out after that save,
       # rebuilt and passed. `Swatinem/rust-cache` prunes the workspace crates'
       # artifacts before saving, so they are always built from this checkout;
-      # it is what ci.yml's `test` and perf.yml use. Only a push to `main`
+      # it is what every cargo cache in the workflows uses (#3017 found the
+      # same failure in ci.yml's `clippy`; docs/internals/ci.md, "The cargo
+      # caches"). Only a push to `main`
       # writes the entry, as for `test`, so a PR or batch cannot evict it.
       - name: Cache cargo (dependencies)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: docs
           save-if: ${{ github.event_name == 'push' }}

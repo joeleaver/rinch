@@ -57,7 +57,7 @@ DOC = os.path.join(REPO_ROOT, "docs", "src", "guide", "component-props.md")
 # components with a props table of their own (internal data/color-math types,
 # or a struct whose sole field is a wrapped sibling component). Skip them.
 NON_COMPONENT_STRUCTS = {
-    "Hsla", "Hsva", "Rgba",              # color_utils.rs — color math, not a component
+    "Hsla", "Hsva", "Rgba",              # color_utils/types.rs — color math, not a component
     "RenderTreeNodePayload",             # tree.rs — internal payload wrapper type
     "UseTreeOptions", "UseTreeReturn",   # tree.rs — state handles, not props
     "SelectOption",                      # select.rs — plain data row, not a Component

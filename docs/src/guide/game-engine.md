@@ -1169,8 +1169,11 @@ belongs to a context when that context's code made it: in its component,
 including the component's first line, in a handler or effect, or in a
 `rinch::exit` call. Two contexts each read only their own. A request made
 outside any context's code goes to the desktop runtime if your process runs
-one. If the process never made a desktop runtime, the request is dropped,
-because nothing would ever carry it out. Needs the `windowing` feature,
+one. If the process made a `RinchContext` and no desktop runtime, the
+request is dropped, because nothing would ever carry it out, except
+`rinch::exit`: one exit is kept, so that an app that renders offscreen and then
+calls `App::run` still ends at once when asked to before the run (it does
+nothing in a process that never runs one). Needs the `windowing` feature,
 which `desktop` includes; without it, `rinch::windows` does not exist.
 
 ### Split Layout (Viewport Hole)

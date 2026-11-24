@@ -429,6 +429,97 @@ the event when it answers false. The synchronous dispatchers already do the
 second: walking an ancestor chain, they skip a node whose handler is gone and
 keep walking, rather than consuming the event on its behalf.
 
+### Which owner a handler runs under: its creator's (#3027)
+
+A handler registered with `register_handler` (and its siblings) re-enters the
+owner that was ambient when it was **registered** (#141). For a component's own
+handlers that is right: the component wrote them, and their captures are its.
+It was wrong for the handler an app hands a component as a prop. A component
+with a reactive struct prop is rebuilt, struct and all, inside
+`reactive_component_dom`'s per-render scope, so `Button::render` registers the
+app's `onclick` under that render's scope. A task the click spawned
+(`busy.set(true); spawn_local(..)`) was adopted by that scope, and the
+re-render the click's own write causes, when its batch ends, disposed the
+scope and aborted the task before its first poll.
+
+The rule now, the one menu items already follow (#183): **an app callback
+runs under the owner ambient where it was created.** Every kind (`Callback`, `ValueCallback`, `InputCallback`,
+`FileDropCallback`, `ScrollCallback`) captures a `CreatorOwner` in its `new`
+and runs its function under it, inside the `Rc` itself, so a call through the
+public tuple field gets it too (a callback built from the tuple field directly
+captures none). The capture is a `Weak`: a stored callback never keeps its
+creator alive. On a re-rendering component the struct is built inside the
+render, so `rsx!` converts each `on*` prop under `__scope.caller_owner()`, the
+owner `reactive_component_dom` captured where the component was placed and
+hands each per-render `RenderScope`; everywhere else that is empty and the
+ambient owner already is the caller's.
+
+- Why creator and not "the stable outer owner" for everything: a handler's
+  captures were made in its creator's scope, so running under it guarantees
+  what it captured lives as long as what it starts. A `Button`'s *own* internal
+  handler captures that render's signals; moving it to the outer owner would
+  let its task outlive them.
+- A `for` row, `if` branch or `match` arm is the creator for a handler written
+  inside it: removing the row or hiding the branch still cancels the task, and
+  a re-render of the row's component does not.
+- No live owner at creation, or a creator that has unmounted since: the
+  callback runs under the dispatch-time owner, rather than pushing "no owner",
+  so what it creates still ends with a live component.
+- `untracked_handler` (observer stack) and the owner push (owner stack) are
+  independent; batching is unchanged.
+
+**The caller-owned region (#3030).** The same holds for handlers written among
+the **children** of a re-rendering component: they are rebuilt inside its
+render too, an element's `onclick` straight through `register_handler` and a
+plain component's `Callback::new` alike, and a nested re-rendering component's
+`reactive_component_dom` used to capture that render as its caller. Only
+`rsx!` knows which code the caller wrote, so the macro marks a region
+(`DomCodegenContext::caller_region`): a re-rendering component's children,
+down to the next `for`/`if`/`match` body, extended by a nested re-rendering
+component. Inside it:
+
+- each element handler is wrapped in `CallerHandler::begin(&__rinch_caller_owner)`
+  (`.plain`, `.input`, `.scroll`, `.key`, `.wheel`, `.file_drop`,
+  `.files_drop`, by argument shape). It is still *registered* in the render's
+  scope, so its registry entry is freed with that render; it *runs* under the
+  caller's owner (the wrapper's push is innermost);
+- each plain component's `on*` prop is converted with `.prop(value)`;
+- a nested re-rendering component is placed with
+  `reactive_component_dom_for_caller(.., __rinch_caller_owner.clone(), ..)`,
+  so its own props and children are the outer caller's too, at any depth.
+
+A re-rendering component's own `on*` props use `.prop(value)` as well. In every
+case the **value is evaluated where it is written** (the render), and only the
+conversion to a callback runs under the caller's owner.
+
+- **Boundaries.** A `for` row, `if` branch or `match` arm body is the creator
+  of what is written in it (`push_closure_frame` ends the region): its handler
+  runs under the row's owner, so removing the row cancels the task, and so does
+  a re-render of the component around the `for`, which rebuilds the row.
+- **What one render made stays that render's.** `CallerHandler::begin` takes
+  the ambient (render) owner's footprint — owned resources, adopted effects,
+  child scopes, cleanups — before the handler expression is evaluated (a method
+  receiver is evaluated before its arguments). If evaluating it changed the
+  footprint (`{ let s = Signal::new(0); move || .. }`), the handler holds
+  what the next render frees, and runs under the render's owner instead: its
+  task ends at the re-render rather than reading a freed signal later, and
+  re-rendering adds nothing to the caller per render. `let` is accepted in
+  `rsx!` children only inside control-flow bodies, which end the region, so no
+  binding made among the region's children reaches a handler there.
+- Not covered: code outside the `rsx!` that wrote the component — a helper
+  `fn row(__scope) -> NodeHandle` called among the children has its own
+  `rsx!`, and its handlers are that render's, as is everything else the helper
+  made while running inside it.
+
+Pins: `rinch-macros/tests/rsx_handler_task_owner_3027.rs` (the repro, unmount,
+a `for` row), `rinch-macros/tests/rsx_handler_task_owner_3030.rs` (an element
+handler, a plain and a re-rendering component, each in a re-rendering parent
+and two deep; an `oninput`; a `for` row; a handler whose expression creates a
+signal; no per-render signal on the caller), `handler_owner::tests` (the
+codegen), `reactive::caller_owner_tests` (every callback kind's capture, the
+dead-creator fallback), `rinch-web/tests/handler_task_owner_3027.rs` (Chrome,
+Firefox).
+
 ### Usage
 
 Components use `#[component]` and return a `NodeHandle`:

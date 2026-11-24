@@ -96,7 +96,9 @@ pub(super) fn edit_intent(input_type: &str) -> EditIntent {
         // browser apply it to the mirror and read the replacement back off the diff.
         "insertReplacementText" => EditIntent::Reconcile,
         "insertParagraph" => EditIntent::Command("enter"),
-        "insertLineBreak" => EditIntent::Command("insertHardBreak"),
+        // Shift+Enter's command: a newline in a code block, else a hard break
+        // (#2993), as the keymap's Shift-Enter.
+        "insertLineBreak" => EditIntent::Command("insertLineBreak"),
         // `deleteContent*` is a single char (or the selection, which both commands
         // delete first); `deleteContent` itself only ever means "the selection".
         "deleteContent" => EditIntent::Command("deleteSelection"),
