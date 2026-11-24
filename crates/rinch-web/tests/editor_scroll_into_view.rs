@@ -283,6 +283,8 @@ fn r846_a_focusing_checkbox_click_does_not_yank_to_the_old_caret() {
     f.host.append_child(&other).unwrap();
     f.focus_first();
     let h = f.handles[0].clone();
+    // The task list comes from the markdown input rule (opt-in, #2210).
+    assert!(h.set_markdown_shortcuts(true));
     h.set_selection(Selection::cursor(Pos(1)));
     for c in ["[", " ", "]", " "] {
         assert!(h.insert_text(c));
@@ -343,6 +345,8 @@ fn r846_a_checkbox_click_refocusing_from_another_editor_does_not_yank() {
     let f = Fixture::mount(2, 0);
     f.focus_first();
     let h = f.handles[0].clone();
+    // The task list comes from the markdown input rule (opt-in, #2210).
+    assert!(h.set_markdown_shortcuts(true));
     h.set_selection(Selection::cursor(Pos(1)));
     for c in ["[", " ", "]", " "] {
         assert!(h.insert_text(c));

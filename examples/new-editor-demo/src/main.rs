@@ -40,6 +40,8 @@ fn select_whole_table(ed: &EditorHandle) {
 #[component]
 fn app() -> NodeHandle {
     let editor = create_editor();
+    // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
+    editor.set_markdown_shortcuts(true);
     let dark = Signal::new(false);
 
     const TBTN: &str = "padding: 6px 12px; border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; color: #1f2328; cursor: pointer; font-family: sans-serif; font-size: 14px;";

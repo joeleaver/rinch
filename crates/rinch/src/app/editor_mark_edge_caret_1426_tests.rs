@@ -223,6 +223,8 @@ fn at_the_seam_of_a_link_split_into_two_runs() {
 #[test]
 fn after_a_code_input_rule() {
     let mut p = page("<p>a </p>");
+    // Opt-in since #2210.
+    assert!(p.handle.set_markdown_shortcuts(true));
     p.caret_at(3);
     for ch in ["`", "b", "c", "`"] {
         assert!(p.handle.insert_text(ch));

@@ -983,7 +983,9 @@ impl EditorHandle {
             // an editor the user already pressed in or typed into is checked
             // now.
             if wanted()
-                && self.install_plugin(Rc::new(SpellcheckPlugin::new()), true)
+                && self.install_plugin(Rc::new(SpellcheckPlugin::new()), true, |plugins| {
+                    plugins.len()
+                })
                 && self.spell_driver(|d| d.interacted) == Some(true)
             {
                 self.spell_user_focus();
