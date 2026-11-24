@@ -236,7 +236,7 @@ handle calls, `app/focus.rs` holds the focus arbiter, and `shell/rinch_runtime/a
 drives the post-layout caret pass and the blink clock.
 
 **Browser (`crates/rinch-web/`)** does the same jobs against the browser DOM in
-`editor_input.rs`, and re-exports `Editor` / `EditorHandle` / `create_editor` so web
+`editor_input/`, and re-exports `Editor` / `EditorHandle` / `create_editor` so web
 app code is *identical* to desktop app code. `rinch-web` depends on
 `rinch-editor-view` unconditionally; on desktop the editor arrives with the `desktop`
 feature.

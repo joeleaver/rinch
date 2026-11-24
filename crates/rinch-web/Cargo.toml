@@ -93,7 +93,7 @@ web-sys = { version = "0.3", features = [
     # Every file of a drop, for `ondropfiles` (#1771).
     "FileList",
     # Files dragged onto an editor from outside the page, offered to the app's
-    # `EditorHandle::on_image_input` (`on_drop` in editor_input.rs).
+    # `EditorHandle::on_image_input` (`on_drop` in editor_input/pictures.rs).
     "DragEvent",
     # Object URLs over the bytes an app's image loader answers with
     # (`images.rs`): an `<img>` whose `src` scheme the app registered is shown

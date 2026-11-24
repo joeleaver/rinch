@@ -1,9 +1,12 @@
+//! The `collaboration` feature's `impl EditorHandle`: hosting or joining a
+//! session, applying a peer's delta, and the sync protocol.
+
 use super::*;
 
 // ── Collaboration (design M9, the `collaboration` feature) ───────────────────
 //
 // One [`CollabSession`] per editor. A local edit is projected onto the CRDT and
-// broadcast (the `commit` → `record_local` path in `core.rs`); a peer's delta arrives via
+// broadcast (the `commit` → `record_local` path in `editor_core.rs`); a peer's delta arrives via
 // `collab_receive`, which integrates it and re-projects without re-broadcasting. The
 // transport is the caller's concern: `outbound` carries bytes out, `collab_receive`
 // (or the platform runtime's thread-safe `post_remote_delta`) carries them

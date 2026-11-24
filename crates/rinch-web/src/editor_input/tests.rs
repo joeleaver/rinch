@@ -1,3 +1,6 @@
+//! Unit tests for the editor input glue's pure helpers: the capture-target
+//! text diff, the parked capture styles and edit intents.
+
 use super::context_menu::{
     HIDDEN_CAPTURE_STYLE, park_around, park_right_of, parked_capture_style, select_all_chosen,
 };

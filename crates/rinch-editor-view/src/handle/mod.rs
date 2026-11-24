@@ -53,7 +53,7 @@ mod callbacks;
 #[cfg(feature = "collaboration")]
 mod collaboration;
 mod content;
-mod core;
+mod editor_core;
 mod focus_scroll;
 mod guards;
 mod image_input;

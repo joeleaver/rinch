@@ -1,3 +1,6 @@
+//! `EditorHandle`'s unit tests, and the fixtures and helpers the test files
+//! share.
+
 use super::*;
 use rinch_core::dom::NodeId;
 use rinch_core::dom::mock::MockDomDocument;
