@@ -15,10 +15,12 @@ syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit"] }
 
 [dev-dependencies]
 # Integration tests need the full rinch crate to verify rsx! macro codegen.
-# Note: This pulls in desktop dependencies (winit, wgpu, vello). If integration
-# tests fail to compile due to windowing/GPU deps in headless environments,
-# the parser unit tests in node.rs and element.rs are the primary test suite.
-rinch = { path = "../rinch", features = ["components", "theme"] }
+# The desktop build without the GPU renderer (a default of `rinch`): codegen
+# needs no GPU shell, and leaving it out keeps `cargo test -p rinch-macros` as
+# short as it was. If integration tests fail to compile due
+# to windowing deps in headless environments, the parser unit tests in node.rs
+# and element.rs are the primary test suite.
+rinch = { path = "../rinch", default-features = false, features = ["desktop", "components", "theme"] }
 # Test-only: the real desktop document, so `rsx_style_prop` can observe the
 # actual `set_style` merge a style shorthand performs rather than the mock's
 # approximation of it (issue #647).

@@ -8,8 +8,9 @@
 //! pixel buffer *after* `build_pixels`, which overwrote every HUD, modal and
 //! dropdown above the viewport and named no damage (`mark_scene_dirty`).
 //!
-//! Gated on `software_shell`: run under `cargo test -p rinch --features
-//! embed,theme,clipboard`, not `--workspace` (which unifies `gpu` on).
+//! Gated on `software_shell`, which every `windowing` build sets, with the GPU
+//! renderer or without it (`build.rs`), so these run under `cargo test
+//! --workspace` and in CI's software-only `feature-gated` lines alike.
 
 use super::*;
 use crate::render_surface::{

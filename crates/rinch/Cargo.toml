@@ -291,7 +291,16 @@ android_logger = { version = "0.14", optional = true }
 rinch-android = { workspace = true, optional = true }
 
 [features]
-default = ["desktop"]
+# A desktop app gets both renderers: the GPU one (Vello on wgpu) presents, and
+# the software one (tiny-skia) takes over when the GPU will not start
+# (`Renderer::Auto`). To build without the GPU renderer, take
+# `default-features = false, features = ["desktop"]` (or `["windowing"]`):
+# a smaller binary and a shorter build than the GPU one (hello-rinch-dom,
+# release, stripped: 31.4 MB against 39.3 MB, and about 276 s less to build),
+# and no GPU device or its memory, which
+# suits a small tool. At run time `RINCH_RENDERER=software` (or `cpu`) and
+# `App::renderer(Renderer::Software)` keep a GPU build off the GPU.
+default = ["desktop", "gpu"]
 # Windows, input, the software and DOM renderers, the DOM menu bar: everything
 # a window needs, without the native menus. A layer-shell surface, a borderless
 # overlay or a game takes this one (with `gpu-renderer` for the GPU renderer),
@@ -364,7 +373,7 @@ gpu-renderer = [
     "dep:rinch-renderer",
     "dep:tokio", "dep:pollster", "dep:futures-util",
 ]
-# The GPU renderer on the full `desktop` build.
+# The GPU renderer on the full `desktop` build: the default.
 gpu = ["desktop", "gpu-renderer"]
 android-gpu = [
     "android",

@@ -8555,9 +8555,9 @@ mod scrollbar_drag_pixel_tests {
 /// frame that stops drawing the ghost therefore has to be told, by hand, to
 /// clear where it used to be.
 ///
-/// Gated on `software_shell`, so these run under CI's `cargo test -p rinch
-/// --features embed,theme,clipboard` step — NOT under `cargo test --workspace`,
-/// which unifies `rinch/gpu` on from the GPU examples and turns the cfg off.
+/// Gated on `software_shell`, which every `windowing` build sets, with the GPU
+/// renderer or without it (`build.rs`), so these run under `cargo test
+/// --workspace` and in CI's software-only `feature-gated` lines alike.
 #[cfg(all(test, software_shell))]
 mod drag_ghost_dirty_region_tests {
     use super::*;

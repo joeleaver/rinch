@@ -604,15 +604,16 @@ allocated. The measurement is the issue's table, summed up beside the constant. 
 keep `MemoryHints::Performance` (not measured), and `external_gpu`'s device is the app's own.
 Pin: `gpu_memory_blocks_stay_at_8_mib_2473` (`#[ignore]`d, lavapipe in CI: ten 3 MiB buffers
 open several blocks, none larger than 8 MiB).
-- `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
+- `crates/rinch/src/app_builder/` — the `App` builder (`gpu_config` / `external_gpu` in `render_options.rs`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API
 
 Your game owns the window and wgpu device. Rinch runs headless — you feed it events, it produces a Vello scene.
 
 **Enable it — the module is feature-gated and the gate is not `desktop`.** `rinch::embed` is
-`#[cfg(any(feature = "gpu-renderer", feature = "embed"))]` (`crates/rinch/src/lib.rs`; `gpu` implies `gpu-renderer`), so on default
-features every type below is a compile error rather than the documented behaviour. Use
+`#[cfg(any(feature = "gpu-renderer", feature = "embed"))]` (`crates/rinch/src/lib.rs`; `gpu` implies `gpu-renderer`).
+The default features include `gpu`, so it is there by default; on `default-features = false,
+features = ["desktop"]` every type below is a compile error rather than the documented behaviour. Use
 `features = ["embed"]` for the headless case this section describes — it pulls in `rinch-dom`,
 `parley`, `peniko`, `vello` and `wgpu` without the desktop shell — or nothing extra if you already
 build with `"gpu"` or `"gpu-renderer"`.
