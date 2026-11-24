@@ -140,9 +140,32 @@ Button {
 
 the click's `busy.set(true)` rebuilds the `Button`, and the task runs on; it is
 dropped when the component containing this `rsx!` unmounts, or when the `for`
-row or `if` branch it is written in goes. Every callback (`Callback`,
-`ValueCallback`, …) runs under the owner it was created under, so the same holds
-for a timer it sets or a signal it creates.
+row, `if` branch or `match` arm it is written in goes. The same holds for a
+handler written among the **children** of a component that re-renders — an
+element's `onclick`, or another component's `on*` prop:
+
+```rust
+Paper {
+    shadow: {|| if busy.get() { "md".into() } else { "sm".into() }},
+    button {
+        onclick: move || {
+            busy.set(true);
+            spawn_local(async move { send().await; busy.set(false) });
+        },
+        "Send"
+    }
+}
+```
+
+Every callback (`Callback`, `ValueCallback`, …) runs under the owner it was
+created under, so the same holds for a timer it sets or a signal it creates.
+
+One exception keeps a task from outliving what it reads: a handler whose own
+expression creates something, such as `onclick: { let n = Signal::new(0); move
+|| … }` on a component that re-renders, is rebuilt with a fresh `n` by every
+render, and the next render frees the old one. Such a handler belongs to that
+render, so a task it spawns ends at the re-render. Create the signal outside
+the re-rendering component (above the `rsx!`) to keep both.
 
 `TaskHandle::abort()` stops a task early; `is_finished()` says whether it has
 completed, been aborted, panicked, or been dropped with its component. Dropping

@@ -880,17 +880,20 @@ impl RenderScope {
         self.id
     }
 
-    /// The owner the handler props of the component this scope renders are
-    /// built under (issue #3027) — what `rsx!` wraps each `on*` prop of a
-    /// re-rendering component in.
+    /// The owner the handlers the caller wrote are run under (issues #3027,
+    /// #3030): `rsx!` binds it as `__rinch_caller_owner` in a re-rendering
+    /// component's render, for that component's `on*` props and the handlers
+    /// among its children (see `rinch_core::reactive::CallerHandler`).
     ///
     /// A component with a reactive prop is rebuilt, struct and all, inside a
     /// scope of its own for each render, and that scope is disposed by the
     /// next one. The handler props are not that render's: the caller wrote
     /// them, and a callback runs under the owner it was created under, so
-    /// they are created under the caller's owner, captured when the component
-    /// was first placed. Everywhere else this is empty and runs its closure
-    /// under the ambient owner, which already is the caller's.
+    /// they run under the caller's owner, captured when the component was
+    /// first placed (or handed on by an enclosing re-rendering component,
+    /// `reactive_component_dom_for_caller`). Everywhere else this is empty
+    /// and runs its closure under the ambient owner, which already is the
+    /// caller's.
     #[doc(hidden)]
     pub fn caller_owner(&self) -> crate::reactive::CreatorOwner {
         self.caller_owner.clone()

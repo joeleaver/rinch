@@ -72,6 +72,9 @@
 //! ```
 
 mod bounds;
+mod caller_owner;
+#[cfg(test)]
+mod caller_owner_tests;
 mod effect;
 mod memo;
 #[cfg(test)]
@@ -89,13 +92,14 @@ mod signal;
 pub use bounds::{
     ElementBounds, register_bounds_signal, registered_bounds_nodes, update_bounds_signals,
 };
+pub use caller_owner::{CallerHandler, CreatorOwner};
 pub use effect::Effect;
 pub use memo::Memo;
 pub use poll::{
     PollRate, drain_polls, next_poll_due, poll_signal, polls_want_every_frame, set_poll_waker,
 };
 pub use scope::{
-    CleanupHandle, CreatorOwner, OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup,
+    CleanupHandle, OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup,
     on_cleanup_removable, unowned,
 };
 pub(crate) use scope::{on_cleanup_for_ambient_owner, record_handler};

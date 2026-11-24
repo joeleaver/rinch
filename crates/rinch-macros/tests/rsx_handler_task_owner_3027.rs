@@ -18,111 +18,18 @@
 //!
 //! The browser twin is `rinch-web/tests/handler_task_owner_3027.rs`.
 
+#[path = "support/task_owner.rs"]
+mod task_owner;
+
 use rinch::prelude::*;
-use rinch_core::dom::DomDocument;
-use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::task::{set_task_scheduler, spawn_local};
-use std::cell::{Cell, RefCell};
-use std::future::Future;
-use std::pin::Pin;
+use rinch_core::task::spawn_local;
+use std::cell::RefCell;
 use std::rc::Rc;
-use std::task::{Context, Poll};
-
-thread_local! {
-    static POLLS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-}
-
-fn record_poll(id: u64) {
-    POLLS.with(|q| q.borrow_mut().push(id));
-}
-
-/// Run every scheduled poll until none is left. The scheduler records per
-/// thread, so tests running in parallel do not see each other's tasks.
-fn run_polls() {
-    loop {
-        let ids: Vec<u64> = POLLS.with(|q| std::mem::take(&mut *q.borrow_mut()));
-        if ids.is_empty() {
-            return;
-        }
-        for id in ids {
-            rinch_core::task::poll_task(id);
-        }
-    }
-}
-
-/// What a task did: how often it was polled, and whether its future was
-/// dropped (aborted, or dropped with its owner).
-#[derive(Clone, Default)]
-struct Trace {
-    polls: Rc<Cell<u32>>,
-    dropped: Rc<Cell<bool>>,
-}
-
-/// A future that never completes, standing in for a request in flight.
-struct Pending(Trace);
-
-impl Future for Pending {
-    type Output = ();
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-        self.0.polls.set(self.0.polls.get() + 1);
-        Poll::Pending
-    }
-}
-
-impl Drop for Pending {
-    fn drop(&mut self) {
-        self.0.dropped.set(true);
-    }
-}
-
-/// A mounted tree: the document (a `NodeHandle` holds only a `Weak` to it) and
-/// the root scope, which owns everything the build created. Dropping the
-/// scope is the unmount.
-struct Mounted {
-    _doc: Rc<RefCell<MockDomDocument>>,
-    scope: Option<RenderScope>,
-    root: NodeHandle,
-}
-
-impl Mounted {
-    fn unmount(&mut self) {
-        if let Some(scope) = self.scope.take() {
-            scope.dispose();
-        }
-    }
-}
-
-/// Mount `build` the way `mount_tree` does: under the root scope's owner.
-fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle) -> Mounted {
-    set_task_scheduler(record_poll);
-    let doc = Rc::new(RefCell::new(MockDomDocument::new()));
-    let body = doc.borrow().body();
-    let mut scope = RenderScope::new(doc.clone(), body);
-    let root = {
-        let _owner = scope.push_owner();
-        build(&mut scope)
-    };
-    Mounted {
-        _doc: doc,
-        scope: Some(scope),
-        root,
-    }
-}
+use task_owner::*;
 
 /// The handler ids of every `.rinch-button` under `node`, in tree order.
 fn button_handlers(node: &NodeHandle) -> Vec<rinch_core::events::EventHandlerId> {
-    let mut out = Vec::new();
-    if node
-        .get_attribute("class")
-        .is_some_and(|c| c.contains("rinch-button"))
-        && let Some(rid) = node.get_attribute("data-rid")
-    {
-        out.push(rinch_core::events::EventHandlerId(rid.parse().unwrap()));
-    }
-    for child in node.children() {
-        out.extend(button_handlers(&child));
-    }
-    out
+    click_handlers(node, &|n| has_class(n, "rinch-button"))
 }
 
 fn click_only_button(node: &NodeHandle) {

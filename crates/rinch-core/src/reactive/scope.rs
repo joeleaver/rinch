@@ -853,6 +853,29 @@ impl Owner {
     pub fn owned_counts(&self) -> Option<OwnedCounts> {
         self.0.upgrade().map(|inner| inner.owned.borrow().counts())
     }
+
+    /// Everything the referenced scope holds that code run under it can add
+    /// to — owned resources, adopted effects, child scopes and cleanups (a
+    /// spawned task registers one) — or `None` if it is gone. Two equal
+    /// footprints taken around some code mean it created nothing under this
+    /// owner (issue #3030).
+    pub(in crate::reactive) fn footprint(&self) -> Option<Footprint> {
+        self.0.upgrade().map(|inner| Footprint {
+            owned: inner.owned.borrow().counts(),
+            effects: inner.effects.borrow().len(),
+            children: inner.children.borrow().len(),
+            cleanups: inner.cleanups.borrow().len(),
+        })
+    }
+}
+
+/// What [`Owner::footprint`] answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::reactive) struct Footprint {
+    owned: OwnedCounts,
+    effects: usize,
+    children: usize,
+    cleanups: usize,
 }
 
 impl PartialEq for Owner {
@@ -961,52 +984,6 @@ pub fn current_owner() -> Option<Owner> {
 pub fn unowned<R>(f: impl FnOnce() -> R) -> R {
     let _owner = Owner::none().push();
     f()
-}
-
-/// The owner an app callback runs under: the one ambient where the callback
-/// was **created** (issue #3027).
-///
-/// Every app-callback kind (`Callback`, `ValueCallback`, `InputCallback`,
-/// `FileDropCallback`, `ScrollCallback`) captures one in its `new` and runs its
-/// function under it. So a task, timer or signal a handler creates belongs to
-/// the component that wrote the handler, whose signals the handler captured —
-/// not to the scope of whichever component the callback was handed to, which
-/// for a component re-rendered by a reactive prop is one render of it, gone
-/// when the handler's own write re-renders it.
-///
-/// No live owner at creation (app lifetime, or [`unowned`]) captures nothing,
-/// and the callback runs under whatever is ambient when it is invoked: the
-/// owner of the handler that dispatched it. A creator that has unmounted
-/// since is treated the same way, rather than pushed as "no owner", so what
-/// the callback creates still ends with a live component instead of living
-/// for the rest of the program.
-///
-/// Holds an [`Owner`], a `Weak`: a callback stored anywhere never keeps its
-/// creator's scope alive.
-#[doc(hidden)]
-#[derive(Clone, Default)]
-pub struct CreatorOwner(Option<Owner>);
-
-impl CreatorOwner {
-    /// The live ambient owner now, if there is one.
-    pub fn capture() -> Self {
-        Self(current_owner())
-    }
-
-    /// Run `f` under the captured owner while it is alive, otherwise under
-    /// whatever owner is ambient.
-    pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
-        match &self.0 {
-            Some(owner) if owner.is_alive() => owner.run(f),
-            _ => f(),
-        }
-    }
-}
-
-impl std::fmt::Debug for CreatorOwner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("CreatorOwner").field(&self.0).finish()
-    }
 }
 
 /// Run `f` against the live ambient owner's scope, if there is one.
