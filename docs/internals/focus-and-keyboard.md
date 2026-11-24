@@ -306,8 +306,8 @@ recomputed by each IFC pass and is not kept under a `display: none` ancestor,
 inline or block, so membership is the rendered-ness test; width is not
 consulted, since Chrome 158 stops Tab on an empty `<a href></a>` (a `0x17`
 rect). Pins: `rinch/src/app/inline_tab_stops_2963_tests.rs` (Chrome-measured
-order). The `:focus-visible` outline of an inline element is not drawn around
-its fragments yet (#2973).
+order). The `:focus-visible` outline of an inline element is drawn round its
+line fragments (#2973; `paint-and-damage.md`, "Outlines of inline elements").
 
 A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
@@ -633,8 +633,10 @@ its content-box height (#1367): a caret in a scroller below the fold of a
 scrolling page was scrolled into its scroller and left off screen. Not
 modelled: the containing-block chain (an `absolute` box is walked through its
 DOM ancestors, so a scroller between it and its containing block is moved
-although it cannot move the box), and smooth scrolling (neither backend
-animates it). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
+although it cannot move the box), and `overflow: hidden` scrollers (above). A
+scroller whose `scroll-behavior` is `smooth` animates its part from the next
+frame (#2291; `docs/internals/pointer-drag-tooltips.md`, "Smooth programmatic
+scrolls"). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
 two and three levels of padded, bordered scrollers in a scrolling page, both
 axes, a placed target, a scroller taller than the window, a fixed boundary,
 #1367's padded rows), `app/mod.rs` `scroll_into_view_tests` (transforms), and
@@ -1113,6 +1115,31 @@ fallback for a drag over no text) is not drawn to them.
   extends by characters, where Chrome extends by the unit.
 - A press on an `<img>` (without Shift) starts no selection and clears the
   one there is: Chrome starts an image drag from it (#2259).
+- The keys extend a selection (`app/text_selection_keys.rs`, #2953), from
+  `handle_text_key`: a Shift chord of the text keymap, with no field holding
+  the keyboard (`live_focused_input_handler` is `None`; the editor's keys
+  never reach it), and only a selection that selects something (a click
+  leaves no caret in read-only text: Chrome extends nothing from one). The
+  focus moves, the anchor stays, the multi-click unit is dropped.
+  Shift+Left/Right step a grapheme, logically by the focus root's
+  direction (Left is forward in an RTL root, as Blink's
+  `ModifyExtendingLeft` reads the enclosing block); a root's edge to the
+  next root (`next_root`/`prev_root`, outermost for a previous paragraph)
+  is one step, and an in-flow `inline-block`'s text is stepped through
+  (entering and leaving it costs nothing: its edges are the same place as
+  the offset it stands at, the focus's side saying which side of it the
+  focus is on). The word chord (`text_key_action`'s: Ctrl, Option on
+  macOS) goes to `rinch_words::text_word_boundary` in the root's text, a
+  root's edge stepping on first; Alt on Windows/Linux extends nothing
+  (Chrome 158). Shift+Up/Down go to the line above or below at a window x
+  kept across a run (`TextSelection::goal_x`), past margins into the next
+  or previous root's nearest line, and from the first or last line of all
+  to the text's start or end. Shift+Home/End go to the visual line's
+  edges (`visual_line_edge`; a wrapped line's end before its hung space);
+  the document keys to the first or last selectable text. Not modelled: a
+  word motion through an `inline-block`'s text (it stays in the root's own
+  text), and Windows' word-right to the next word's start (rinch's text
+  fields do the same).
 - Atomic inlines count as drawn for the white space a root's lines drop
   (`InlineLayout::atomic_inline_offsets`): the space between two
   `inline-block` columns, or two pictures, is copied, as Chrome copies it.

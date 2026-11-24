@@ -2711,20 +2711,23 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         // The visual line's edges, as on desktop (#301).
         "Home" => move_to_line_edge(&handle, false, shift),
         "End" => move_to_line_edge(&handle, true, shift),
-        // 2. Tab. A read-only editor is a `readonly` field to it (#833): its
-        //    keymap's sink / lift are refused, so Tab and Shift+Tab move the focus
-        //    on from the editor's place in the page instead of being swallowed.
-        //    Otherwise table cell-nav (shared) first; else the keymap resolves
-        //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below, both consuming
-        //    bindings, so Tab is consumed either way.
+        // 2. Tab. Offered to the editor first (`tab_key`: a table cell, a list
+        //    binding that applies, per its `TabBehavior`); when it has no use for
+        //    it — a read-only editor (#833), `MoveFocus`, a plain paragraph
+        //    (#2210: the keymap's `sinkListItem` did nothing there and the
+        //    matched binding was consumed, a keyboard trap) — Tab and Shift+Tab
+        //    move the focus on from the editor's place in the page.
         //    Shift+Tab with no Tab stop before the editor (and no trap) leaves the
-        //    page backward, as from a native `<textarea readonly>` that is the first
+        //    page backward, as from a native `<textarea>` that is the first
         //    stop: the focus goes to the document, so the capture textarea is
         //    blurred and the key consumed. The browser's own Shift+Tab would start
         //    from the capture textarea at the end of `<body>` and land on the
         //    page's last control instead. Forward past the last stop is left to
         //    the browser, whose Tab from there leaves the page as native does.
-        "Tab" if !ctrl && !alt && handle.refuses_edits() => {
+        //    (The guard runs the editor's use of the key, so a used Tab takes
+        //    the `handled` path below and the caret is redrawn.)
+        "Tab" if !ctrl && !alt && handle.tab_key(shift) => true,
+        "Tab" if !ctrl && !alt => {
             let Some(container) =
                 node_by_nid(container_nid).and_then(|n| n.dyn_into::<web_sys::Element>().ok())
             else {

@@ -97,11 +97,14 @@ App::new(app)
     .run();
 ```
 
-- **Dictionaries.** By default the system's Hunspell dictionaries for the
-  user's locale (`$LANGUAGE`, `$LC_ALL`, `$LC_MESSAGES`, `$LANG`), from
-  `$DICPATH`, `~/.local/share/hunspell`, `/usr/share/hunspell` and the other
-  usual places. When none is installed nothing is marked; it is never an
-  error. `.languages(..)` names the locales instead.
+- **Dictionaries.** By default the system's own spellchecking, which
+  depends on the platform (see "Choosing a backend" below): on macOS and
+  Windows the operating system's spellchecker, on Linux and Android the
+  system's Hunspell dictionaries for the user's locale (`$LANGUAGE`,
+  `$LC_ALL`, `$LC_MESSAGES`, `$LANG`), from `$DICPATH`,
+  `~/.local/share/hunspell`, `/usr/share/hunspell` and the other usual
+  places. When there is nothing to check with, nothing is marked; it is never
+  an error. `.languages(..)` names the languages instead.
 - **Your own checker.** `.checker(..)` takes any `rinch::spellcheck::SpellChecker`,
   for example a `HunspellChecker` over dictionaries the app bundles
   (`HunspellChecker::from_bytes("en_US", AFF, DIC)`).
@@ -110,6 +113,59 @@ App::new(app)
   change (the context menu's "Add to dictionary" included) so the app can
   persist it. A word the app adds or removes itself clears or brings back
   its marks too.
+
+### Choosing a backend
+
+Where the operating system has a spellchecker, rinch uses it, as Chrome
+does: `NSSpellChecker` on macOS, the Windows Spell Checking API
+(`ISpellChecker`) on Windows. Words the user taught the system in other apps
+are accepted, and the system's languages are checked with its own
+dictionaries. Elsewhere (Linux, Android) the engine is Hunspell over the
+system's dictionaries. An app that supplies its own checker (`.checker(..)`,
+say a `HunspellChecker` over bundled dictionaries) gets that checker on every
+platform.
+
+```rust
+use rinch::spellcheck::{Backend, SpellcheckConfig};
+
+SpellcheckConfig::new().backend(Backend::Hunspell)  // Hunspell even on macOS and Windows
+SpellcheckConfig::new().backend(Backend::Platform)  // the platform's only; nothing marked on Linux
+SpellcheckConfig::new().add_to_system_dictionary(false)
+```
+
+| | macOS | Windows | Linux, Android |
+|---|---|---|---|
+| default engine (`Backend::Auto`) | `NSSpellChecker` | `ISpellChecker` | Hunspell, system dictionaries |
+| languages by default | the user's preferred spelling languages, with the system's automatic language detection (System Settings › Keyboard › Text Input) | the languages in Settings › Language that have a spellchecker installed | the locale's dictionary |
+| `.languages([..])` | the listed ones macOS has | the listed ones with a spellchecker installed | the listed ones installed |
+| "Add to dictionary" | the personal dictionary and the system's (`learnWord:`) | the personal dictionary and the system's (`ISpellChecker::Add`) | the personal dictionary |
+
+- **The personal dictionary** behaves the same whatever the engine: "Add to
+  dictionary" adds the word to it and its `add_listener` fires, so the app
+  saves its list as it does with Hunspell. With the platform's spellchecker
+  the word also goes to the system's user dictionary, so TextEdit, Word and
+  every other app accept it too (Chrome's behaviour); a word removed from the
+  personal dictionary is removed there as well. `.add_to_system_dictionary(false)`
+  keeps the words the app's own. Words loaded with `with_words` are never
+  written to the system.
+- **Languages in other scripts.** As with Hunspell, a word in a script none
+  of the checked languages writes in (Cyrillic with only English) is never
+  marked. A language rinch has no script for hands every word to the
+  platform.
+- **Fallback.** Under the default `Backend::Auto`, if the platform's
+  spellchecker cannot start or has none of the languages (none of
+  `.languages([..])` installed, or no spellchecker for the user's
+  languages), rinch checks with Hunspell over the system's dictionaries
+  instead, as Chrome does for languages Windows cannot check.
+- **The results differ per machine** (installed languages, words the user
+  taught the system), which is why tests configure a checker of their own.
+- On macOS every `NSSpellChecker` call runs on the main thread, as in
+  Chromium: checking happens there in slices of a few milliseconds, and
+  suggestions are asked when the menu opens. On Windows the spellchecker's
+  COM objects live on a thread of their own (`rinch-spell-windows`).
+  `.main_thread_wait_ms(..)` (default 2000: how long a check waits for a
+  busy main thread before leaving its words unmarked) and
+  `.main_thread_slice_ms(..)` (default 3) tune the macOS side.
 
 Change the settings while the app runs with `rinch::spellcheck::configure(..)`
 or `rinch::spellcheck::set_enabled(..)`: every mark is dropped and the fields

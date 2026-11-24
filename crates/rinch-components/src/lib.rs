@@ -199,7 +199,9 @@ pub use anchor::Anchor;
 pub use avatar::Avatar;
 pub use badge::Badge;
 pub use blockquote::Blockquote;
-pub use borderless_window::{BorderlessWindow, SectionRenderer, WindowRadius};
+pub use borderless_window::{
+    BorderlessWindow, SectionRenderer, WindowControl, WindowControlsLayout, WindowRadius,
+};
 pub use breadcrumbs::{Breadcrumbs, BreadcrumbsItem};
 pub use button::Button;
 pub use card::{Card, CardSection};

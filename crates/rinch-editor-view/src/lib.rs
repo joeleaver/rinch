@@ -18,6 +18,8 @@ mod clock;
 #[cfg(feature = "collaboration")]
 mod collab;
 mod component;
+#[cfg(test)]
+mod configurability_2210_tests;
 mod handle;
 mod images;
 mod keys;
@@ -38,7 +40,7 @@ pub use images::{
     ImageHover, ImageInput, ImageInputSource, clear_image_source, set_image_source,
     sniff_image_mime,
 };
-pub use keys::EditorKey;
+pub use keys::{EditorKey, TabBehavior};
 pub use links::{LinkClick, LinkHover, LinkSpan};
 pub use margins::{__margin_counters, MarginAnchor, MarginAssoc, MarginAt, MarginLine};
 pub use node_views::{
@@ -71,7 +73,7 @@ use std::time::Duration;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_editor_core::model::Fragment;
-use rinch_editor_core::{Node, Schema, default_plugins};
+use rinch_editor_core::{Node, Plugin, Schema, default_plugins};
 
 /// Create an unmounted [`EditorHandle`] over a fresh (single empty paragraph)
 /// document — the factory for the declarative API (mirrors `create_render_surface`).
@@ -80,6 +82,11 @@ use rinch_editor_core::{Node, Schema, default_plugins};
 /// `set_selection`/`command` operate on its owned state, which the view renders
 /// when the [`Editor`] component mounts it. Hand the same handle to toolbar
 /// buttons and to `Editor { editor: handle }`.
+///
+/// The handle starts with the built-in commands and keymap and the undo
+/// history, over [`Schema::starter_kit`]. The markdown shortcuts are **off**
+/// (#2210), as in a Chrome `contenteditable`:
+/// [`EditorHandle::set_markdown_shortcuts`] turns them on.
 pub fn create_editor() -> EditorHandle {
     let schema = Rc::new(Schema::starter_kit());
     let empty = empty_doc(&schema);
@@ -88,13 +95,22 @@ pub fn create_editor() -> EditorHandle {
     handle
 }
 
-/// [`default_plugins`], plus the spellchecker (#2862) when this thread has a
-/// spellcheck configuration (an app run through `App::run`, an embedded
-/// `RinchContext`). On the web only when that configuration has the app's own
-/// dictionaries and is on (`spellcheck::wanted`); the browser has none of
-/// its own for rinch to use.
+/// [`default_plugins`] without the markdown input rules, plus the spellchecker
+/// (#2862) when this thread has a spellcheck configuration (an app run through
+/// `App::run`, an embedded `RinchContext`). On the web only when that
+/// configuration has the app's own dictionaries and is on
+/// (`spellcheck::wanted`); the browser has none of its own for rinch to use.
+///
+/// The markdown shortcuts are opt-in (#2210): a Chrome `contenteditable`
+/// inserts what is typed literally, so a fresh editor does too, and
+/// [`EditorHandle::set_markdown_shortcuts`] (or `Editor { markdown_shortcuts:
+/// true }`) turns them on.
 fn editor_plugins() -> Vec<Rc<dyn rinch_editor_core::Plugin>> {
-    let mut plugins = default_plugins();
+    let markdown = rinch_editor_core::MarkdownInputRulesPlugin.key();
+    let mut plugins: Vec<_> = default_plugins()
+        .into_iter()
+        .filter(|p| p.key() != markdown)
+        .collect();
     if spellcheck::wanted() {
         plugins.push(Rc::new(spellcheck::SpellcheckPlugin::new()));
     }
