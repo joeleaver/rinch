@@ -1151,10 +1151,10 @@ mod nested_read_tests {
 /// one check that makes a stale `Signal<T>` handle read as dead after its
 /// slot is recycled by a new signal — every read/write/track/notify call
 /// site goes through it. `a_dep_whose_slot_was_recycled_does_not_disturb_the_new_occupant`
-/// (`effect.rs`) looks like it would catch a dropped filter but does not: it
-/// only exercises `DepKey::unsubscribe`, and `ObserverId`s are never reused,
-/// so a stale key's `.remove()` is a no-op on the new occupant's subscriber
-/// set whether or not `get_inner` filters by generation.
+/// (`effect/unsubscribe_tests.rs`) looks like it would catch a dropped filter
+/// but does not: it only exercises `DepKey::unsubscribe`, and `ObserverId`s
+/// are never reused, so a stale key's `.remove()` is a no-op on the new
+/// occupant's subscriber set whether or not `get_inner` filters by generation.
 #[cfg(test)]
 mod slot_reuse_tests {
     use super::*;
