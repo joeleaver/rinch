@@ -360,11 +360,14 @@ fn assert_clean(f: &Fixture) {
         "rinch-sortable__item--lifted",
         "rinch-sortable__item--drop-before",
         "rinch-sortable__item--drop-after",
+        "rinch-sortable__item--slot",
+        "rinch-sortable--slot-into",
     ] {
         assert!(carrying(f, class).is_empty(), "{class} left behind");
     }
-    for k in ["a", "b", "c", "d", "e", "f"] {
-        assert_eq!(shift(f, k), None, "{k}'s shift left behind");
+    // Every card still on the board (a test may have emptied a list).
+    for k in f.board.get().into_iter().flat_map(|(_, keys)| keys) {
+        assert_eq!(shift(f, &k), None, "{k}'s shift left behind");
     }
     assert_eq!(sortable_drag(), None);
     assert_eq!(sortable_drag_pointer(), None);
@@ -793,6 +796,150 @@ fn a_collapsed_source_closes_up_and_reopens_over_its_own_place() {
     release_at(&mut f, over);
     assert_eq!(cards(&f, "c2"), ["e", "b", "f"]);
     assert_eq!(cards(&f, "c1"), ["a", "c", "d"]);
+    assert_clean(&f);
+}
+
+/// The `::before` box an element generated, if any: its painted box.
+fn before_box(f: &Fixture, id: u64) -> Option<(f32, f32, f32, f32)> {
+    let doc = f.app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let first = *d.tree.nodes[id].children.first()?;
+    if !d.tree.nodes[first].is_pseudo_element {
+        return None;
+    }
+    Some(hit_testing::painted_element_box(&d.tree, first))
+}
+
+/// The slot an element draws: its `(start, size)` custom properties.
+fn slot_of(f: &Fixture, id: u64) -> Option<(f32, f32)> {
+    let doc = f.app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let style = d.tree.nodes[id].attributes.get("style")?.clone();
+    let decls = rinch_core::dom::split_declarations(&style);
+    let read = |name: &str| {
+        decls
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.trim_end_matches("px").parse::<f32>().unwrap())
+    };
+    Some((
+        read("--rinch-sortable-slot-start")?,
+        read("--rinch-sortable-slot-size")?,
+    ))
+}
+
+/// The gap holds a slot the size of the card, where the drop lands: the item
+/// after the gap draws it, the last item after itself, and it follows the
+/// place. It is painted in the gap, between the cards around it.
+#[test]
+fn a_gap_holds_a_slot_the_size_of_the_card_where_it_lands() {
+    let mut f = fixture(Options {
+        source: SortSource::Collapse,
+        indicator: SortIndicator::Gap,
+        ..Options::default()
+    });
+    grab(&mut f, "b", 0.5, 0.5);
+    // Into c2 before f: f draws a card-sized slot one spacing above itself.
+    let over = point(&f, item(&f, "f"), 0.5, 0.2);
+    move_to(&mut f, over);
+    let fid = item(&f, "f");
+    assert!(classes(&f, fid).contains("rinch-sortable__item--slot"));
+    assert_eq!(slot_of(&f, fid), Some((-(10.0 + 30.0), 30.0)));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let (_, ey, _, eh) = box_of(&f, item(&f, "e"));
+    let (fx, fy, fw, _) = box_of(&f, fid);
+    let (sx, sy, sw, sh) = before_box(&f, fid).expect("the slot is drawn");
+    assert!(
+        (sy - (ey + eh + 10.0)).abs() < 0.5,
+        "slot at {sy}, e ends at {}",
+        ey + eh
+    );
+    assert!(
+        (sy + sh + 10.0 - fy).abs() < 0.5,
+        "slot ends {} before f at {fy}",
+        sy + sh
+    );
+    assert_eq!((sx, sw, sh), (fx, fw, 30.0));
+    // After f, the last: f draws it below itself; one slot at a time.
+    let over = point(&f, fid, 0.5, 0.8);
+    move_to(&mut f, over);
+    assert_eq!(slot_of(&f, fid), Some((30.0 + 10.0, 30.0)));
+    assert_eq!(carrying(&f, "rinch-sortable__item--slot"), vec![fid]);
+    // Off every list: no slot.
+    move_to(&mut f, (790.0, 590.0));
+    assert!(carrying(&f, "rinch-sortable__item--slot").is_empty());
+    assert_eq!(slot_of(&f, fid), None);
+    // Back into c2 before e, and dropped: nothing is left.
+    let over = point(&f, item(&f, "e"), 0.5, 0.2);
+    move_to(&mut f, over);
+    assert_eq!(
+        carrying(&f, "rinch-sortable__item--slot"),
+        vec![item(&f, "e")]
+    );
+    release_at(&mut f, over);
+    assert_eq!(cards(&f, "c2"), ["b", "e", "f"]);
+    assert_clean(&f);
+}
+
+/// The list of the group holding no item.
+fn empty_list(f: &Fixture) -> u64 {
+    let doc = f.app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    d.tree
+        .nodes
+        .iter()
+        .find(|(nid, n)| {
+            n.attributes.get("data-sortable-group").map(String::as_str) == Some("cards")
+                && n.attributes.contains_key("data-sortable-list")
+                && connected(&d, *nid)
+                && !n.children.iter().any(|c| {
+                    d.tree.nodes[*c]
+                        .attributes
+                        .contains_key("data-sortable-key")
+                })
+        })
+        .map(|(nid, _)| nid)
+        .unwrap()
+}
+
+/// An empty list draws the slot inside itself, where the first card goes.
+#[test]
+fn an_empty_list_draws_the_slot_inside_itself() {
+    let mut f = fixture(Options {
+        source: SortSource::Collapse,
+        indicator: SortIndicator::Gap,
+        ..Options::default()
+    });
+    f.board.update(|b| b[1].1.clear());
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    grab(&mut f, "a", 0.5, 0.5);
+    let c2 = empty_list(&f);
+    let over = point(&f, c2, 0.5, 0.1);
+    move_to(&mut f, over);
+    assert!(classes(&f, c2).contains("rinch-sortable--slot-into"));
+    assert_eq!(slot_of(&f, c2).map(|s| s.1), Some(30.0));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let (_, ly, _, _) = box_of(&f, c2);
+    let (_, sy, _, sh) = before_box(&f, c2).expect("the slot is drawn");
+    assert_eq!((sy, sh), (ly, 30.0));
+    release_at(&mut f, over);
+    assert_eq!(cards(&f, "c2"), ["a"]);
+    assert_clean(&f);
+}
+
+/// Over its own place in its own list, the source's space is the place: no
+/// slot over a list holding only what is carried, and none in a caret list.
+#[test]
+fn no_slot_without_a_gap() {
+    let mut f = fixture(Options::default());
+    grab(&mut f, "a", 0.5, 0.5);
+    let over = point(&f, item(&f, "e"), 0.5, 0.75);
+    move_to(&mut f, over);
+    assert!(
+        carrying(&f, "rinch-sortable__item--slot").is_empty(),
+        "a caret list"
+    );
+    release_at(&mut f, over);
     assert_clean(&f);
 }
 

@@ -79,6 +79,11 @@ const SHIFTED_CLASS: &str = "rinch-sortable__item--shifted";
 const REFLOWING_CLASS: &str = "rinch-sortable--reflowing";
 const GHOST_CLASS: &str = "rinch-sortable__ghost";
 const GHOST_ATTR: &str = "data-sortable-ghost";
+const SLOT_CLASS: &str = "rinch-sortable__item--slot";
+const SLOT_ACROSS_CLASS: &str = "rinch-sortable__item--slot-horizontal";
+const SLOT_INTO_CLASS: &str = "rinch-sortable--slot-into";
+const SLOT_START: &str = "--rinch-sortable-slot-start";
+const SLOT_SIZE: &str = "--rinch-sortable-slot-size";
 const SHIFT_X: &str = "--rinch-sortable-shift-x";
 const SHIFT_Y: &str = "--rinch-sortable-shift-y";
 const GHOST_X: &str = "--rinch-sortable-ghost-x";
@@ -233,6 +238,11 @@ pub enum SortIndicator {
     /// a gap the size of what is carried, and back when the place moves on.
     /// The slide is a CSS transition (`--rinch-sortable-reflow-duration`,
     /// `--rinch-sortable-reflow-easing`); layout does not move.
+    ///
+    /// The gap holds a slot the size of what is carried, where the drop
+    /// lands: invisible unless the app paints it with
+    /// `--rinch-sortable-slot-background`, `-border` and `-radius` (set on
+    /// the list or an ancestor), so the place can be lit as well as opened.
     Gap,
     /// The gap and the caret.
     Both,
@@ -464,6 +474,54 @@ struct Active {
     /// Items carrying a shift, and lists carrying the reflow class.
     shifted: Vec<(NodeHandle, f32, f32)>,
     reflowing: Vec<NodeHandle>,
+    /// What draws the gap's slot now: an item or an empty list.
+    slot: Option<Slot>,
+}
+
+/// Where the open gap's slot is drawn ([`SortIndicator::Gap`]): a box the
+/// size of what is carried, in the gap, painted only as the app styles it
+/// (`--rinch-sortable-slot-*`). The item after the gap draws it before
+/// itself, the last item after itself, an empty list inside itself; an
+/// item's slot rides its shift.
+#[derive(Clone)]
+struct Slot {
+    node: NodeHandle,
+    /// Drawn by an empty list rather than an item.
+    into: bool,
+    horizontal: bool,
+    /// From the item's own start along the axis, in its own units.
+    start: f32,
+    size: f32,
+}
+
+impl Slot {
+    fn same(&self, other: &Slot) -> bool {
+        self.node.node_id() == other.node.node_id()
+            && self.into == other.into
+            && self.horizontal == other.horizontal
+            && self.start == other.start
+            && self.size == other.size
+    }
+
+    fn draw(&self) {
+        if self.into {
+            self.node.add_class(SLOT_INTO_CLASS);
+        } else {
+            self.node.add_class(SLOT_CLASS);
+            if self.horizontal {
+                self.node.add_class(SLOT_ACROSS_CLASS);
+            }
+        }
+        self.node
+            .set_styles(&[(SLOT_START, &px(self.start)), (SLOT_SIZE, &px(self.size))]);
+    }
+
+    fn erase(&self) {
+        for class in [SLOT_CLASS, SLOT_ACROSS_CLASS, SLOT_INTO_CLASS] {
+            self.node.remove_class(class);
+        }
+        clear_props(&self.node, &[SLOT_START, SLOT_SIZE]);
+    }
 }
 
 /// (document, group, key, the list it was dropped in).
@@ -962,6 +1020,9 @@ fn end_active() {
     for list in &active.reflowing {
         list.remove_class(REFLOWING_CLASS);
     }
+    if let Some(slot) = &active.slot {
+        slot.erase();
+    }
     if let Some((ghost, scope)) = active.ghost {
         if let Some(scope) = scope {
             scope.dispose();
@@ -1075,6 +1136,7 @@ fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
             spacing,
             shifted: Vec::new(),
             reflowing: Vec::new(),
+            slot: None,
         })
     });
     // The drag starts over its own place (a collapsed item's space stays
@@ -1718,6 +1780,7 @@ fn reflow() {
             }
         }
     }
+    let mut slot_now: Option<Slot> = None;
     if let Some((list, slot)) = &plan.gap_at
         && let Some(cfg) = list_by_id(&plan.group, list, plan.doc).filter(|c| c.indicator.gap())
     {
@@ -1731,9 +1794,11 @@ fn reflow() {
             }
         } else {
             let d = along(&cfg);
-            for (node, _) in rest_of(&cfg.node, &plan.keys).0.iter().skip(*slot) {
+            let rest = rest_of(&cfg.node, &plan.keys).0;
+            for (node, _) in rest.iter().skip(*slot) {
                 add(&cfg, node, d);
             }
+            slot_now = slot_at(&cfg, &rest, *slot, d - plan.spacing, plan.spacing);
         }
     }
     let (old, mut reflowing) = ACTIVE.with(|a| {
@@ -1773,12 +1838,67 @@ fn reflow() {
         }
         shifted.push((node, 0.0, 0.0));
     }
-    ACTIVE.with(|a| {
-        if let Some(a) = a.borrow_mut().as_mut() {
-            a.shifted = shifted;
-            a.reflowing = reflowing;
-        }
+    let old_slot = ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        let a = a.as_mut()?;
+        a.shifted = shifted;
+        a.reflowing = reflowing;
+        std::mem::replace(&mut a.slot, slot_now.clone())
     });
+    match (old_slot, slot_now) {
+        (Some(old), Some(new)) if old.same(&new) => {}
+        (old, new) => {
+            if let Some(old) = old {
+                old.erase();
+            }
+            if let Some(new) = new {
+                new.draw();
+            }
+        }
+    }
+}
+
+/// The slot of a gap opened at `slot` of `rest` (the list's items less the
+/// carried ones), `size` long, `spacing` from the items beside it: drawn by
+/// the item after it, else by the last item, else by the list when it holds
+/// no item at all. A list holding only what is carried (its own place, the
+/// carried items still taking their space) draws none.
+fn slot_at(
+    cfg: &ListConfig,
+    rest: &[(NodeHandle, String)],
+    slot: usize,
+    size: f32,
+    spacing: f32,
+) -> Option<Slot> {
+    let horizontal = cfg.axis == SortAxis::Horizontal;
+    let size = size.max(0.0);
+    if let Some((after, _)) = rest.get(slot) {
+        return Some(Slot {
+            node: after.clone(),
+            into: false,
+            horizontal,
+            start: -(spacing + size),
+            size,
+        });
+    }
+    if let Some((last, _)) = rest.last() {
+        let (w, h) = size_of(last)?;
+        let len = if horizontal { w } else { h };
+        return Some(Slot {
+            node: last.clone(),
+            into: false,
+            horizontal,
+            start: len + spacing,
+            size,
+        });
+    }
+    items_of(&cfg.node).is_empty().then(|| Slot {
+        node: cfg.node.clone(),
+        into: true,
+        horizontal,
+        start: 0.0,
+        size,
+    })
 }
 
 // =============================================================================

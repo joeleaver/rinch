@@ -1490,6 +1490,15 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
 - **Snapshots.** The drag ghost's painters (`activate_drag` in
   `app/event_dispatch.rs`, Vello and software) are `set_subpixel_text(false)`:
   the ghost is appended at the pointer's fractional `Affine::translate`.
+  Its damage (`RinchApp::ghost_overlay_rect`, old and new place every frame)
+  is the blit rectangle at the truncated translate the software path blits
+  at, unioned with the snapshot's painted bounds
+  (`paint::paint_subtree_bounds`, kept on `ActiveDrag::snapshot_bounds`) at
+  the real fractional translate, rounded out; unknown bounds damage the whole
+  surface. Until the fix the GPU frame damaged only the truncated box, so the
+  right column and bottom row of every place a bordered ghost passed stayed
+  painted after the drag. Pins: `gpu_drag_ghost_damage_tests`,
+  `drag_ghost_dirty_region_tests`.
 - **tiny-skia** (`blit_subpixel_mask_into`): straight into the pixmap at whole
   pixels, through the clip mask; per channel where the pixel's alpha is 255,
   grey source-over elsewhere, in `f32` then rounded, as the shader does.

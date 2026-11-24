@@ -58,6 +58,46 @@ pub fn styles() -> String {
     transition: transform var(--rinch-sortable-reflow-duration, 150ms)
         var(--rinch-sortable-reflow-easing, ease);
 }
+/* SortIndicator::Gap: the slot, a box the size of what is carried in the
+   gap the drop lands in. The item after the gap draws it before itself (the
+   last item after itself) at the --rinch-sortable-slot-start / -size the
+   component writes, so it rides the item's shift; an empty list draws it
+   inside itself. It shows only as the app styles it:
+   --rinch-sortable-slot-background, -border, -radius. */
+.rinch-sortable__item--slot::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: var(--rinch-sortable-slot-start, 0px);
+    height: var(--rinch-sortable-slot-size, 0px);
+}
+.rinch-sortable__item--slot-horizontal::before {
+    top: 0;
+    bottom: 0;
+    right: auto;
+    height: auto;
+    left: var(--rinch-sortable-slot-start, 0px);
+    width: var(--rinch-sortable-slot-size, 0px);
+}
+.rinch-sortable--slot-into::before {
+    content: "";
+    flex: none;
+    height: var(--rinch-sortable-slot-size, 0px);
+}
+.rinch-sortable--horizontal.rinch-sortable--slot-into::before {
+    height: auto;
+    width: var(--rinch-sortable-slot-size, 0px);
+}
+.rinch-sortable__item--slot::before,
+.rinch-sortable--slot-into::before {
+    box-sizing: border-box;
+    pointer-events: none;
+    background: var(--rinch-sortable-slot-background, transparent);
+    border: var(--rinch-sortable-slot-border, none);
+    border-radius: var(--rinch-sortable-slot-radius, 0px);
+}
+
 /* SortPreview::Clone and ::Custom: a `.rinch-sortable__ghost` wrapper on
    <body> holding `display: contents` stand-ins for the item's ancestors, so
    the preview's body inherits and matches selectors as the item does. The

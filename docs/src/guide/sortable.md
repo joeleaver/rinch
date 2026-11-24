@@ -295,6 +295,17 @@ SortableList {
   threshold away from the pointer, so a slow sweep changes the place once
   each way. Over its own place a collapsed item's list opens the gap there
   again (with a gap indicator).
+- **The slot.** The room a gap opens can be lit: it holds a box the size of
+  what is carried, exactly where the drop lands, drawn only as the app styles
+  it with `--rinch-sortable-slot-background`, `--rinch-sortable-slot-border`
+  and `--rinch-sortable-slot-radius` (on the list or an ancestor; all off by
+  default). It is the `::before` of the item after the gap (the last item's
+  when the place is at the end), positioned at `--rinch-sortable-slot-start`
+  and sized by `--rinch-sortable-slot-size`, which the component writes, so it
+  rides that item's shift and moves nothing. An empty list draws it inside
+  itself. A list holding only what is carried, and a gap in the source's own
+  list that does not collapse (where the source is drawn at the place), draw
+  none. An item's own `::before` is taken while it holds the slot.
 - **In the source's own list**, unless it collapses, a gap is the list laid out
   again in the order the drop would give: the items between the place and the
   source make room and the source itself is drawn at the place, so nothing is
@@ -331,6 +342,7 @@ add a stylesheet, has.
 | `--rinch-sortable-dragging-opacity` | `0.4` (`SortSource::Dim`) |
 | `--rinch-sortable-reflow-duration` | `150ms` (the gap's and a collapse's slide; `0ms` turns it off) |
 | `--rinch-sortable-reflow-easing` | `ease` |
+| `--rinch-sortable-slot-background` | `transparent` (the gap's slot; with `-border`, e.g. `2px dashed …`, default `none`, and `-radius`, default `0px`) |
 | `--rinch-sortable-ghost-opacity` | `0.75` (each `-ghost-` one is read where the item is: on the list, an ancestor or the item) |
 | `--rinch-sortable-ghost-tilt` | `0deg` (a `rotate`) |
 | `--rinch-sortable-ghost-scale` | `1` |
