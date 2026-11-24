@@ -715,12 +715,20 @@ records, and 50 scrollers left their walks): a subtree taken out of the
 tree drops the records of its boxes, and the walks of the scroll containers
 in it, when it is taken out (`DeepOverflow::forget_detached`, from
 `mark_subtree_paint_dirty`, which every removal and every move of a painted
-box calls); a freed node drops its own (`forget_freed`, from
+box calls). Those walks are found by walking the subtree's element tree, so
+a removal costs its own nodes plus the records it drops
+(`testing::deep_overflow_forget_steps`); it used to ask every kept walk
+whether its container was in the subtree, climbing from each, and taking
+out N rows that each held a scroller cost O(N² · depth) (329 ms for 2000
+rows). The element walk also reaches an out-of-flow box hoisted past the
+subtree's root to a host above it, which the box tree under the root does
+not hold: its walk and records go too. A freed node drops its own (`forget_freed`, from
 `NodeTree::remove_subtree` and the anonymous-box frees in `ifc.rs`); and a
 walk dropped to be taken again drops the records it made. The parent of
 the subtree's top box is noted, at the next check, as one that lost a child,
-and so is a scroll container in the subtree whose walk is kept (its children
-are recorded again); the other parents in the subtree go with it, unnoted
+and so is a scroll container in the subtree whose walk is kept — only a box
+found moved by the check, since a removal drops those walks first (its
+children are recorded again); the other parents in the subtree go with it, unnoted
 (noting each row of a hidden 1000-row branch made the next check climb from
 each, `branch_hide` in `rinch-bench`). So
 the memo holds at most one record per box of the kept walks, and a freed
