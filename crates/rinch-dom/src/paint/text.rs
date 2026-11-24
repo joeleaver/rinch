@@ -1326,14 +1326,7 @@ pub fn inline_box_reach<'a>(
     let r = r?;
     // Nested relative elements compose (`relative_offset_at`): the sum of
     // each direction's offsets bounds them.
-    let mut d = [0.0f64; 4];
-    for span in &inline_layout.relative_spans {
-        let (dx, dy) = (span.dx as f64, span.dy as f64);
-        d[0] += dx.min(0.0);
-        d[1] += dy.min(0.0);
-        d[2] += dx.max(0.0);
-        d[3] += dy.max(0.0);
-    }
+    let d = inline_layout.relative_reach();
     Some([r[0] + d[0], r[1] + d[1], r[2] + d[2], r[3] + d[3]].map(|v| v as f32))
 }
 

@@ -996,6 +996,27 @@ impl InlineLayout {
         self.layout.get(n - 1)
     }
 
+    /// How far the relative inline elements of these lines move what they
+    /// draw, `[left, up, right, down]` in CSS px, each `<= 0` on the left and
+    /// up sides and `>= 0` on the right and down ones: the sum of each
+    /// direction's offsets over [`Self::relative_spans`]. Nested relative
+    /// elements compose (`text_query::unmoved_point` adds every offset
+    /// around a byte), so no byte is drawn moved further than this. A
+    /// rectangle holding the lines as laid out, grown by it, holds them as
+    /// drawn: hit testing's flow extent (#3056) and
+    /// `paint::inline_box_reach` read it.
+    pub fn relative_reach(&self) -> [f64; 4] {
+        let mut d = [0.0f64; 4];
+        for span in &self.relative_spans {
+            let (dx, dy) = (span.dx as f64, span.dy as f64);
+            d[0] += dx.min(0.0);
+            d[1] += dy.min(0.0);
+            d[2] += dx.max(0.0);
+            d[3] += dy.max(0.0);
+        }
+        d
+    }
+
     /// Where the lines reach horizontally, `[x0, x1]` in CSS px from the
     /// content origin: the union of every line's line box
     /// (`inline_min_coord..inline_max_coord`) and its content, from where it

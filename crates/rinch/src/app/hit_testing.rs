@@ -1118,7 +1118,12 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
     // which the hit test answers. Across, the lines' own reach
     // (`InlineLayout::lines_x_reach`, measured when they are built): a line
     // can start left of the origin (a negative `text-indent`, an rtl line
-    // wider than its box), which `0..width()` would miss.
+    // wider than its box), which `0..width()` would miss. Where they are
+    // drawn, not where they were laid out: a relative inline element's text
+    // is drawn moved by its offset and hit there (`visible_text_at` through
+    // `unmoved_point`). One that paints in its own entry is hit by that entry,
+    // but a split one (a block inside it) has none, and its text in an
+    // anonymous block's lines is reached only through this extent (#3056).
     if (!clip_x || !clip_y)
         && let Some(inline) = node.text_layout.as_ref()
         && let Some([lx0, lx1]) = inline.lines_x_reach()
@@ -1126,14 +1131,15 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
         let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
         let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
         let lh = inline.layout.height();
+        let [d0, d1, d2, d3] = inline.relative_reach().map(|v| v as f32);
         if lx1 > lx0 && lh > 0.0 {
             if !clip_x {
-                e[0] = e[0].min(ox - sx + lx0);
-                e[2] = e[2].max(ox - sx + lx1);
+                e[0] = e[0].min(ox - sx + lx0 + d0);
+                e[2] = e[2].max(ox - sx + lx1 + d2);
             }
             if !clip_y {
-                e[1] = e[1].min(oy - sy);
-                e[3] = e[3].max(oy - sy + lh);
+                e[1] = e[1].min(oy - sy + d1);
+                e[3] = e[3].max(oy - sy + lh + d3);
             }
         }
     }
@@ -1920,6 +1926,10 @@ mod paint_phases_hit_2276_tests;
 #[cfg(test)]
 #[path = "overflow_line_hit_2956_tests.rs"]
 mod overflow_line_hit_2956_tests;
+
+#[cfg(test)]
+#[path = "relative_line_extent_3056_tests.rs"]
+mod relative_line_extent_3056_tests;
 
 #[cfg(test)]
 #[path = "relative_inline_hit_2346_tests.rs"]
