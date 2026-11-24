@@ -313,7 +313,9 @@ fn the_caret_stands_on_the_painted_glyph_at_every_offset_320() {
     }
 }
 
-/// The same in a right-to-left value: the caret after character `i` stands
+/// The same in a right-to-left value, in a `direction: rtl` field (in a
+/// `ltr` one the caret at the value's end is at the line's right, its end,
+/// as Chrome draws it, #2950): the caret after character `i` stands
 /// at the left edge of character `i`'s painted glyph — in a right-to-left
 /// run, the boundary *before* it in logical order is its right edge, the one
 /// after it its left (to under a pixel: a face may offset a glyph from its pen). The glyphs are drawn left to right, so character `i` is
@@ -326,7 +328,7 @@ fn the_caret_stands_on_the_painted_glyph_in_rtl_text_320() {
         &mut doc,
         "input",
         "font-size: 20px; letter-spacing: 2.5px; word-spacing: 6px; display: block; \
-         width: 500px; padding: 3px 11px; color: rgb(0, 1, 0)",
+         width: 500px; padding: 3px 11px; color: rgb(0, 1, 0); direction: rtl",
     );
     doc.set_attribute(input, "value", RTL);
     doc.resolve_layout(VW, VH);

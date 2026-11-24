@@ -75,7 +75,7 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `white-space`; two `<wbr>`s in a row give one between `aaaa` and `bbbb` under `nowrap` and
     `pre`, not under `normal`. Where `aaaa` alone does not wrap, the `<wbr>`s' own
     `white-space` decides: a `<wbr>` that does not wrap starts the line after `aaaa` (#2944:
-    Parley Fork item 19, each `<wbr>` pushed with its own mode as `StyleProperty::Wbr`, and
+    Parley Fork item 21, each `<wbr>` pushed with its own mode as `StyleProperty::Wbr`, and
     `ifc::chrome_break` has an opportunity between two ZWSPs, where UAX #14's LB7 has none;
     `tests/wbr_empty_line_2944_tests.rs`, `tests/wbr_white_space_2944_differential.rs`). The builders that set the override are the IFC, a flex or grid item's text leaf,
     the paint fallback and `ComputedStyle::build_parley_layout`, so a `<textarea>`'s and an
@@ -1022,8 +1022,8 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`8e871f08a7d614d6d2308f842f20637db2d40df0`, branch `rinch-2944` on `a95d7806` of branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17) and #15 (item 18); item 19 is on `rinch-2944`, fork PR #18): commits on parley's
+(`73e8afa10c482d69be6763efd1a85b1ca04a448f`, branch `rinch-patch`, with fork PRs joeleaver/parley-fork#6 and #8
+(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17), #15 (item 18), #16 (items 19 and 20, rinch #2940 and #2950) and #18 (item 21, rinch #2944) merged): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1369,7 +1369,7 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `no_system_render_properties_without_system_fonts`, `tests/system_render_properties.rs` (a
     private `FONTCONFIG_FILE` whose `target="font"` rule tests the matched family) and
     `the_config_default_substitution_is_found_where_fontconfig_has_it`.
-19. **A line holding only zero-advance atoms ends at a soft wrap opportunity, and a `<wbr>`
+21. **A line holding only zero-advance atoms ends at a soft wrap opportunity, and a `<wbr>`
     after an overflow stays on the line or starts the next by its own `white-space`**
     (`27603cfd`, `c109b113`, `13ed23fd`, `a8f903b7` and `8e871f08`, `parley/src/layout/line_break.rs`,
     `parley/src/tests/test_wbr.rs`; #2944). The breaker took no opportunity while the line's
