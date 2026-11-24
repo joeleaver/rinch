@@ -254,6 +254,17 @@ jobs:
         with:
           packages: libvpx-dev
 
+      # - valgrind: `font_warmup::tests::the_warm_up_runs_under_valgrind_3016`
+      #   runs the font warm-up thread under Callgrind and Memcheck (#3016:
+      #   rustix's first vDSO look-up died under Valgrind). This shard runs
+      #   rinch's lib tests; `RINCH_REQUIRE_VALGRIND` below makes the test fail
+      #   rather than skip when valgrind is missing, so it cannot pass unrun.
+      - name: Install valgrind (the font warm-up under Valgrind)
+        if: matrix.shard == 'unit'
+        uses: ./.github/actions/apt-install
+        with:
+          packages: valgrind
+
       - name: Install Rust toolchain
         id: rust
         uses: ./.github/actions/rust-toolchain
@@ -265,6 +276,8 @@ jobs:
           save-if: ${{ github.event_name == 'push' && matrix.shard == 'unit' }}
 
       - name: Run tests
+        env:
+          RINCH_REQUIRE_VALGRIND: ${{ matrix.shard == 'unit' && '1' || '' }}
         run: ${{ matrix.run }}
 
   # The `#[ignore]`d GPU pixel tests (#1865 D9), on lavapipe: Mesa's software
