@@ -872,6 +872,10 @@ pub struct InlineLayout {
     /// #1632). Read by the damage ink and the clip proof
     /// (`paint::text::inline_ink_past_lines`).
     pub(crate) glyph_overflow: Option<[f32; 4]>,
+    /// Where the lines reach horizontally, `[x0, x1]` in CSS px from the
+    /// content origin, `None` for a layout with no lines
+    /// ([`Self::lines_x_reach_of`]). Read through [`Self::lines_x_reach`].
+    pub(crate) lines_x_reach: Option<[f32; 2]>,
 }
 
 /// Where `text-overflow: ellipsis` cuts an IFC root's lines (#1100): what
@@ -987,6 +991,39 @@ impl InlineLayout {
             return None;
         }
         self.layout.get(n - 1)
+    }
+
+    /// Where the lines reach horizontally, `[x0, x1]` in CSS px from the
+    /// content origin: the union of every line's line box
+    /// (`inline_min_coord..inline_max_coord`) and its content, from where it
+    /// is placed (`offset`) to `advance` past that. A line can start left of
+    /// the origin (a negative `text-indent`, an rtl line wider than its box)
+    /// and end past the layout's `width()`, which measures advances, not
+    /// placement. Hit testing's flow extent reads it (#2956), so the prune
+    /// reaches every point a line's text can be hit at. `None` when there
+    /// are no lines.
+    pub fn lines_x_reach(&self) -> Option<[f32; 2]> {
+        self.lines_x_reach
+    }
+
+    /// [`Self::lines_x_reach`] measured over `layout`, once when the lines
+    /// are built. The line box counts for a justified line, whose clusters
+    /// are spread past `advance` (which leaves the justification out); an
+    /// unbounded line box (lines broken in infinite room) is left out, its
+    /// content alone counting.
+    pub(crate) fn lines_x_reach_of(layout: &parley::layout::Layout<Brush>) -> Option<[f32; 2]> {
+        let mut reach: Option<[f32; 2]> = None;
+        for line in layout.lines() {
+            let m = line.metrics();
+            let start = m.inline_min_coord + m.offset;
+            let (mut x0, mut x1) = (start, start + m.advance);
+            if m.inline_min_coord.is_finite() && m.inline_max_coord.is_finite() {
+                x0 = x0.min(m.inline_min_coord);
+                x1 = x1.max(m.inline_max_coord);
+            }
+            reach = Some(reach.map_or([x0, x1], |[a0, a1]| [a0.min(x0), a1.max(x1)]));
+        }
+        reach
     }
 
     /// Where `layout`'s glyphs reach, in CSS px `[x0, y0, x1, y1]` from the
