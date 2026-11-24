@@ -28,11 +28,16 @@ wasm_bindgen_test_configure!(run_in_browser);
 #[wasm_bindgen(inline_js = r#"
 export function rv_install() {
   if (window.__rv) return;
-  window.__rv = { ctxs: [], errors: [] };
+  window.__rv = { ctxs: [], procs: [], errors: [] };
   const B = BaseAudioContext.prototype;
   for (const m of ['createMediaStreamSource', 'createScriptProcessor']) {
     const o = B[m];
-    B[m] = function(...a) { if (!window.__rv.ctxs.includes(this)) window.__rv.ctxs.push(this); return o.apply(this, a); };
+    B[m] = function(...a) {
+      if (!window.__rv.ctxs.includes(this)) window.__rv.ctxs.push(this);
+      const node = o.apply(this, a);
+      if (m === 'createScriptProcessor') window.__rv.procs.push(node);
+      return node;
+    };
   }
   window.addEventListener('error', e => window.__rv.errors.push('err:' + String(e.message)));
   window.addEventListener('unhandledrejection', e => window.__rv.errors.push('rej:' + String(e.reason)));
@@ -42,6 +47,69 @@ export function rv_ctx_states(from) { return window.__rv.ctxs.slice(from).map(c 
 export function rv_errors() { return window.__rv.errors.join(' | '); }
 export function rv_video_count() { return document.querySelectorAll('video').length; }
 export function rv_ua() { return navigator.userAgent; }
+// Firefox's order (#3007): a context delivers buffers before its `state`
+// says `running` and before its `statechange` fires. While held, every
+// AudioContext but `keep` reports `suspended` and its `statechange` handler
+// calls wait; release restores `state` and then makes the waiting calls,
+// which read `running`.
+export function rv_hold_state(keep) {
+  const B = BaseAudioContext.prototype;
+  const state = Object.getOwnPropertyDescriptor(B, 'state').get;
+  const on = Object.getOwnPropertyDescriptor(B, 'onstatechange');
+  window.__rvHold = [];
+  Object.defineProperty(AudioContext.prototype, 'state', {
+    configurable: true,
+    get() { return this === keep ? state.call(this) : 'suspended'; },
+  });
+  Object.defineProperty(AudioContext.prototype, 'onstatechange', {
+    configurable: true,
+    get() { return on.get.call(this); },
+    set(h) {
+      if (this === keep || !h) return on.set.call(this, h);
+      const ctx = this;
+      on.set.call(this, e => window.__rvHold ? window.__rvHold.push(() => h.call(ctx, e)) : h.call(ctx, e));
+    },
+  });
+}
+export function rv_release_state() {
+  const waiting = window.__rvHold;
+  window.__rvHold = null;
+  delete AudioContext.prototype.state;
+  delete AudioContext.prototype.onstatechange;
+  if (window.__rvHeld) delete window.__rvHeld.state;
+  window.__rvHeld = null;
+  for (const f of waiting || []) f();
+  return (waiting || []).length;
+}
+export function rv_suspend(i) { return window.__rv.ctxs[i].suspend(); }
+export function rv_proc_count() { return window.__rv.procs.length; }
+// A buffer the context queued before it stopped, reaching the handler late.
+export function rv_late_buffer(i) {
+  const p = window.__rv.procs[i];
+  const b = new AudioBuffer({ length: 1024, sampleRate: p.context.sampleRate, numberOfChannels: 1 });
+  p.onaudioprocess({ inputBuffer: b, outputBuffer: b, playbackTime: 0 });
+}
+export function rv_pointerdown() { window.dispatchEvent(new PointerEvent('pointerdown')); }
+// Firefox's order after a resume: the context delivers before `state`
+// reads `running` and before `statechange`. Context `i`'s `state` reads
+// `suspended` and its installed `statechange` handler waits, until
+// rv_release_state (which also lifts this instance override).
+export function rv_hold_installed(i) {
+  const ctx = window.__rv.ctxs[i];
+  const h = ctx.onstatechange;
+  window.__rvHold = [];
+  window.__rvHeld = ctx;
+  Object.defineProperty(ctx, 'state', { configurable: true, get() { return 'suspended'; } });
+  ctx.onstatechange = e => window.__rvHold ? window.__rvHold.push(() => h.call(ctx, e)) : h.call(ctx, e);
+}
+// Context `i` reports `state` (until rv_release_state) and fires `statechange`.
+export function rv_fake_state(i, state) {
+  const ctx = window.__rv.ctxs[i];
+  window.__rvHeld = ctx;
+  Object.defineProperty(ctx, 'state', { configurable: true, get() { return state; } });
+  ctx.dispatchEvent(new Event('statechange'));
+}
+export function rv_close(i) { return window.__rv.ctxs[i].close(); }
 "#)]
 extern "C" {
     fn rv_install();
@@ -50,6 +118,15 @@ extern "C" {
     fn rv_errors() -> String;
     fn rv_video_count() -> u32;
     fn rv_ua() -> String;
+    fn rv_hold_state(keep: &web_sys::AudioContext);
+    fn rv_release_state() -> u32;
+    fn rv_suspend(i: u32) -> js_sys::Promise;
+    fn rv_proc_count() -> u32;
+    fn rv_late_buffer(i: u32);
+    fn rv_pointerdown();
+    fn rv_hold_installed(i: u32);
+    fn rv_fake_state(i: u32, state: &str);
+    fn rv_close(i: u32) -> js_sys::Promise;
 }
 
 /// Resume `ctx`, waiting at most 3 s. A browser with no audio output can
@@ -413,4 +490,212 @@ async fn audio_status_says_whether_samples_arrive() {
     }
     drop(input);
     let _ = ctx.close();
+}
+
+/// Samples delivered mean `Running`, whatever the context's `state` says
+/// (#3007). Firefox delivers a context's first buffers (rendered on its
+/// fallback clock while the audio output opens) before `state` reads
+/// `running` and before `statechange` fires; the status, derived from
+/// `state` alone, said `WaitingForGesture` with samples already in hand.
+/// That order is made here in any browser: every context but the source's
+/// reports `suspended` and its `statechange` waits, so the capture context
+/// delivers while its `state` says it is held and before its `statechange`.
+///
+/// The no-autoplay run skips it: a held context delivers nothing, and
+/// `audio_status_says_whether_samples_arrive` pins that.
+#[wasm_bindgen_test]
+async fn audio_is_running_once_samples_arrive_whatever_state_says() {
+    if option_env!("RINCH_AV_NO_AUTOPLAY").is_some() {
+        return;
+    }
+    rv_install();
+    let tone = tone_ctx(None).await;
+    let s = tone_stream(&tone);
+    rv_hold_state(&tone.ctx);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let input = open_audio_input_from_stream(&s, AudioInputConfig::default(), move |_| {
+        c.fetch_add(1, Ordering::Relaxed);
+    });
+    for _ in 0..50 {
+        sleep_ms(100).await;
+        if calls.load(Ordering::Relaxed) > 0 {
+            break;
+        }
+    }
+    let n = calls.load(Ordering::Relaxed);
+    let status = input.status();
+    // The `statechange` that waited, now reading `running`.
+    let waited = rv_release_state();
+    let after = input.status();
+    drop(input);
+    let _ = tone.ctx.close();
+    assert!(n > 0, "the capture context delivers samples");
+    assert_eq!(
+        status,
+        AudioInputStatus::Running,
+        "{n} buffers delivered, yet the status says the context is held"
+    );
+    assert_eq!(waited, 1, "the capture context's statechange waited");
+    assert_eq!(after, AudioInputStatus::Running);
+}
+
+/// Wait up to 3 s for `f`.
+async fn until(mut f: impl FnMut() -> bool) -> bool {
+    for _ in 0..30 {
+        if f() {
+            return true;
+        }
+        sleep_ms(100).await;
+    }
+    f()
+}
+
+/// A context that stops after running is held again: the status says so
+/// (a buffer queued before it stopped does not say `Running`), and the
+/// page's next gesture resumes it. The no-autoplay run skips it (nothing
+/// runs there).
+#[wasm_bindgen_test]
+async fn audio_stopped_after_running_waits_for_a_gesture_again() {
+    if option_env!("RINCH_AV_NO_AUTOPLAY").is_some() {
+        return;
+    }
+    rv_install();
+    let tone = tone_ctx(None).await;
+    let (input, calls, capture, processor) = running_input(&tone_stream(&tone)).await;
+
+    // The context stops (here by `suspend()`; the browser can do it too).
+    let _ = JsFuture::from(rv_suspend(capture)).await;
+    let held = until(|| input.status() == AudioInputStatus::WaitingForGesture).await;
+    // A buffer queued before it stopped arrives late: the status stays held.
+    let delivered = calls.load(Ordering::Relaxed);
+    rv_late_buffer(processor);
+    let late = calls.load(Ordering::Relaxed) - delivered;
+    let still = input.status();
+
+    // A gesture resumes it, and samples arrive again.
+    let before = calls.load(Ordering::Relaxed);
+    rv_pointerdown();
+    let resumed = until(|| {
+        input.status() == AudioInputStatus::Running && calls.load(Ordering::Relaxed) > before
+    })
+    .await;
+    let status = input.status();
+    drop(input);
+    let _ = tone.ctx.close();
+    assert!(held, "a stopped context says it is held");
+    assert_eq!(late, 1, "the late buffer reached the capture's handler");
+    assert_eq!(still, AudioInputStatus::WaitingForGesture);
+    assert!(resumed, "the gesture resumed capture (status {status:?})");
+}
+
+/// Open capture from `s` and wait until it delivers. Returns the input,
+/// its call counter, and the indices of its context and processor.
+async fn running_input(
+    s: &MediaStream,
+) -> (
+    rinch_av::audio::AudioInputStream,
+    Arc<AtomicUsize>,
+    u32,
+    u32,
+) {
+    let capture = rv_ctx_count();
+    let processor = rv_proc_count();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let input = open_audio_input_from_stream(s, AudioInputConfig::default(), move |_| {
+        c.fetch_add(1, Ordering::Relaxed);
+    });
+    assert!(
+        until(|| calls.load(Ordering::Relaxed) > 0).await,
+        "the capture context delivers samples"
+    );
+    assert_eq!(input.status(), AudioInputStatus::Running);
+    (input, calls, capture, processor)
+}
+
+/// Resumed by a gesture, a stopped context's first buffers arrive (in
+/// Firefox) while `state` still reads `suspended` and before `statechange`
+/// says `running`: they are the resumed context's, so the status says
+/// `Running` as they arrive (#3008's review). Made here in any browser by
+/// holding the installed handler and the context's `state`.
+#[wasm_bindgen_test]
+async fn audio_resumed_by_a_gesture_is_running_once_samples_arrive() {
+    if option_env!("RINCH_AV_NO_AUTOPLAY").is_some() {
+        return;
+    }
+    rv_install();
+    let tone = tone_ctx(None).await;
+    let (input, calls, capture, _) = running_input(&tone_stream(&tone)).await;
+    let _ = JsFuture::from(rv_suspend(capture)).await;
+    let held = until(|| input.status() == AudioInputStatus::WaitingForGesture).await;
+
+    rv_hold_installed(capture);
+    let before = calls.load(Ordering::Relaxed);
+    rv_pointerdown();
+    let delivered = until(|| calls.load(Ordering::Relaxed) > before).await;
+    let status = input.status();
+    let waited = rv_release_state();
+    let after = input.status();
+    drop(input);
+    let _ = tone.ctx.close();
+    assert!(held, "a stopped context says it is held");
+    assert!(delivered, "the gesture resumed delivery");
+    assert_eq!(
+        status,
+        AudioInputStatus::Running,
+        "samples delivered after the gesture's resume, yet the status says held"
+    );
+    assert_eq!(waited, 1, "the resume's statechange waited");
+    assert_eq!(after, AudioInputStatus::Running);
+}
+
+/// Safari's `interrupted` stops delivery as `suspended` does: the status
+/// says held (it said `Running`), and `running` again says `Running`.
+#[wasm_bindgen_test]
+async fn audio_interrupted_says_held() {
+    if option_env!("RINCH_AV_NO_AUTOPLAY").is_some() {
+        return;
+    }
+    rv_install();
+    let tone = tone_ctx(None).await;
+    let (input, _, capture, processor) = running_input(&tone_stream(&tone)).await;
+    rv_fake_state(capture, "interrupted");
+    let interrupted = input.status();
+    // A buffer queued before the interruption does not say `Running`.
+    rv_late_buffer(processor);
+    let late = input.status();
+    rv_fake_state(capture, "running");
+    let back = input.status();
+    rv_release_state();
+    drop(input);
+    let _ = tone.ctx.close();
+    assert_eq!(interrupted, AudioInputStatus::WaitingForGesture);
+    assert_eq!(late, AudioInputStatus::WaitingForGesture);
+    assert_eq!(back, AudioInputStatus::Running);
+}
+
+/// The capture context closed under the stream (not by its drop): nothing
+/// will arrive again, so the status says `Failed`, the track is stopped,
+/// and a buffer still queued does not say `Running`.
+#[wasm_bindgen_test]
+async fn audio_context_closed_under_the_stream_fails_and_ends_the_track() {
+    if option_env!("RINCH_AV_NO_AUTOPLAY").is_some() {
+        return;
+    }
+    rv_install();
+    let tone = tone_ctx(None).await;
+    let s = tone_stream(&tone);
+    let track: web_sys::MediaStreamTrack = s.get_audio_tracks().get(0).unchecked_into();
+    let (input, _, capture, processor) = running_input(&s).await;
+    let _ = JsFuture::from(rv_close(capture)).await;
+    let failed = until(|| matches!(input.status(), AudioInputStatus::Failed(_))).await;
+    rv_late_buffer(processor);
+    let late = input.status();
+    let ended = track.ready_state();
+    drop(input);
+    let _ = tone.ctx.close();
+    assert!(failed, "the status after the close: {late:?}");
+    assert!(matches!(late, AudioInputStatus::Failed(_)), "{late:?}");
+    assert_eq!(ended, MediaStreamTrackState::Ended);
 }
