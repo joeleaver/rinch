@@ -3,7 +3,7 @@
 //! One computation, three consumers: the paint pass draws the thumbs from it,
 //! and the desktop input path hit-tests and drags them by it. They used to
 //! derive it separately — paint inline in `super::paint_node`, input in
-//! `rinch/src/app/hit_testing.rs` and the `MouseDown`/`MouseMove` arms — and
+//! `rinch/src/app/hit_testing/` and the `MouseDown`/`MouseMove` arms — and
 //! the two had drifted apart in two ways, so a drag did not move the thumb the
 //! distance the pointer moved (#400):
 //!
@@ -1549,7 +1549,7 @@ fn auto_thumb_color(color: Option<peniko::Color>) -> AlphaColor<Srgb> {
 ///
 /// This is the "visible" half of the overflow test [`scrollbars`] answers by
 /// painting a bar: a node overflows an axis when [`content_extents`] on that
-/// axis exceeds this. Exposed so `rinch/src/app/hit_testing.rs`'s
+/// axis exceeds this. Exposed so `rinch/src/app/hit_testing/scroll.rs`'s
 /// `find_*_scroll_container` walks (the wheel's routing) ask the exact same
 /// question rather than re-deriving "visible" against the **border** box,
 /// which is strictly larger whenever there is any padding or border: that
