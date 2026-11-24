@@ -676,8 +676,19 @@ for its content); a fixed box, and an absolute one contained above the
 scroller, count nothing; a transformed box is listed and measured where it is
 drawn on each read. **Cost:** the walk is the subtree, so it is kept per
 container (`NodeTree::deep_overflow`, `scrollbar::DeepOverflow`) with a
-`WalkSnap` of every box it met: its box, its lines' extent, and whether it
-clips, is transformed, positioned, displayed or collapsed. Every read first
+`WalkSnap` of every box it met: everything the walk reads of it — its box,
+the offset `box_origin` adds to it for an atomic inline, its own **content
+origin** (padding+border, `ifc_root_content_origin`), its lines' extent, its
+`DisplayMode`, whether it clips, is transformed, positioned, displayed or
+collapsed, and whether it is the containing block of an absolute or a fixed
+box below it. The content origin is there because a box's lines, and the
+atomic inlines its inline formatting context places (whose `layout` is
+relative to its content box), move with its padding or border while its box
+and their `layout` stay put: without it a `padding-left: 150px` on a 280px
+border-box box kept an inline-block inside it out of the range (review of
+#2961, round 3). The containing-block bits are there because a `filter`
+taken off a box puts an inset-less absolute box below it out of the
+scroller's overflow with nothing else of either changed. Every read first
 checks the boxes pushed paint-dirty, and the parents a subtree left
 (`bar_check_parents`), since the last check, and `consume_paint_dirty` runs
 the same check before it drains those lists. For each such box the entry of
@@ -688,8 +699,10 @@ that is itself unchanged: a hover colour keeps the entry; a box toggled to
 transform given with no layout, or a box added under one the walk entered
 drops it. (The first version judged "moved" against the last *paint*, with
 `geometry_may_have_moved`, and missed both the `overflow` toggle and the
-change-and-back: review of #2961.) A box whose snapshot differs in its box or
-its lines alone is kept too when it adds nothing to the reach
+change-and-back: review of #2961.) A box whose snapshot differs in its box
+(position, inline offset included, and size) or its lines alone — not its
+content origin, since what its record holds below it was placed from the old
+one — is kept too when it adds nothing to the reach
 (`moved_inside`): the walk does not count what lies inside the border box of
 its **top box** — the first box below the scroller, through `display:
 contents` wrappers (`Keep::top`, `containing_rect`; not an empty, atomic

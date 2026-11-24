@@ -459,7 +459,7 @@ fn descendant_reach(
     let out = walk_out(tree, container_id, node);
     if let Some(keep) = keep {
         keep.snaps
-            .insert(node.id, Rec::new(WalkSnap::of(node, out), origin));
+            .insert(node.id, Rec::new(WalkSnap::of(tree, node, out), origin));
     }
     if node.computed_style.display == crate::computed_style::DisplayValue::None || out {
         return Found::NONE;
@@ -671,29 +671,60 @@ impl Rec {
 }
 
 /// Everything [`descendant_reach`] reads of one box: where it is and how big,
-/// its lines' extent, and each property that decides whether the walk
-/// counts it and goes into it. A kept walk is stale exactly when one of
-/// these differs for a box it met, or a box appears under one it entered
-/// ([`DeepOverflow`]).
+/// where what it lays out from its content box starts, its lines' extent,
+/// and each property that decides whether the walk counts it and goes into
+/// it — or whether it counts a box below it ([`walk_out`]). A kept walk is
+/// stale exactly when one of these differs for a box it met, or a box
+/// appears under one it entered ([`DeepOverflow`]).
+///
+/// A box's own `layout` does not say where its content is: its lines, and
+/// the atomic inlines its inline formatting context places (whose `layout`
+/// is relative to its content box), start one padding+border in
+/// ([`super::ifc_root_content_origin`]). Padding or a border changes that
+/// without moving or resizing the box, and without moving the boxes placed
+/// from it in their own `layout`, so the snapshot carries it
+/// (`content_origin`), and each box carries the offset the walk added to
+/// its own origin for it (`inline_offset`, [`box_origin`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct WalkSnap {
     layout: crate::node::LayoutResult,
+    /// What [`box_origin`] adds to its layout origin: its IFC root's content
+    /// origin, for an atomic inline ([`super::ifc_content_box_offset`]).
+    inline_offset: (f32, f32),
+    /// Its own content origin, from its border box: what its lines and the
+    /// atomic inlines of its inline formatting context are placed from.
+    content_origin: (f32, f32),
     /// Its lines' `(width, height, leftmost start)`, for an IFC root.
     lines: Option<(f32, f32, f32)>,
+    /// How it takes part in its formatting context: whether it is an atomic
+    /// inline decides where its children are placed from and whether it
+    /// holds them as a top box ([`containing_rect`]).
+    mode: crate::node::DisplayMode,
     clips: bool,
     transformed: bool,
     position: PositionValue,
     display: crate::computed_style::DisplayValue,
     contents: bool,
     collapsed: bool,
+    /// Whether it is the containing block of an absolute, and of a fixed,
+    /// box below it: what decides whether such a box is the container's
+    /// overflow ([`crate::out_of_flow::contributes_to_scrollable_overflow`]).
+    /// A `filter` makes one with no change to anything else recorded here.
+    holds_abs: bool,
+    holds_fixed: bool,
+    /// A fixed box contained by a box below the viewport, which is judged as
+    /// an absolute one.
+    fixed_contained: bool,
     /// Not the container's overflow (fixed, contained above, empty absolute).
     out: bool,
 }
 
 impl WalkSnap {
-    fn of(node: &crate::node::Node, out: bool) -> Self {
+    fn of(tree: &NodeTree, node: &crate::node::Node, out: bool) -> Self {
         Self {
             layout: node.layout,
+            inline_offset: super::ifc_content_box_offset(tree, node),
+            content_origin: super::ifc_root_content_origin(node),
             lines: node.text_layout.as_ref().map(|t| {
                 (
                     t.layout.width(),
@@ -701,12 +732,16 @@ impl WalkSnap {
                     lines_left(&t.layout) as f32,
                 )
             }),
+            mode: node.display_mode,
             clips: node.clips_overflow(),
             transformed: node.has_applied_transform(),
             position: node.box_position(),
             display: node.computed_style.display,
             contents: node.taffy_style_owned_by_contents_splice(),
             collapsed: node.estimated_height.is_some(),
+            holds_abs: node.establishes_abs_containing_block(),
+            holds_fixed: node.establishes_fixed_containing_block(),
+            fixed_contained: node.fixed_contained,
             out,
         }
     }
@@ -771,8 +806,10 @@ fn walk_deep_overflow(tree: &NodeTree, container_id: RawNodeId) -> DeepEntry {
         if let Some(keep) = &mut keep
             && !child.is_text()
         {
-            keep.snaps
-                .insert(child_id, Rec::new(WalkSnap::of(child, !enters), (0.0, 0.0)));
+            keep.snaps.insert(
+                child_id,
+                Rec::new(WalkSnap::of(tree, child, !enters), (0.0, 0.0)),
+            );
         }
         if enters {
             // A box child is its descendants' top box; a `display: contents`
@@ -919,7 +956,7 @@ impl DeepOverflow {
             let Some(node) = tree.get_live(id) else {
                 continue;
             };
-            let now = WalkSnap::of(node, false);
+            let now = WalkSnap::of(tree, node, false);
             chain.clear();
             let mut current = Some(id);
             while let Some(a) = current {
@@ -954,7 +991,7 @@ impl DeepOverflow {
                         snap.is_stop()
                             && tree
                                 .get_live(chain[i])
-                                .is_some_and(|n| same_snap(&snap, &WalkSnap::of(n, snap.out)))
+                                .is_some_and(|n| same_snap(&snap, &WalkSnap::of(tree, n, snap.out)))
                     }
                 });
                 if !keep {
@@ -973,8 +1010,11 @@ impl DeepOverflow {
 
 /// Whether box `id`, whose [`WalkSnap`] differs from the one `entry`'s walk
 /// recorded, changed only where it adds nothing to the kept reach — and if
-/// so, the record follows it. Only its box and its lines may have changed
-/// (nothing that decides whether the walk counts it or goes into it), and
+/// so, the record follows it. Only its box (where it is, inline offset
+/// included, and how big) and its lines may have changed — nothing that
+/// decides whether the walk counts it or goes into it, and not its content
+/// origin, which moves what is placed from it with no change to their
+/// `layout` ([`WalkSnap`]) — and
 /// either it counts nothing (out of the container's overflow, displayed
 /// `none`, or transformed, which each read measures anew), or nothing of it
 /// was counted and all of it — its box, its lines and what the walk found
@@ -1022,10 +1062,14 @@ fn moved_inside(
     } else {
         walk_out(tree, container_id, node)
     };
-    let now = WalkSnap::of(node, out);
-    // Only its box and its lines may differ.
+    let now = WalkSnap::of(tree, node, out);
+    // Only where its box is, how big, and its lines may differ — not its
+    // content origin: the record of what is below it holds the lines and
+    // atomic inlines placed from that origin where they were, and they do
+    // not move in their own `layout` when it does.
     if (WalkSnap {
         layout: rec.snap.layout,
+        inline_offset: rec.snap.inline_offset,
         lines: rec.snap.lines,
         ..now
     }) != rec.snap
