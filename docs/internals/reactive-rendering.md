@@ -465,7 +465,7 @@ ambient owner already is the caller's.
 - No live owner at creation, or a creator that has unmounted since: the
   callback runs under the dispatch-time owner, rather than pushing "no owner",
   so what it creates still ends with a live component.
-- `untracked_handler` (observer stack) and the owner push (owner stack) are
+- `untracked_handler` (current observer) and the owner push (owner stack) are
   independent; batching is unchanged.
 
 **The caller-owned region (#3030).** The same holds for handlers written among

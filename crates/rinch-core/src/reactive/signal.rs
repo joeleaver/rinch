@@ -224,7 +224,7 @@ impl<T: 'static> Signal<T> {
     /// records nothing, which keeps the registry lookup to once per dependency
     /// per run rather than once per read.
     fn track(&self) {
-        let Some(observer) = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied()) else {
+        let Some(observer) = super::tracking::current_observer() else {
             return;
         };
         // Clone the signal's own cell out of the store under a brief shared

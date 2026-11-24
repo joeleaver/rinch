@@ -16,11 +16,12 @@
 //! owned by nobody and live as long as the thread. That is what makes
 //! ownership non-breaking to add.
 //!
-//! Two independent stacks are in play, and they are easy to confuse:
+//! Two independent pieces of ambient state are in play, and they are easy to
+//! confuse:
 //!
-//! | stack | suspended by | answers |
+//! | state | suspended by | answers |
 //! |---|---|---|
-//! | observer stack | [`untracked`](super::untracked) | *who subscribes to this read* |
+//! | current observer | [`untracked`](super::untracked) | *who subscribes to this read* |
 //! | owner stack | [`unowned`] | *who owns this allocation* |
 //!
 //! [`Signal`]: super::Signal
@@ -478,60 +479,6 @@ pub(crate) fn disposal_available() -> bool {
         && super::MEMO_STORE.try_with(|_| ()).is_ok()
 }
 
-/// Suspends the **entire** observer stack until dropped.
-///
-/// Teardown's counterpart to [`untracked`](super::untracked), which pops
-/// exactly one observer and is the right depth for a *render* boundary: user
-/// render code always runs exactly one boundary deep, and every boundary wraps
-/// its render in one `untracked`, so a single pop leaves the stack balanced at
-/// any nesting depth (the #491 invariant). Disposal has no such structural
-/// position — the fixpoint can start from a reconcile effect (one observer
-/// live), from a bare `Effect::new` first run nested inside another effect
-/// (two live, with nothing having balanced the outer frame), or from
-/// `run_effect` dropping a retired closure after its own observer already
-/// popped (whatever the surrounding context holds). "A teardown read
-/// subscribes nobody" is depth-independent, so the guard is too: every frame
-/// is suspended, and restored on drop — including while unwinding, for the
-/// same reason `untracked`'s `RestoreObserver` restores (#232): a panic caught
-/// upstream must not leave the stack short.
-///
-/// Effects that *run* during the suspension track normally — a cleanup that
-/// writes a signal flushes effects synchronously, and a cleanup may even
-/// create one; each pushes its own observer onto the emptied stack. Only the
-/// observers that were mid-run when disposal began are hidden, and those are
-/// exactly the ones a teardown read must not subscribe (issue #494).
-pub(in crate::reactive) struct SuspendObservers {
-    saved: Vec<ObserverId>,
-}
-
-impl SuspendObservers {
-    pub(in crate::reactive) fn take() -> Self {
-        SuspendObservers {
-            saved: RUNTIME.with(|rt| std::mem::take(&mut rt.borrow_mut().observer_stack)),
-        }
-    }
-}
-
-impl Drop for SuspendObservers {
-    fn drop(&mut self) {
-        if self.saved.is_empty() {
-            return;
-        }
-        let saved = std::mem::take(&mut self.saved);
-        let _ =
-            super::restore::with_runtime_on_drop("the observer stack disposal suspended", |rt| {
-                // The saved frames go back *under* anything still on the stack:
-                // an observer pushed during the suspension and not yet popped
-                // belongs to a frame above this guard, and its `ObserverGuard`
-                // pops blindly from the top. (In normal flow the stack is empty
-                // again here — every run that started during the suspension has
-                // finished — so this is belt and braces for unwinding.)
-                let since = std::mem::replace(&mut rt.observer_stack, saved);
-                rt.observer_stack.extend(since);
-            });
-    }
-}
-
 /// Clears the in-flight [`DisposeCtx`] on drop, including while unwinding.
 ///
 /// The fixpoint runs arbitrary user code — cleanups, closure drops, value drops
@@ -556,7 +503,7 @@ impl Drop for DisposeCtxGuard {
         // still teardown user code, so still untracked (issue #494), even on
         // this unwinding path.
         if leftover.is_some() {
-            let _untracked = SuspendObservers::take();
+            let _untracked = super::tracking::SuspendObservers::take();
             drop(leftover);
         }
     }
@@ -645,7 +592,7 @@ fn run_dispose_fixpoint() {
     // cascades too: a cleanup that disposes a further scope only pushes work
     // onto the in-flight context, and that work drains in later iterations of
     // this same loop, still under this guard.
-    let _untracked = SuspendObservers::take();
+    let _untracked = super::tracking::SuspendObservers::take();
     loop {
         // 1. Handlers.
         let handlers = take_batch(|ctx| &mut ctx.handlers);
@@ -971,7 +918,7 @@ pub fn current_owner() -> Option<Owner> {
 /// lifetime of the thread.
 ///
 /// The owner-stack counterpart to [`untracked`](super::untracked), which
-/// suspends the *observer* stack instead. The two are independent and easy to
+/// suspends the current *observer* instead. The two are independent and easy to
 /// confuse; picking the wrong one fails silently.
 ///
 /// # Warning
@@ -2007,16 +1954,14 @@ mod tests {
         assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
     }
 
-    /// A teardown read subscribes no observer at ANY stack depth (issue #494).
+    /// A teardown read subscribes no observer at ANY nesting depth (issue
+    /// #494).
     ///
-    /// Disposal is not a render boundary: it can begin with several observers
-    /// live — here a bare `Effect::new` running inside another effect, stack
-    /// `[outer, inner]`, where nothing has balanced the outer frame (bare
-    /// `Effect::new` is not one of the #491 boundaries). A one-`untracked`
-    /// guard — the render-side shape — would pop `inner` and hand the
-    /// cleanup's read to `outer`, trading one wrong subscriber for another.
-    /// This test fails the unfixed code (the inner effect re-runs) AND that
-    /// mutant (the outer effect re-runs): teardown suspends the whole stack.
+    /// Disposal is not a render boundary: it can begin with several observer
+    /// runs in progress — here a bare `Effect::new` running inside another
+    /// effect. When the observer runtime was a stack, a one-frame pop would
+    /// have handed the cleanup's read to `outer`; since #3047 a nested run
+    /// hides the outer one, and this pins that neither subscribes.
     #[test]
     fn a_teardown_read_subscribes_no_observer_at_any_stack_depth() {
         let probe = Signal::new(0u32);

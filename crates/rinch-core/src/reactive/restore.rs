@@ -2,7 +2,7 @@
 //! (issue #234, item 3).
 //!
 //! rinch-core keeps its ambient state in thread-locals — the reactive
-//! [`Runtime`] (observer stack, owner stack, batching flag),
+//! [`Runtime`] (current observer, owner stack, batching flag),
 //! the context root and dispatching document, the effect depth, the
 //! child-observer dispatch flag — and every piece of code that changes one of
 //! them for the length of a call restores it with an RAII guard, so that a
@@ -254,7 +254,7 @@ mod tests {
         );
 
         // Positive control: with the borrow released it runs and answers.
-        let depth = with_runtime_on_drop("a test value", |rt| rt.observer_stack.len());
+        let depth = with_runtime_on_drop("a test value", |rt| rt.observer.is_none());
         assert!(depth.is_ok(), "an unborrowed runtime runs the restore");
     }
 }

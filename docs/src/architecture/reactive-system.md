@@ -211,7 +211,7 @@ thread-local slabs rather than in shared smart pointers:
 - Thread-local runtime by default
 - All reactive primitives (`Signal`, `Effect`, `Memo`) are `!Send` and `!Sync`
 - This is intentional: GUI frameworks are inherently single-threaded (main thread)
-- The observer stack and effect scheduling are thread-local
+- The current observer and effect scheduling are thread-local
 
 ## Comparison with Other Systems
 
