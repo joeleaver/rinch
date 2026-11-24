@@ -2209,6 +2209,10 @@ fn handle_mousedown(event: &web_sys::MouseEvent, doc: &web_sys::Document) -> boo
     // Focus the hidden capture target so the browser routes clipboard / IME events
     // to this editor (a non-`contenteditable` `<div>` would receive none).
     focus_capture_target(doc, &handle);
+    // A press is the user's interaction: the spellchecker checks the whole
+    // document, in slices after this event (#2862). Nothing happens unless
+    // the app supplied dictionaries.
+    handle.spell_user_focus();
 
     // A click on a leaf atom node-selects it: any node the schema calls a
     // selectable leaf (an image, a horizontal rule, an `embed` — a node view's

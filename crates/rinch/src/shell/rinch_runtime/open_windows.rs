@@ -400,8 +400,19 @@ impl ShellWindow {
     pub(super) fn close(mut self) {
         self.app.dispose_document();
         self.forget_published();
+        // A popup's renderer is kept for the next popup (#2552).
         #[cfg(feature = "gpu-renderer")]
-        drop(self.renderer.take());
+        if let Some(renderer) = self.renderer.take() {
+            if window_handle::with_popup(self.handle, |_| ()).is_some() {
+                let idle = self
+                    .app
+                    .window_props
+                    .as_ref()
+                    .map_or(Default::default(), |p| p.idle_trim)
+                    .period();
+                super::popups::keep_spare_renderer(renderer, idle);
+            }
+        }
         drop(self.soft_renderer.take());
         drop(self.window.take());
     }

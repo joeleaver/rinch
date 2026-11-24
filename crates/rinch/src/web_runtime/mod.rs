@@ -60,6 +60,9 @@ pub(crate) fn install_web_scheduling() {
     // no threads, so rinch-core's built-in shared-thread scheduler cannot run
     // here.
     rinch_core::set_timer_backend_with_cancel(web_set_timeout, web_clear_timeout);
+    // `yield_now` (work in slices, #2862) through a `MessageChannel`: a
+    // nested `setTimeout(0)` waits at least 4 ms, a posted message does not.
+    rinch_core::set_yield_backend(web_yield);
     // And `rinch_core::spawn_local`'s polls off microtasks: nothing drains the
     // main-thread callback queue in a browser unless an embedded context's
     // `update()` does, once a frame.
@@ -90,6 +93,44 @@ fn web_set_timeout(id: u64, delay_ms: u32) {
         )
     {
         TIMEOUTS.with(|t| t.borrow_mut().insert(id, handle));
+    }
+}
+
+/// The web `yield_now` backend: `fire_timeout(id)` in the task a
+/// `MessageChannel` message starts. One channel for the page; the ids wait in
+/// order in `YIELDS`, one message each. Falls back to a 0 ms timeout where
+/// the channel cannot be made.
+fn web_yield(id: u64) {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
+
+    thread_local! {
+        static YIELDS: std::cell::RefCell<std::collections::VecDeque<u64>> =
+            const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+        static CHANNEL: Option<web_sys::MessageChannel> = {
+            let channel = web_sys::MessageChannel::new().ok()?;
+            let on_message = Closure::<dyn FnMut()>::new(|| {
+                if let Some(id) = YIELDS.with(|y| y.borrow_mut().pop_front()) {
+                    rinch_core::fire_timeout(id);
+                }
+            });
+            channel
+                .port1()
+                .set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+            // The page's one listener, for the page's lifetime.
+            on_message.forget();
+            Some(channel)
+        };
+    }
+    let posted = CHANNEL.with(|c| {
+        c.as_ref().is_some_and(|c| {
+            YIELDS.with(|y| y.borrow_mut().push_back(id));
+            c.port2().post_message(&wasm_bindgen::JsValue::NULL).is_ok()
+        })
+    });
+    if !posted {
+        YIELDS.with(|y| y.borrow_mut().retain(|&i| i != id));
+        web_set_timeout(id, 0);
     }
 }
 

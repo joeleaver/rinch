@@ -29,7 +29,6 @@ mod margins;
 mod margins_tests;
 mod node_views;
 pub mod registry;
-#[cfg(not(target_family = "wasm"))]
 pub mod spellcheck;
 mod styles;
 mod view;
@@ -66,8 +65,7 @@ pub use rinch_editor_collab::{CollabError, OversizedTable, StickyAssoc, StickyLo
 // [`EditorHandle::collab_sync_diff`]) needs no re-exported engine types: a state vector
 // and a diff are both opaque `Vec<u8>`, and a diff is applied through the same
 // [`EditorHandle::collab_receive`] as a broadcast delta.
-#[cfg(not(target_family = "wasm"))]
-pub use spellcheck::{SPELL_ERROR_CLASS, SPELLCHECK_KEY, SpellcheckPlugin};
+pub use spellcheck::{Misspelling, SPELL_ERROR_CLASS, SPELLCHECK_KEY, SpellcheckPlugin};
 pub use view::RinchDomEditorView;
 
 use std::rc::Rc;
@@ -92,13 +90,16 @@ use rinch_editor_core::{Node, Plugin, Schema, default_plugins};
 pub fn create_editor() -> EditorHandle {
     let schema = Rc::new(Schema::starter_kit());
     let empty = empty_doc(&schema);
-    EditorHandle::unmounted(schema, empty, editor_plugins())
+    let handle = EditorHandle::unmounted(schema, empty, editor_plugins());
+    spellcheck::watch_for_dictionaries(&handle);
+    handle
 }
 
 /// [`default_plugins`] without the markdown input rules, plus the spellchecker
 /// (#2862) when this thread has a spellcheck configuration (an app run through
-/// `App::run`, an embedded `RinchContext`). Never on the web, where the browser
-/// checks.
+/// `App::run`, an embedded `RinchContext`). On the web only when that
+/// configuration has the app's own dictionaries and is on
+/// (`spellcheck::wanted`); the browser has none of its own for rinch to use.
 ///
 /// The markdown shortcuts are opt-in (#2210): a Chrome `contenteditable`
 /// inserts what is typed literally, so a fresh editor does too, and
@@ -106,13 +107,11 @@ pub fn create_editor() -> EditorHandle {
 /// true }`) turns them on.
 fn editor_plugins() -> Vec<Rc<dyn rinch_editor_core::Plugin>> {
     let markdown = rinch_editor_core::MarkdownInputRulesPlugin.key();
-    #[allow(unused_mut)]
     let mut plugins: Vec<_> = default_plugins()
         .into_iter()
         .filter(|p| p.key() != markdown)
         .collect();
-    #[cfg(not(target_family = "wasm"))]
-    if rinch_spell::runtime::config().is_some() {
+    if spellcheck::wanted() {
         plugins.push(Rc::new(spellcheck::SpellcheckPlugin::new()));
     }
     plugins

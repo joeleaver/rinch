@@ -641,8 +641,10 @@ when alpha must be externally drivable.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `href` | `String` | `""` | |
-| `target` | `String` | `""` | e.g., "_blank" |
+| `href` | `String` | `""` | Empty writes no `href`: a placeholder link, as in a browser (not focusable, nothing to follow). It used to be `#`. With an `onclick` too, the anchor is a button for the keyboard: `tabindex="0"` and `role="button"`, so Tab reaches it and Enter or Space runs `onclick` on both backends |
+| `target` | `String` | `""` | e.g., "_blank" (which a browser already treats as `noopener`) |
+| `rel` | `String` | `""` | Written as given, e.g. `"noreferrer"`; nothing when empty |
+| `onclick` | `Option<Callback>` | `None` | Runs on a click or Enter on the link. The click is then the app's: on the web the browser does not follow `href` (the link is marked `data-claim-links="menu"`, which keeps the browser's own link menu), so in-app routing works the same on desktop and web. A middle click reaches it too (`click_context().button` is `Middle`); `click_link()` gives the `href` |
 | `size` | `String` | `""` | |
 | `underline` | `bool` | `false` | |
 
@@ -682,11 +684,17 @@ Custom Default: `ignore_case` defaults to `true`.
 |------|------|---------|-------------|
 | `src` | `String` | `""` | Image URL |
 | `alt` | `String` | `""` | |
-| `name` | `String` | `""` | For initials fallback |
+| `name` | `String` | `""` | For initials fallback: the first letters of its first two words, uppercased |
+| `initials` | `String` | `""` | Initials to show instead of the ones `name` gives |
+| `placeholder_icon` | `Option<TablerIcon>` | `None` | The placeholder's icon when there are no children and no initials. `None` draws a person (`TablerIcon::User`) |
 | `size` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `color` | `String` | `""` | |
 | `variant` | `String` | `""` | "filled", "light", "outline" |
+| `on_error` | `Option<Callback>` | `None` | Runs when the image fails to load (the browser's `error` event; on the desktop, after the layout that learnt of it) |
+| `keep_failed_image` | `bool` | `false` | Keep an image that failed to load (its `alt` text shows, as in a browser) instead of replacing it with the placeholder |
+
+Without an image (or once it failed, unless `keep_failed_image`), the avatar shows a placeholder, as Mantine's does: its **children** if it has any (`Avatar { "?" }`), else the initials, else the icon. With an image that loads, the children are not shown.
 
 **AvatarGroup:** `spacing: String` — overlap spacing.
 
@@ -748,8 +756,14 @@ Custom Default: `ignore_case` defaults to `true`.
 | `height` | `String` | `""` | CSS height |
 | `fit` | `String` | `""` | CSS object-fit |
 | `radius` | `String` | `""` | |
-| `fallback_src` | `String` | `""` | Fallback image URL |
+| `fallback_src` | `String` | `""` | The picture shown when `src` fails to load, or is empty. Tried once: a fallback that fails too does not retry itself. (It used to be a JavaScript `onerror` string, which did nothing on the desktop) |
 | `caption` | `String` | `""` | Caption text below image |
+| `on_error` | `Option<Callback>` | `None` | Runs each time a picture fails to load: `src`, then `fallback_src` if that fails as well |
+| `fallback` | `Option<SectionRenderer>` | `None` | Content that replaces the `<img>` once no picture can be shown (`src` failed or is empty, and `fallback_src` failed or is empty). Pass `Some(renderer)` |
+
+With no fallback, a failed picture shows its `alt` text, as a browser does. An empty `src` loads nothing and fires no `on_error`.
+
+Any `<img>` can take a load failure itself: `img { src: …, onerror: move || … }` (the `data-onerror` attribute). The browser fires it from its `error` event; the desktop fires it after the layout in which the failure arrived, once per failure.
 
 ### List / ListItem
 
@@ -1450,10 +1464,24 @@ the horizontal underline along the tab's bottom edge.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `separator` | `String` | `""` | Custom separator character |
+| `separator` | `String` | `""` | Separator text, drawn as given (empty: `/`) |
+| `separator_icon` | `Option<TablerIcon>` | `None` | A Tabler icon as the separator, in place of the text |
+| `separator_fn` | `Option<SectionRenderer>` | `None` | Escape hatch: renders each separator's content; wins over the two above |
 | `separator_margin` | `String` | `""` | Spacing around separator |
+| `aria_label` | `String` | `""` | The `<nav>`'s accessible name (empty: `"Breadcrumb"`) |
 
-**BreadcrumbsItem:** `href: String`.
+Each separator is a `<span class="rinch-breadcrumbs__separator" aria-hidden="true">`
+appended to every item but the last, re-settled when a crumb arrives or leaves
+(#2193; it used to be an `::after` whose content came from five whitelisted
+strings, so `›` or `|` drew `/`).
+
+**BreadcrumbsItem:**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `href` | `String` | `""` | A link (`<a href>`) |
+| `onclick` | `Option<Callback>` | `None` | In-app routing. Without `href` the item is a `<button type="button">` drawn as the link |
+| `active` | `Option<bool>` | `None` | The current page: styled as the current item, with `aria-current="page"`. `None` means "when it has neither `href` nor `onclick`" |
 
 ### Pagination
 
@@ -1473,6 +1501,20 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `disabled` | `bool` | `false` | |
 | `gap` | `String` | `""` | |
 | `onchange` | `Option<ValueCallback<u32>>` | `None` | Receives page number |
+| `aria_label` | `String` | `""` | The `<nav>`'s accessible name (empty: `"Pagination"`) |
+| `first_label` | `String` | `""` | First-page control's accessible name (empty: `"First page"`) |
+| `previous_label` | `String` | `""` | Previous-page control's accessible name (empty: `"Previous page"`) |
+| `next_label` | `String` | `""` | Next-page control's accessible name (empty: `"Next page"`) |
+| `last_label` | `String` | `""` | Last-page control's accessible name (empty: `"Last page"`) |
+| `first_icon` | `Option<TablerIcon>` | `None` | In place of the double chevron |
+| `previous_icon` | `Option<TablerIcon>` | `None` | In place of the chevron |
+| `next_icon` | `Option<TablerIcon>` | `None` | In place of the chevron |
+| `last_icon` | `Option<TablerIcon>` | `None` | In place of the double chevron |
+| `dots` | `String` | `""` | Text for a gap in the page list (empty: `"..."`) |
+| `render_item` | `Option<PaginationItemRenderer>` | `None` | Escape hatch: `Rc<dyn Fn(&mut RenderScope, u32, bool) -> NodeHandle>`, called with the page and whether it is active; draws the page button's content, the button (classes, `aria-current`, click) stays the component's. Pass it as `Some(Rc::new(...))` |
+
+The active page carries `aria-current="page"` (#2194). Its text colour is
+`--rinch-pagination-active-text` (default `white`).
 
 ### NavLink
 
@@ -1486,13 +1528,24 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `variant` | `String` | `""` | "light", "filled", "subtle" |
 | `color` | `String` | `""` | |
 | `left_section` | `Option<TablerIcon>` | `None` | |
-| `right_section` | `Option<TablerIcon>` | `None` | |
-| `disabled` | `bool` | `false` | |
+| `right_section` | `Option<TablerIcon>` | `None` | With children it takes the chevron's place, and turns with it |
+| `chevron_icon` | `Option<TablerIcon>` | `None` | The expand chevron, in place of the built-in one (points right, turns 90° open) |
+| `disable_right_section_rotation` | `bool` | `false` | Keeps the chevron or right section still when open |
+| `label_fn` | `Option<SectionRenderer>` | `None` | Escape hatch: renders the label slot (a badge, a count) in place of `label` |
+| `disabled` | `bool` | `false` | No click at all, from mouse or keyboard; an `<a>` gets `aria-disabled="true"` and `tabindex="-1"` |
 | `children_offset` | `String` | `""` | Indentation for nested NavLinks |
-| `opened` | `bool` | `false` | Nested section expanded |
-| `default_opened` | `bool` | `false` | |
+| `opened` | `bool` | `false` | Nested section starts expanded |
+| `default_opened` | `bool` | `false` | Same as `opened` |
+| `opened_fn` | `Option<ReactiveBool>` | `None` | Controlled open state: the children follow the getter, a click only calls `on_opened_change` |
+| `on_opened_change` | `Option<ValueCallback<bool>>` | `None` | Called with the new state when a click toggles |
 | `no_wrap` | `bool` | `false` | |
-| `onclick` | `Option<Callback>` | `None` | |
+| `onclick` | `Option<Callback>` | `None` | Runs before the toggle |
+
+With children, a click toggles them (#2192; it used to set the first class and
+nothing more), and the control carries `aria-expanded`. Open children are as tall
+as their content (a fixed `max-height: 1000px` used to clip a longer list);
+closed, the container is `display: none`, as a closed `<details>` is, so Tab
+skips them. Open and close are instant.
 
 ### Stepper
 

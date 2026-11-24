@@ -140,7 +140,6 @@ impl Component for Editor {
         if let Some(on) = self.spellcheck {
             container.set_attribute("spellcheck", if on { "true" } else { "false" });
         }
-        #[cfg(not(target_family = "wasm"))]
         handle.refresh_spellcheck();
         if !children.is_empty() {
             container.append_child(&overlay_slot(scope, children));

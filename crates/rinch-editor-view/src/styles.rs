@@ -250,7 +250,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 [data-pm-editor][data-pm-theme="dark"] th { border-color: #30363d; }
 [data-pm-editor][data-pm-theme="dark"] th { background: #161b22; }
 [data-pm-editor][data-pm-theme="dark"] [data-pm-placeholder] { color: #6e7681; }
-[data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-spell-error { text-decoration-color: #ff7b72; }
+[data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-spell-error { text-decoration-color: var(--rinch-spellcheck-color, #ff7b72); }
 [data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-grammar-error { text-decoration-color: #3fb950; }
 "#;
 

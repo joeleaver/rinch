@@ -47,7 +47,15 @@ pub fn styles() -> String {
     object-fit: cover;
 }
 
-/* Avatar placeholder (initials or icon) */
+/* Avatar placeholder (children, initials or icon) */
+.rinch-avatar__placeholder-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+}
+
 .rinch-avatar__placeholder {
     display: flex;
     align-items: center;

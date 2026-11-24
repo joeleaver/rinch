@@ -187,11 +187,9 @@ struct EditorCore {
     /// borrow held.
     on_margin_layout: Option<MarginHook>,
     /// The spellchecker's timer and configuration listener (#2862).
-    #[cfg(not(target_family = "wasm"))]
     spell: crate::spellcheck::Driver,
     /// The spellchecker generation the last mutable borrow saw: a new one
     /// with dirty words owes a check (`Owed::spell`).
-    #[cfg(not(target_family = "wasm"))]
     spell_seen: u64,
 }
 
@@ -289,7 +287,6 @@ struct Owed {
     caret_moved: Option<Hook<dyn Fn()>>,
     node_views: Vec<node_views::Work>,
     /// The spellchecker has newly dirty words to check after the pause.
-    #[cfg(not(target_family = "wasm"))]
     spell: bool,
 }
 
@@ -711,7 +708,6 @@ impl EditorCore {
         // Every path that changes the state ends a mutable borrow here, so a
         // check owed by any of them (a command, an undo, a picture, a peer's
         // edit, a dispatch) is noticed in one place.
-        #[cfg(not(target_family = "wasm"))]
         let spell = match self
             .state
             .plugin_state::<crate::spellcheck::SpellState>(crate::spellcheck::SPELLCHECK_KEY)
@@ -726,7 +722,6 @@ impl EditorCore {
             selection,
             caret_moved,
             node_views,
-            #[cfg(not(target_family = "wasm"))]
             spell,
         }
     }
@@ -1157,7 +1152,6 @@ impl Drop for CoreMutGuard<'_> {
                 owed.node_views,
             );
         }
-        #[cfg(not(target_family = "wasm"))]
         if owed.spell {
             EditorHandle {
                 inner: self.editor.clone(),
@@ -1258,9 +1252,7 @@ impl EditorHandle {
                 node_views: Rc::default(),
                 margins: Margins::default(),
                 on_margin_layout: None,
-                #[cfg(not(target_family = "wasm"))]
                 spell: Default::default(),
-                #[cfg(not(target_family = "wasm"))]
                 spell_seen: 0,
             })),
         }
@@ -1327,9 +1319,7 @@ impl EditorHandle {
                 node_views,
                 margins: Margins::default(),
                 on_margin_layout: None,
-                #[cfg(not(target_family = "wasm"))]
                 spell: Default::default(),
-                #[cfg(not(target_family = "wasm"))]
                 spell_seen: 0,
             })),
         }
@@ -1490,31 +1480,26 @@ impl EditorHandle {
         if doc_changed {
             self.notify_change();
         }
-        #[cfg(not(target_family = "wasm"))]
         self.spell_after_dispatch(doc_changed, input);
         true
     }
 
     /// Read the editor state.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn with_state<R>(&self, f: impl FnOnce(&EditorState) -> R) -> R {
         f(&self.core().state)
     }
 
     /// A weak handle.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn downgrade(&self) -> WeakHandle {
         WeakHandle(Rc::downgrade(&self.inner))
     }
 
     /// The host container, once mounted.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn container_node(&self) -> Option<NodeHandle> {
         self.core().view.as_ref().map(|v| v.container().clone())
     }
 
     /// The host element of the textblock at `pos`.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn block_host(&self, pos: usize) -> Option<NodeHandle> {
         let core = self.core();
         let view = core.view.as_ref()?;
@@ -1523,7 +1508,6 @@ impl EditorHandle {
     }
 
     /// Run `f` on the spellchecker's driver.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn spell_driver<R>(
         &self,
         f: impl FnOnce(&mut crate::spellcheck::Driver) -> R,
@@ -1534,7 +1518,6 @@ impl EditorHandle {
 
     /// Dispatch a transaction of the handle's own (not the user's input, not
     /// the app's `build`).
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn update_internal(
         &self,
         build: impl FnOnce(&EditorState) -> Option<Transaction>,
@@ -1565,16 +1548,20 @@ impl EditorHandle {
     /// Returns whether the plugin was added. It is all-or-nothing: `false` leaves
     /// the plugin list untouched, so a later call can still add it.
     pub fn add_plugin(&self, plugin: Rc<dyn Plugin>) -> bool {
-        self.install_plugin(plugin, |plugins| plugins.len())
+        self.install_plugin(plugin, false, |plugins| plugins.len())
     }
 
-    /// [`add_plugin`](Self::add_plugin) at the index `at` picks from the
-    /// installed list (clamped to its length): the end for `add_plugin`, the
-    /// [`default_plugins`](rinch_editor_core::default_plugins) place for
-    /// [`set_markdown_shortcuts`](Self::set_markdown_shortcuts) (#2210).
-    fn install_plugin(
+    /// [`add_plugin`](Self::add_plugin), keeping every installed plugin's
+    /// folded state (undo history included) when `keep` (the spellchecker
+    /// added once the app's dictionaries arrive, #2862), at the index `at`
+    /// picks from the installed list (clamped to its length): the end for
+    /// `add_plugin`, the [`default_plugins`](rinch_editor_core::default_plugins)
+    /// place for [`set_markdown_shortcuts`](Self::set_markdown_shortcuts)
+    /// (#2210).
+    pub(crate) fn install_plugin(
         &self,
         plugin: Rc<dyn Plugin>,
+        keep: bool,
         at: impl FnOnce(&[Rc<dyn Plugin>]) -> usize,
     ) -> bool {
         let mut core = self.core_mut();
@@ -1585,9 +1572,15 @@ impl EditorHandle {
         let index = at(&plugins).min(plugins.len());
         plugins.insert(index, plugin);
         let prev = core.state.clone();
-        let mut next = EditorState::create(core.schema.clone(), prev.doc.clone(), plugins.clone());
-        next.selection = prev.selection.clone();
-        next.stored_marks = prev.stored_marks.clone();
+        let next = if keep {
+            prev.reconfigure(plugins.clone())
+        } else {
+            let mut next =
+                EditorState::create(core.schema.clone(), prev.doc.clone(), plugins.clone());
+            next.selection = prev.selection.clone();
+            next.stored_marks = prev.stored_marks.clone();
+            next
+        };
         // The identity mapping says what this is: a step forward over the same
         // document, not a load. `commit` treats a `None` mapping as a load, which
         // a read-only editor with a collaboration session attached refuses (a
@@ -1671,13 +1664,15 @@ impl EditorHandle {
         let key = MarkdownInputRulesPlugin.key();
         let installed = self.core().plugins.iter().any(|p| p.key() == key);
         match (on, installed) {
-            (true, false) => self.install_plugin(Rc::new(MarkdownInputRulesPlugin), |plugins| {
-                let base = BaseCommandsPlugin.key();
-                plugins
-                    .iter()
-                    .position(|p| p.key() == base)
-                    .map_or(0, |i| i + 1)
-            }),
+            (true, false) => {
+                self.install_plugin(Rc::new(MarkdownInputRulesPlugin), false, |plugins| {
+                    let base = BaseCommandsPlugin.key();
+                    plugins
+                        .iter()
+                        .position(|p| p.key() == base)
+                        .map_or(0, |i| i + 1)
+                })
+            }
             (false, true) => !self.remove_plugin(key),
             _ => installed,
         }
@@ -3050,7 +3045,6 @@ impl EditorHandle {
         drop(core);
         // A read-only editor shows no spelling marks; an editable one again
         // is checked again (#2862).
-        #[cfg(not(target_family = "wasm"))]
         self.refresh_spellcheck();
         // No input event brought this change; a runtime that keeps per-editor
         // input state in step from its input handlers (the web's capture field)

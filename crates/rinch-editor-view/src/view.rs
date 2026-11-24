@@ -281,9 +281,20 @@ struct RunDeco {
 /// `Decoration::inline_class` is the core's own filter, so the view never
 /// matches the enum.
 fn inline_decos(set: &DecorationSet) -> Vec<InlineDeco> {
+    // One allocation per distinct class in a row, not per decoration: a
+    // spellchecker's thousands of marks share one (#2862).
+    let mut last: Option<Rc<str>> = None;
     set.iter()
         .filter_map(|d| {
-            let class: Rc<str> = Rc::from(d.inline_class()?);
+            let name = d.inline_class()?;
+            let class = match &last {
+                Some(c) if &**c == name => c.clone(),
+                _ => {
+                    let c: Rc<str> = Rc::from(name);
+                    last = Some(c.clone());
+                    c
+                }
+            };
             let (from, to) = d.range();
             Some(InlineDeco {
                 from: from.0,
@@ -2273,15 +2284,14 @@ impl RinchDomEditorView {
         }
     }
 
-    /// Resolve a model [`Pos`] to its host caret address `(textblock element id,
-    /// flat UTF-8 byte offset)` — the address app-side geometry (caret point,
-    /// vertical movement) queries Parley with. `None` if `pos` isn't in a textblock.
     /// A handle on host node `id` of this view's document.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn host_node(&self, id: u64) -> NodeHandle {
         NodeHandle::new(rinch_core::dom::NodeId(id), self.doc.clone())
     }
 
+    /// Resolve a model [`Pos`] to its host caret address `(textblock element id,
+    /// flat UTF-8 byte offset)` — the address app-side geometry (caret point,
+    /// vertical movement) queries Parley with. `None` if `pos` isn't in a textblock.
     pub(crate) fn caret_address(&self, doc: &Node, pos: Pos) -> Option<(u64, usize)> {
         self.caret_target(doc, pos)
             .map(|(dom, byte)| (dom.node_id().0, byte))
