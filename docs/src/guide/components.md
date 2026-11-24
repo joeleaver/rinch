@@ -734,7 +734,9 @@ NavLink { label: "Projects", default_opened: true,
 }
 
 // Stepper. Each step's state follows its position against `active`, and
-// `{|| …}` makes the whole stepper follow the signal.
+// `{|| …}` makes the whole stepper follow the signal. A step's children are its
+// content, shown below the steps while it is active (`content_for_active_only:
+// false` keeps every step's content inside its step instead).
 let step = Signal::new(1u32);
 Stepper { active: {|| step.get()},
     StepperStep { label: "Account", description: "Create account" }

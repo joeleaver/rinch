@@ -156,8 +156,18 @@ fn with_content_for_active_only_off_every_step_shows_its_content_in_place() {
     for (name, step) in ["one", "two", "three"].into_iter().zip(steps) {
         let shown = one(&app, &format!("content-{name}"));
         let (x, y, w, h) = abs_box(&app, shown);
+        // Its own height; no width of its own, as the fixture's content is
+        // an empty box sized only by `height`, and the step is a flex row.
         assert_eq!(h, 40.0, "`{name}` is laid out at its own height");
-        assert!(w > 0.0, "`{name}` has a width");
+        let wrapper = {
+            let d = app.doc.as_ref().unwrap().borrow();
+            d.tree
+                .get(shown)
+                .unwrap()
+                .parent
+                .expect("a content wrapper")
+        };
+        assert_ne!(display(&app, wrapper), DisplayValue::None, "`{name}`");
         let (sx, sy, sw, sh) = abs_box(&app, step);
         assert!(
             x >= sx && y >= sy && x + w <= sx + sw + 0.5 && y + h <= sy + sh + 0.5,

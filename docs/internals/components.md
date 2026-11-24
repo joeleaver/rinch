@@ -271,8 +271,17 @@ The pieces that follow from it:
   `.rinch-stepper__step-content` is **moved** into the region (its children are
   live nodes, so never copied), remembered with its step and next sibling (the
   separator), and moved back as soon as another step is at `active` or its step
-  is no longer in the list — so a removed step carries its content away. Content
-  something else took out of the region is forgotten. `StepperCompleted` blocks
+  is no longer in the list — so a removed step carries its content away. A
+  step that was **discarded** (a `for` row discards the step it built) is asked
+  with `NodeHandle::is_retired`, and its shown content is discarded too: the
+  step's recursive discard cannot reach content that sits in the region, and
+  putting it back into a retired step left it alive and attached to nothing.
+  Content something else took out of the region is forgotten (neither put back
+  nor discarded: it is the app's). `content_for_active_only: false` skips the
+  move altogether; the stepper then carries `rinch-stepper--content-in-steps`,
+  which sets `--rinch-stepper-step-content-display: block` for its own subtree
+  (each stepper sets the property, so a nested one follows its own setting,
+  which a descendant selector would not). `StepperCompleted` blocks
   are moved into the region on every pass whatever `active` is, and shown only by
   `rinch-stepper__content--completed`, set while `active >= steps.len()`: left
   among the steps a block would be the last step's sibling, and that step would
