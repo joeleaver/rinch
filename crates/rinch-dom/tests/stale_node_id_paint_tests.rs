@@ -4,7 +4,7 @@
 //! answer the live node's geometry in release builds. Found in review of #2017.
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomLayout, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint;
 

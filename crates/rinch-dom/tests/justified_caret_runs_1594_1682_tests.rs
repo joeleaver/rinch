@@ -20,7 +20,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::text_query::{
     byte_offset_from_position, caret_position_for_offset, glyph_bounds_for_offset,

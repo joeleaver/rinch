@@ -1944,7 +1944,7 @@ mod absolute_escape_hit_2815_tests;
 #[cfg(test)]
 mod tests {
     use super::{flow_extent, hit_test};
-    use rinch_core::dom::{DomDocument, NodeId};
+    use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
     use rinch_dom::RinchDocument;
 
     /// Absolute (border-box) origin of a node as a **plain parent-chain sum**:

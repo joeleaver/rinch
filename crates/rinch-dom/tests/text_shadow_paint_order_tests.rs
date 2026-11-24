@@ -27,7 +27,7 @@
 
 use peniko::kurbo::{Affine, Point, Stroke};
 use peniko::{Brush, Fill, FontData};
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;

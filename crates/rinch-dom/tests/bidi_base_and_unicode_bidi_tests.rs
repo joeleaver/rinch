@@ -23,7 +23,7 @@
 //! | `direction: rtl`, `123<img 30px>abc` | `abc` 315.7, image 343.3, `123` 373.3 |
 
 use parley::layout::PositionedLayoutItem;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 fn lay_out(style: &str, inner: &str) -> (RinchDocument, u64) {

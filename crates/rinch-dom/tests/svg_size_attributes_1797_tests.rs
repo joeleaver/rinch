@@ -20,7 +20,7 @@
 //! never square when a ratio is in play, never the default object size's own
 //! numbers, a viewBox whose ratio differs from the attributes'.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const BOX: &str = "width: 400px; height: 300px; font: 16px/20px sans-serif";

@@ -559,7 +559,10 @@ pub use title_tooltip::{TITLE_TOOLTIP_DELAY, set_title_tooltips_default};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
+use rinch_core::dom::{
+    DomContent, DomDocument, DomLayout, DomScroll, DomTree, NodeHandle, RenderScope,
+    clear_render_scope, set_render_scope,
+};
 
 /// Identifies which theme CSS a document is showing without holding the CSS:
 /// the thread-global slot at a [generation](rinch_core::current_theme_css_generation),
@@ -5580,10 +5583,8 @@ impl RinchApp {
         // a browser's `selectionStart`/`selectionEnd` do: remember it for
         // `NodeHandle::selection_range` (issue #1678). Read from the bytes the
         // last sync wrote, which are what the field showed.
-        let kept = rinch_core::dom::DomDocument::text_selection_range(
-            &*d,
-            rinch_core::dom::NodeId(node_id),
-        );
+        let kept =
+            rinch_core::dom::DomFocus::text_selection_range(&*d, rinch_core::dom::NodeId(node_id));
         if let Some(kept) = kept {
             d.tree.text_selections.insert(node_id, kept);
         }
@@ -6404,7 +6405,7 @@ impl RinchApp {
     /// branch at all, so stashing for one would sit forever, unconsumed — a
     /// silent, unbounded leak. A browser's own `setSelectionRange` throws
     /// `InvalidStateError` on such a control; dropping the request is rinch's
-    /// equivalent (see `DomDocument::set_selection_range`'s doc comment).
+    /// equivalent (see `DomFocus::set_selection_range`'s doc comment).
     pub(crate) fn apply_or_stash_text_selection(
         &mut self,
         node_id: u64,
@@ -6446,7 +6447,7 @@ impl RinchApp {
     }
 
     /// Drop any `pending_text_selection` entry whose node is no longer
-    /// **connected** to the document (`DomDocument::is_connected`) — review
+    /// **connected** to the document (`DomTree::is_connected`) — review
     /// of #1325, finding 3 — so a node that is stashed and then removed
     /// before ever being focused does not hold its entry forever. Checked by
     /// connectivity rather than slab presence: `remove()`/`discard()` are
@@ -6473,13 +6474,13 @@ impl RinchApp {
         };
         let d = doc.borrow();
         self.pending_text_selection.retain(|&node_id, _| {
-            rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(node_id))
+            rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(node_id))
         });
     }
 
     /// Give the keyboard back now that the overlay rooted at `root` has closed,
     /// or let it go (issue #695) — the apply-time half of
-    /// [`DomDocument::restore_focus`],
+    /// [`DomFocus::restore_focus`](rinch_core::dom::DomFocus::restore_focus),
     /// where the boxes are current.
     ///
     /// Three rules, in order, none of which the component that posted this could
@@ -6587,7 +6588,7 @@ impl RinchApp {
         let Some(node) = d.tree.get(node_id) else {
             return false;
         };
-        if !rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(node_id)) {
+        if !rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(node_id)) {
             return false;
         }
         if !Self::node_is_visible(node) || Self::node_is_disabled_in_tree(&d.tree, node_id) {
@@ -6874,7 +6875,7 @@ impl RinchApp {
         false
     }
 
-    /// This app's document identity (see `DomDocument::doc_key`), or 0 before
+    /// This app's document identity (see `DomTree::doc_key`), or 0 before
     /// mount. Used to scope thread-local registries (bounds signals, pending
     /// focus requests) to this document (issue #134).
     pub(crate) fn doc_key(&self) -> u64 {
@@ -7023,10 +7024,8 @@ impl RinchApp {
         // a range set on it before focus, the one it had when it last lost
         // the keyboard, the end after a `value` write, else the start — as a
         // browser's `focus()` keeps the control's own selection.
-        let kept_selection = rinch_core::dom::DomDocument::text_selection_range(
-            &*d,
-            rinch_core::dom::NodeId(node_id),
-        );
+        let kept_selection =
+            rinch_core::dom::DomFocus::text_selection_range(&*d, rinch_core::dom::NodeId(node_id));
         drop(d);
 
         // Take input focus through the arbiter (tears down a prior surface / CE /
@@ -8009,7 +8008,7 @@ fn replace_keeping_offsets(state: &mut EditableState<StringDocument>, new: &str)
 }
 
 /// Convert a **UTF-16 code-unit** offset into `text` to a byte offset —
-/// [`DomDocument::set_selection_range`]'s
+/// [`DomFocus::set_selection_range`](rinch_core::dom::DomFocus::set_selection_range)'s
 /// unit, matching the DOM's own `setSelectionRange` (issue #552). `units`
 /// past the text's end clamps to `text.len()`, as `byte_at` in
 /// [`replace_keeping_offsets`] does for the same reason.

@@ -924,7 +924,7 @@ fn a_caret_before_a_hard_break_draws_on_its_own_line() {
 /// The affinity-blind caret query answers DOWNSTREAM at a soft wrap on the web,
 /// as on desktop: the start of the lower line, not the collapsed range Chrome
 /// draws at the upper line's end (`NodeHandle::query_caret_position`, the
-/// public door to `DomDocument::query_caret_position`).
+/// public door to `DomLayout::query_caret_position`).
 #[wasm_bindgen_test]
 fn the_blind_caret_query_answers_downstream_at_a_wrap() {
     let slot: std::rc::Rc<std::cell::RefCell<Option<rinch_core::dom::NodeHandle>>> =

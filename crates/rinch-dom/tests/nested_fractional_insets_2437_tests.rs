@@ -20,7 +20,7 @@
 //!
 //! No text: the geometry is the box model's alone, and does not pin fonts.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const CHROME_X: [f64; 10] = [

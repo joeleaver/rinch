@@ -14,7 +14,7 @@
 //! - `KNOWN`: rinch does **not** agree; the row pins what rinch gives and
 //!   names the review finding. A fix flips the row into `ROWS`.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

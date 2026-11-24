@@ -5,8 +5,8 @@
 
 use crate::dom::mock::MockDomDocument;
 use crate::dom::{
-    __minted_by_len, __retired_insertions, __scope_parents_len, DomDocument, NodeHandle, NodeId,
-    RenderScope, reactive_component_dom,
+    __minted_by_len, __retired_insertions, __scope_parents_len, DomContent, DomTree, NodeHandle,
+    NodeId, RenderScope, reactive_component_dom,
 };
 use crate::reactive::Signal;
 use crate::{for_each_dom_typed, match_dom, show_dom};

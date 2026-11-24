@@ -9,7 +9,7 @@ use super::hit_testing::{
     find_scroll_container, find_scroll_container_at_point,
 };
 use super::*;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::NodeId;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::scrollbars;
 

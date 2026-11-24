@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{DomDocument, DomTree, NodeHandle, RenderScope};
 
 fn walk(n: &NodeHandle, out: &mut Vec<NodeHandle>) {
     out.push(n.clone());

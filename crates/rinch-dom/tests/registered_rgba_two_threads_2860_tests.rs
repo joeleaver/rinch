@@ -28,7 +28,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_core::image::{register_rgba, rgba_src, unregister_rgba};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::FileImageLoader;

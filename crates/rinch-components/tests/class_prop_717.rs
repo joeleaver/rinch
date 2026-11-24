@@ -43,7 +43,7 @@ use rinch_components::popover::Popover;
 use rinch_components::select::{Select, SelectOption};
 use rinch_components::switch::Switch;
 use rinch_components::tree::{Tree as TreeComponent, TreeNodeData, UseTreeOptions, UseTreeReturn};
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event};
 use rinch_core::{Component, Signal};

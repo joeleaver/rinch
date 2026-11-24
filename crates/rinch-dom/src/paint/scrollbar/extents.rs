@@ -94,7 +94,7 @@ pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
 }
 
 /// `element.scrollWidth` / `scrollHeight` on rinch-dom
-/// (`DomDocument::scroll_width` / `scroll_height`), in [`content_extents`]'
+/// (`DomScroll::scroll_width` / `scroll_height`), in [`content_extents`]'
 /// frame (from the content box's inline-start and top edges).
 ///
 /// A scroll container answers [`content_extents`], the range its bar and the

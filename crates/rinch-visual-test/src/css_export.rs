@@ -789,7 +789,7 @@ mod tests {
     /// rather than hand-written JSON so a field rename fails it.
     #[test]
     fn gradients_export_from_a_real_computed_style() {
-        use rinch_core::dom::DomDocument;
+        use rinch_core::dom::{DomContent, DomTree};
         let css_of = |style: &str| {
             let mut doc = rinch_dom::RinchDocument::new();
             let body = doc.body();

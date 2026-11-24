@@ -12,7 +12,7 @@
 //! range (`-min scrollLeft`), and each mark's x relative to `c` at the
 //! scroll start and at the far end (`scrollLeft = -1e6`).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::{ScrollbarAxis, scroll_bounds};
 use rinch_dom::testing::query_selector;

@@ -2174,11 +2174,11 @@ fn offset_map_note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
 ///
 /// Preserved text takes [`PRESERVED_SUBSTITUTES`], which is also what the
 /// rich-text editor's caret map is told
-/// ([`DomDocument::substituted_char_flat_bytes`]), so the two count the same
+/// ([`DomLayout::substituted_char_flat_bytes`]), so the two count the same
 /// flat bytes for each.
 ///
 /// [`InlineLayout::measured_width`]: crate::node::InlineLayout::measured_width
-/// [`DomDocument::substituted_char_flat_bytes`]: rinch_core::dom::DomDocument::substituted_char_flat_bytes
+/// [`DomLayout::substituted_char_flat_bytes`]: rinch_core::dom::DomLayout::substituted_char_flat_bytes
 fn laid_out_as(c: char, preserved: bool) -> Option<&'static str> {
     if !preserved && c == '\u{c}' {
         return None;
@@ -10071,7 +10071,7 @@ impl RinchDocument {
     /// dirty a measure without dirtying the IFC structure — a restyle that
     /// changed something, and `set_text_content` — which between them are five
     /// call sites (`dom_impl/mod.rs` twice, `style_resolution/mod.rs`,
-    /// `dom_document_impl.rs`, `layout_engine.rs`). A *structural* mutation
+    /// `dom_impl/content.rs`, `layout_engine.rs`). A *structural* mutation
     /// seeds a structural pass instead (`crate::ifc_scope`), which sizes what
     /// it placed and calls this itself for every container it set up (the
     /// atomic inlines around a changed container are outside its scope, and
@@ -14775,7 +14775,7 @@ impl TabStops {
 #[cfg(test)]
 mod atomic_leaf_layout_tests {
     use crate::RinchDocument;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     /// The keying rule of `NodeTree::atomic_leaf_layouts` (#904): each layout
     /// the atomic compute's text measure builds is filed under the width it

@@ -38,7 +38,7 @@
 //! wide), the `label` attribute was trimmed, and none of the three properties
 //! reached either the size or the paint.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

@@ -20,7 +20,7 @@
 //! descent of 20px, the declared line-height, so the vertical numbers are
 //! declarations.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

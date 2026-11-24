@@ -4,7 +4,7 @@
 //! border box is, as without the filter.
 
 use super::hit_test;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 fn div(doc: &mut RinchDocument, parent: NodeId, style: &str) -> NodeId {

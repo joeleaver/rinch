@@ -344,7 +344,7 @@ fn replacing_the_selected_block_keeps_the_wash_owned_and_visible() {
     {
         let mut doc = p.app.doc.as_ref().unwrap().borrow_mut();
         for _ in 0..16 {
-            let _ = rinch_core::dom::DomDocument::create_element(&mut *doc, "span");
+            let _ = rinch_core::dom::DomTree::create_element(&mut *doc, "span");
         }
     }
     let selected = frame(&mut p.app);

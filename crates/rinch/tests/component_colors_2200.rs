@@ -14,7 +14,7 @@
 use peniko::Brush;
 use rinch_components::alert::Alert;
 use rinch_components::badge::Badge;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

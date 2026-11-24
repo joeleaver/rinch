@@ -19,7 +19,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 
@@ -263,7 +263,7 @@ fn inline_outlines_are_drawn_round_their_fragments_as_chrome_draws_them() {
 // and compares that with a full paint of the new state on a fresh document.
 
 mod partial {
-    use super::DomDocument;
+    use super::DomTree;
     use peniko::Brush;
     use peniko::kurbo::Rect;
     use rinch_dom::RinchDocument;

@@ -22,7 +22,7 @@
 //! string is far wider than 60px in any face, the line box is declared, and
 //! the width is bounded by the box, not pinned.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VP: (f32, f32) = (400.0, 300.0);

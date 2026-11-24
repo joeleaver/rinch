@@ -6,7 +6,7 @@
 //! each box `width: 1px`. A `<wbr>` is laid out as a zero width space
 //! (#2386) in a span that wraps whatever the `white-space` (#2261).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

@@ -385,7 +385,7 @@ it with rinch's.
    callback), cancel it on unmount or explicitly `.leak()` it.
 6. **Thread-local registries keyed by bare node id.** Node ids are per-document slab
    indices and collide across documents on one thread (two windows, two embedded
-   contexts). Always key by `DomDocument::doc_key()` too.
+   contexts). Always key by `DomTree::doc_key()` too.
 7. **`app/event_dispatch.rs` coupling.** Event handling, hit testing, focus and
    rendering interact; changes there have non-obvious reach.
 8. **Stylo complexity.** The Firefox CSS engine integration has many trait impls with

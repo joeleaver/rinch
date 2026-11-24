@@ -69,7 +69,7 @@
 //! all four unmount fixtures fail. That is why the skip is in `resolve_styles`
 //! rather than at the `has_been_styled` assignment.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 
 /// A node's computed `width` in px, or `None` when it is not a length.

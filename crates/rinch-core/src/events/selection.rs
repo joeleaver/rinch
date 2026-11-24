@@ -243,14 +243,14 @@ pub fn fire_selection_sync() {
 /// anyway — see [`needs_layout`](Self::needs_layout).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusRequest {
-    /// Focus this node — [`DomDocument::focus_element`](crate::dom::DomDocument::focus_element).
+    /// Focus this node — [`DomFocus::focus_element`](crate::dom::DomFocus::focus_element).
     Node(u64),
     /// Move focus into this subtree —
-    /// [`DomDocument::focus_into`](crate::dom::DomDocument::focus_into).
+    /// [`DomFocus::focus_into`](crate::dom::DomFocus::focus_into).
     Into(u64, crate::dom::FocusIntoPolicy),
     /// Give the keyboard back to `opener` now that the overlay rooted at `root`
     /// has closed, or release it — the decision is the runtime's, at apply
-    /// time. [`DomDocument::restore_focus`](crate::dom::DomDocument::restore_focus).
+    /// time. [`DomFocus::restore_focus`](crate::dom::DomFocus::restore_focus).
     Restore {
         /// Whoever held the keyboard when the overlay opened, if anyone.
         opener: Option<u64>,
@@ -337,7 +337,7 @@ fn next_focus_seq() -> u64 {
 }
 
 /// Request that a specific element be focused, identified by its document's
-/// [`doc_key`](crate::dom::DomDocument::doc_key) and node id.
+/// [`doc_key`](crate::dom::DomTree::doc_key) and node id.
 /// The runtime will apply this focus before the next event processing cycle.
 pub fn request_focus(doc_key: u64, node_id: u64) {
     post_focus_request(doc_key, FocusRequest::Node(node_id));
@@ -470,7 +470,7 @@ pub fn take_pending_focus_steps(doc_key: u64, layout_is_fresh: bool) -> Vec<Focu
 // (review of #1325, finding 2).
 
 /// `(start, end, direction)` — UTF-16 code-unit offsets,
-/// [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
+/// [`DomFocus::set_selection_range`](crate::dom::DomFocus::set_selection_range)'s
 /// unit.
 type TextSelectionRequest = (usize, usize, crate::dom::SelectionDirection);
 
@@ -486,7 +486,7 @@ crate::doc_keyed! {
 /// was parked **for that node** (a second `set_selection_range` on the same
 /// node before the first was drained is simply superseded, as two calls to
 /// the DOM's own `setSelectionRange` on one control would be). Called by
-/// [`DomDocument::set_selection_range`](crate::dom::DomDocument::set_selection_range)'s
+/// [`DomFocus::set_selection_range`](crate::dom::DomFocus::set_selection_range)'s
 /// desktop implementation; the runtime applies it to the node if it already
 /// holds the keyboard, or stashes it for the next time the node is focused
 /// (issue #552).

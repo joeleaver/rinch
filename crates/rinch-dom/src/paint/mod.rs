@@ -5298,7 +5298,7 @@ fn paint_layered_span(
 
 /// A highlight box held back from its place in a stacking sequence until the
 /// box whose content it highlights is painted (#2666,
-/// [`rinch_core::dom::DomDocument::set_highlight_owner`]): what
+/// [`rinch_core::dom::DomContent::set_highlight_owner`]): what
 /// [`paint_sequence_entry`] would have drawn it with.
 #[derive(Clone, Copy)]
 struct HeldHighlight {
@@ -7514,7 +7514,7 @@ fn paint_text_leaf(
 mod tests {
     use crate::RinchDocument;
     use peniko::kurbo::Affine;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     // The correctness criterion for every test here: `painted_border_box`
     // returns the box the node is *painted* in. So the expected rects are

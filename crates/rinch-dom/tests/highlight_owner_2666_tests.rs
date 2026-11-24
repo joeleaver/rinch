@@ -1,4 +1,4 @@
-//! #2666: a box given a highlight owner (`DomDocument::set_highlight_owner`)
+//! #2666: a box given a highlight owner (`DomContent::set_highlight_owner`)
 //! is painted over the owner's backgrounds, inline ones too, and under its
 //! glyphs, as Chrome paints a selection. The page and its checks are in
 //! `support/highlight_owner_2666.rs`, shared with `gpu_highlight_owner_2666`

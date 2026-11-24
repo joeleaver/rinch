@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch::prelude::*;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 /// Mount a component into a real desktop document.

@@ -84,7 +84,7 @@
 //! would read as a clamping bug instead. 300 versus 800 is a 500px gap that no
 //! rounding or font can close.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{DimensionValue, IntrinsicSize};
 

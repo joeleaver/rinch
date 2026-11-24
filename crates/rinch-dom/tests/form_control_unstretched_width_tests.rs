@@ -33,7 +33,7 @@
 //! real Chrome 153 (a few px; Inter is the only font this crate's picker fit
 //! is calibrated against).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
@@ -417,7 +417,7 @@ fn a_letter_spacing_only_change_reshapes_a_button_label() {
 /// `sync_form_control_measure` never runs for it — `set_attribute` has to
 /// call it directly. Before the fix, `w2` stayed pinned at `w1` (the
 /// control's first-layout width): confirmed by reverting
-/// `dom_document_impl.rs`'s new `value`/`rows`/`cols`/`size` block alone.
+/// `dom_impl/content.rs`'s new `value`/`rows`/`cols`/`size` block alone.
 #[test]
 fn a_value_only_change_reshapes_a_submit_label() {
     use rinch_dom::perf::Counter;

@@ -13,7 +13,7 @@
 
 use peniko::kurbo::{Affine, Rect, Stroke};
 use peniko::{Brush, Fill, FontData};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 use rinch_dom::paint::vello_painter::VelloPainter;

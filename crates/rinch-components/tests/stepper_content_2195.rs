@@ -20,7 +20,7 @@ use std::rc::Rc;
 use rinch_components::SectionRenderer;
 use rinch_components::stepper::{Stepper, StepperCompleted, StepperStep};
 use rinch_core::Component;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 
 mod common;

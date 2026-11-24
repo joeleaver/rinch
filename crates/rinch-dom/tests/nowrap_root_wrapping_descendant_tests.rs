@@ -18,7 +18,7 @@
 //! root's — so that line overflows the 50px box (it is 60.84px), exactly as
 //! in Chrome.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

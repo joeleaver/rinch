@@ -333,7 +333,7 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
     U+000C as nothing (`ifc::laid_out_as`, #1181; the offset map records the length
     change; `letter-spacing`/`word-spacing` on the substitutes still differ from Chrome's).
     The rich-text editor's caret map counts the same bytes for each through
-    `DomDocument::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
+    `DomLayout::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
     (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109; 1 since #1122).
     **A flex or grid item's own text (a text leaf) goes through the same functions** (#1279,
     #1672): `ifc::LeafText` collapses it with `IfcText` by its element's `white-space`

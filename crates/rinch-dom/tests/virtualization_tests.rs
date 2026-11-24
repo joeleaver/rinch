@@ -10,7 +10,7 @@
 //! broken at the layout layer (not in the driver). See the
 //! `project-editor-virtualization` handover.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 /// Build a scroll container holding `n` paragraphs, each with text long enough

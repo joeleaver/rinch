@@ -12,7 +12,7 @@
 //! binary: the counting allocator counts every thread, so nothing else may
 //! run beside it.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering::Relaxed};

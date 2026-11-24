@@ -8,7 +8,7 @@
 //! It used to keep a hidden child out whenever its owner *could* be an IFC
 //! root, which left the block childless in Taffy and one line (22px) tall.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 fn build(

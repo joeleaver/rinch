@@ -8,7 +8,7 @@
 //! cell. The fixtures are laid out in the bundled Inter; a line of text is
 //! 20px whatever the face, and nothing here measures a width.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

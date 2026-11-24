@@ -57,7 +57,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const IMG00: &str = r#"<img width="0" height="0" alt="" src="x.png">"#;

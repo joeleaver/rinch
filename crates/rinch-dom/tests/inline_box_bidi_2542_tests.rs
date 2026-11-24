@@ -19,7 +19,7 @@
 //! another size).
 
 use parley::layout::PositionedLayoutItem;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 /// The left edges of the run holding `hebrew`, the image, and the run

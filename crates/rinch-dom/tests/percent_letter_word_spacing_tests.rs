@@ -39,7 +39,7 @@
 //! addition is font-independent; only the glyph-position fixture at the end
 //! needs an exact, host-stable font.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::text_query::glyph_bounds_for_offset;
 

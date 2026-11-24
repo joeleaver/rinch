@@ -9,7 +9,7 @@
 
 use peniko::Brush;
 use rinch::image::{register_rgba, unregister_rgba};
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::FileImageLoader;
 use rinch_dom::paint::vello_painter::VelloPainter;

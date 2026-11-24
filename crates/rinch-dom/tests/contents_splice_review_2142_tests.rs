@@ -12,7 +12,7 @@
 //! it ends in (the reviewer's harness). `review_2142_random_per_seed` is the
 //! seeded random differential (`#[ignore]`d; `R2142_SEEDS=0..600`).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::node::NodeKind;
 
