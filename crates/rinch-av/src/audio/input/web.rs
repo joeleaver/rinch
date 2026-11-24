@@ -40,12 +40,15 @@ pub(super) struct WasmAudioInputState {
 /// The status says held and the gesture listener is armed again, and a
 /// buffer the context queued before it stopped does not say `Running`
 /// again. What ends that is the next `resume()`: a `statechange` back to
-/// `running`, or the gesture listener asking for it. Any buffer after a
-/// resume is asked for is the resumed context's: one queued before the stop
-/// was dispatched before the stop's `statechange`, and so before any later
-/// gesture. Firefox delivers the resumed context's first buffers while
-/// `state` still reads `suspended` (the #3007 order again), so waiting for
-/// `statechange` would drop them with the status still saying held.
+/// `running`, or the gesture listener asking for it. A buffer after a resume
+/// is asked for is taken as the resumed context's. Firefox delivers the
+/// resumed context's first buffers while `state` still reads `suspended` (the
+/// #3007 order again), so waiting for `statechange` would drop them with the
+/// status still saying held. The rule is not exact: HTML does not order the
+/// audio task source against user input, so a stale buffer queued before the
+/// stop can still be dispatched after the gesture and say `Running` a few
+/// milliseconds early; a resume that then never takes effect leaves
+/// `Running` with no samples (#3011).
 ///
 /// A `statechange` to `closed` ends capture for good: the status says
 /// `Failed` and the tracks are stopped, as after a failed setup.
