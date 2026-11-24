@@ -263,17 +263,22 @@ impl Component for StepperStep {
             body.append_child(&desc_span);
         }
 
-        step_el.append_child(&body);
-
-        // Content: hidden here, and moved into the stepper's content region
-        // below the steps while this step is the active one (issue #2195).
+        // Content: the body's last child, under the label and description.
+        // Hidden here, and moved into the stepper's content region below the
+        // steps while this step is the active one (issue #2195). In the body
+        // rather than beside it so that, shown in place
+        // (`content_for_active_only: false`), it lies in the label's column in
+        // either orientation: under the label, and in a vertical stepper
+        // beside the icon and its connector, as a timeline's entries are.
         let content_el = rinch_macros::rsx! { div { class: "rinch-stepper__step-content" } };
 
         for child in children {
             content_el.append_child(child);
         }
 
-        step_el.append_child(&content_el);
+        body.append_child(&content_el);
+
+        step_el.append_child(&body);
 
         // Separator
         let separator = rinch_macros::rsx! { div { class: "rinch-stepper__separator" } };

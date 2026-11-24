@@ -269,8 +269,9 @@ The pieces that follow from it:
   `.rinch-stepper__content` region after `.rinch-stepper__steps`, and every
   pass ends with `settle_content`: the active step's
   `.rinch-stepper__step-content` is **moved** into the region (its children are
-  live nodes, so never copied), remembered with its step and next sibling (the
-  separator), and moved back as soon as another step is at `active` or its step
+  live nodes, so never copied), remembered with its step and its place in the
+  step's `.rinch-stepper__step-body` (its last child, under the label), and
+  moved back as soon as another step is at `active` or its step
   is no longer in the list — so a removed step carries its content away. A
   step that was **discarded** (a `for` row discards the step it built) is asked
   with `NodeHandle::is_retired`, and its shown content is discarded too: the
@@ -278,7 +279,12 @@ The pieces that follow from it:
   putting it back into a retired step left it alive and attached to nothing.
   Content something else took out of the region is forgotten (neither put back
   nor discarded: it is the app's). `content_for_active_only: false` skips the
-  move altogether; the stepper then carries `rinch-stepper--content-in-steps`,
+  move altogether, and each step shows its content where it renders it, in its
+  body: under the label, so a vertical stepper reads as a timeline (the content
+  beside the icon and connector, not a third column right of the label, which
+  it was while the wrapper was the body's sibling in the step's row) and a
+  horizontal step's centred column grows to the content's width. The stepper
+  then carries `rinch-stepper--content-in-steps`,
   which sets `--rinch-stepper-step-content-display: block` for its own subtree
   (each stepper sets the property, so a nested one follows its own setting,
   which a descendant selector would not). `StepperCompleted` blocks

@@ -159,7 +159,11 @@ pub(super) const CONTENT_COMPLETED_CLASS: &str = "rinch-stepper__content--comple
 /// shows its own content inside the step (issue #2195).
 pub(super) const CONTENT_IN_STEPS_CLASS: &str = "rinch-stepper--content-in-steps";
 
-/// A step's own content wrapper, which holds its children (issue #2195).
+/// A step's body: its label, its description and, last, its content wrapper.
+pub(super) const STEP_BODY_CLASS: &str = "rinch-stepper__step-body";
+
+/// A step's own content wrapper, which holds its children (issue #2195). It is
+/// the last child of the step's body.
 pub(super) const STEP_CONTENT_CLASS: &str = "rinch-stepper__step-content";
 
 /// A [`StepperCompleted`] block, which is **not a position** — see

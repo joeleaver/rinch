@@ -156,8 +156,9 @@ fn with_content_for_active_only_off_every_step_shows_its_content_in_place() {
     for (name, step) in ["one", "two", "three"].into_iter().zip(steps) {
         let shown = one(&app, &format!("content-{name}"));
         let (x, y, w, h) = abs_box(&app, shown);
-        // Its own height; no width of its own, as the fixture's content is
-        // an empty box sized only by `height`, and the step is a flex row.
+        // Its own height. Its width is the step body's, as the fixture's
+        // content is an empty box sized only by `height`; where a sized box
+        // lands is `content_in_steps_sits_under_the_label_in_both_orientations`.
         assert_eq!(h, 40.0, "`{name}` is laid out at its own height");
         let wrapper = {
             let d = app.doc.as_ref().unwrap().borrow();
@@ -212,6 +213,72 @@ fn a_nested_stepper_follows_its_own_content_setting() {
     let hidden = one(&app, "content-inner-b");
     let (.., h) = abs_box(&app, hidden);
     assert_eq!(h, 0.0, "the inner inactive step's content stays hidden");
+}
+
+/// A step whose content is one 120x40 `.content-{name}`: a box with a width
+/// of its own, so where it lands across the step is measured, not assumed.
+fn sized_step(scope: &mut RenderScope, name: &str) -> NodeHandle {
+    let body = scope.create_element("div");
+    body.set_attribute("class", &format!("content-{name}"));
+    body.set_attribute("style", "width: 120px; height: 40px");
+    StepperStep {
+        label: name.to_string(),
+        ..Default::default()
+    }
+    .render(scope, &[body])
+}
+
+/// `content_for_active_only: false` in either orientation: each step's content
+/// sits **under its label**, in the step body's column. Vertically that is a
+/// timeline: indented with the label, beside the icon and its connector (it
+/// used to be a third column in the step's row, right of the label).
+/// Horizontally it is under the label in the step's centred column, and the
+/// step is at least as wide as its content.
+#[test]
+fn content_in_steps_sits_under_the_label_in_both_orientations() {
+    for orientation in ["vertical", "horizontal"] {
+        let app = mount(move |scope| {
+            let kids = [sized_step(scope, "one"), sized_step(scope, "two")];
+            Stepper {
+                active: 0,
+                content_for_active_only: false,
+                orientation: orientation.to_string(),
+                ..Default::default()
+            }
+            .render(scope, &kids)
+        });
+        let steps = nodes_with_class(&app, "rinch-stepper__step");
+        let labels = nodes_with_class(&app, "rinch-stepper__step-label");
+        let icons = nodes_with_class(&app, "rinch-stepper__step-icon");
+        assert_eq!((steps.len(), labels.len(), icons.len()), (2, 2, 2));
+        for (i, name) in ["one", "two"].into_iter().enumerate() {
+            let case = format!("{orientation}, step `{name}`");
+            let (x, y, w, h) = abs_box(&app, one(&app, &format!("content-{name}")));
+            let (lx, ly, _, lh) = abs_box(&app, labels[i]);
+            let (ix, iy, iw, ih) = abs_box(&app, icons[i]);
+            let (sx, sy, sw, sh) = abs_box(&app, steps[i]);
+            assert_eq!((w, h), (120.0, 40.0), "{case}: laid out at its own size");
+            assert!(
+                y >= ly + lh - 0.5,
+                "{case}: under the label: content {:?}, label bottom {}",
+                (x, y, w, h),
+                ly + lh
+            );
+            assert!(
+                x >= sx - 0.5 && y >= sy - 0.5 && x + w <= sx + sw + 0.5 && y + h <= sy + sh + 0.5,
+                "{case}: inside its step: content {:?}, step {:?}",
+                (x, y, w, h),
+                (sx, sy, sw, sh)
+            );
+            if orientation == "vertical" {
+                assert_eq!(x, lx, "{case}: indented with the label");
+                assert!(x >= ix + iw, "{case}: beside the icon, not under it");
+            } else {
+                assert!(y >= iy + ih, "{case}: below the icon");
+                assert!(sw >= w, "{case}: the step is as wide as its content");
+            }
+        }
+    }
 }
 
 #[test]

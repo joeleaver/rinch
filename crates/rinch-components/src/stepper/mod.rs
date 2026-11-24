@@ -223,10 +223,14 @@ pub struct Stepper {
     /// Mantine layout; issue #2195).
     ///
     /// `false` is the escape hatch: the stepper moves no step's content, and
-    /// every step shows its own content **inside the step**, after its body
-    /// (the stepper carries `rinch-stepper--content-in-steps`). That suits a
-    /// vertical stepper laid out as a timeline; an app that wants only some
-    /// steps' content seen there hides the rest with its own rule, such as
+    /// every step shows its own content **inside the step**, at the end of its
+    /// body, under the label and description (the stepper carries
+    /// `rinch-stepper--content-in-steps`). In a vertical stepper that is a
+    /// timeline: each step's content beside its icon and connector, indented
+    /// with the label. In a horizontal one it sits under the label in the
+    /// step's centred column, which is then at least as wide as the content.
+    /// An app that wants only some steps' content seen there hides the rest
+    /// with its own rule, such as
     /// `.rinch-stepper__step--inactive .rinch-stepper__step-content { display:
     /// none }`. The [`StepperCompleted`] block is shown below the steps past the
     /// last one either way.

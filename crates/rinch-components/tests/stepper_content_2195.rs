@@ -167,15 +167,21 @@ fn a_step_inserted_in_front_hands_the_region_to_the_new_step_at_active() {
         ["two"],
         "step 2 got its content back"
     );
-    // Back where it was: in front of the separator, after the body.
-    let kids = steps[2].children();
-    let content = kids
-        .iter()
-        .position(|c| has_class(c, "rinch-stepper__step-content"))
-        .expect("step two has its content wrapper back");
+    // Back where it was: the last child of the step's body, under the label.
+    let body = steps[2]
+        .children()
+        .into_iter()
+        .find(|c| has_class(c, "rinch-stepper__step-body"))
+        .expect("step two has its body");
+    let kids = body.children();
     assert!(
-        has_class(&kids[content + 1], "rinch-stepper__separator"),
-        "the content wrapper went back in front of the separator"
+        kids.last()
+            .is_some_and(|c| has_class(c, "rinch-stepper__step-content")),
+        "the content wrapper went back to the end of the step's body"
+    );
+    assert!(
+        has_class(&kids[0], "rinch-stepper__step-label"),
+        "after the label"
     );
 }
 
@@ -488,6 +494,38 @@ fn content_the_app_takes_out_of_the_region_is_forgotten() {
         Tree::markers(&tree.steps()[0]),
         Vec::<String>::new(),
         "and is not put back into step two"
+    );
+}
+
+/// Content the app took out of the region stays the app's when its step is
+/// then **discarded**: it is not retired with the step. `settle_content` asks
+/// whether the content still sits in the region before it asks whether the
+/// step was retired; asked the other way round, this content is discarded
+/// from under the app.
+#[test]
+fn content_the_app_takes_out_survives_its_step_being_discarded() {
+    let mut tree = Tree::build(|scope| {
+        let kids = [step(scope, "one"), step(scope, "two"), step(scope, "three")];
+        stepper(scope, 1, &kids)
+    });
+    let content = tree.content_of("two");
+    let elsewhere = tree.scope.create_element("div");
+    tree.root.append_child(&elsewhere);
+    elsewhere.append_child(&content);
+
+    let two = tree.steps()[1].clone();
+    two.discard();
+
+    assert!(tree.retired(&two), "the step is gone");
+    assert_eq!(Tree::markers(&tree.region()), ["three"], "a pass ran");
+    assert!(
+        !tree.retired(&content),
+        "the content the app moved out is the app's, not discarded with the step"
+    );
+    assert_eq!(
+        parent_id(&content),
+        Some(elsewhere.node_id()),
+        "and stays where the app put it"
     );
 }
 

@@ -101,10 +101,15 @@ pub fn styles() -> String {
     margin-top: var(--rinch-spacing-xs);
 }
 
+/* A vertical step's body takes the row's width beside the icon, so content
+   shown in it (`content_for_active_only: false`) has the room a timeline
+   entry has, not just its label's. */
 .rinch-stepper--vertical .rinch-stepper__step-body {
     text-align: left;
     margin-top: 0;
     padding-top: 0.25rem;
+    flex: 1;
+    min-width: 0;
 }
 
 /* Step label */
@@ -125,13 +130,15 @@ pub fn styles() -> String {
     margin-top: 0.125rem;
 }
 
-/* Step content. Hidden inside its step; the Stepper moves the active step's
-   content into `.rinch-stepper__content`, below the steps, where it shows
-   (issue #2195, Mantine's layout).
+/* Step content: the last child of the step's body. Hidden inside its step;
+   the Stepper moves the active step's content into `.rinch-stepper__content`,
+   below the steps, where it shows (issue #2195, Mantine's layout).
 
    With `content_for_active_only: false` the stepper carries
    `--content-in-steps`, moves nothing, and every step shows its content in
-   place. The choice travels as a custom property each stepper sets for its own
+   place, under its label: in a vertical stepper beside the icon and its
+   connector (a timeline), in a horizontal one in the step's centred column,
+   which is then at least as wide as the content. The choice travels as a custom property each stepper sets for its own
    subtree, so a stepper nested in another's step content follows its own
    setting, not the outer one's (a descendant selector would reach into it). */
 .rinch-stepper {
@@ -149,6 +156,10 @@ pub fn styles() -> String {
 .rinch-stepper__content > .rinch-stepper__step-content {
     display: block;
     padding-top: var(--rinch-spacing-md);
+}
+
+.rinch-stepper__step-body > .rinch-stepper__step-content {
+    margin-top: var(--rinch-spacing-xs);
 }
 
 /* A step with no children has nothing to show and takes no room, in the

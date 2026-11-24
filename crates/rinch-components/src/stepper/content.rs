@@ -7,8 +7,8 @@ use super::*;
 ///
 /// Content is **moved** into the region, never copied: a step's children are
 /// live nodes with effects and handlers of their own. So each node taken in
-/// remembers where it came from, and goes back there — into its step, before
-/// the separator — as soon as it is no longer the one to show. That is also
+/// remembers where it came from, and goes back there — into its step's body,
+/// under the label — as soon as it is no longer the one to show. That is also
 /// what makes a step that leaves the stepper (a `for` reconcile, a move to
 /// another stepper) take its content with it, and a step that is
 /// **discarded** retire it: the content is the step's, so it does not outlive
@@ -33,15 +33,19 @@ pub(super) struct ContentRegion {
 pub(super) struct Shown {
     pub(super) node: NodeHandle,
     /// The step it was taken from.
+    pub(super) step: NodeHandle,
+    /// Its parent there, the step's `.rinch-stepper__step-body`, to put it
+    /// back into.
     pub(super) home: NodeHandle,
-    /// Its next sibling there (the separator), to put it back in front of.
+    /// Its next sibling there, to put it back in front of (`None` for the
+    /// body's last child, where a step renders it).
     pub(super) before: Option<NodeHandle>,
 }
 
 impl Shown {
-    /// Put the content back into its step.
+    /// Put the content back into its step's body.
     ///
-    /// Not when the step now sits **inside** the content (an app moved it
+    /// Not when the body now sits **inside** the content (an app moved it
     /// there while the content was shown): putting the content into it would
     /// make the content its own ancestor, a cycle every tree walk then spins
     /// in for ever. The content stays where it is and is forgotten, as content
@@ -74,11 +78,19 @@ fn is_inclusive_ancestor(ancestor: &NodeHandle, node: &NodeHandle) -> bool {
     false
 }
 
-/// The `.rinch-stepper__step-content` child of a step, if it is still there.
-pub(super) fn step_content(step: &NodeHandle) -> Option<NodeHandle> {
-    step.children()
+/// A step's `.rinch-stepper__step-content`, under its
+/// `.rinch-stepper__step-body`, with that body: `(body, content)`, if both are
+/// still there.
+pub(super) fn step_content(step: &NodeHandle) -> Option<(NodeHandle, NodeHandle)> {
+    let body = step
+        .children()
         .into_iter()
-        .find(|child| has_class(child, STEP_CONTENT_CLASS))
+        .find(|child| has_class(child, STEP_BODY_CLASS))?;
+    let content = body
+        .children()
+        .into_iter()
+        .find(|child| has_class(child, STEP_CONTENT_CLASS))?;
+    Some((body, content))
 }
 
 /// Bring the content region into line with `active` (issue #2195).
@@ -115,11 +127,11 @@ pub(super) fn settle_content(steps: &[NodeHandle], completed: &[NodeHandle], d: 
         if s.node.parent_node().map(|p| p.node_id()) != Some(region_id) {
             return false;
         }
-        if s.home.is_retired() {
+        if s.step.is_retired() {
             s.node.discard();
             return false;
         }
-        let wanted = target.is_some_and(|t| t.node_id() == s.home.node_id());
+        let wanted = target.is_some_and(|t| t.node_id() == s.step.node_id());
         if !wanted {
             s.return_home();
         }
@@ -129,13 +141,14 @@ pub(super) fn settle_content(steps: &[NodeHandle], completed: &[NodeHandle], d: 
     if d.content.for_active_only
         && let Some(step) = target
         && shown.is_empty()
-        && let Some(content) = step_content(step)
+        && let Some((body, content)) = step_content(step)
     {
         let before = content.next_sibling();
         region.append_child(&content);
         shown.push(Shown {
             node: content,
-            home: step.clone(),
+            step: step.clone(),
+            home: body,
             before,
         });
     }
