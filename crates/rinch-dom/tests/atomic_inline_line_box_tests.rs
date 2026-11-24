@@ -11,6 +11,8 @@
 //! counted: a 300x80 box after `"x "` in a 200px container made a 180px
 //! paragraph where Chrome makes 105. The same shape at parley's `main`
 //! (checked 2026-09-26) still returns from that branch without setting `done`.
+//! rinch dropped the line after the fact until #2944, since when the fork ends
+//! such a box's line only at the next item, so no line follows the last box.
 //!
 //! Chrome 153's numbers, from the issue (`font-size: 16px; line-height: 20px`,
 //! 200px wide, a `300x80` `inline-block` after `"x "`): the paragraph's

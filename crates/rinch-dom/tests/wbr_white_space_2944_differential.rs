@@ -1,7 +1,7 @@
 //! #2944 (review): `<wbr>`s among elements of mixed `white-space`, against
 //! Chrome 158.
 //!
-//! `wbr_2944/chrome158.tsv` holds 970 boxes, one per line: id, the box's
+//! `wbr_2944/chrome158.tsv` holds 1007 boxes, one per line: id, the box's
 //! `white-space` (and any more of its style, after a `;`), Chrome 158's
 //! height (headless), and the markup. The box is a `div` with `width: 1px`
 //! before that style; the page is that of `wbr_empty_line_2944_tests.rs`
@@ -13,10 +13,14 @@
 //!   `bbbb`.
 //! - `s1`, `s2` put a space in an element between `aaaa` and one or two
 //!   `<wbr>`s, and `sa` after the `<wbr>`; `mx` splits `aaaa` over two
-//!   elements; `ib` puts a 20px inline-block in `aaaa`'s place; `in` puts
-//!   each `<wbr>` in an element whose `white-space` it inherits.
+//!   elements; `ib` puts a 20px inline-block in `aaaa`'s place (`ibv*` in
+//!   a root that does not wrap); `in` puts each `<wbr>` in an element whose
+//!   `white-space` it inherits.
 //! - `ow1`, `ow20` are `g2` under `overflow-wrap: anywhere`, 1px and 20px
-//!   wide; `fs0`, `fs0b` have text of `font-size: 0`.
+//!   wide; `on*` and `ob*` put `overflow-wrap` or `word-break` on text that
+//!   does not wrap around a `<wbr>`, in one element or across elements, and
+//!   `eb*` across elements with no `<wbr>`; `fs0`, `fs0b` have text of
+//!   `font-size: 0`.
 //! - `a*`, `b*`, `q*`, `r*` are the review's rows and their neighbours, and
 //!   `k*` the review's base-level differences.
 //!
@@ -39,6 +43,16 @@ const CORPUS: &str = include_str!("wbr_2944/chrome158.tsv");
 /// is one text here (#2996). These were 40px before #2944 too, by another way:
 /// every `<wbr>` stayed on the line.
 const SPLIT_TEXT: &str = "text that does not wrap in two text nodes (#2996)";
+
+/// Under `overflow-wrap: anywhere | break-word`, Blink breaks a line that
+/// overflows with no opportunity at the end of an element whose parent wraps
+/// (`<nowrap>aaaa</nowrap><nowrap>bbbb</nowrap>` is two lines in 1px). parley
+/// sees no element's end: the text on either side does not wrap, and nothing
+/// between them is an opportunity (#2996). An emergency opportunity before
+/// every `<wbr>` that does not wrap got `ow*`, `on4` and `on5` right, and
+/// `on1`, `on10` and their like (one element around the text, or a root that
+/// does not wrap) wrong.
+const ELEMENT_END: &str = "an emergency break at an element's end (#2996)";
 
 /// `(id, rinch's height, why it is not Chrome's)`.
 const KNOWN: &[(&str, f32, &str)] = &[
@@ -73,6 +87,18 @@ const KNOWN: &[(&str, f32, &str)] = &[
         "`bbbb` split after an empty inline-block between `<wbr>`s (#2996)",
     ),
     ("k3", 40.0, "`break-spaces` space after a `<wbr>` (#2996)"),
+    ("ow1_nowrap_nowrap_normal", 100.0, ELEMENT_END),
+    ("ow20_nowrap_nowrap_normal", 60.0, ELEMENT_END),
+    ("on4", 40.0, ELEMENT_END),
+    ("on5", 100.0, ELEMENT_END),
+    ("ob13", 100.0, ELEMENT_END),
+    ("ob15", 40.0, ELEMENT_END),
+    ("ob19", 40.0, ELEMENT_END),
+    ("eb1", 20.0, ELEMENT_END),
+    ("eb2", 80.0, ELEMENT_END),
+    ("eb4", 20.0, ELEMENT_END),
+    ("eb5", 20.0, ELEMENT_END),
+    ("eb6", 40.0, ELEMENT_END),
 ];
 
 struct Row {
@@ -134,7 +160,7 @@ fn height(d: &RinchDocument, id: &str) -> f32 {
 #[test]
 fn the_corpus_is_whole() {
     let rows = corpus();
-    assert_eq!(rows.len(), 970);
+    assert_eq!(rows.len(), 1007);
     let mut ids: Vec<&str> = rows.iter().map(|r| r.id).collect();
     ids.sort_unstable();
     ids.dedup();

@@ -968,3 +968,40 @@ r3	nowrap	60	aaaa<b><wbr><wbr></b>bbbb
 k1	nowrap	60	aaaa<wbr><span style='display:inline-block'></span><wbr>bbbb
 k2	pre-wrap	40	aaaa <wbr> bbbb
 k3	break-spaces	60	<wbr> aaaa
+on1	nowrap;overflow-wrap:anywhere	40	aaaa<wbr>bbbb
+on2	nowrap;overflow-wrap:break-word	40	aaaa<wbr>bbbb
+on3	nowrap;overflow-wrap:anywhere	60	aaaa<wbr><wbr>bbbb
+on4	normal;overflow-wrap:anywhere	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+on5	normal;overflow-wrap:anywhere	120	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+on6	nowrap;overflow-wrap:anywhere	40	aaaa<wbr>bbbb cc
+on7	nowrap	40	aaaa<wbr>bbbb
+on8	nowrap;overflow-wrap:anywhere	40	aaaa<wbr style='white-space:normal'>bbbb
+on9	nowrap;word-break:break-all	40	aaaa<wbr>bbbb
+on10	normal;overflow-wrap:anywhere	40	<span style='white-space:nowrap'>aaaa<wbr>bbbb</span>
+on11	nowrap;overflow-wrap:anywhere	100	aaaa<wbr><span style='white-space:normal'>bbbb</span>
+on12	pre;overflow-wrap:anywhere	40	aaaa<wbr>bbbb
+ob1	nowrap	60	aaaa<wbr><wbr>bbbb
+ob3	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+ob5	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'>bbbb
+ob7	nowrap;overflow-wrap:anywhere	40	aaaa<span></span><wbr>bbbb
+ob8	nowrap;overflow-wrap:anywhere	40	aaaa<wbr><span></span>bbbb
+ob9	nowrap;overflow-wrap:anywhere	40	<span>aaaa</span><wbr>bbbb
+ob10	nowrap;overflow-wrap:anywhere	40	aaaa<wbr><span>bbbb</span>
+ob11	nowrap;overflow-wrap:anywhere	40	aaaa<wbr>b
+ob12	nowrap;overflow-wrap:anywhere	40	<span>aaaa</span><wbr><span>bbbb</span>
+ob13	normal;overflow-wrap:anywhere	120	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'>bbbb
+ob14	normal;overflow-wrap:anywhere	40	<span style='white-space:nowrap'>aaaa<wbr></span><span style='white-space:nowrap'>bbbb</span>
+ob15	normal;overflow-wrap:anywhere	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'><wbr>bbbb</span>
+ob16	nowrap;overflow-wrap:anywhere	60	aaaa<wbr><wbr><wbr>bbbb
+ob17	nowrap;overflow-wrap:anywhere	40	aaaa<wbr> bbbb
+ob18	nowrap;overflow-wrap:anywhere	40	<span style='display:inline-block;width:20px'></span><wbr>bbbb
+ob19	normal;overflow-wrap:anywhere	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>b</span>
+eb1	normal;overflow-wrap:anywhere	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'>bbbb</span>
+eb2	normal;overflow-wrap:anywhere	100	<span style='white-space:nowrap'>aaaa</span>bbbb
+eb3	normal	20	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'>bbbb</span>
+eb4	normal;overflow-wrap:break-word	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'>bbbb</span>
+eb5	normal;overflow-wrap:anywhere	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap;color:red'>bbbb</span>
+eb6	normal;overflow-wrap:anywhere	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap;color:red'>bbbb</span>
+ibv1	nowrap	40	<span style='display:inline-block;width:20px'></span><wbr>bbbb
+ibv2	nowrap;overflow-wrap:anywhere	20	<span style='display:inline-block;width:20px'></span>bbbb
+ibv3	nowrap	20	<span style='display:inline-block;width:20px'></span>bbbb

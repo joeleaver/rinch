@@ -815,8 +815,7 @@ pub struct HangStats {
     /// or to undo a hung NBSP (`unglue`).
     pub lines: u32,
     /// Extra breaks of the whole paragraph to drop parley's empty line after
-    /// an overflowing last inline box (#1050) or a final forced break
-    /// (#1172): 0 or 1.
+    /// a final forced break (#1172): 0 or 1.
     pub phantom_rebreaks: u32,
     /// Breaks of one line `unglue` made to move a break parley put after
     /// a hung NBSP (#1218): a few per such line, logarithmic in the length
@@ -890,9 +889,8 @@ impl HangStats {
 /// ordinary break and a scan of its lines.
 ///
 /// And whatever the white space, a paragraph that ends in the empty line parley
-/// commits after an overflowing inline box or a final forced break
-/// ([`phantom_last_line`], #1050, #1172) is broken once more, the same way,
-/// without it.
+/// commits after a final forced break ([`phantom_last_line`], #1172) is broken
+/// once more, the same way, without it.
 ///
 /// And with `align_width`, a paragraph broken unconstrained (`max_width` is
 /// `None`: none of its text may wrap) is aligned within that width ([`AlignWidth`]) rather
@@ -981,9 +979,8 @@ pub(crate) fn break_lines_hanging_spaces<'p>(
         ),
         None => HangStats::default(),
     };
-    // #1050, #1172: parley's trailing empty line after an overflowing inline
-    // box or a final forced break. Broken again, the same way, up to the line
-    // before it.
+    // #1172: parley's trailing empty line after a final forced break. Broken
+    // again, the same way, up to the line before it.
     if let Some(keep) = phantom_last_line(layout) {
         match fix {
             Some(max) => {
@@ -1902,26 +1899,18 @@ impl LeafShape {
     }
 }
 
-/// The line count to keep when `layout` ends in an empty line parley 0.11.1
-/// commits where CSS has no line box: after an inline box it placed by an
-/// **emergency** break (#1050), or after a forced break that ends the text
-/// (#1172).
+/// The line count to keep when `layout` ends in the empty line parley commits
+/// after a forced break that ends the text, where CSS has no line box (#1172).
 ///
-/// **After an overflowing box.** At the start of a line, a box too wide for
-/// any line is consumed and the line committed on the spot
-/// (`BreakReason::Emergency`). When that box was the paragraph's last item the
-/// breaker is not marked done, so its next `break_next` commits one more line
-/// holding nothing. When text came before the box that line still carries an
-/// empty text-run item, so the breaker's own rule that an empty last line adds
-/// no height does not apply, and it is counted at the box's line height: a
-/// 300x80 box wrapped under `"x "` in a 200px paragraph made it 180px tall
-/// where Chrome makes it 105. Parley's `main` still has the same branch
-/// (checked 2026-09-26).
+/// (Parley 0.11.1 also left an empty line after an inline box too wide for any
+/// line that ended the paragraph, committing the box's line on the spot by an
+/// emergency break (#1050). The fork ends such a line only at the next item
+/// that starts the next one (rinch #2944), so nothing follows the last box.)
 ///
-/// **After a final forced break.** A `<br>` is pushed to parley as `"\n"`, and
-/// parley always lays out one more line after a text-final newline, with an
-/// empty text run in it (its "copy metrics from previous line" hack) — so it
-/// is counted too. A line box after the last forced break exists in CSS only
+/// A `<br>` is pushed to parley as `"\n"`, and parley always lays out one more
+/// line after a text-final newline, with an empty text run in it (its "copy
+/// metrics from previous line" hack), so its height is counted. A line box
+/// after the last forced break exists in CSS only
 /// when something comes after the break: `<div>a<br></div>` and `<pre>a\n</pre>`
 /// are one line in Chrome 153 (rinch made two), `<div><br></div>` one,
 /// `<div>a<br><br></div>` two. What "something" is has been settled before
@@ -1929,11 +1918,10 @@ impl LeafShape {
 /// out-of-flow box put nothing into it ([`IfcText`]), while a preserved space,
 /// an NBSP, and any in-flow atomic inline (even a 0x0 one) do.
 ///
-/// Either way it is that line exactly: the last line, ended by the end of the
-/// text (`BreakReason::None`), right after an emergency break with nothing to
-/// paint or hit (no glyph run, no box), or right after a forced break
-/// (`BreakReason::Explicit`) with no text and no box. A line of real content —
-/// even a single space — has a glyph run or text and is kept.
+/// It is that line exactly: the last line, ended by the end of the text
+/// (`BreakReason::None`), right after a forced break (`BreakReason::Explicit`),
+/// with no text and no box. A line of real content — even a single space — has
+/// text and is kept.
 ///
 /// **This is not a `<textarea>`'s rule**, whose value ending in `"\n"` does
 /// show an empty last line in Chrome (where its caret goes). A textarea is laid
@@ -1952,16 +1940,11 @@ fn phantom_last_line(layout: &parley::Layout<Brush>) -> Option<usize> {
     if last.break_reason() != BreakReason::None {
         return None;
     }
-    let phantom = match prev.break_reason() {
-        BreakReason::Emergency => last.items().next().is_none(),
-        BreakReason::Explicit => {
-            last.text_range().is_empty()
-                && !last
-                    .items()
-                    .any(|item| matches!(item, PositionedLayoutItem::InlineBox(_)))
-        }
-        _ => false,
-    };
+    let phantom = prev.break_reason() == BreakReason::Explicit
+        && last.text_range().is_empty()
+        && !last
+            .items()
+            .any(|item| matches!(item, PositionedLayoutItem::InlineBox(_)));
     phantom.then_some(n - 1)
 }
 
