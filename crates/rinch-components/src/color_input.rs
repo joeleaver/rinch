@@ -121,6 +121,13 @@ pub struct ColorInput {
     /// given. On desktop the attribute is kept on the element for the DOM;
     /// there is no autofill there.
     pub autocomplete: String,
+    /// The field's HTML `inputmode` attribute (#3048): which on-screen
+    /// keyboard a touch device shows, one of `"none"`, `"text"`, `"decimal"`,
+    /// `"numeric"`, `"tel"`, `"search"`, `"email"` or `"url"` (`"numeric"`
+    /// brings up a digit pad for a one-time code). Empty (the default) writes
+    /// no attribute, the browser's default. On desktop the attribute is kept
+    /// on the element for the DOM; it changes nothing there.
+    pub inputmode: String,
 }
 
 impl Default for ColorInput {
@@ -148,6 +155,7 @@ impl Default for ColorInput {
             z_index: None,
             spellcheck: None,
             autocomplete: "off".to_string(),
+            inputmode: String::new(),
         }
     }
 }
@@ -242,9 +250,7 @@ impl Component for ColorInput {
         if let Some(on) = self.spellcheck {
             text_input.set_attribute("spellcheck", if on { "true" } else { "false" });
         }
-        if !self.autocomplete.is_empty() {
-            text_input.set_attribute("autocomplete", &self.autocomplete);
-        }
+        crate::entry_attrs::write_entry_hints(&text_input, &self.autocomplete, &self.inputmode);
         if !self.placeholder.is_empty() {
             text_input.set_attribute("placeholder", &self.placeholder);
         }
