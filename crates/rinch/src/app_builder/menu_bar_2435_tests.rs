@@ -7,7 +7,7 @@
 //! says why not: with `native-menus` building the native bar registers the
 //! chords, without them the wrapped component arms them as it mounts.
 
-use super::with_menu_bar_in_document;
+use super::menu_bar::with_menu_bar_in_document;
 use crate::app::RinchApp;
 use crate::menu::{Menu, MenuItem};
 use rinch_core::dom::{NodeHandle, RenderScope};
