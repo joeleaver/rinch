@@ -471,6 +471,10 @@ jobs:
           # a scaled clip) against Chrome's pixels and the area, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_rounded_corners_2321 -- \
             --ignored --test-threads=1
+          # #2368's box edges, borders and clips on whole device pixels (and a
+          # transform that is not snapped) against Chrome's pixels, at 1.25x and 1.5x.
+          run 1 -p rinch --features gpu,video --test gpu_box_snap_2368 -- \
+            --ignored --test-threads=1
           # #2335's <img> shadows, outline and background image, #2375's
           # four-colour rounded border, #2396's inline border styles (and its
           # wrapped border, exact since #2607) and #2373's decorations on whole

@@ -300,7 +300,9 @@ pub fn padding_box_radii(node: &Node, scale: f64) -> BorderRadii {
 /// The rect is the **padding** box (#536) — CSS clips overflowing content to
 /// a box's padding edge (css-overflow-3 §3), inset from the border box by
 /// [`padding_box_insets`] and scaled here; with no border the two boxes
-/// coincide; see the module doc. `layer_bounds` and the viewport-clip walks in
+/// coincide; see the module doc. Each clipped edge is on the device grid
+/// (#2368, `padding_edges`), as Chrome snaps the clip rect at a fractional
+/// scale; an unbounded axis is not snapped. `layer_bounds` and the viewport-clip walks in
 /// `RinchApp` ask this same function (or, where they work in unscaled logical
 /// px, [`padding_box_insets`]/[`padding_box_radii`] directly) so nothing can
 /// drift back out of agreement with it.
@@ -332,16 +334,12 @@ pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, Bord
         bottom as f64 * scale,
     );
     let (x0, x1) = if clip_x {
-        let ix = x + left;
-        let iw = (w - left - right).max(0.0);
-        (ix, ix + iw)
+        padding_edges(x, w, left, right)
     } else {
         (x - AXIS_UNBOUNDED, x + AXIS_UNBOUNDED)
     };
     let (y0, y1) = if clip_y {
-        let iy = y + top;
-        let ih = (h - top - bottom).max(0.0);
-        (iy, iy + ih)
+        padding_edges(y, h, top, bottom)
     } else {
         (y - AXIS_UNBOUNDED, y + AXIS_UNBOUNDED)
     };
@@ -351,4 +349,17 @@ pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, Bord
         BorderRadii::ZERO
     };
     Some((Rect::new(x0, y0, x1, y1), radii))
+}
+
+/// One axis of a clipping box's padding edges: the border box from `start`,
+/// `size` long, inset by `near` and `far` (all physical px), each edge on the
+/// device grid (#2368) as Chrome snaps an overflow clip rect, and never
+/// inverted. The one rule [`clip_shape`] and the damage walk's clip chain
+/// (`clip_chain_walk`) both cut with, so the clip paint pushes and the clip
+/// damage is bounded by are the same pixels.
+pub(crate) fn padding_edges(start: f64, size: f64, near: f64, far: f64) -> (f64, f64) {
+    let inner = (size - near - far).max(0.0);
+    let a = super::pixel_snap::snap_edge(start + near);
+    let b = super::pixel_snap::snap_edge(start + near + inner);
+    (a, b.max(a))
 }

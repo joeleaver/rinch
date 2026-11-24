@@ -1151,18 +1151,26 @@ impl Walk<'_> {
             return match reach {
                 crate::node::SubtreeReach::Within([x0, y0, x1, y1]) => {
                     let s = self.scale;
-                    Extent::Within(transform.transform_rect_bbox(Rect::new(
-                        x + x0 as f64 * s,
-                        y + y0 as f64 * s,
-                        x + x1 as f64 * s,
-                        y + y1 as f64 * s,
+                    // Measured at scale 1, where every box is on the grid;
+                    // here, at `s`, the boxes in it are drawn snapped (#2368),
+                    // and rounding is monotonic, so the reach's own snapped
+                    // self bounds theirs.
+                    Extent::Within(transform.transform_rect_bbox(super::pixel_snap::reach_of(
+                        Rect::new(
+                            x + x0 as f64 * s,
+                            y + y0 as f64 * s,
+                            x + x1 as f64 * s,
+                            y + y1 as f64 * s,
+                        ),
                     )))
                 }
                 crate::node::SubtreeReach::Unknown => Extent::Unknown,
                 crate::node::SubtreeReach::Escapes => Extent::Escapes,
             };
         }
-        let rect = Rect::new(x, y, x + w, y + h);
+        // The border box and its snapped self (#2368): paint draws the box
+        // on the device grid, up to half a device pixel past its layout box.
+        let rect = super::pixel_snap::box_reach(x, y, w, h);
 
         // What this node draws for itself, in its own untransformed space,
         // starting from the border box every arm of `paint_node` fills.
@@ -1183,10 +1191,10 @@ impl Walk<'_> {
             let dx = shadow.offset_x as f64 * self.scale;
             let dy = shadow.offset_y as f64 * self.scale;
             own = own.union(Rect::new(
-                x + dx - reach,
-                y + dy - reach,
-                x + w + dx + reach,
-                y + h + dy + reach,
+                rect.x0 + dx - reach,
+                rect.y0 + dy - reach,
+                rect.x1 + dx + reach,
+                rect.y1 + dy + reach,
             ));
         }
 
