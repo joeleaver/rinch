@@ -606,7 +606,11 @@ impl RinchRuntime {
         rinch_core::video_sink::set_video_sink_factory(
             crate::render_surface::create_video_frame_sink,
         );
-        app.register_app_fonts(fonts);
+        // The build's faces, then any `rinch::font::register_font` queued
+        // before there was a runtime to wake: those reach the first frame too.
+        let mut fonts = fonts.to_vec();
+        fonts.extend(crate::font::take_registered_fonts());
+        app.register_app_fonts(&fonts);
         // The main window's size, scale and focus reach `rinch::window`
         // (#1770); the DevTools window's do not.
         let windowless = crate::window_handle::windowless();
@@ -643,7 +647,7 @@ impl RinchRuntime {
             exit_when: crate::window_handle::exit_when(),
             windowless,
             windowless_root_warned: false,
-            fonts: fonts.to_vec(),
+            fonts,
             popups: Default::default(),
             #[cfg(test)]
             _queue_lock,
@@ -1534,6 +1538,73 @@ mod bundled_font_tests {
             before + 1
         );
         assert!(rinch_core::video_sink::has_video_sink_factory());
+    }
+
+    /// `rinch::font::register_font` called before there is a runtime (in
+    /// `main`, before `App::run`) has no loop to wake: the runtime takes the
+    /// queued face at construction, after the build's own, so it is in the
+    /// font context that measures the first frame and kept for later windows.
+    #[test]
+    fn a_face_registered_before_the_runtime_reaches_its_first_frame() {
+        let _lock = TestQueueLock::hold();
+        let _ = crate::font::take_registered_fonts();
+        crate::font::register_font(AppFont::monospace(FACE));
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        let runtime = RinchRuntime::new("t", 800, 600, component, &[AppFont::serif(FACE)]);
+        let generics: Vec<_> = runtime
+            .main
+            .app
+            .pending_fonts
+            .iter()
+            .map(|f| f.font.generics[0])
+            .collect();
+        assert_eq!(
+            generics,
+            vec![
+                parley::fontique::GenericFamily::Serif,
+                parley::fontique::GenericFamily::Monospace
+            ],
+            "the build's face first, then the queued one"
+        );
+        assert_eq!(runtime.fonts.len(), 2, "both kept for windows opened later");
+        assert!(crate::font::take_registered_fonts().is_empty());
+    }
+
+    /// While the app runs, `register_font` queues the face and wakes the loop
+    /// (`RegisterFonts`); the turn that drains it registers the face with
+    /// every open window's document and keeps it with the app's fonts, which
+    /// is what `new_other_window` makes a later window with.
+    #[test]
+    fn a_face_registered_while_running_reaches_the_windows() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        let _ = crate::font::take_registered_fonts();
+
+        crate::font::register_font(AppFont::monospace(FACE));
+        let queued = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        assert!(
+            queued
+                .iter()
+                .any(|(_, e)| matches!(e, RinchNativeEvent::RegisterFonts)),
+            "the loop is woken to register it: {queued:?}"
+        );
+        assert!(
+            runtime.main.app.pending_fonts.is_empty(),
+            "nothing is registered until the loop's turn"
+        );
+
+        runtime.register_queued_fonts();
+        assert_eq!(runtime.main.app.pending_fonts.len(), 1);
+        assert_eq!(
+            runtime.main.app.pending_fonts[0].font.generics[0],
+            parley::fontique::GenericFamily::Monospace
+        );
+        assert_eq!(runtime.fonts.len(), 1, "kept for windows opened later");
+
+        // A second turn with nothing queued registers nothing again.
+        runtime.register_queued_fonts();
+        assert_eq!(runtime.main.app.pending_fonts.len(), 1);
+        assert_eq!(runtime.fonts.len(), 1);
     }
 
     /// And a build that bundles none is not handed a phantom face.

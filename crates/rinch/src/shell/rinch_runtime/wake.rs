@@ -288,6 +288,9 @@ pub enum RinchNativeEvent {
     ApplyVsync,
     /// Apply the zoom `rinch::window::set_zoom` set to every open window.
     ApplyZoom,
+    /// Register the faces `rinch::font::register_font` queued with every
+    /// open window, and keep them for windows opened later.
+    RegisterFonts,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).

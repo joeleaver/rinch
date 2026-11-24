@@ -238,6 +238,35 @@ covers the emoji still draws it, as in Chrome, and an emoji face you name after
 a generic (`…, sans-serif, 'Segoe UI Emoji'`) wins it. A character that is text
 by default — ❤ without U+FE0F, ©, the digits — follows the stack as written.
 
+## Faces that arrive while the app runs
+
+`.fonts()` is for the faces a build carries. A face the app only learns about
+later — a typeface the user picks from a catalogue and the app downloads, a
+document that names its own fonts — is registered from anywhere on the UI
+thread with `rinch::font::register_font`:
+
+```rust,ignore
+// In a download's callback, an effect, an event handler…
+let bytes: Vec<u8> = fetched_ttf;
+rinch::font::register_font(AppFont::from_data(bytes));
+```
+
+On the desktop it takes effect on the event loop's next turn: every open
+window registers the face, and text already drawn in a fallback is shaped and
+painted again in it, a frame behind. Windows opened afterwards are made with
+it. Called before `App::run`, the face reaches the first frame like one from
+`.fonts()`.
+
+Each call registers the bytes again, so an app that may ask for the same face
+twice keeps its own record of what it has registered. As with every
+registration, the face answers its own family name (and any generics it
+claims), and cannot be unregistered.
+
+On the web it does nothing: the browser loads fonts from the page's CSS
+(`@font-face` or a stylesheet `<link>`). It does nothing yet on Android or in
+an embedded `RinchContext`, which registers through
+`RinchContext::register_app_font`.
+
 ## Fonts installed while the app runs
 
 rinch lists the installed fonts once, when the first window (or embedded

@@ -147,6 +147,22 @@ registration is kept as a `PendingFont { font, fill_empty_generics }` so the
 mount replays the same policy onto the document's context that the hit-test
 context got.
 
+**Faces registered while the app runs: `rinch::font::register_font`.** The
+`RinchApp` that owns the font contexts belongs to the desktop shell, so
+component code cannot call `register_app_font` itself. `register_font` (UI
+thread only, like `set_zoom`) pushes the face onto a thread-local queue
+(`font::RUNTIME_FONTS`) and sends `RinchNativeEvent::RegisterFonts`; the
+runtime's turn (`RinchRuntime::register_queued_fonts`) drains the queue,
+registers the faces on every open window's app (`roles()`: main, DevTools,
+others), asks each OS window for a redraw, and appends them to
+`RinchRuntime::fonts`, which `new_other_window` makes later windows with. The
+registration's root-dirty mark (#2749) is what makes that frame re-shape text
+already drawn in a fallback. Before a runtime exists the event is dropped
+(`send_native_event`'s `runtime_drains`), and `RinchRuntime::with_app` takes
+the queue after the build's own `.fonts()`, so a face registered in `main`
+reaches the first frame. Web, Android and embed builds compile it as a no-op
+(the embed has `RinchContext::register_app_font`).
+
 **Font bytes are `FontData`, owned or `'static`** (#2101). `AppFont::data` is a
 `FontData` (`&'static [u8]` or an `Arc<dyn AsRef<[u8]> + Send + Sync>`, from
 `Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>`, `Arc<Vec<u8>>` or `peniko::Blob<u8>`), so

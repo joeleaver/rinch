@@ -381,6 +381,10 @@ impl RinchRuntime {
                 self.apply_zoom(event_loop);
                 return;
             }
+            RinchNativeEvent::RegisterFonts => {
+                self.register_queued_fonts();
+                return;
+            }
             RinchNativeEvent::SetWindowOutput(output) => {
                 self.w(role).output_override = Some(output);
                 // A layer surface cannot change output: make it again there,
@@ -483,6 +487,26 @@ impl RinchRuntime {
             let actions = self.w(role).rezoom();
             self.process_actions(role, actions, event_loop);
         }
+    }
+
+    /// Register the faces `rinch::font::register_font` queued with every open
+    /// window's document, and keep them with the app's fonts so a window
+    /// opened later is made with them. Each registration names its
+    /// document's root dirty (#2749), so the next frame re-shapes and repaints
+    /// text drawn in a fallback; the redraw asks for that frame.
+    pub(super) fn register_queued_fonts(&mut self) {
+        let fonts = crate::font::take_registered_fonts();
+        if fonts.is_empty() {
+            return;
+        }
+        for role in self.roles() {
+            let window = self.w(role);
+            window.app.register_app_fonts(&fonts);
+            if let Some(os_window) = window.window.as_ref() {
+                os_window.request_redraw();
+            }
+        }
+        self.fonts.extend(fonts);
     }
 
     fn dispatch_to_app(
