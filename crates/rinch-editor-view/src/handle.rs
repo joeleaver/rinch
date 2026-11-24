@@ -1565,12 +1565,25 @@ impl EditorHandle {
     /// Returns whether the plugin was added. It is all-or-nothing: `false` leaves
     /// the plugin list untouched, so a later call can still add it.
     pub fn add_plugin(&self, plugin: Rc<dyn Plugin>) -> bool {
+        self.install_plugin(plugin, |plugins| plugins.len())
+    }
+
+    /// [`add_plugin`](Self::add_plugin) at the index `at` picks from the
+    /// installed list (clamped to its length): the end for `add_plugin`, the
+    /// [`default_plugins`](rinch_editor_core::default_plugins) place for
+    /// [`set_markdown_shortcuts`](Self::set_markdown_shortcuts) (#2210).
+    fn install_plugin(
+        &self,
+        plugin: Rc<dyn Plugin>,
+        at: impl FnOnce(&[Rc<dyn Plugin>]) -> usize,
+    ) -> bool {
         let mut core = self.core_mut();
         if core.plugins.iter().any(|p| p.key() == plugin.key()) {
             return false;
         }
         let mut plugins = core.plugins.clone();
-        plugins.push(plugin);
+        let index = at(&plugins).min(plugins.len());
+        plugins.insert(index, plugin);
         let prev = core.state.clone();
         let mut next = EditorState::create(core.schema.clone(), prev.doc.clone(), plugins.clone());
         next.selection = prev.selection.clone();
@@ -1629,6 +1642,12 @@ impl EditorHandle {
             return false;
         }
         core.plugins = plugins;
+        // The placeholder slot names the plugin `set_placeholder` installed;
+        // once it is gone, a later `set_placeholder` installs a new one rather
+        // than changing the text of a plugin no state holds (#2210).
+        if core.placeholder.as_ref().is_some_and(|p| p.key() == key) {
+            core.placeholder = None;
+        }
         true
     }
 
@@ -1642,15 +1661,23 @@ impl EditorHandle {
     /// The `Editor { markdown_shortcuts: … }` prop calls this at mount.
     ///
     /// Installs or removes the plugin, so it is construction-time as
-    /// [`add_plugin`](Self::add_plugin) is (the undo history restarts). A call
-    /// that changes nothing changes nothing. Returns whether they are on
-    /// afterwards.
+    /// [`add_plugin`](Self::add_plugin) is (the undo history restarts). It goes
+    /// where `default_plugins` has it, right after the `BaseCommandsPlugin`
+    /// (first when that is not installed), so its input rules run before those
+    /// of plugins the app added. A call that changes nothing changes nothing.
+    /// Returns whether they are on afterwards.
     pub fn set_markdown_shortcuts(&self, on: bool) -> bool {
-        use rinch_editor_core::MarkdownInputRulesPlugin;
+        use rinch_editor_core::{BaseCommandsPlugin, MarkdownInputRulesPlugin};
         let key = MarkdownInputRulesPlugin.key();
         let installed = self.core().plugins.iter().any(|p| p.key() == key);
         match (on, installed) {
-            (true, false) => self.add_plugin(Rc::new(MarkdownInputRulesPlugin)),
+            (true, false) => self.install_plugin(Rc::new(MarkdownInputRulesPlugin), |plugins| {
+                let base = BaseCommandsPlugin.key();
+                plugins
+                    .iter()
+                    .position(|p| p.key() == base)
+                    .map_or(0, |i| i + 1)
+            }),
             (false, true) => !self.remove_plugin(key),
             _ => installed,
         }

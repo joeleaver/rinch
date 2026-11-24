@@ -8,7 +8,9 @@ use std::rc::Rc;
 
 use rinch_core::dom::mock::MockDomDocument;
 use rinch_core::dom::{DomDocument, NodeHandle, NodeId};
-use rinch_editor_core::{HistoryPlugin, Plugin, Pos, Selection};
+use rinch_editor_core::{
+    HistoryPlugin, InputRule, Plugin, PluginKey, Pos, Selection, plugins::PLACEHOLDER_KEY,
+};
 
 use crate::{EditorHandle, TabBehavior, create_editor};
 
@@ -107,6 +109,40 @@ fn set_markdown_shortcuts_turns_the_rules_on_and_off() {
     assert_eq!(first_block_type(&h), "paragraph");
 }
 
+/// An app plugin with one input rule, `^zz$`, which declines every match.
+#[derive(Debug)]
+struct AppRules;
+
+impl Plugin for AppRules {
+    fn key(&self) -> PluginKey {
+        PluginKey("app-rules-2210")
+    }
+    fn input_rules(&self) -> Vec<InputRule> {
+        vec![InputRule::new("^zz$", |_, _, _, _| None)]
+    }
+}
+
+/// Turned on later, the shortcuts take their `default_plugins` place, before
+/// the rules of a plugin the app added (#2210), not after them.
+#[test]
+fn set_markdown_shortcuts_installs_them_at_their_default_place() {
+    let h = editor_with("<p></p>");
+    assert!(h.add_plugin(Rc::new(AppRules)));
+    assert!(h.set_markdown_shortcuts(true));
+    let state = h.state();
+    let patterns: Vec<&str> = state
+        .input_rules()
+        .iter()
+        .map(|r| r.pattern.as_str())
+        .collect();
+    assert!(patterns.len() > 1, "{patterns:?}");
+    assert_eq!(
+        patterns.last(),
+        Some(&"^zz$"),
+        "the app's rule stays last: {patterns:?}"
+    );
+}
+
 // ── remove_plugin ───────────────────────────────────────────────────────────
 
 /// The history can be taken out (an outer undo stack owns it) and put back
@@ -157,6 +193,22 @@ fn the_placeholder_is_live_and_changing_it_keeps_the_history() {
     assert!(placeholder_texts(&host).is_empty(), "empty text shows none");
     assert!(h.set_placeholder("Back"));
     assert_eq!(placeholder_texts(&host), ["Back"]);
+}
+
+/// `remove_plugin(PLACEHOLDER_KEY)` takes the placeholder away for good: the
+/// handle forgets it, and a later `set_placeholder` installs a new one that
+/// shows (#2210), rather than changing the text of a plugin no state holds.
+#[test]
+fn removing_the_placeholder_plugin_forgets_it() {
+    let h = editor_with("<p></p>");
+    assert!(h.set_placeholder("First"));
+    let host = attach(&h);
+    assert!(h.remove_plugin(PLACEHOLDER_KEY));
+    assert!(placeholder_texts(&host).is_empty(), "removed");
+    assert_eq!(h.placeholder(), "", "the handle forgot it");
+
+    assert!(h.set_placeholder("Second"));
+    assert_eq!(placeholder_texts(&host), ["Second"], "installed again");
 }
 
 // ── Inline block styles ─────────────────────────────────────────────────────
