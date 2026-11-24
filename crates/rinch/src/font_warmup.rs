@@ -207,7 +207,9 @@ mod tests {
             ["--tool=callgrind", "--callgrind-out-file=/dev/null"],
             ["--tool=memcheck", "--leak-check=no"],
         ] {
+            // A crash leaves a `vgcore.<pid>` in the working directory.
             let out = Command::new(&valgrind)
+                .current_dir(std::env::temp_dir())
                 .args(tool)
                 .args(["--num-callers=30", "--quiet", "--"])
                 .arg(&exe)
