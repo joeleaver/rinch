@@ -182,7 +182,7 @@ str0m = { version = "=0.24.1", default-features = false, features = ["openssl"] 
 wasm-bindgen-test = "0.3"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Navigator", "Request", "RequestInit", "RequestMode", "Response", "console", "Document", "Element", "HtmlElement", "HtmlVideoElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData", "AudioContext", "AnalyserNode", "MediaStreamAudioSourceNode", "MediaStream", "MediaStreamTrack", "MediaStreamTrackState", "AudioNode"] }
+web-sys = { version = "0.3", features = ["Window", "Performance", "Navigator", "Request", "RequestInit", "RequestMode", "Response", "console", "Document", "Element", "HtmlElement", "HtmlVideoElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "ImageData", "AudioContext", "AnalyserNode", "MediaStreamAudioSourceNode", "MediaStream", "MediaStreamTrack", "MediaStreamTrackState", "AudioNode"] }
 # web_media's MediaView test mounts a real rinch-web root.
 rinch-web = { workspace = true }
 wasm-bindgen = "0.2"
