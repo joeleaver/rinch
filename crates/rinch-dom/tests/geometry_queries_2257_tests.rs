@@ -805,3 +805,94 @@ fn changes_inside_the_top_box_match_a_fresh_document() {
         ],
     );
 }
+
+/// A box moved inside the top box adds what it now holds to the record of
+/// each box above it (the ancestor join in `moved_inside`): `g` is moved past
+/// its parent `a`, still inside `t`, and then `a` moves, taking `g` past `t`.
+/// Without the join `a`'s record still holds `g` where it was, so the second
+/// move is judged inside and the kept range stays at `t`'s 150.
+#[test]
+fn a_child_moved_past_its_parent_then_the_parent_moves() {
+    const NESTED: &str = r#"<div id="s" style="width:100px;height:50px;overflow:auto"><div id="t" style="width:150px;height:200px"><div id="a" style="width:100px;height:10px"><div id="g" style="width:50px;height:10px"></div></div></div></div>"#;
+    kept_matches_fresh(
+        "a child moved past its parent, then the parent moves",
+        NESTED,
+        &[
+            |d| {
+                let g = by_id(d, "g");
+                d.set_style(g, "margin-left", "90px");
+            },
+            |d| {
+                let a = by_id(d, "a");
+                d.set_style(a, "margin-left", "30px");
+            },
+        ],
+    );
+}
+
+/// Padding moves what a box lays out from its content box — its lines, and
+/// the atomic inlines its inline formatting context places — without moving
+/// or resizing the box, so the kept walk's record of the box must say where
+/// its content starts. Here `r` keeps its 280px border box and its
+/// inline-block keeps its layout (relative to `r`'s content box), but the
+/// padding takes the inline-block to 150..350, past `t`.
+const PADDED: &str = r#"<div id="s" style="width:200px;height:50px;overflow:auto"><div id="t" style="width:300px;height:100px"><div id="r" style="box-sizing:border-box;width:280px"><div style="display:inline-block;width:200px;height:20px;vertical-align:top"></div></div></div></div>"#;
+
+#[test]
+fn padding_that_moves_an_inline_block_drops_the_kept_walk() {
+    kept_matches_fresh(
+        "padding moves an inline-block",
+        PADDED,
+        &[|d| {
+            let r = by_id(d, "r");
+            d.set_style(r, "padding-left", "150px");
+        }],
+    );
+}
+
+/// The same for a line: `lines_span` measures from the content origin.
+#[test]
+fn padding_that_moves_a_line_drops_the_kept_walk() {
+    const TEXT: &str = r#"<div id="s" style="width:200px;height:50px;overflow:auto"><div id="t" style="width:300px;height:100px"><div id="r" style="box-sizing:border-box;width:280px;white-space:nowrap;font-size:16px;line-height:20px">wwwwwwwwwwww wwwwwwwwwwww</div></div></div>"#;
+    kept_matches_fresh(
+        "padding moves a line",
+        TEXT,
+        &[|d| {
+            let r = by_id(d, "r");
+            d.set_style(r, "padding-left", "150px");
+        }],
+    );
+}
+
+/// And for a border, the other half of the content origin.
+#[test]
+fn a_border_that_moves_an_inline_block_drops_the_kept_walk() {
+    kept_matches_fresh(
+        "a border moves an inline-block",
+        PADDED,
+        &[|d| {
+            let r = by_id(d, "r");
+            d.set_style(r, "border-left", "150px solid black");
+        }],
+    );
+}
+
+/// A `filter` makes its box the containing block of an absolute box below
+/// it (#2719), which is then the container's overflow; taken off, the box's
+/// containing block is above the container, and it is not. The absolute box
+/// has no insets, so it stays where it is and nothing of it changes: only
+/// the filtered box's record can say so. (Taking the filter off is the case
+/// the walk alone answers: while it is on, the container's own measure lists
+/// the absolute box too, `NodeTree::overflow_absolutes`.)
+#[test]
+fn a_filter_taken_off_an_absolute_boxs_containing_block_drops_the_kept_walk() {
+    const ABS: &str = r#"<div id="s" style="width:200px;height:50px;overflow:auto"><div id="t" style="width:150px;height:100px"><div id="a" style="width:100px;height:10px;filter:blur(0px)"><div style="position:absolute;width:400px;height:10px"></div></div></div></div>"#;
+    kept_matches_fresh(
+        "a filter taken off an absolute box's containing block",
+        ABS,
+        &[|d| {
+            let a = by_id(d, "a");
+            d.set_style(a, "filter", "none");
+        }],
+    );
+}
