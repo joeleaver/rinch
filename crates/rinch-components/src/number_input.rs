@@ -132,6 +132,20 @@ pub struct NumberInput {
     /// modification, or Enter) — HTML `change` semantics, receives the final
     /// value. Fires only if the value changed since focus (issue #226).
     pub onchange: Option<InputCallback>,
+    /// The field's HTML `autocomplete` attribute (#3028): a token list such as
+    /// `"username"`, `"current-password"`, `"new-password"`, `"email"` or
+    /// `"one-time-code"`, which password managers and the browser's autofill
+    /// read. Empty (the default) writes no attribute, the browser's default.
+    /// On desktop the attribute is kept on the element for the DOM; there is
+    /// no autofill there.
+    pub autocomplete: String,
+    /// The field's HTML `inputmode` attribute (#3048): which on-screen
+    /// keyboard a touch device shows, one of `"none"`, `"text"`, `"decimal"`,
+    /// `"numeric"`, `"tel"`, `"search"`, `"email"` or `"url"` (`"numeric"`
+    /// brings up a digit pad for a one-time code). Empty (the default) writes
+    /// no attribute, the browser's default. On desktop the attribute is kept
+    /// on the element for the DOM; it changes nothing there.
+    pub inputmode: String,
 }
 
 impl std::fmt::Debug for NumberInput {
@@ -166,6 +180,8 @@ impl std::fmt::Debug for NumberInput {
             )
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
+            .field("autocomplete", &self.autocomplete)
+            .field("inputmode", &self.inputmode)
             .finish()
     }
 }
@@ -274,6 +290,7 @@ impl Component for NumberInput {
         // Input element
         let input =
             rinch_macros::rsx! { input { class: "rinch-number-input__input", r#type: "number" } };
+        crate::entry_attrs::write_entry_hints(&input, &self.autocomplete, &self.inputmode);
 
         // Uncontrolled display state (#501). With no `value_fn` nothing else
         // writes the field, so the steppers own it: `shown` is the number the

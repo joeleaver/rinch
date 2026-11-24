@@ -793,7 +793,7 @@ mod editor {
             root.set_attribute(
                 "style",
                 "padding: 20px; width: 400px; font-size: 16px; line-height: 20px; \
-                 font-family: sans-serif",
+                 font-family: sans-serif; --rinch-editor-caret-color: #1a73e8",
             );
             let e = h.mount(scope);
             ed_in.set(e.node_id().0);
@@ -846,8 +846,9 @@ mod editor {
         )
     }
 
-    /// The caret's exact colour (`#1a73e8`, opaque), which nothing else in
-    /// this page paints.
+    /// The caret's exact colour (`#1a73e8`, opaque, named through
+    /// `--rinch-editor-caret-color` since the default became the text colour,
+    /// #2210), which nothing else in this page paints.
     fn caret_px(px: &[u8], rect: (i32, i32, i32, i32)) -> usize {
         let (w, h) = (SIZE.0 as i32, SIZE.1 as i32);
         let mut n = 0;
@@ -970,7 +971,7 @@ mod editor {
             root.set_attribute(
                 "style",
                 "padding-top: 40px; width: 400px; font-size: 16px; line-height: 20px; \
-                 font-family: sans-serif",
+                 font-family: sans-serif; --rinch-editor-caret-color: #1a73e8",
             );
             let e = h.mount(scope);
             e.set_attribute(

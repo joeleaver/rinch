@@ -57,7 +57,7 @@ pub fn styles() -> String {
     justify-content: center;
     width: 0.75rem;
     height: 0.75rem;
-    color: white;
+    color: var(--rinch-primary-color-contrast, white);
     opacity: 0;
     transform: scale(0.5);
     transition: all 150ms ease;

@@ -72,6 +72,8 @@ web-sys = { version = "0.3", features = [
     # that fulfils the editor view's `ScrollSelectionIntoView` request on the web
     # (`request_scroll_into_view` in web_document.rs).
     "ScrollIntoViewOptions", "ScrollLogicalPosition",
+    # `Element::scrollTo({left, top, behavior})` for `scroll_to_with` (#2291).
+    "ScrollToOptions", "ScrollBehavior",
     # `window.getSelection()`, so a copy/cut of ordinary page content mirrors
     # into the clipboard buffers the way `copy_text()` does (issue #150).
     "Selection",
@@ -91,7 +93,7 @@ web-sys = { version = "0.3", features = [
     # Every file of a drop, for `ondropfiles` (#1771).
     "FileList",
     # Files dragged onto an editor from outside the page, offered to the app's
-    # `EditorHandle::on_image_input` (`on_drop` in editor_input.rs).
+    # `EditorHandle::on_image_input` (`on_drop` in editor_input/pictures.rs).
     "DragEvent",
     # Object URLs over the bytes an app's image loader answers with
     # (`images.rs`): an `<img>` whose `src` scheme the app registered is shown
@@ -140,6 +142,12 @@ tracing.workspace = true
 log = "0.4"
 
 [features]
+default = ["spellcheck"]
+# rinch's spellchecker in the rich-text editor (#2862), which runs only with
+# dictionaries the app supplies. On by default; an app that never supplies
+# any turns default features off to drop the checking code (~113 KB of wasm).
+# Text fields are the browser's either way.
+spellcheck = ["rinch-editor-view/spellcheck"]
 # Collaborative editing (M9): forwards to the editor view's collab adapter, which
 # is the only thing that links a CRDT engine (yrs). Off by default, so a default web
 # build links zero CRDT code. Nothing else is required of a wasm app enabling it: yrs

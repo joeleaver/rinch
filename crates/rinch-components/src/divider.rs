@@ -5,8 +5,10 @@
 use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
+use crate::SectionRenderer;
+
 /// A horizontal or vertical divider line.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Divider {
     /// Orientation ("horizontal" or "vertical").
     pub orientation: String,
@@ -14,11 +16,35 @@ pub struct Divider {
     pub size: String,
     /// Optional label text (horizontal only).
     pub label: String,
+    /// A custom label node (an icon, an icon and text, ...), drawn in the
+    /// `.rinch-divider__label` span in place of `label`'s text (horizontal
+    /// only). Pass `Some(renderer)`.
+    pub label_node: Option<SectionRenderer>,
     /// Label position ("left", "center", "right").
     pub label_position: String,
 }
 
+impl std::fmt::Debug for Divider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Divider")
+            .field("orientation", &self.orientation)
+            .field("size", &self.size)
+            .field("label", &self.label)
+            .field(
+                "label_node",
+                &self.label_node.as_ref().map(|_| "<renderer>"),
+            )
+            .field("label_position", &self.label_position)
+            .finish()
+    }
+}
+
 impl Divider {
+    /// Whether a label (text or node) is drawn.
+    fn has_label(&self) -> bool {
+        self.label_node.is_some() || !self.label.is_empty()
+    }
+
     /// Generate the CSS class string for this divider.
     pub fn class_string(&self) -> String {
         let mut classes = vec!["rinch-divider"];
@@ -47,7 +73,7 @@ impl Divider {
         }
 
         // Label
-        if !self.label.is_empty() {
+        if self.has_label() {
             classes.push("rinch-divider--with-label");
 
             // Label position
@@ -77,9 +103,15 @@ impl Component for Divider {
             let container = rinch_macros::rsx! { div { class: "rinch-divider" } };
             container.set_attribute("class", &class);
             container
-        } else if !self.label.is_empty() {
-            let label_span =
-                rinch_macros::rsx! { span { class: "rinch-divider__label", {self.label.clone()} } };
+        } else if self.has_label() {
+            let label_span = if let Some(render) = &self.label_node {
+                let span = rinch_macros::rsx! { span { class: "rinch-divider__label" } };
+                let node = render(__scope);
+                span.append_child(&node);
+                span
+            } else {
+                rinch_macros::rsx! { span { class: "rinch-divider__label", {self.label.clone()} } }
+            };
 
             let container = rinch_macros::rsx! { div { class: "rinch-divider" } };
             container.set_attribute("class", &class);

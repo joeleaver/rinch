@@ -24,35 +24,13 @@ pub fn styles() -> String {
     font-size: var(--rinch-font-size-sm);
 }
 
-/* Separator via data attribute */
-.rinch-breadcrumbs__item:not(:last-child)::after {
-    content: attr(data-separator);
+/* Separator: a real element appended to every item but the last (#2193).
+   `aria-hidden`, so it is not read. Drawn in the dimmed colour, at the item's
+   font size; a Tabler icon in it is 1em. */
+.rinch-breadcrumbs__separator {
+    display: flex;
+    align-items: center;
     color: var(--rinch-color-dimmed);
-}
-
-/* Fallback separator when no data attribute */
-.rinch-breadcrumbs__list[data-separator] .rinch-breadcrumbs__item:not(:last-child)::after {
-    content: '/';
-}
-
-.rinch-breadcrumbs__list[data-separator="/"] .rinch-breadcrumbs__item:not(:last-child)::after {
-    content: '/';
-}
-
-.rinch-breadcrumbs__list[data-separator=">"] .rinch-breadcrumbs__item:not(:last-child)::after {
-    content: '>';
-}
-
-.rinch-breadcrumbs__list[data-separator=">>"] .rinch-breadcrumbs__item:not(:last-child)::after {
-    content: '>>';
-}
-
-.rinch-breadcrumbs__list[data-separator="-"] .rinch-breadcrumbs__item:not(:last-child)::after {
-    content: '-';
-}
-
-.rinch-breadcrumbs__list[data-separator="•"] .rinch-breadcrumbs__item:not(:last-child)::after {
-    content: '•';
 }
 
 /* Breadcrumbs link */
@@ -60,6 +38,16 @@ pub fn styles() -> String {
     color: var(--rinch-color-dimmed);
     text-decoration: none;
     transition: color 150ms ease;
+}
+
+/* An item with `onclick` and no `href` is a <button>, drawn as the link. */
+button.rinch-breadcrumbs__link {
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    cursor: pointer;
 }
 
 .rinch-breadcrumbs__link:hover {

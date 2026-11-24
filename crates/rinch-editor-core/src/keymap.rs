@@ -6,6 +6,18 @@
 //! runs the bound command (design §5; salvages the `normalize_key` *logic* from the
 //! old `shortcuts.rs` but consumes events at the platform edge, not here).
 //!
+//! ## Which keys a binding consumes
+//!
+//! A binding consumes its key whether or not its command applies: the platform
+//! never passes on a chord the editor advertises (Ctrl+Shift+R on a paragraph
+//! that is already right-aligned must not reach the browser's hard reload). A
+//! binding can instead be declared **fall-through** ([`Keymap::add_fall_through`],
+//! [`Plugin::fall_through_keys`](crate::Plugin::fall_through_keys)), ProseMirror's
+//! keymap semantics: where its command does not apply, its key goes on to the
+//! page (the web's `keydown` listeners, the browser's default) as an unbound key
+//! does. The base keymap declares only Mod-Enter (`exitCode`), so an app's
+//! Ctrl/Cmd+Enter still reaches it outside a code block.
+//!
 //! ## "Mod" / the primary accelerator
 //!
 //! Bindings are written with `Mod` (e.g. `"Mod-b"`) meaning *the platform's primary
@@ -14,7 +26,7 @@
 //! decides which physical modifier maps to `primary` for the host OS. This keeps
 //! one binding table correct on every platform.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// An abstract key — a named editing key or a printable character (lower-cased;
 /// case is carried by [`Modifiers::shift`]).
@@ -149,24 +161,43 @@ impl KeyBinding {
     }
 }
 
-/// A binding → command-name lookup table, aggregated from all plugins.
+/// A binding → command-name lookup table, aggregated from all plugins, with the
+/// set of bindings that leave their key alone when the command does not apply
+/// (the module docs, "Which keys a binding consumes").
 #[derive(Debug, Default, Clone)]
 pub struct Keymap {
     map: HashMap<KeyBinding, String>,
+    fall_through: HashSet<KeyBinding>,
 }
 
 impl Keymap {
     /// An empty keymap.
     pub fn new() -> Keymap {
-        Keymap {
-            map: HashMap::new(),
-        }
+        Keymap::default()
     }
 
-    /// Bind `binding` to the command named `command`. Later bindings override
-    /// earlier ones for the same key.
+    /// Bind `binding` to the command named `command`, a binding that consumes
+    /// its key whether or not the command applies (Tab at the top level, which
+    /// sinks no list item, still never moves the focus). Later bindings override
+    /// earlier ones for the same key, fall-through included.
     pub fn add(&mut self, binding: KeyBinding, command: impl Into<String>) {
         self.map.insert(binding, command.into());
+        self.fall_through.remove(&binding);
+    }
+
+    /// Bind `binding` to the command named `command`, a binding that consumes
+    /// its key only when the command applies, and otherwise leaves it to the
+    /// page (Mod-Enter's `exitCode` outside a code block). Overrides an earlier
+    /// binding of the same key.
+    pub fn add_fall_through(&mut self, binding: KeyBinding, command: impl Into<String>) {
+        self.map.insert(binding, command.into());
+        self.fall_through.insert(binding);
+    }
+
+    /// Whether `binding` leaves its key alone when its command does not apply
+    /// ([`add_fall_through`](Self::add_fall_through)). `false` for an unbound key.
+    pub fn falls_through_when_inapplicable(&self, binding: &KeyBinding) -> bool {
+        self.fall_through.contains(binding)
     }
 
     /// Bind a parsed string (`"Mod-b"`) to a command; ignored if the string does
@@ -238,5 +269,25 @@ mod tests {
         assert_eq!(km.command_for(&b), Some("toggleBold"));
         let other = KeyBinding::parse("Mod-i").unwrap();
         assert_eq!(km.command_for(&other), None);
+    }
+
+    #[test]
+    fn a_later_binding_replaces_the_fall_through_too() {
+        let enter = KeyBinding::parse("Mod-Enter").unwrap();
+        let mut km = Keymap::new();
+        km.add(enter, "a");
+        assert!(
+            !km.falls_through_when_inapplicable(&enter),
+            "add: consuming"
+        );
+        km.add_fall_through(enter, "b");
+        assert!(km.falls_through_when_inapplicable(&enter));
+        assert_eq!(km.command_for(&enter), Some("b"));
+        km.add(enter, "c");
+        assert!(
+            !km.falls_through_when_inapplicable(&enter),
+            "a plain rebinding consumes its key again"
+        );
+        assert!(!km.falls_through_when_inapplicable(&KeyBinding::parse("q").unwrap()));
     }
 }

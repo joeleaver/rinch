@@ -427,6 +427,11 @@ impl ComputedStyle {
             ),
             overflow_x: overflow_from_stylo(&box_style.overflow_x),
             overflow_y: overflow_from_stylo(&box_style.overflow_y),
+            // Parsed behind `layout.unimplemented`, which rinch turns on.
+            scroll_behavior_smooth: matches!(
+                box_style.scroll_behavior,
+                style::properties::longhands::scroll_behavior::computed_value::T::Smooth
+            ),
             scrollbar_color: custom_property(cv, &SCROLLBAR_COLOR, ScrollbarColorValue::parse)
                 .unwrap_or_default(),
             scrollbar_width: custom_property(cv, &SCROLLBAR_WIDTH, ScrollbarWidthValue::parse)

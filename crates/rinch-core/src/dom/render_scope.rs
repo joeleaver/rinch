@@ -704,6 +704,10 @@ pub struct RenderScope {
     /// The document's ancestry tables. Every scope of a document holds them,
     /// so they live exactly as long as some `RenderScope` of that document.
     ancestry: AncestryRef,
+    /// The owner of the code that **invoked** the component this scope renders,
+    /// for a scope `reactive_component_dom` makes for one render (issue
+    /// #3027); empty everywhere else. See [`caller_owner`](Self::caller_owner).
+    caller_owner: crate::reactive::CreatorOwner,
 }
 
 impl RenderScope {
@@ -781,6 +785,7 @@ impl RenderScope {
             id,
             minted: 0,
             ancestry,
+            caller_owner: crate::reactive::CreatorOwner::default(),
         }
     }
 
@@ -873,6 +878,31 @@ impl RenderScope {
     /// this one's behalf.
     pub fn id(&self) -> ScopeId {
         self.id
+    }
+
+    /// The owner the handlers the caller wrote are run under (issues #3027,
+    /// #3030): `rsx!` binds it as `__rinch_caller_owner` in a re-rendering
+    /// component's render, for that component's `on*` props and the handlers
+    /// among its children (see `rinch_core::reactive::CallerHandler`).
+    ///
+    /// A component with a reactive prop is rebuilt, struct and all, inside a
+    /// scope of its own for each render, and that scope is disposed by the
+    /// next one. The handler props are not that render's: the caller wrote
+    /// them, and a callback runs under the owner it was created under, so
+    /// they run under the caller's owner, captured when the component was
+    /// first placed (or handed on by an enclosing re-rendering component,
+    /// `reactive_component_dom_for_caller`). Everywhere else this is empty
+    /// and runs its closure under the ambient owner, which already is the
+    /// caller's.
+    #[doc(hidden)]
+    pub fn caller_owner(&self) -> crate::reactive::CreatorOwner {
+        self.caller_owner.clone()
+    }
+
+    /// Set what [`caller_owner`](Self::caller_owner) answers.
+    #[doc(hidden)]
+    pub fn set_caller_owner(&mut self, owner: crate::reactive::CreatorOwner) {
+        self.caller_owner = owner;
     }
 
     /// Whether this scope minted `node` (issue #719).

@@ -8,6 +8,8 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 
 There is **one** icon system: the **`TablerIcon` enum** in `rinch-tabler-icons`, which is also what every component's icon prop takes (`Option<TablerIcon>`). There is no `Icon` enum in the workspace — an older curated `rinch-core` `Icon` enum was removed, so treat any doc comment or snippet still showing `Icon::CheckCircle` as stale.
 
+**The chrome glyphs the components draw themselves** (the close X, the chevrons, the check: `icons.rs`'s `close_icon_dom`, `close_icon_lines_dom`, `chevron_*_dom`, `chevrons_*_dom`, `check_dom`) are replaceable app-wide through the `IconSet` context (#2208). Each of those helpers first asks `replaced`, which reads `try_use_context::<IconSet>()` once, at render, and runs the slot's closure under `rinch_core::untracked_handler`; with no set or an empty slot it draws the built-in SVG as before. Where the built-in carried `width`/`height` (`close_icon_dom`) the replacement root is given them, and Accordion's gets the `rinch-accordion__chevron` class its rotation targets. A component's own icon prop is checked before the helper is called, so it still wins. `IconSet::tabler` drops Tabler's inline `1em` size so component CSS sizes the svg. Pinned by `crates/rinch-components/tests/chrome_glyphs_2208.rs`.
+
 `TablerIcon` is **not** in the `rinch` prelude — the facade doesn't depend on `rinch-tabler-icons`. Any crate that names an icon variant (including one just passing `icon:` to a component) must depend on it directly.
 
 **Add to Cargo.toml:**
@@ -79,11 +81,15 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 | `List`, `ListItem` | `icon` | `list.rs:109`, `list.rs:233` |
 | `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:143`, `:150` |
 | `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:544`, `:546`, `:548` |
-| `NavLink` | `left_section`, `right_section` | `navlink.rs:100`, `:102` |
+| `NavLink` | `left_section`, `right_section`, `chevron_icon` | `navlink.rs` |
+| `Breadcrumbs` | `separator_icon` | `breadcrumbs.rs` |
+| `Pagination` | `first_icon`, `previous_icon`, `next_icon`, `last_icon` | `pagination.rs` |
 | `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:483`, `:485` |
 | `Tab` | `left_section`, `right_section` | `tabs.rs:397`, `:399` |
 
 The `Tree` component takes its icons through data rather than a prop: `TreeNodeData::icon` (`tree.rs:56`), set with the `with_icon(TablerIcon)` builder.
+
+`List` and `ListItem` also take `icon_node: Option<SectionRenderer>` (#2207), a marker node of the app's own (pass `Some(renderer)`), which wins over `icon` on the same component. Both reach the item through one private `Marker` enum (`list.rs`), so the default-icon patch below treats a list's node exactly as its Tabler default: once per item at render and again for late items, the renderer called once per item, an item's own `icon` or `icon_node` winning, and a defaulted item (`data-list-icon`) taking a new list's marker when it moves.
 
 **`List::icon` and the two `Stepper` icons are container *defaults*, and they
 work by patching the rendered children** (#707). A parent component renders
@@ -163,6 +169,13 @@ first, synchronously. So a `for` reconcile, a `show_dom` branch and a hand-rolle
 with no deferred queue and no drain site in any host — which is what the
 alternative would have needed, since `queue_main_callback` takes a `Send`
 closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
+
+`Breadcrumbs` takes both halves too (#2193): its separators are real
+`aria-hidden` spans appended to every item but the last, so a crumb that arrives
+or leaves changes which item needs one. `settle_separators` is idempotent — it
+writes only a missing or extra separator — and each write lands inside an item,
+which both halves decline (the item class is the boundary), so a settle never
+starts another.
 
 `rinch_core::dom::on_child_removed` is the other half, fired by the four verbs
 that take a node **out** of a tree (`remove_child`, `remove`, `discard`, and
@@ -256,6 +269,39 @@ The pieces that follow from it:
   own `state` keeps none. A **removal** runs the same pass for the same
   reason, through `on_child_removed` (issue #745): a step that goes moves every
   step behind it backwards, which renumbers it and can restate it.
+- **The content region (issue #2195).** `Stepper` renders a
+  `.rinch-stepper__content` region after `.rinch-stepper__steps`, and every
+  pass ends with `settle_content`: the active step's
+  `.rinch-stepper__step-content` is **moved** into the region (its children are
+  live nodes, so never copied), remembered with its step and its place in the
+  step's `.rinch-stepper__step-body` (its last child, under the label), and
+  moved back as soon as another step is at `active` or its step
+  is no longer in the list — so a removed step carries its content away. A
+  step that was **discarded** (a `for` row discards the step it built) is asked
+  with `NodeHandle::is_retired`, and its shown content is discarded too: the
+  step's recursive discard cannot reach content that sits in the region, and
+  putting it back into a retired step left it alive and attached to nothing.
+  Content something else took out of the region is forgotten (neither put back
+  nor discarded: it is the app's). `content_for_active_only: false` skips the
+  move altogether, and each step shows its content where it renders it, in its
+  body: under the label, so a vertical stepper reads as a timeline (the content
+  beside the icon and connector, not a third column right of the label, which
+  it was while the wrapper was the body's sibling in the step's row) and a
+  horizontal step's centred column grows to the content's width. The stepper
+  then carries `rinch-stepper--content-in-steps`,
+  which sets `--rinch-stepper-step-content-display: block` for its own subtree
+  (each stepper sets the property, so a nested one follows its own setting,
+  which a descendant selector would not). `StepperCompleted` blocks
+  are moved into the region on every pass whatever `active` is, and shown only by
+  `rinch-stepper__content--completed`, set while `active >= steps.len()`: left
+  among the steps a block would be the last step's sibling, and that step would
+  stop being `:last-child` (and draw its separator). A step content's move is
+  out of and back into its step, a boundary the stepper's late-child observers
+  decline; a completed block's move out of the steps container happens either
+  in `render`, before those observers are registered, or inside one of their
+  callbacks, where late-child dispatch is suppressed. An empty step content is `:empty` and hidden
+  in the region too. Pins: `tests/stepper_content_2195.rs`, and the real
+  stylesheet in `rinch/src/app/stepper_window_2195_tests.rs`.
 - **A `StepperCompleted` is not a position, and neither is anything inside it**
   (issue #741). The step walk skips that block: it is what a stepper shows
   *instead of* its steps once they are all done. It used to walk straight into
@@ -282,7 +328,9 @@ The pieces that follow from it:
   every step behind it otherwise (three writes each when only renumbered).
   Counted on `MockDomDocument`, appending to a 40-step stepper went from 1005
   attribute reads and 126 attribute writes to 142 and 4, and growing one from 0
-  to 40 steps from 2650 writes to 238. Growing or shrinking one step at a time
+  to 40 steps from 2650 writes to 238 (239 since #2195: the step that makes
+  `active: 3` a real step takes the content region out of `--completed`, one
+  class write). Growing or shrinking one step at a time
   is still quadratic in the three reads, and a `for` row edited in place still
   renumbers the steps behind it twice (an insertion, then a removal).
   `crates/rinch-components/tests/stepper_cost_748.rs` pins the per-step
@@ -424,3 +472,63 @@ props with the old string as the empty default: `Loader::aria_label`
 ("Close"). Pins: `rinch-components/tests/button_loading_1334.rs`,
 `rinch-components/tests/loader_and_labels_2205.rs`, and the computed-style check
 `rinch/src/app/decorative_pseudo_773_tests.rs::a_loading_button_draws_the_shared_loader_in_its_text_colour`.
+
+## Component colour variables (#2200, #2201, #2204)
+
+`Alert` and `Badge` take any colour, not only the names they had rules for.
+Every variant's rule reads the component's custom properties
+(`--rinch-alert-color`, `-light`, `-light-text`, `-light-strong`,
+`-filled-text`, `-outline-text`; `--rinch-badge-color`, `-light`,
+`-light-color`, `-text`), and the value is set in one of two places:
+
+- a **built-in name** sets them from the stylesheet: Alert's six classes
+  (`.rinch-alert--blue` …, so `info`/`success`/`warning`/`error` still map onto
+  them) and Badge's fourteen `[data-color]` rules. The rendered tree for those
+  names is unchanged (no inline style), and their shades are the ones the old
+  per-variant rules named: `rinch/tests/component_colors_2200.rs` paints each
+  against a swatch of the old value, beside #2879's light-scheme test;
+- **any other colour** sets them inline through `style_string()`, from
+  `color_utils::color_tokens`: a raw CSS colour (`is_raw_css_color`) is the
+  solid colour with a 10% `color-mix` tint for the light background, `primary`
+  reads `--rinch-primary-color` and its `-light…` tokens, and any other name
+  reads `--rinch-color-{name}-6` / `-light…`, so an app's own token family
+  named that way works too. Its `contrast` (the text on the solid colour,
+  Alert's `-filled-text` and Badge's `-text`) is `white` or `black` computed
+  from a raw colour, and a name's family token with a `white` fallback
+  (`var(--rinch-color-{name}-contrast, white)`,
+  `var(--rinch-primary-color-contrast, white)`). It and `contrast_for`
+  (Button, and `accent_vars` for Stepper, Tabs and the rest) share one rule,
+  `contrast_value`; `contrast_for` writes the token with no fallback (#3020).
+  An unknown Alert name used to fall back to blue; it now reads undefined
+  tokens and paints no fill, as Button's does.
+
+**Every colour sets every variable** (review of #2960). Custom properties
+inherit, so a variable one colour left unset came from the enclosing
+component: a filled blue Alert inside a yellow one took the yellow's
+`--rinch-alert-filled-text` (yellow-9), and a colourless Badge in a coloured
+Badge's section took that badge's colour. Each Alert colour class and
+`Alert::style_string` set all six, `-filled-text` included (the colour's
+contrast token with a `white` fallback; yellow's is `yellow-9`);
+`.rinch-badge` itself sets the primary defaults, and each `[data-color]` rule
+and `Badge::style_string` set all four. A filled Alert with no colour class
+(hand-written markup only) falls back to the primary fill and
+`--rinch-primary-color-contrast`, as `.rinch-badge--filled` does (#3020). An app overrides one on the component (`.my-alert.rinch-alert`),
+not on an ancestor. Pin:
+`component_colors_2200.rs::a_nested_component_does_not_inherit_the_outer_ones_colours`.
+
+`Alert` is `role="alert"` (Mantine's), set from `role` (empty is `"alert"`); a
+quoted `"role":` root attribute still overrides it after render.
+`Alert::title_section` and `Badge::{left,right}_section` are `SectionRenderer`s.
+A Badge wraps its children in `.rinch-badge__label` only when it has a section.
+
+`Progress` follows `<progress>`: no `value` and no `value_fn` is indeterminate
+(`.rinch-progress--indeterminate`, no `aria-valuenow`, a 40% segment swept by
+`transform` keyframes, so it needs no relayout per frame; it was a 0% bar).
+One `apply` writes a state, called once for a static bar and from the one effect
+when `value_fn` or `indeterminate_fn` is set, so `aria-valuenow` follows the
+width (it was written once, #2204). The modifier class goes on and off with
+`add_class`/`remove_class` (#717). `max` scales the width (`value * (100 /
+max)`, exactly the value at the default 100) and is `aria-valuemax`. The width
+transition is `var(--rinch-progress-transition, width 200ms ease)`, the one
+Progress always had (Mantine animates width too); `none` makes it jump, as
+`<progress>` does. Pins: `rinch-components/tests/alert_badge_progress_2200.rs`.

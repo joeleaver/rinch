@@ -14,99 +14,91 @@ thread_local! {
 // Global (Send+Sync) proxy for waking the event loop from any thread.
 pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy> = OnceLock::new();
 
-/// The native events waiting for the next `proxy_wake_up`, with at most one
-/// [`RinchNativeEvent::ReRender`] among them.
+mod queue;
+
+use queue::Drainer;
+pub(crate) use queue::{EventFor, NativeEventQueue};
+
+/// Queue of native events to process on the next proxy_wake_up.
+/// winit 0.31 removes send_event(T); we queue events and call proxy.wake_up().
+/// The type ([`NativeEventQueue`]) says what a send does with its event.
 ///
-/// `ReRender` means "signals changed since the last resolve", and one resolve
-/// answers any number of changes — so a second one queued behind the first is
-/// pure cost: a mutex, an event-loop wake and a `resolve_and_repaint` preamble
-/// that finds nothing to do. It used to be queued once per signal flush, which
-/// a handler writing *n* signals outside a batch turned into *n* events.
-///
-/// `rerender_pending` is cleared by [`Self::drain`] **under the same lock** that
-/// empties the queue: a `ReRender` sent after the drain (from an effect the
-/// drained events run, or from another thread) finds the flag down and queues
-/// afresh, and one sent before it is already in the drained batch. Clearing the
-/// flag outside the lock would leave a window in which a send saw it up,
-/// queued nothing, and then had its wake-up discarded.
-///
-/// Each event carries the window it is for ([`EventFor`], #2416): the document
-/// whose code sent it, or a window a [`WindowHandle`](crate::WindowHandle)
-/// names. The runtime resolves it to one of its windows
-/// ([`RinchRuntime::role_for`]), which is how `hide_current_window` from the
-/// DevTools window's code is DevTools'.
-pub(crate) struct NativeEventQueue {
-    events: VecDeque<(EventFor, RinchNativeEvent)>,
-    rerender_pending: bool,
-}
+/// The crate's own unit tests drive the queue with no runtime, as though one
+/// had been made, so it starts at [`Drainer::Runtime`] there.
+pub(super) static NATIVE_EVENT_QUEUE: Mutex<NativeEventQueue> =
+    Mutex::new(NativeEventQueue::with_drainer(if cfg!(test) {
+        Drainer::Runtime
+    } else {
+        Drainer::Coming
+    }));
 
-impl NativeEventQueue {
-    const fn new() -> Self {
-        Self {
-            events: VecDeque::new(),
-            rerender_pending: false,
-        }
-    }
-
-    /// Queue `event` for the window `to` names. Returns `false` for a
-    /// `ReRender` that coalesced into one already queued — nothing was added
-    /// and no wake is owed.
-    pub(crate) fn push(&mut self, to: EventFor, event: RinchNativeEvent) -> bool {
-        if matches!(event, RinchNativeEvent::ReRender) {
-            if self.rerender_pending {
-                return false;
-            }
-            self.rerender_pending = true;
-        }
-        self.events.push_back((to, event));
-        true
-    }
-
-    /// Take every queued event with the window it is for, and let the next
-    /// `ReRender` queue again.
-    pub(crate) fn drain(&mut self) -> Vec<(EventFor, RinchNativeEvent)> {
-        self.rerender_pending = false;
-        self.events.drain(..).collect()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.events.is_empty()
-    }
-}
-
-/// Which window a queued native event is for (#2416).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum EventFor {
-    /// The window of the document whose code sent it, `None` from outside any
-    /// document (`main`, a worker thread, a menu callback): the main window.
-    Sender(Option<u64>),
-    /// The window a [`WindowHandle`](crate::WindowHandle) names, by its id.
-    /// For nothing once that window has closed.
-    Window(u64),
-}
-
-// Queue of native events to process on the next proxy_wake_up.
-// winit 0.31 removes send_event(T); we queue events and call proxy.wake_up().
-pub(super) static NATIVE_EVENT_QUEUE: Mutex<NativeEventQueue> = Mutex::new(NativeEventQueue::new());
-
-/// Whether a desktop runtime was made in this process: what drains
-/// [`NATIVE_EVENT_QUEUE`]. Set by [`RinchRuntime::new`], never cleared (a
-/// request sent after the runtime is gone is queued as before).
-static RUNTIME_MADE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Note that a desktop runtime exists, so native events are queued for it.
+/// Note that a desktop runtime exists, so native events are queued for it
+/// (#2801). Called by `RinchRuntime::with_app`, before anything of its app.
 pub(super) fn note_runtime_made() {
-    RUNTIME_MADE.store(true, std::sync::atomic::Ordering::Relaxed);
+    NATIVE_EVENT_QUEUE.lock().unwrap().note_runtime();
 }
 
-/// Whether a native event sent now is drained by anything. The crate's own
-/// unit tests drive the queue with no runtime, so it always is there.
-fn runtime_drains() -> bool {
-    cfg!(test) || RUNTIME_MADE.load(std::sync::atomic::Ordering::Relaxed)
+/// Note that a [`RinchContext`](crate::embed::RinchContext) was made: with
+/// no desktop runtime made, the process is an embed host (#2801).
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+pub(crate) fn note_embed_host() {
+    NATIVE_EVENT_QUEUE.lock().unwrap().note_embed_host();
+}
+
+/// Whether [`exit`](crate::exit) was asked for before the run that is
+/// starting (#3015): the run then returns `Ok(())` without opening a
+/// window. Called at the top of [`App::try_run`](crate::App::try_run);
+/// [`run_unless_exit_asked`] looks again just before the event loop runs,
+/// which covers an exit sent from another thread while the display was being
+/// connected to.
+pub(crate) fn take_exit_before_run() -> bool {
+    NATIVE_EVENT_QUEUE.lock().unwrap().take_exit()
+}
+
+/// Run the event loop (`run`, given the runtime it runs) unless an exit was
+/// asked for since [`App::try_run`](crate::App::try_run) looked — sent from
+/// another thread while the display was being connected to and the app
+/// mounted, #3015 — in which case the runtime is dropped and the run ends
+/// with `Ok(())` before any window is made. Either way, once the run has
+/// ended the queue is as it was before any run
+/// ([`NativeEventQueue::note_run_ended`]): what the ended runtime left in it
+/// is dropped, and what is sent after it is kept for the next run.
+pub(super) fn run_unless_exit_asked<R>(
+    runtime: R,
+    run: impl FnOnce(R) -> Result<(), crate::RunError>,
+) -> Result<(), crate::RunError> {
+    run_unless_exit_asked_in(&NATIVE_EVENT_QUEUE, runtime, run)
+}
+
+/// [`run_unless_exit_asked`] on `queue`, which its unit tests make their own.
+fn run_unless_exit_asked_in<R>(
+    queue: &Mutex<NativeEventQueue>,
+    runtime: R,
+    run: impl FnOnce(R) -> Result<(), crate::RunError>,
+) -> Result<(), crate::RunError> {
+    /// Notes the run's end however it ends, a panic out of the loop
+    /// included, after the runtime is dropped (its shutdown's own requests
+    /// are the ended run's too).
+    struct RunEnds<'a>(&'a Mutex<NativeEventQueue>);
+    impl Drop for RunEnds<'_> {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .note_run_ended();
+        }
+    }
+    let _ends = RunEnds(queue);
+    if queue.lock().unwrap().take_exit() {
+        drop(runtime);
+        return Ok(());
+    }
+    run(runtime)
 }
 
 /// How many native events are queued for the desktop runtime, for a test
-/// that pins what an embed-only process queues (#2801). Not part of the API.
+/// that pins what a process without one queues (#2801, #3015). Not part of
+/// the API.
 #[doc(hidden)]
 pub fn __native_events_queued() -> usize {
     NATIVE_EVENT_QUEUE.lock().unwrap().events.len()
@@ -133,13 +125,9 @@ pub(crate) fn send_native_event_for(to: EventFor, event: RinchNativeEvent) {
     let Some(event) = crate::embed::window_requests::capture(to, event) else {
         return;
     };
-    // Nothing drains the queue in a process that never made a desktop
-    // runtime (an embed-only host): queued, it would stay for the life of the
-    // process (#2801).
-    if !runtime_drains() {
-        tracing::debug!("no desktop runtime to take {event:?}: dropped");
-        return;
-    }
+    // Kept for the runtime to come, queued to the one made, or dropped where
+    // none will drain it (an embed host, #2801): `NativeEventQueue::push`
+    // decides, under the lock the runtime's construction takes (#3015).
     let is_rerender = matches!(event, RinchNativeEvent::ReRender);
     if !NATIVE_EVENT_QUEUE.lock().unwrap().push(to, event) {
         return;
@@ -369,379 +357,4 @@ pub fn inject_platform_event(event: PlatformEvent) {
 }
 
 #[cfg(test)]
-mod native_event_queue_tests {
-    use super::*;
-
-    fn rerenders(events: &[(EventFor, RinchNativeEvent)]) -> usize {
-        events
-            .iter()
-            .filter(|(_, e)| matches!(e, RinchNativeEvent::ReRender))
-            .count()
-    }
-
-    /// Any number of `ReRender`s between two drains queue one event, and only
-    /// the first asks for a wake.
-    #[test]
-    fn rerenders_coalesce_until_the_queue_is_drained() {
-        let mut q = NativeEventQueue::new();
-        let accepted: Vec<bool> = (0..7)
-            .map(|_| q.push(EventFor::Sender(None), RinchNativeEvent::ReRender))
-            .collect();
-        assert_eq!(accepted, [true, false, false, false, false, false, false]);
-        assert_eq!(rerenders(&q.drain()), 1);
-
-        // Drained: the next one queues again, and again coalesces its followers.
-        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::ReRender));
-        assert!(!q.push(EventFor::Sender(None), RinchNativeEvent::ReRender));
-        assert_eq!(rerenders(&q.drain()), 1);
-        assert!(q.is_empty());
-    }
-
-    /// Through the real entry point: `rerender_events_queued` (what
-    /// `perf_stats` reports) counts the events actually queued, so a burst of
-    /// signal flushes between two drains counts one. The only test in the
-    /// process that sends a `ReRender` through the static queue.
-    #[test]
-    fn send_native_event_counts_one_rerender_per_drain() {
-        use std::sync::atomic::Ordering;
-        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        let before = crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed);
-        for _ in 0..6 {
-            send_native_event(RinchNativeEvent::ReRender);
-        }
-        assert_eq!(
-            crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed) - before,
-            1
-        );
-        assert_eq!(rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()), 1);
-        send_native_event(RinchNativeEvent::ReRender);
-        assert_eq!(
-            crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed) - before,
-            2,
-            "a drain re-arms it"
-        );
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-    }
-
-    /// Issue #988. A second thread's `run_on_main_thread` lands between a
-    /// wake's two halves: after the main-thread queue was emptied (so
-    /// `queue_main_callback` answers "was empty" and it sends a `ReRender`)
-    /// and before the native drain (so that `ReRender` coalesces into the one
-    /// that caused this wake, and asks for no wake of its own). The drain then
-    /// consumes the old `ReRender`, and nothing is left to wake the loop for
-    /// the new callback.
-    ///
-    /// Two injection points, both inside that window: the end of the queued
-    /// half, and the start of the native half (before its drain takes the
-    /// lock). The second is what a fix that samples "is anything queued?"
-    /// *before* the native drain gets wrong.
-    ///
-    /// The invariant: once the wake returns, the injected callback has either
-    /// run or has a wake owed (a `ReRender` in the queue — which is what
-    /// `send_native_event` wakes the loop for). "Or has run" keeps the fixture
-    /// honest if another test in this process drains the shared main queue in
-    /// the meantime; that drain runs it, which is not a lost wake.
-    fn callback_queued_mid_wake_keeps_its_wake(inject_in_native_half: bool) {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        // The wake being served: one queued callback and its ReRender.
-        run_on_main_thread(|| {});
-        NATIVE_EVENT_QUEUE
-            .lock()
-            .unwrap()
-            .push(EventFor::Sender(None), RinchNativeEvent::ReRender);
-
-        let injected_ran = Arc::new(AtomicBool::new(false));
-        let flag = injected_ran.clone();
-        // Another thread, inside the window.
-        let inject = move || {
-            std::thread::spawn(move || {
-                run_on_main_thread(move || flag.store(true, Ordering::SeqCst))
-            })
-            .join()
-            .unwrap();
-        };
-        let mut inject = Some(inject);
-        drain_wake_queues(
-            &mut inject,
-            |inject| {
-                rinch_core::drain_main_callbacks();
-                if !inject_in_native_half {
-                    (inject.take().unwrap())();
-                }
-            },
-            |inject| {
-                if inject_in_native_half {
-                    (inject.take().unwrap())();
-                }
-                let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-            },
-        );
-        assert!(inject.is_none(), "the injection ran");
-
-        let wake_owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()) > 0;
-        if !wake_owed {
-            // Only another test's drain may have taken it; give that drain
-            // time to finish running it.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-            while !injected_ran.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
-                std::thread::yield_now();
-            }
-        }
-        let ran = injected_ran.load(Ordering::SeqCst);
-        // Leave the shared queue as we found it.
-        rinch_core::drain_main_callbacks();
-        assert!(
-            wake_owed || ran,
-            "the callback queued mid-wake is stranded: still queued, no wake owed"
-        );
-    }
-
-    #[test]
-    fn a_callback_queued_after_the_callback_drain_keeps_its_wake() {
-        callback_queued_mid_wake_keeps_its_wake(false);
-    }
-
-    #[test]
-    fn a_callback_queued_as_the_native_drain_starts_keeps_its_wake() {
-        callback_queued_mid_wake_keeps_its_wake(true);
-    }
-
-    /// Issue #1733: what made the two tests above flaky. Dropping a
-    /// [`RinchRuntime`] runs its shutdown, which **drops** every queued
-    /// main-thread callback without running it (`clear_main_callbacks`) — and
-    /// the runtime-building tests in this binary did that on other threads
-    /// while a wake test's injected callback sat in the shared queue: neither
-    /// run nor owed a wake. A real process has one runtime, dropped at exit,
-    /// so only the test binary had the race. Every test runtime now holds
-    /// `RERENDER_EVENTS_TEST_LOCK` for its lifetime (`RinchRuntime::_queue_lock`).
-    ///
-    /// The runtime here is built and dropped on another thread, inside the
-    /// wake test's window: before the fix its drop landed there every time.
-    #[test]
-    fn a_runtime_dropped_on_another_thread_mid_wake_strands_nothing() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        rinch_core::drain_main_callbacks();
-        run_on_main_thread(|| {});
-        let injected_ran = Arc::new(AtomicBool::new(false));
-        let flag = injected_ran.clone();
-        let dropped = Arc::new(AtomicBool::new(false));
-        let dropped_flag = dropped.clone();
-        let mut dropper = None;
-        drain_wake_queues(
-            &mut (),
-            |_| {
-                rinch_core::drain_main_callbacks();
-                run_on_main_thread(move || flag.store(true, Ordering::SeqCst));
-                dropper = Some(std::thread::spawn(move || {
-                    drop(RinchRuntime::new(
-                        "t",
-                        800,
-                        600,
-                        |s: &mut RenderScope| s.create_element("div"),
-                        &[],
-                    ));
-                    dropped_flag.store(true, Ordering::SeqCst);
-                }));
-                // Long enough for an unserialised runtime to be built and
-                // dropped; a serialised one waits for this test's lock.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-                while !dropped.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-            },
-            |_| {
-                let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-            },
-        );
-        let wake_owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()) > 0;
-        let ran = injected_ran.load(Ordering::SeqCst);
-        rinch_core::drain_main_callbacks();
-        drop(_lock);
-        dropper.unwrap().join().unwrap();
-        assert!(
-            wake_owed || ran,
-            "a runtime dropped mid-wake threw away the queued callback"
-        );
-    }
-
-    /// Why every dispatch asks for a `ReRender` (#1540) rather than only a push
-    /// onto an empty main queue: the queue can be non-empty with no wake owed
-    /// for it — a closure pushed past the dispatcher (#1035's shape), or one
-    /// queued plainly before the dispatcher existed (#1541) — and under the
-    /// empty-queue rule every later sender, from any thread, then found it
-    /// non-empty and asked for nothing. Run through both senders the shell
-    /// installs: the dispatcher behind `Signal::send`, and the shell's own
-    /// `run_on_main_thread`.
-    fn a_dispatch_behind_an_unwoken_callback_still_wakes(send: fn()) {
-        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        rinch_core::drain_main_callbacks();
-        // A callback with no wake of its own.
-        rinch_core::queue_main_callback(Box::new(|| {}));
-        // The next write from a worker.
-        std::thread::spawn(send).join().unwrap();
-        let wake_owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()) > 0;
-        let still_queued = rinch_core::main_callbacks_pending();
-        rinch_core::drain_main_callbacks();
-        assert!(
-            wake_owed || !still_queued,
-            "cross-thread writes stranded: queued, and no wake owed"
-        );
-    }
-
-    #[test]
-    fn a_signal_send_behind_an_unwoken_callback_still_wakes() {
-        a_dispatch_behind_an_unwoken_callback_still_wakes(|| {
-            dispatch_to_main_thread(Box::new(|| {}))
-        });
-    }
-
-    #[test]
-    fn a_run_on_main_thread_behind_an_unwoken_callback_still_wakes() {
-        a_dispatch_behind_an_unwoken_callback_still_wakes(|| run_on_main_thread(|| {}));
-    }
-
-    /// Issue #1540's fix asks for a `ReRender` on every dispatch; the
-    /// coalescing #988 / #1035 rely on still holds: a burst of dispatches
-    /// between two native drains leaves exactly one pending `ReRender`, and
-    /// counts one in `rerender_events_queued`.
-    #[test]
-    fn a_burst_of_dispatches_leaves_one_rerender_per_drain() {
-        use std::sync::atomic::Ordering;
-        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        for round in 0..2 {
-            let before = crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed);
-            std::thread::spawn(|| {
-                for _ in 0..25 {
-                    dispatch_to_main_thread(Box::new(|| {}));
-                    run_on_main_thread(|| {});
-                }
-            })
-            .join()
-            .unwrap();
-            assert_eq!(
-                crate::app::RERENDER_EVENTS_QUEUED.load(Ordering::Relaxed) - before,
-                1,
-                "round {round}: one ReRender queued for 50 dispatches"
-            );
-            assert_eq!(rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain()), 1);
-        }
-        rinch_core::drain_main_callbacks();
-    }
-
-    /// Issue #1541: a callback queued plainly before the dispatcher existed
-    /// is given a `ReRender`, and the wake is paid, once the proxy is set.
-    #[test]
-    fn work_queued_before_the_proxy_is_owed_a_wake() {
-        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        // Queued plainly, as `dispatch_main_callback` does with no dispatcher.
-        rinch_core::queue_main_callback(Box::new(|| {}));
-        let mut woke = 0;
-        owe_startup_wake(|| woke += 1);
-        let owed = rerenders(&NATIVE_EVENT_QUEUE.lock().unwrap().drain());
-        let still_queued = rinch_core::main_callbacks_pending();
-        rinch_core::drain_main_callbacks();
-        assert!(
-            (owed == 1 && woke == 1) || !still_queued,
-            "queued before the proxy, and no wake owed or paid (owed {owed}, woke {woke})"
-        );
-    }
-
-    /// Issue #1540: a `ReRender` sent before the proxy existed (the mount's
-    /// signal-change callback, an early `Signal::send`) carried no wake and
-    /// holds the coalescing flag up, so every later `ReRender` coalesces into
-    /// it and wakes nothing. A window that paints drains it; a windowless or
-    /// hidden app never does. The wake owed once the proxy is set is what
-    /// clears it — and it is the `wake` call, not a further `ReRender`, that
-    /// does: one more `ReRender` coalesces into the stale one.
-    #[test]
-    fn a_rerender_queued_before_the_proxy_is_woken_for() {
-        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        rinch_core::drain_main_callbacks();
-        // The stale `ReRender`, flag up, nothing woken.
-        send_native_event(RinchNativeEvent::ReRender);
-        // A worker's write behind it: coalesced, no wake of its own.
-        std::thread::spawn(|| dispatch_to_main_thread(Box::new(|| {})))
-            .join()
-            .unwrap();
-        let mut woke = 0;
-        let owed = owe_startup_wake(|| woke += 1);
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        rinch_core::drain_main_callbacks();
-        assert!(owed, "a ReRender is waiting");
-        assert_eq!(woke, 1, "and the loop is woken for it");
-    }
-
-    /// Only `ReRender` coalesces: every other event is a distinct request, and
-    /// the `ReRender` keeps the position it was first queued at.
-    #[test]
-    fn other_events_are_never_coalesced() {
-        let mut q = NativeEventQueue::new();
-        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::MinimizeWindow));
-        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::ReRender));
-        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::MinimizeWindow));
-        assert!(!q.push(EventFor::Sender(None), RinchNativeEvent::ReRender));
-        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::ShowWindow));
-        let drained = q.drain();
-        assert_eq!(drained.len(), 4, "{drained:?}");
-        assert!(matches!(
-            drained[1],
-            (EventFor::Sender(None), RinchNativeEvent::ReRender)
-        ));
-        assert_eq!(rerenders(&drained), 1);
-    }
-
-    /// An event carries the document whose code sent it (#2416), so the
-    /// runtime can give it to that document's window; from outside any
-    /// document it carries none.
-    #[test]
-    fn an_event_carries_the_document_that_sent_it() {
-        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        send_native_event(RinchNativeEvent::MinimizeWindow);
-        {
-            let _doc = rinch_core::push_dispatching_doc(42);
-            send_native_event(RinchNativeEvent::HideWindow);
-        }
-        send_native_event_for(EventFor::Window(7), RinchNativeEvent::CloseWindow);
-        let drained = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        assert!(matches!(
-            drained[0],
-            (EventFor::Sender(None), RinchNativeEvent::MinimizeWindow)
-        ));
-        assert!(matches!(
-            drained[1],
-            (EventFor::Sender(Some(42)), RinchNativeEvent::HideWindow)
-        ));
-        assert!(matches!(
-            drained[2],
-            (EventFor::Window(7), RinchNativeEvent::CloseWindow)
-        ));
-    }
-}
+mod tests;

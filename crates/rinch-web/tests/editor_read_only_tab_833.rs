@@ -342,3 +342,42 @@ fn with_two_traps_tab_stays_in_the_editors_trap() {
         f.teardown();
     }
 }
+
+/// #2210: an **editable** editor lets go of a Tab it has no use for. In the
+/// first item (which has no previous sibling to sink into) the keymap's
+/// `sinkListItem` does nothing, and the matched binding used to be consumed
+/// anyway: a keyboard trap. Now the focus moves on, as from the read-only
+/// editor above, and nothing is edited.
+#[wasm_bindgen_test]
+fn an_editable_editor_lets_go_of_a_tab_it_has_no_use_for() {
+    let f = Fixture::new(Layout::Page, false);
+    // "one", in the first item: Tab cannot sink it.
+    f.handle.set_selection(Selection::cursor(Pos(4)));
+    let doc = f.handle.doc();
+    assert!(tab(false), "rinch moves the focus itself");
+    assert!(
+        f.active_is(&f.button("after")),
+        "focus is on {:?}",
+        document().active_element().map(|e| e.outer_html())
+    );
+    assert!(f.handle.doc().same_ref(&doc), "no edit");
+    f.teardown();
+}
+
+/// #2210: `TabBehavior::MoveFocus` is Chrome's `contenteditable`: even in an
+/// item that Tab could nest, the focus moves on and nothing is edited.
+#[wasm_bindgen_test]
+fn move_focus_lets_every_tab_go() {
+    let f = Fixture::new(Layout::Page, false);
+    f.handle.set_tab_behavior(rinch_web::TabBehavior::MoveFocus);
+    f.handle.set_selection(Selection::cursor(Pos(11)));
+    let doc = f.handle.doc();
+    assert!(tab(false), "rinch moves the focus itself");
+    assert!(
+        f.active_is(&f.button("after")),
+        "focus is on {:?}",
+        document().active_element().map(|e| e.outer_html())
+    );
+    assert!(f.handle.doc().same_ref(&doc), "no edit");
+    f.teardown();
+}

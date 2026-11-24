@@ -137,12 +137,71 @@ pub struct Text {
     pub size: String,
     /// Font weight (thin, light, normal, medium, semibold, bold, etc.).
     pub weight: String,
-    /// Text color (primary, dimmed, or any color name).
+    /// Text color. A named value (`primary`, `dimmed`, `inherit`, or one of the
+    /// theme palettes: `red`, `blue`, `gray`, ...) is a class, as before.
+    /// Anything else is written to `--rinch-text-color` and applied by
+    /// `.rinch-text--custom-color`: a palette shade as `name.N` (`"blue.3"` →
+    /// `var(--rinch-color-blue-3)`), another bare name as that palette's shade 6
+    /// with the name itself as the fallback (`"brand"` →
+    /// `var(--rinch-color-brand-6, brand)`, so a custom theme palette and a CSS
+    /// colour keyword such as `crimson` both work), and any other value (`#hex`,
+    /// `rgb(…)`, `var(…)`) as written.
     pub color: String,
     /// Text alignment (left, center, right, justify).
     pub align: String,
     /// Whether to render as a span instead of p (inline).
     pub inline: bool,
+    /// Cut the text to one line ending in "…" (`.rinch-text--truncate`:
+    /// `display: block`, `white-space: nowrap`, `overflow: hidden`,
+    /// `text-overflow: ellipsis`).
+    pub truncate: bool,
+    /// Clamp the text to this many lines, the last ending in "…"
+    /// (`.rinch-text--line-clamp`, a `-webkit-line-clamp` box reading
+    /// `--rinch-text-line-clamp`). `None` (the default) does not clamp.
+    pub line_clamp: Option<u32>,
+}
+
+/// The CSS value a non-named `Text::color` stands for (see its doc).
+fn custom_color_value(color: &str) -> String {
+    let c = color.trim();
+    let is_word = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    };
+    if let Some((name, shade)) = c.split_once('.') {
+        if is_word(name) && !shade.is_empty() && shade.chars().all(|ch| ch.is_ascii_digit()) {
+            return format!("var(--rinch-color-{name}-{shade})");
+        }
+    }
+    if is_word(c) && c.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+        return format!("var(--rinch-color-{c}-6, {c})");
+    }
+    c.to_string()
+}
+
+/// The class a named `Text::color` maps to, if it is one.
+fn named_color_class(color: &str) -> Option<&'static str> {
+    Some(match color {
+        "primary" => "rinch-text--primary",
+        "dimmed" => "rinch-text--dimmed",
+        "inherit" => "rinch-text--inherit",
+        "red" => "rinch-text--red",
+        "pink" => "rinch-text--pink",
+        "grape" => "rinch-text--grape",
+        "violet" => "rinch-text--violet",
+        "indigo" => "rinch-text--indigo",
+        "blue" => "rinch-text--blue",
+        "cyan" => "rinch-text--cyan",
+        "teal" => "rinch-text--teal",
+        "green" => "rinch-text--green",
+        "lime" => "rinch-text--lime",
+        "yellow" => "rinch-text--yellow",
+        "orange" => "rinch-text--orange",
+        "gray" => "rinch-text--gray",
+        "dark" => "rinch-text--dark",
+        _ => return None,
+    })
 }
 
 impl Text {
@@ -165,27 +224,8 @@ impl Text {
         }
 
         // Color class
-        if !self.color.is_empty() {
-            match self.color.as_str() {
-                "primary" => classes.push("rinch-text--primary"),
-                "dimmed" => classes.push("rinch-text--dimmed"),
-                "inherit" => classes.push("rinch-text--inherit"),
-                "red" => classes.push("rinch-text--red"),
-                "pink" => classes.push("rinch-text--pink"),
-                "grape" => classes.push("rinch-text--grape"),
-                "violet" => classes.push("rinch-text--violet"),
-                "indigo" => classes.push("rinch-text--indigo"),
-                "blue" => classes.push("rinch-text--blue"),
-                "cyan" => classes.push("rinch-text--cyan"),
-                "teal" => classes.push("rinch-text--teal"),
-                "green" => classes.push("rinch-text--green"),
-                "lime" => classes.push("rinch-text--lime"),
-                "yellow" => classes.push("rinch-text--yellow"),
-                "orange" => classes.push("rinch-text--orange"),
-                "gray" => classes.push("rinch-text--gray"),
-                "dark" => classes.push("rinch-text--dark"),
-                _ => {}
-            }
+        if !self.color.trim().is_empty() {
+            classes.push(named_color_class(&self.color).unwrap_or("rinch-text--custom-color"));
         }
 
         // Alignment class
@@ -193,6 +233,13 @@ impl Text {
             if let Ok(a) = self.align.parse::<TextAlign>() {
                 classes.push(a.class_name());
             }
+        }
+
+        if self.truncate {
+            classes.push("rinch-text--truncate");
+        }
+        if self.line_clamp.is_some() {
+            classes.push("rinch-text--line-clamp");
         }
 
         classes.join(" ")
@@ -208,6 +255,12 @@ impl Component for Text {
             rinch_macros::rsx! { p { class: "rinch-text" } }
         };
         container.set_attribute("class", &class);
+        if !self.color.trim().is_empty() && named_color_class(&self.color).is_none() {
+            container.set_style("--rinch-text-color", &custom_color_value(&self.color));
+        }
+        if let Some(lines) = self.line_clamp {
+            container.set_style("--rinch-text-line-clamp", &lines.to_string());
+        }
         for child in children {
             container.append_child(child);
         }

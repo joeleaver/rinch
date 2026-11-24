@@ -254,17 +254,30 @@ jobs:
         with:
           packages: libvpx-dev
 
+      # - valgrind: `font_warmup::tests::the_warm_up_runs_under_valgrind_3016`
+      #   runs the font warm-up thread under Callgrind and Memcheck (#3016:
+      #   rustix's first vDSO look-up died under Valgrind). This shard runs
+      #   rinch's lib tests; `RINCH_REQUIRE_VALGRIND` below makes the test fail
+      #   rather than skip when valgrind is missing, so it cannot pass unrun.
+      - name: Install valgrind (the font warm-up under Valgrind)
+        if: matrix.shard == 'unit'
+        uses: ./.github/actions/apt-install
+        with:
+          packages: valgrind
+
       - name: Install Rust toolchain
         id: rust
         uses: ./.github/actions/rust-toolchain
 
       - name: Cache cargo (dependencies)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test
           save-if: ${{ github.event_name == 'push' && matrix.shard == 'unit' }}
 
       - name: Run tests
+        env:
+          RINCH_REQUIRE_VALGRIND: ${{ matrix.shard == 'unit' && '1' || '' }}
         run: ${{ matrix.run }}
 
   # The `#[ignore]`d GPU pixel tests (#1865 D9), on lavapipe: Mesa's software
@@ -341,7 +354,7 @@ jobs:
         uses: ./.github/actions/rust-toolchain
 
       - name: Cache cargo (dependencies)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test-gpu
           save-if: ${{ github.event_name == 'push' }}
@@ -471,6 +484,10 @@ jobs:
           # a scaled clip) against Chrome's pixels and the area, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_rounded_corners_2321 -- \
             --ignored --test-threads=1
+          # #2368's box edges, borders and clips on whole device pixels (and a
+          # transform that is not snapped) against Chrome's pixels, at 1.25x and 1.5x.
+          run 1 -p rinch --features gpu,video --test gpu_box_snap_2368 -- \
+            --ignored --test-threads=1
           # #2335's <img> shadows, outline and background image, #2375's
           # four-colour rounded border, #2396's inline border styles (and its
           # wrapped border, exact since #2607) and #2373's decorations on whole
@@ -518,16 +535,25 @@ jobs:
         with:
           components: clippy
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Dependency artifacts only, never the workspace crates' (#3017; the
+      # mechanism is in docs/internals/ci.md, "The cargo caches"). This was an
+      # `actions/cache` of the whole `target/`, keyed by Cargo.lock alone. Cargo
+      # trusts a workspace crate's artifacts when they are newer than its
+      # sources, and a checkout writes the sources at checkout time: an entry
+      # that a `main` run built and saved AFTER this job's checkout (here, while
+      # this job spent 35 minutes in apt) made rinch-core from an older `main`
+      # look fresh. Clippy never printed `Checking rinch-core`, and
+      # rinch-components failed with E0599 on a method the PR had added; a
+      # crate the PR changed could as easily have passed unchecked.
+      # `Swatinem/rust-cache` deletes the workspace members' artifacts before
+      # it saves, so they are always built from this checkout. Every cargo
+      # cache in the workflows is one; only a push to `main` writes it, so PR
+      # runs read `main`'s entry and cannot evict it with their own.
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-${{ steps.rust.outputs.channel }}-
+          shared-key: clippy
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -675,17 +701,13 @@ jobs:
           components: clippy
           targets: wasm32-unknown-unknown,wasm32-wasip1
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Dependency artifacts only (see the `clippy` job, and
+      # docs/internals/ci.md "The cargo caches").
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-            examples/menu-bar-web/target
-          key: ${{ runner.os }}-cargo-clippy-wasm-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-wasm-${{ steps.rust.outputs.channel }}-
+          shared-key: clippy-wasm
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Run clippy (wasm32)
         run: |
@@ -742,14 +764,20 @@ jobs:
       # is the only thing in the repo that calls `mount_with_menu_bar` and names
       # `rinch_web::{Menu, MenuItem}` — the web menu bar's whole public surface
       # has no other consumer, in CI or out of it. `--manifest-path` rather than
-      # `cd`, so it is one step; its own target dir is cached alongside the
-      # workspace's. The other excluded `*-web` examples are still unbuilt here,
-      # deliberately: `ui-zoo-web` is covered by the docs workflow, and the rest
-      # exercise APIs the workspace crates already test.
+      # `cd`, so it is one step. It builds into the workspace's `target/`
+      # (cargo keys each unit by package, version and features, so the two
+      # lockfiles' builds sit side by side and share what they have in common):
+      # rust-cache's pruning keeps only packages whose manifest lies outside
+      # the workspace root it is given, so a separate
+      # `examples/menu-bar-web/target` registered with it would keep the
+      # path-dependency rinch crates, which are outside THAT root, and cache
+      # them stale again. The other excluded `*-web` examples are still unbuilt
+      # here, deliberately: `ui-zoo-web` is covered by the docs workflow, and
+      # the rest exercise APIs the workspace crates already test.
       - name: Check the web menu-bar example (wasm32)
         run: |
           cargo check --manifest-path examples/menu-bar-web/Cargo.toml \
-            --target wasm32-unknown-unknown
+            --target wasm32-unknown-unknown --target-dir target
 
   # Lint the Android target too (#598). `clippy --workspace` above only ever
   # sees the native host cfg — this was the first gate that ever ran clippy
@@ -809,16 +837,13 @@ jobs:
           components: clippy
           targets: aarch64-linux-android
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Dependency artifacts only (see the `clippy` job, and
+      # docs/internals/ci.md "The cargo caches").
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-android-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-clippy-android-${{ steps.rust.outputs.channel }}-
+          shared-key: clippy-android
+          save-if: ${{ github.event_name == 'push' }}
 
       # clippy does not link, so no NDK / cargo-ndk linker setup is needed here
       # (unlike `cargo test --target aarch64-linux-android`, which does).
@@ -885,16 +910,13 @@ jobs:
         with:
           packages: libasound2-dev libvpx-dev nasm
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Dependency artifacts only (see the `clippy` job, and
+      # docs/internals/ci.md "The cargo caches").
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-test-wasm-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-test-wasm-${{ steps.rust.outputs.channel }}-
+          shared-key: test-wasm
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Run wasm tests (headless Chrome)
         env:
@@ -918,12 +940,16 @@ jobs:
           # rather than skip if it is missing: a skip must not read as a pass.
           # The URL is fixed (port 47811), so the Firefox step below builds
           # the same test binaries and rebuilds nothing.
+          # The runner's timeout is set here, not only inherited from the job:
+          # web_live_lite's whole run is held to 12 s, and a timed-out wait
+          # then spends at most 4 s reading lite_echo's /stats, so its report
+          # prints well inside 180 s (and inside the runner's default 20 s).
           cargo build -p rinch-rtc --example lite_echo
           target/debug/examples/lite_echo --port 47811 --url-file lite_echo.url &
           for i in $(seq 1 50); do [ -s lite_echo.url ] && break; sleep 0.2; done
           test "$(cat lite_echo.url)" = http://127.0.0.1:47811
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
-            cargo test -p rinch-rtc --target wasm32-unknown-unknown
+            WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown
           # rinch-rtc's audio and video (#1916), behind its `media` feature:
           # two peers in the page, synthetic sources only (no getUserMedia).
           # The crate's webdriver.json lets audio play without a gesture.
@@ -1108,7 +1134,7 @@ jobs:
             test "$(cat lite_echo_ff.url)" = http://127.0.0.1:47811
           fi
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
-            cargo test -p rinch-rtc --target wasm32-unknown-unknown
+            WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown
           WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
             --features media --test web_media
           # Browser <-> native media in Firefox. The runner's Firefox has no
@@ -1170,16 +1196,13 @@ jobs:
           components: clippy
           targets: aarch64-linux-android, x86_64-linux-android
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Dependency artifacts only (see the `clippy` job, and
+      # docs/internals/ci.md "The cargo caches").
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-android-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-android-${{ steps.rust.outputs.channel }}-
+          shared-key: android
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Lint the Android shell and platform crate
         run: |
@@ -1215,16 +1238,13 @@ jobs:
           components: clippy
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # Dependency artifacts only (see the `clippy` job, and
+      # docs/internals/ci.md "The cargo caches").
+      - name: Cache cargo (dependencies)
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-macos-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-macos-${{ steps.rust.outputs.channel }}-
+          shared-key: macos
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Lint the macOS desktop shell
         run: |

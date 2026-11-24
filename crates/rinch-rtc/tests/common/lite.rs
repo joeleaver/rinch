@@ -34,6 +34,16 @@ pub struct LiteStats {
     pub closed: Vec<String>,
     /// Offers answered (1, then 2 after an ICE restart).
     pub offers: usize,
+    /// UDP datagrams read from the socket, and written to it.
+    pub datagrams_in: usize,
+    pub datagrams_out: usize,
+    /// `send_to` calls that failed (the datagram never left).
+    pub send_errors: usize,
+    /// The local UDP port, so a reader can find the socket's kernel drop
+    /// count (`/proc/net/udp`).
+    pub port: u16,
+    /// str0m errors from `poll_output` / `handle_input`, in order (a few).
+    pub errors: Vec<String>,
 }
 
 enum LiteCmd {
@@ -141,6 +151,7 @@ fn lite_loop(
     // Channels opened from this side, by id, until str0m says they opened.
     let mut opening: HashMap<ChannelId, String> = HashMap::new();
     let mut backlog: std::collections::VecDeque<(ChannelId, Vec<u8>)> = Default::default();
+    stats.lock().unwrap().port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
         while let Ok(cmd) = cmds.try_recv() {
             match cmd {
@@ -231,7 +242,10 @@ fn lite_loop(
             match r.poll_output() {
                 Ok(Output::Timeout(t)) => break t,
                 Ok(Output::Transmit(t)) => {
-                    let _ = socket.send_to(&t.contents, t.destination);
+                    let sent = socket.send_to(&t.contents, t.destination).is_ok();
+                    let mut st = stats.lock().unwrap();
+                    st.datagrams_out += 1;
+                    st.send_errors += usize::from(!sent);
                 }
                 Ok(Output::Event(Event::ChannelOpen(id, label))) => {
                     opening.remove(&id);
@@ -262,7 +276,10 @@ fn lite_loop(
                     stats.lock().unwrap().closed.push(label);
                 }
                 Ok(Output::Event(_)) => {}
-                Err(_) => break Instant::now() + Duration::from_millis(5),
+                Err(e) => {
+                    note_error(&stats, format!("poll_output: {e}"));
+                    break Instant::now() + Duration::from_millis(5);
+                }
             }
         };
         let wait = timeout
@@ -270,20 +287,32 @@ fn lite_loop(
             .clamp(Duration::from_millis(1), Duration::from_millis(20));
         socket.set_read_timeout(Some(wait)).unwrap();
         let input = match socket.recv_from(&mut buf) {
-            Ok((n, source)) => Input::Receive(
-                Instant::now(),
-                Receive {
-                    proto: Protocol::Udp,
-                    source,
-                    destination: local,
-                    contents: match (&buf[..n]).try_into() {
-                        Ok(c) => c,
-                        Err(_) => continue,
+            Ok((n, source)) => {
+                stats.lock().unwrap().datagrams_in += 1;
+                Input::Receive(
+                    Instant::now(),
+                    Receive {
+                        proto: Protocol::Udp,
+                        source,
+                        destination: local,
+                        contents: match (&buf[..n]).try_into() {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        },
                     },
-                },
-            ),
+                )
+            }
             Err(_) => Input::Timeout(Instant::now()),
         };
-        let _ = r.handle_input(input);
+        if let Err(e) = r.handle_input(input) {
+            note_error(&stats, format!("handle_input: {e}"));
+        }
+    }
+}
+
+fn note_error(stats: &Mutex<LiteStats>, e: String) {
+    let mut st = stats.lock().unwrap();
+    if st.errors.len() < 8 {
+        st.errors.push(e);
     }
 }

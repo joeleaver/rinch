@@ -88,7 +88,11 @@ impl Tree {
 fn list_of_one(list_icon: Option<TablerIcon>, item_icon: Option<TablerIcon>) -> Tree {
     Tree::build(move |scope| {
         let text = scope.create_text("One");
-        let item = ListItem { icon: item_icon }.render(scope, &[text]);
+        let item = ListItem {
+            icon: item_icon,
+            ..Default::default()
+        }
+        .render(scope, &[text]);
         List {
             icon: list_icon,
             ..Default::default()

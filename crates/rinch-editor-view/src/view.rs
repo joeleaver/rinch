@@ -134,26 +134,64 @@ fn apply_type_attrs(dom: &NodeHandle, node: &Node) {
             _ => dom.remove_attribute("data-checked"),
         },
         // The indent level (set by the indent / outdent commands) renders as a left
-        // margin — 2em per level. Always written (resetting to 0) so outdent clears
-        // the previous value, like the table spans above.
+        // margin, `--rinch-editor-indent-step` (2em) per level. At level 0 nothing
+        // is written and a previous value is taken off (#2210): as in Chrome,
+        // where a block carries no inline style until a command gives it one, the
+        // app's stylesheet decides an unindented block's margin.
         "paragraph" | "heading" => {
             let indent = node.attrs().get_int("indent").unwrap_or(0).max(0);
             if indent > 0 {
-                dom.set_style("margin-left", &format!("{}em", indent * 2));
+                dom.set_style(
+                    "margin-left",
+                    &format!("calc(var(--rinch-editor-indent-step, 2em) * {indent})"),
+                );
             } else {
-                dom.set_style("margin-left", "0");
+                dom.remove_style("margin-left");
             }
-            // Horizontal alignment. Always written (resetting to "left") so switching
-            // back to the default clears a previously applied alignment, like the
-            // margin above. Only the three non-default values are honoured.
+            // Horizontal alignment: an alignment the block holds is written,
+            // `left` included (the align-left command stores it), so it holds
+            // inside a `th`, in an RTL editor and against an app's rules. An
+            // unset alignment takes a previous value off rather than writing
+            // `text-align: left` (#2210), so the app's stylesheet (a justified
+            // body, a centred `h1`) and the inherited `start` of an RTL editor
+            // decide it, as they do in Chrome.
             match node.attrs().get_str("text_align") {
-                Some(a @ ("center" | "right" | "justify")) => dom.set_style("text-align", a),
-                _ => dom.set_style("text-align", "left"),
+                Some(a @ ("left" | "center" | "right" | "justify")) => {
+                    dom.set_style("text-align", a)
+                }
+                _ => dom.remove_style("text-align"),
             }
         }
         _ => {}
     }
 }
+
+/// The caret's colour (#2210): `--rinch-editor-caret-color` on the editor (or
+/// any ancestor) names one; unset, it is the editor's text colour, as Chrome's
+/// `caret-color: auto` is. Written inline as a `var()` so an app sets the
+/// variable rather than out-ranking an inline declaration.
+pub(crate) const CARET_COLOR: &str = "var(--rinch-editor-caret-color, currentColor)";
+/// The drag-and-drop drop caret's colour (#2210):
+/// `--rinch-editor-drop-caret-color`, else the caret's.
+pub(crate) const DROP_CARET_COLOR: &str =
+    "var(--rinch-editor-drop-caret-color, var(--rinch-editor-caret-color, currentColor))";
+/// The selection highlight (#2210): `--rinch-editor-selection-bg`, else the
+/// translucent blue it has always been.
+pub(crate) const SELECTION_COLOR: &str = "var(--rinch-editor-selection-bg, rgba(26,115,232,0.3))";
+/// A selected node's outline, a `border` shorthand (#2210):
+/// `--rinch-editor-node-outline`, else `2px solid #1a73e8`. `none` drops it.
+pub(crate) const NODE_OUTLINE: &str = "var(--rinch-editor-node-outline, 2px solid #1a73e8)";
+/// A selected node's tint (#2210): `--rinch-editor-node-selection-bg`.
+pub(crate) const NODE_SELECTION_COLOR: &str =
+    "var(--rinch-editor-node-selection-bg, rgba(26,115,232,0.15))";
+/// The IME composition's background (#2210): `--rinch-editor-preedit-bg`, else
+/// the editor's background, `--rinch-editor-bg`, which the default stylesheet
+/// sets for its light and dark schemes.
+pub(crate) const PREEDIT_BG: &str = "var(--rinch-editor-preedit-bg, var(--rinch-editor-bg, var(--rinch-editor-default-bg, #ffffff)))";
+/// The IME composition's underline, a `border-bottom` shorthand (#2210):
+/// `--rinch-editor-preedit-underline`, else 1px in the text colour.
+pub(crate) const PREEDIT_UNDERLINE: &str =
+    "var(--rinch-editor-preedit-underline, 1px solid currentColor)";
 
 /// Set a mark wrapper element's attributes: a `data-pm-mark` marker plus the
 /// attr-bearing specials (`link` → `href`/`title`/`target`+`rel`, `text_color` →
@@ -243,9 +281,20 @@ struct RunDeco {
 /// `Decoration::inline_class` is the core's own filter, so the view never
 /// matches the enum.
 fn inline_decos(set: &DecorationSet) -> Vec<InlineDeco> {
+    // One allocation per distinct class in a row, not per decoration: a
+    // spellchecker's thousands of marks share one (#2862).
+    let mut last: Option<Rc<str>> = None;
     set.iter()
         .filter_map(|d| {
-            let class: Rc<str> = Rc::from(d.inline_class()?);
+            let name = d.inline_class()?;
+            let class = match &last {
+                Some(c) if &**c == name => c.clone(),
+                _ => {
+                    let c: Rc<str> = Rc::from(name);
+                    last = Some(c.clone());
+                    c
+                }
+            };
             let (from, to) = d.range();
             Some(InlineDeco {
                 from: from.0,
@@ -1464,6 +1513,8 @@ pub struct RinchDomEditorView {
     root: ViewDesc,
     /// The placeholder overlay node while shown — decoration-diff state (A4/A8).
     placeholder: Option<NodeHandle>,
+    /// The text `placeholder` shows, so a changed text rebuilds it (#2210).
+    placeholder_text: Rc<str>,
     /// The caret overlay node — an absolutely-positioned bar the view owns and
     /// repositions from `state.selection` (design §6: caret is rendered *from*
     /// the selection, never via a `data-ce-cursor` attribute). It lives as a child
@@ -1681,6 +1732,7 @@ impl RinchDomEditorView {
             doc,
             root,
             placeholder: None,
+            placeholder_text: Rc::from(""),
             caret: None,
             last_caret: None,
             blink_shown: None,
@@ -1743,12 +1795,27 @@ impl RinchDomEditorView {
         changed
     }
 
+    /// Diff `state`'s decorations again with no transaction (#2210): a
+    /// plugin's decorations changed by themselves — the placeholder's text.
+    pub(crate) fn refresh_decorations(&mut self, state: &EditorState) {
+        self.sync_decorations(state);
+    }
+
     /// The widget half of [`Self::sync_decorations`]: today the empty-editor
     /// placeholder (design A8).
     fn sync_widget_decorations(&mut self, next: &DecorationSet) {
         let placeholder_text = next.iter().find_map(|d| d.as_placeholder());
         match (placeholder_text, self.placeholder.is_some()) {
+            (Some(text), true) if *text != *self.placeholder_text => {
+                // The text changed (`EditorHandle::set_placeholder`, #2210):
+                // a fresh overlay in the old one's place.
+                if let Some(old) = self.placeholder.take() {
+                    old.discard();
+                }
+                self.sync_widget_decorations(next);
+            }
             (Some(text), false) => {
+                self.placeholder_text = text.into();
                 if let Some(node) = create_element(&self.doc, "div") {
                     node.set_attribute("data-pm-placeholder", "true");
                     node.set_attribute("class", "rinch-editor-placeholder");
@@ -1770,7 +1837,7 @@ impl RinchDomEditorView {
                     node.discard();
                 }
             }
-            // (Some, true): placeholder stays (its text is fixed per editor).
+            // (Some, true) with the same text: the placeholder stays.
             // (None, false): nothing to do.
             _ => {}
         }
@@ -2217,15 +2284,14 @@ impl RinchDomEditorView {
         }
     }
 
-    /// Resolve a model [`Pos`] to its host caret address `(textblock element id,
-    /// flat UTF-8 byte offset)` — the address app-side geometry (caret point,
-    /// vertical movement) queries Parley with. `None` if `pos` isn't in a textblock.
     /// A handle on host node `id` of this view's document.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn host_node(&self, id: u64) -> NodeHandle {
         NodeHandle::new(rinch_core::dom::NodeId(id), self.doc.clone())
     }
 
+    /// Resolve a model [`Pos`] to its host caret address `(textblock element id,
+    /// flat UTF-8 byte offset)` — the address app-side geometry (caret point,
+    /// vertical movement) queries Parley with. `None` if `pos` isn't in a textblock.
     pub(crate) fn caret_address(&self, doc: &Node, pos: Pos) -> Option<(u64, usize)> {
         self.caret_target(doc, pos)
             .map(|(dom, byte)| (dom.node_id().0, byte))
@@ -3123,7 +3189,9 @@ impl RinchDomEditorView {
                 ("top", "0"),
                 // The width a caret query keeps inside its block (#1041).
                 ("width", &format!("{}px", rinch_core::dom::CARET_WIDTH)),
-                ("background-color", "#1a73e8"),
+                // The caret's colour (#2210), as Chrome draws the drop point
+                // with an ordinary caret.
+                ("background-color", DROP_CARET_COLOR),
                 ("pointer-events", "none"),
                 ("z-index", "1"),
             ]);
@@ -3371,7 +3439,7 @@ impl RinchDomEditorView {
                 // placed by `transform` (`overlay_translate`), which is paint-only.
                 ("left", "0"),
                 ("top", "0"),
-                ("background-color", "rgba(26,115,232,0.3)"),
+                ("background-color", SELECTION_COLOR),
                 ("pointer-events", "none"),
                 // Behind the in-flow text (the container is a stacking
                 // context). On a host that paints it with its owner (rinch-dom,
@@ -3560,8 +3628,8 @@ impl RinchDomEditorView {
                 ("top", "0"),
                 // Trace the node's box exactly (border drawn inside the box).
                 ("box-sizing", "border-box"),
-                ("border", "2px solid #1a73e8"),
-                ("background-color", "rgba(26,115,232,0.15)"),
+                ("border", NODE_OUTLINE),
+                ("background-color", NODE_SELECTION_COLOR),
                 ("pointer-events", "none"),
                 // In front of the node content, like the caret.
                 ("z-index", "1"),
@@ -3670,7 +3738,9 @@ impl RinchDomEditorView {
                 ("top", "0"),
                 // The width a caret query keeps inside its block (#1041).
                 ("width", &format!("{}px", rinch_core::dom::CARET_WIDTH)),
-                ("background-color", "#1a73e8"),
+                // The text colour unless the app names one (#2210), as
+                // Chrome's `caret-color: auto`.
+                ("background-color", CARET_COLOR),
                 ("pointer-events", "none"),
                 // In front of the in-flow text and the selection highlight.
                 ("z-index", "1"),
@@ -3791,10 +3861,13 @@ impl RinchDomEditorView {
                 ("position", "absolute"),
                 // Preserve composition spacing; size to the content.
                 ("white-space", "pre"),
-                // Opaque so the composition reads cleanly over any text underneath.
-                ("background-color", "#ffffff"),
-                // Underline marks it as an in-progress composition.
-                ("border-bottom", "1px solid #1a73e8"),
+                // Opaque so the composition reads cleanly over any text
+                // underneath: the editor's own background (#2210), so a dark
+                // editor's composition is not a white box.
+                ("background-color", PREEDIT_BG),
+                // Underline marks it as an in-progress composition, in the
+                // text colour as Chrome draws it (#2210).
+                ("border-bottom", PREEDIT_UNDERLINE),
                 ("pointer-events", "none"),
                 // Above the in-flow text, the selection highlight, and the caret.
                 ("z-index", "2"),

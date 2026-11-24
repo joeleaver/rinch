@@ -432,8 +432,146 @@ pub(super) fn paints_nothing_at_all(
     }
 }
 
+/// [`opacity_layer_bounds`] with the root's own `overflow` clip left out:
+/// what the subtree paints when the root does not clip it. For a damage
+/// computation on a box whose clipping changed since it was painted (#2222):
+/// what it painted unclipped is cleared, though it clips now.
+pub(super) fn unclipped_root_bounds(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> Rect {
+    match layer_extent(tree, node_id, scale, x, y, true) {
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
+        _ => UNBOUNDED,
+    }
+}
+
+/// What a **moved** box's subtree paints, for its damage (#2222):
+/// [`opacity_layer_bounds`] with viewport-`fixed` descendants left out, since
+/// they do not move with it.
+pub(super) fn moved_subtree_bounds(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> Rect {
+    match damage_walk(tree, node_id, scale, x, y, false, true) {
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
+        _ => UNBOUNDED,
+    }
+}
+
+/// What `node_id`'s subtree paints as [`moved_subtree_bounds`] measures it,
+/// at scale 1 and relative to its border-box origin, for
+/// `PaintedState::subtree_reach` (#2222): a moved box whose subtree has not
+/// changed since is damaged from it without a walk. Descendants with a
+/// recorded reach are not entered, so measuring every box of a freshly
+/// painted tree deepest first is linear in the tree. `None` for a box with
+/// no area, which the damage never asks about.
+///
+/// The reach is read back at whatever scale the next paint has and wherever
+/// the box has moved to, so no box in it is snapped to a device grid
+/// (#2368): it is measured unsnapped, with the snap gain
+/// ([`crate::node::SubtreeReach::Within`]) that bounds what snapping adds at
+/// any scale and position. [`placed_subtree_reach`] applies both.
+pub(crate) fn measure_subtree_reach(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+) -> Option<crate::node::SubtreeReach> {
+    use crate::node::SubtreeReach;
+    let node = tree.get(node_id)?;
+    let (w, h) = (node.layout.width, node.layout.height);
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let mut walk = Walk {
+        measuring: true,
+        ..Walk::new(tree, 1.0, false, true)
+    };
+    let extent = walk.node(
+        node_id,
+        -(node.layout.x as f64),
+        -(node.layout.y as f64),
+        Affine::IDENTITY,
+        true,
+        0,
+    );
+    let snap_gain = walk.snap_gain.map(|g| g as f32);
+    Some(match extent {
+        Extent::Within(r) => SubtreeReach::Within {
+            rect: [
+                (r.x0 as f32).min(0.0),
+                (r.y0 as f32).min(0.0),
+                (r.x1 as f32).max(w),
+                (r.y1 as f32).max(h),
+            ],
+            snap_gain,
+        },
+        // Paints nothing (refused at the root): its box is a bound.
+        Extent::Nothing => SubtreeReach::Within {
+            rect: [0.0, 0.0, w, h],
+            snap_gain,
+        },
+        Extent::Unknown => SubtreeReach::Unknown,
+        Extent::Escapes => SubtreeReach::Escapes,
+    })
+}
+
+/// Where a subtree whose recorded reach is `rect` / `snap_gain`
+/// ([`crate::node::SubtreeReach::Within`]) paints at `scale` with its border
+/// box at `(x, y)` (physical px), before its own transform: the rect scaled
+/// and placed, with what snapping its boxes to the device grid adds (#2368).
+/// The boxes no transform inside moves are snapped on this grid, and
+/// rounding is monotonic, so the rect's own snapped self bounds theirs
+/// ([`super::pixel_snap::reach_of`]); a transformed one is snapped on its
+/// own grid, half a device pixel per edge at most, which its transform
+/// carries out by `snap_gain` times that.
+pub(crate) fn placed_subtree_reach(
+    rect: [f32; 4],
+    snap_gain: [f32; 2],
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> Rect {
+    let [x0, y0, x1, y1] = rect.map(|v| v as f64 * scale);
+    let slack = super::pixel_snap::SNAP_SLACK;
+    super::pixel_snap::reach_of(Rect::new(x + x0, y + y0, x + x1, y + y1))
+        .inflate(slack * snap_gain[0] as f64, slack * snap_gain[1] as f64)
+}
+
 /// The subtree's extent as the walk finds it (see [`opacity_layer_bounds`]).
 fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64, y: f64) -> Extent {
+    layer_extent(tree, node_id, scale, x, y, false)
+}
+
+/// [`opacity_layer_extent`], with the root's own clip left out when
+/// `skip_root_clip`.
+fn layer_extent(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+    skip_root_clip: bool,
+) -> Extent {
+    damage_walk(tree, node_id, scale, x, y, skip_root_clip, false)
+}
+
+/// The walk behind [`layer_extent`] and [`moved_subtree_bounds`], with each
+/// flag of [`Walk`] they set.
+fn damage_walk(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+    skip_root_clip: bool,
+    skip_fixed: bool,
+) -> Extent {
     let Some(node) = tree.get(node_id) else {
         return Extent::Unknown;
     };
@@ -445,15 +583,7 @@ fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64,
     let offset_x = x - node.layout.x as f64 * scale;
     let offset_y = y - node.layout.y as f64 * scale;
 
-    let mut walk = Walk {
-        tree,
-        scale,
-        budget: MAX_VISITS,
-        skip_root_clip: false,
-        absolutes_escape_clips: false,
-        clipper_below_cb: false,
-        clipper_below_fixed_cb: false,
-    };
+    let mut walk = Walk::new(tree, scale, skip_root_clip, skip_fixed);
     walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0)
 }
 
@@ -481,6 +611,9 @@ pub(super) fn subtree_paint_extent(
         budget: MAX_VISITS,
         skip_root_clip: false,
         absolutes_escape_clips: false,
+        skip_fixed: false,
+        measuring: false,
+        snap_gain: [0.0, 0.0],
         clipper_below_cb: false,
         clipper_below_fixed_cb: false,
     };
@@ -551,6 +684,9 @@ pub(super) fn clip_cuts_nothing(
         budget: MAX_VISITS,
         skip_root_clip: true,
         absolutes_escape_clips: false,
+        skip_fixed: false,
+        measuring: false,
+        snap_gain: [0.0, 0.0],
         clipper_below_cb: false,
         clipper_below_fixed_cb: false,
     };
@@ -629,6 +765,9 @@ pub(super) fn subtree_is_entirely_outside(
         budget: MAX_VISITS,
         skip_root_clip: false,
         absolutes_escape_clips: true,
+        skip_fixed: false,
+        measuring: false,
+        snap_gain: [0.0, 0.0],
         clipper_below_cb: false,
         clipper_below_fixed_cb: false,
     };
@@ -689,6 +828,24 @@ struct Walk<'a> {
     /// that function working and being vacuous. See its doc comment.
     /// Descendants' clips always apply, in both callers.
     skip_root_clip: bool,
+    /// Answer [`Extent::Nothing`] for a viewport-`fixed` descendant instead of
+    /// [`Extent::Escapes`]: for the damage of a moved box, whose fixed
+    /// descendants stay where they are (#2222). A fixed box that changed is
+    /// paint-dirty itself.
+    skip_fixed: bool,
+    /// Measure a subtree reach (`PaintedState::subtree_reach`): only
+    /// [`measure_subtree_reach`] sets it, right after the paint, when every
+    /// recorded reach describes the tree as it is. The walk then answers a
+    /// descendant box from the reach its last paint recorded instead of
+    /// entering it, and measures every box and clip **unsnapped** (#2368),
+    /// keeping in [`Self::snap_gain`] how far snapping can take them at any
+    /// scale: the reach is read back at a scale and a position this walk
+    /// does not know, where the device grid is somewhere else.
+    measuring: bool,
+    /// While [`Self::measuring`]: the largest snap gain
+    /// ([`crate::node::SubtreeReach::Within`]) of any box visited so far,
+    /// `[0, 0]` while no transform has moved one.
+    snap_gain: [f64; 2],
     /// Answer [`Extent::Escapes`] for a `position: absolute` descendant that
     /// this walk would narrow by a clip paint does not apply to it — **#550's
     /// hole, closed for the one caller that cannot survive it**.
@@ -719,7 +876,41 @@ struct Walk<'a> {
     clipper_below_fixed_cb: bool,
 }
 
-impl Walk<'_> {
+impl<'a> Walk<'a> {
+    /// A walk at `scale` with the given flags, measuring nothing.
+    fn new(tree: &'a NodeTree, scale: f64, skip_root_clip: bool, skip_fixed: bool) -> Self {
+        Walk {
+            tree,
+            scale,
+            budget: MAX_VISITS,
+            skip_root_clip,
+            absolutes_escape_clips: false,
+            skip_fixed,
+            measuring: false,
+            snap_gain: [0.0, 0.0],
+            clipper_below_cb: false,
+            clipper_below_fixed_cb: false,
+        }
+    }
+
+    /// While measuring: fold in a box whose own space reaches the root's
+    /// through `transform`, with its own subtree's gain `inner` (`[0, 0]` for
+    /// a box alone, or a subtree no transform moves). Through no transform
+    /// the box is snapped on the root's grid, and the gain is its subtree's;
+    /// through one it is snapped on its own, half a device pixel per edge at
+    /// most, its subtree's transformed boxes `inner` times that.
+    fn note_snap_gain(&mut self, transform: Affine, inner: [f64; 2]) {
+        if !self.measuring {
+            return;
+        }
+        let g = if transform == Affine::IDENTITY {
+            inner
+        } else {
+            super::pixel_snap::snap_gain_through(transform, inner.map(|g| g.max(1.0)))
+        };
+        self.snap_gain = [self.snap_gain[0].max(g[0]), self.snap_gain[1].max(g[1])];
+    }
+
     /// What an IFC root's own inline content draws. A root collapsed to no
     /// area draws it too (it overflows the box), so both arms of [`Self::node`]
     /// ask.
@@ -751,9 +942,12 @@ impl Walk<'_> {
         // Before #1762 and #1817 a clip was elided whenever the unshifted
         // lines fitted, and the pill, the raised text or the wave painted
         // outside the box.
-        if let Some(past) =
-            super::text::inline_ink_past_lines(|id| self.tree.get(id), inline, self.scale)
-        {
+        if let Some(past) = super::text::inline_ink_past_lines(
+            |id| self.tree.get(id),
+            inline,
+            self.scale,
+            self.tree.inline_outlines,
+        ) {
             text = text.union(past + Vec2::new(content_x, content_y));
         }
         // The shadows its inline elements declare are drawn with it (#1048).
@@ -921,7 +1115,11 @@ impl Walk<'_> {
             // `a_fixed_descendant_is_not_narrowed_by_a_clipper_it_escapes`
             // asserts on the bounds themselves.
             if node.box_position() == PositionValue::Fixed {
-                return Extent::Escapes;
+                return if self.skip_fixed {
+                    Extent::Nothing
+                } else {
+                    Extent::Escapes
+                };
             }
             // `position: absolute` escapes the clippers **below its containing
             // block** — `Collector::span` truncates its chain at `cb_depth` —
@@ -1006,6 +1204,8 @@ impl Walk<'_> {
             // `paint_node`'s zero-area arm draws the box's own inline content,
             // which `children` skips as drawn by the IFC.
             let transform = self.own_transform(node, x, y, parent_transform, is_root);
+            // Its inline content's fragments are drawn snapped (#2607).
+            self.note_snap_gain(transform, [0.0, 0.0]);
             let inline = self.inline_extent(node, x, y, scroll, transform);
             return inline.union(self.scoped_children(
                 node,
@@ -1022,7 +1222,43 @@ impl Walk<'_> {
         let w = layout.width as f64 * self.scale;
         let h = layout.height as f64 * self.scale;
         let transform = self.own_transform(node, x, y, parent_transform, is_root);
-        let rect = Rect::new(x, y, x + w, y + h);
+        // A descendant whose subtree reach the last paint recorded is that
+        // reach, placed at its box and through its own transform: what this
+        // walk answered for it as a root then, and nothing under it has
+        // changed since (`NodeTree::consume_paint_dirty` drops the reach of
+        // every ancestor of a changed node).
+        if self.measuring
+            && !is_root
+            && let Some(reach) = node.painted.as_ref().and_then(|p| p.subtree_reach)
+        {
+            return match reach {
+                crate::node::SubtreeReach::Within { rect, snap_gain } => {
+                    // Unsnapped, as this walk measures (#2368), its own
+                    // snapped self left to the reach this one records; its
+                    // gain, carried through the transform that places it.
+                    self.note_snap_gain(transform, snap_gain.map(f64::from));
+                    Extent::Within(transform.transform_rect_bbox(placed_subtree_reach(
+                        rect,
+                        [0.0, 0.0],
+                        self.scale,
+                        x,
+                        y,
+                    )))
+                }
+                crate::node::SubtreeReach::Unknown => Extent::Unknown,
+                crate::node::SubtreeReach::Escapes => Extent::Escapes,
+            };
+        }
+        // The border box and its snapped self (#2368): paint draws the box
+        // on the device grid, up to half a device pixel past its layout box.
+        // Measuring a reach, the box as laid out, and the gain that bounds
+        // its snapped self at whatever scale the reach is read at.
+        let rect = if self.measuring {
+            self.note_snap_gain(transform, [0.0, 0.0]);
+            Rect::new(x, y, x + w, y + h)
+        } else {
+            super::pixel_snap::box_reach(x, y, w, h)
+        };
 
         // What this node draws for itself, in its own untransformed space,
         // starting from the border box every arm of `paint_node` fills.
@@ -1043,10 +1279,10 @@ impl Walk<'_> {
             let dx = shadow.offset_x as f64 * self.scale;
             let dy = shadow.offset_y as f64 * self.scale;
             own = own.union(Rect::new(
-                x + dx - reach,
-                y + dy - reach,
-                x + w + dx + reach,
-                y + h + dy + reach,
+                rect.x0 + dx - reach,
+                rect.y0 + dy - reach,
+                rect.x1 + dx + reach,
+                rect.y1 + dy + reach,
             ));
         }
 
@@ -1136,7 +1372,14 @@ impl Walk<'_> {
         // escapes it (#2815): one whose containing block is above the root,
         // which paint lifts the root's bracket around. The whole subtree is
         // then left unnarrowed there — wider than exact, never narrower.
-        if let Some((clip_rect, _)) = super::clip_shape(node, self.scale, x, y)
+        // Measuring a reach, the clip as laid out: the box's gain, noted
+        // above, bounds its snapped self as it bounds the box's.
+        let clip = if self.measuring {
+            super::clip::unsnapped_clip_shape(node, self.scale, x, y)
+        } else {
+            super::clip_shape(node, self.scale, x, y)
+        };
+        if let Some((clip_rect, _)) = clip
             && !(is_root
                 && (self.skip_root_clip || super::holds_escaping_absolute(self.tree, node_id)))
         {

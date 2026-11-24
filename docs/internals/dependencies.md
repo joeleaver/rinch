@@ -69,10 +69,15 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     breaker and its min-content pass both lag the mode by one atom), and an IFC holding a
     `<wbr>` is broken at its width even when none of its text wraps (`IfcText::has_wbr`).
     Chrome 156: `aaaa<wbr>bbbb cc` in a `nowrap` or `pre` box 1px wide is `aaaa` / `bbbb cc`,
-    and its `min-content` is `bbbb cc`'s width (`tests/url_line_break_2369_tests.rs`). Not
-    Chrome's yet: a leading `<wbr>` in a 1px box gives Chrome an empty first line (rinch makes
-    none: parley takes no opportunity at a line's start), and so do two `<wbr>`s in a row
-    under `nowrap` (not under `normal`). The builders that set the override are the IFC, a flex or grid item's text leaf,
+    and its `min-content` is `bbbb cc`'s width (`tests/url_line_break_2369_tests.rs`). A
+    `<wbr>` that starts a line, where what follows does not fit, gives an empty line, as in
+    Chrome 158: `<wbr>aaaa` in a 1px box is an empty line, then `aaaa`, under every
+    `white-space`; two `<wbr>`s in a row give one between `aaaa` and `bbbb` under `nowrap` and
+    `pre`, not under `normal`. Where `aaaa` alone does not wrap, the `<wbr>`s' own
+    `white-space` decides: a `<wbr>` that does not wrap starts the line after `aaaa` (#2944:
+    Parley Fork item 21, each `<wbr>` pushed with its own mode as `StyleProperty::Wbr`, and
+    `ifc::chrome_break` has an opportunity between two ZWSPs, where UAX #14's LB7 has none;
+    `tests/wbr_empty_line_2944_tests.rs`, `tests/wbr_white_space_2944_differential.rs`). The builders that set the override are the IFC, a flex or grid item's text leaf,
     the paint fallback and `ComputedStyle::build_parley_layout`, so a `<textarea>`'s and an
     `<input>`'s text (`form_control::field_text_layout`, through it since #320) breaks as
     ordinary text does (#2387: a URL in a textarea broke after every `/`;
@@ -233,14 +238,16 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     (`nbsp_glue_line_break_tests`), and a collapsible space then `break-spaces` spaces break
     after the first `break-spaces` space (`pre_space_seams_1243_tests`). Six cases of the same
     corpus moved to Chrome's.
-  - **An inline box too wide for any line leaves an empty line after it** when it is the
-    paragraph's last item (its emergency break returns without marking the breaker done), and
-    with text before the box that line is counted at the box's height. `ifc::phantom_last_line`
-    finds it and `break_lines_hanging_spaces` breaks the paragraph again without it (#1050),
-    counted as `ifc_phantom_rebreaks`;
-    `crates/rinch-dom/tests/atomic_inline_line_box_tests.rs` is the pin. And that branch commits
-    the box's line on the spot, so a `<br>`, a preserved newline or spaces right after the box
-    made a line of their own (`x <ib><br>` was three lines where Chrome 155 makes two):
+  - **An inline box too wide for any line left an empty line after it** when it was the
+    paragraph's last item (its emergency break returned without marking the breaker done), and
+    with text before the box that line was counted at the box's height. rinch broke the
+    paragraph again without it (#1050, counted as `ifc_phantom_rebreaks`) until Parley Fork item
+    19 ended such a box's line only at the next item, one that starts the next line (#2944):
+    nothing follows the last box, and `ifc::phantom_last_line` now finds only the line after a
+    final forced break (below). `crates/rinch-dom/tests/atomic_inline_line_box_tests.rs` is the
+    pin. The box's line still ends before anything after it but a `<wbr>` that stays, so a
+    `<br>`, a preserved newline or spaces right after the box make a line of their own
+    (`x <ib><br>` was three lines where Chrome 155 makes two):
     `ifc::fold_after_overflowing_box`, in the hang pass, commits the box's line again by length
     with the run of hangable spaces after it, or a newline right after it (spaces a newline
     follows keep a line of their own, as in Chrome 155) (#1081);
@@ -1017,8 +1024,12 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`399a8b8e66b6ec581118f91179d1833dc7e8fbc6`, branch `fix-2962`, fork PR joeleaver/parley-fork#17 (item 21, open against `rinch-patch`), on branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17), #15 (item 18) and #16 (items 19 and 20) merged): commits on parley's
+(`909eb3bf8ab37247a6ad79df816bd7a2f2f7502b`, branch `fix-2962`: fork PR joeleaver/parley-fork#17
+(item 22, rinch #2962, open against `rinch-patch`), on the current `rinch-patch`). `rinch-patch`
+has fork PRs joeleaver/parley-fork#6 and #8 (items 7 and 8), #7 (item 9), #9 (item 10), #10
+(items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16
+and 17), #15 (item 18), #16 (items 19 and 20, rinch #2940 and #2950) and #18 (item 21, rinch
+#2944) merged. All of them are commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1383,7 +1394,7 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `plaintext`) in `build_parley_layout` (a `<textarea>`, select labels, image placeholders), a
     flex or grid text leaf (`TextMeasure::base_direction`) and the paint fallback; a tooltip takes
     its first strong character's (review of #2969: an `ltr` textarea's Hebrew-led second line had
-    gone right to left). An explicit direction's paragraphs are split too since item 21.
+    gone right to left). An explicit direction's paragraphs are split too since item 22.
     Pinned by
     the fork's `test_plaintext_paragraphs.rs` and `auto_resolves_each_paragraph_on_its_own`, and
     `crates/rinch-dom/tests/plaintext_paragraphs_2940_tests.rs` (Chrome 158).
@@ -1404,20 +1415,92 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     by the fork's `test_line_edge_caret.rs` and
     `crates/rinch-dom/tests/line_edge_caret_2950_tests.rs` (Chrome 158).
 
-21. **An explicit direction's paragraphs are resolved on their own, the controls open across a
-    separator reopened** (`399a8b8e`, `parley_engine/src/bidi.rs`; #2962; fork PR
-    joeleaver/parley-fork#17, stacked on #16). UAX #9 P1 and X8 whatever the base direction: each
-    paragraph is resolved at the block's level, so a neutral that starts one takes the block's
-    direction, not the strong text's before the break (Chrome 158: `<div dir=rtl>abc<br><img>abc`
-    puts the image at the right, where it was left of the second `abc`). Before, item 19 split
-    paragraphs only under `Auto`, and an explicit direction made the block one paragraph. The
-    explicit controls open at a separator (an inline element's `unicode-bidi`, a block's
-    override; nested by X6a and X7) are reopened at the next paragraph's start, as Blink reopens
-    an element's bidi context after a forced break, so they still run across a `<br>`; that
-    applies under `Auto` too. Pinned by the fork's `an_explicit_directions_paragraphs_are_resolved_on_their_own`
-    and `an_embedding_runs_across_a_separator`, and
-    `crates/rinch-dom/tests/explicit_direction_paragraphs_2962_tests.rs` (Chrome 158, the
-    reopened embedding, isolate and override among them).
+21. **A line holding only zero-advance atoms ends at a soft wrap opportunity, and a `<wbr>`
+    after an overflow stays on the line or starts the next by its own `white-space`**
+    (`27603cfd`, `c109b113`, `13ed23fd`, `a8f903b7` and `8e871f08`, `parley/src/layout/line_break.rs`,
+    `parley/src/tests/test_wbr.rs`; #2944). The breaker took no opportunity while the line's
+    advance was 0 (the guard against an overflowing atom making consecutive empty lines), so a
+    line holding only a ZERO WIDTH SPACE (a `<wbr>`, `ifc::WBR_TEXT`) never ended at its
+    opportunity: `<wbr>aaaa` in 1px was one line, where Chrome 158 gives an empty line, then
+    `aaaa`. `LineState::holds_atoms` (any atom appended, of any advance) now allows it; such a
+    line holds an atom, so it is never empty and lays out no atom twice.
+
+    Where a line that overflows ends among `<wbr>`s, Chrome 158 decides by the `<wbr>`'s own
+    `white-space` and by whether Blink has *noticed* the overflow. rinch pushes each `<wbr>`'s
+    ZWSP in a span that wraps (#2261) carrying the element's own mode,
+    `StyleProperty::Wbr(Some(mode))` (`TextStyle::wbr`, `ifc::IfcText::push_wbr`). The line's
+    `Overflow` is `None`, `Unnoticed` (text that does not wrap, or an inline box, overflowed) or
+    `Noticed` (text that wraps overflowed, or text that wraps came after the overflow; spaces
+    that hang do not count). If the overflow is unnoticed, a `<wbr>` that wraps stays on the
+    line that ends at the opportunity before it. One that does not starts the next line, which
+    then ends after it (Blink's `RewindOverflow`). If the overflow is noticed, every `<wbr>`
+    stays (the `kTrailing` state). In 1px:
+    - `aaaa<wbr><wbr>bbbb` is `aaaa` / an empty line / `bbbb` under `nowrap`, and two lines
+      under `normal`.
+    - With `aaaa` alone `nowrap`, it is two lines when the second `<wbr>` is `normal`.
+    - `overflow-wrap` adds no opportunity before a `<wbr>`: text that does not wrap has none
+      (`aaaa<wbr>bbbb` is two lines under `nowrap` and `overflow-wrap: anywhere`).
+    - An inline box that overflows at a line's start no longer ends the line at once, so the
+      `<wbr>`s that stay go on its line. Nothing else joins it: a space that would hang starts
+      the next line, as in Chrome 125 (`LineState::ends_after_box`;
+      `tests/overflowing_box_line_end_1081_tests.rs`).
+    - The opportunity after an inline box that starts the paragraph is the root's to give (or
+      the box's parent's): the lagged wrap mode started every layout as `Wrap`, so
+      `<div style="white-space:nowrap"><inline-block>bbbb</div>` was two lines in 1px, where
+      Chrome 158 makes one (`8e871f08`).
+
+    The empty line needs an opportunity between two ZWSPs, which rinch's `ifc::chrome_break`
+    adds. `27603cfd` first let a zero-advance atom past an overflow hang in wrapping text. That
+    kept a typed ZWSP after a space on the overflowing line, where the Chrome 153 pin breaks
+    before it (`aaaa~bbbbbb` / ZWSP `cc`). `c109b113` replaced it with a rule keyed on the next
+    text's wrap mode, which a 970-box Chrome grid showed wrong in 323 boxes. `13ed23fd`
+    replaced that rule. It also gave an emergency opportunity before every `<wbr>` that does not
+    wrap, under `overflow-wrap`, which was right only where an element's end stood there (see
+    "Not done") and broke `tests/url_line_break_2369_tests.rs`'s `nowrap` pin; `8e871f08`
+    dropped it.
+
+    Pinned by:
+    - rinch's `tests/wbr_empty_line_2944_tests.rs` (17 boxes).
+    - `tests/wbr_white_space_2944_differential.rs` (the 1007 boxes of `wbr_2944/chrome158.tsv`,
+      Chrome 158's heights).
+
+    Not done: parley cannot see DOM text nodes, and Blink notices an overflow at the text node
+    after the one that overflowed. So text that does not wrap, split over two elements, still
+    differs. Nor can it see an element's end, where Blink breaks a line that overflows with no
+    opportunity under `overflow-wrap: anywhere | break-word` when the element's parent wraps
+    (`<nowrap>aaaa</nowrap><nowrap>bbbb</nowrap>` is two lines in 1px, with or without a
+    `<wbr>` between). These rows, and the other base-level differences, are pinned in that
+    test's `KNOWN` (#2996).
+
+22. **An explicit direction's paragraphs are resolved on their own, and an element's bidi
+    controls are reopened after a separator** (`80462346`, `a1c8b70b`, `b99a085d`, `909eb3bf`,
+    `parley_engine/src/bidi/paragraphs.rs`; #2962; fork PR joeleaver/parley-fork#17). UAX #9 P1
+    and X8 apply whatever the base direction. Each paragraph is resolved at the block's level, so
+    a neutral that starts one takes the block's direction, not that of the strong text before
+    the break. Chrome 158 puts the image in `<div dir=rtl>abc<br><img>abc` at the right; rinch
+    had it left of the second `abc`. Before, item 19 split paragraphs only under `Auto`, and an
+    explicit direction made the block one paragraph.
+
+    X8 ends every explicit control at a separator. Blink reopens an element's own bidi context
+    after a forced break, so an element's `unicode-bidi` (and a block's override) still runs
+    across a `<br>`, while a control the author typed into the text ends there. rinch writes
+    `unicode-bidi` as control characters in the text (`ifc::inline_bidi_controls`), so it tells
+    parley which ones are its own: `TreeBuilder::set_reopened_bidi_controls` takes
+    `InlineLayout::bidi_control_ranges`. Only those still open at a separator (nested by X6a and
+    X7) are reopened at the next paragraph's start, under `Auto` too. Under `Auto` a line
+    after a forced break takes its direction (its alignment, the side its spaces hang on) from
+    the paragraph's first strong character inside an isolate too, while its levels are still
+    resolved at P2's, which skips isolates. Blink does this with `ubidi_getBaseDirection` after
+    a forced break: Chrome 158 lays out `x<br><span dir=ltr>abc</span> <img> א` as a
+    left-to-right line holding `א <img> abc`, and an element's isolate carried across a `<br>`
+    counts the same way. The resolver streams each
+    paragraph into its resolution, so text with no separator is resolved in one pass, with no
+    copy. Pinned by the fork's `test_plaintext_paragraphs.rs`
+    (`an_explicit_directions_paragraphs_are_resolved_on_their_own`,
+    `an_elements_embedding_runs_across_a_separator`, `the_texts_own_controls_end_at_a_separator`)
+    and `crates/rinch-dom/tests/explicit_direction_paragraphs_2962_tests.rs` (Chrome 158: the
+    reopened embedding, isolate and override, three paragraphs, an element closed between two
+    breaks, an isolate in a `plaintext` block, and the text's own controls).
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has

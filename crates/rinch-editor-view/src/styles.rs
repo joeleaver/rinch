@@ -37,7 +37,11 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
   font-size: 16px;
   line-height: 1.65;
   color: #1f2328;
-  background: #ffffff;
+  /* `--rinch-editor-bg` (set anywhere above the editor) names the background;
+     the IME composition box takes the same colour (#2210). The default lives
+     in a variable of its own so the dark scheme changes both. */
+  --rinch-editor-default-bg: #ffffff;
+  background: var(--rinch-editor-bg, var(--rinch-editor-default-bg));
   padding: 16px 20px;
   border: 1px solid #d0d7de;
   border-radius: 10px;
@@ -187,6 +191,10 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
   padding: 0.45em 0.7em; border: 1px solid #d0d7de;
 }
 [data-pm-editor] th { font-weight: 600; background: #f6f8fa; }
+/* A header cell's text starts like a body cell's (#2210). The UA sheet's
+   `th { text-align: center }` would otherwise reach the paragraphs inside it,
+   which are blocks here, and centre every header an app has not styled. */
+[data-pm-editor] th { text-align: start; }
 
 /* ── Inline decorations ─────────────────────────────────────
    A `Decoration::Inline` wraps its range in `<span data-pm-deco class="…">`
@@ -214,7 +222,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 /* ═══ Dark color scheme (opt-in via data-pm-theme="dark") ═══════════════ */
 [data-pm-editor][data-pm-theme="dark"] {
   color: #e6edf3;
-  background: #0d1117;
+  --rinch-editor-default-bg: #0d1117;
   border-color: #30363d;
 }
 [data-pm-editor][data-pm-theme="dark"] h1,
@@ -242,7 +250,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 [data-pm-editor][data-pm-theme="dark"] th { border-color: #30363d; }
 [data-pm-editor][data-pm-theme="dark"] th { background: #161b22; }
 [data-pm-editor][data-pm-theme="dark"] [data-pm-placeholder] { color: #6e7681; }
-[data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-spell-error { text-decoration-color: #ff7b72; }
+[data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-spell-error { text-decoration-color: var(--rinch-spellcheck-color, #ff7b72); }
 [data-pm-editor][data-pm-theme="dark"] [data-pm-deco].pm-grammar-error { text-decoration-color: #3fb950; }
 "#;
 

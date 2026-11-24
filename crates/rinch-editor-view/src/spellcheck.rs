@@ -16,12 +16,23 @@
 //! transaction, which the plugin applies only if the document has not changed
 //! since (its generation), so a stale result is never drawn.
 //!
+//! **On the web** there is no thread: the check runs on the page's own thread
+//! in slices (`Slicer`), each one a few milliseconds of words in its own
+//! browser task, and each slice's result is applied as it comes (the plugin
+//! trims its dirty list to the slice's end, so an edit between slices loses
+//! nothing already checked). The first whole-document check of a long
+//! document is sliced the same way.
+//!
 //! The plugin is installed by [`create_editor`](crate::create_editor) only
 //! when the thread has a spellcheck configuration (an app run through
-//! `App::run`, an embedded `RinchContext`), never on the web (the browser
-//! checks there) and never in a test that configured none.
+//! `App::run`, an embedded `RinchContext`), never in a test that configured
+//! none, and on the web only when the configuration is on and holds the
+//! app's own dictionaries (the browser lends rinch none of its own): an editor
+//! made before they arrive gets the plugin, its undo history kept, when they
+//! do (`watch_for_dictionaries`).
 
 use std::any::Any;
+use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -63,12 +74,19 @@ pub(crate) enum SpellMeta {
     /// The editor is not to be checked now (read-only, `spellcheck` off):
     /// drop every mark and forget what is pending.
     Clear,
+    /// These marks' words are correct now (added to the dictionary,
+    /// ignored): drop them. The document did not change, so nothing else is
+    /// stale.
+    Drop(Vec<(usize, usize)>),
     /// A check came back: `found` are the misspelled words in `checked`, for
-    /// the document at `generation`.
+    /// the document at `generation`. `upto` is `None` when the check covered
+    /// every dirty word (the dirty list is cleared), or the position a sliced
+    /// check stopped at (only the dirty words before it are done).
     Result {
         generation: u64,
         checked: Vec<(usize, usize)>,
         found: Vec<(usize, usize)>,
+        upto: Option<usize>,
     },
 }
 
@@ -212,16 +230,30 @@ impl Plugin for SpellcheckPlugin {
                     Vec::new()
                 };
             }
+            Some(SpellMeta::Drop(gone)) => {
+                st.marks.retain(|m| !gone.contains(m));
+            }
             Some(SpellMeta::Result {
                 generation,
                 checked,
                 found,
+                upto,
             }) if st.activated && *generation == st.generation => {
                 st.marks
                     .retain(|&(a, b)| !checked.iter().any(|&(c, d)| a < d && b > c));
                 st.marks.extend(found.iter().copied());
                 st.marks.sort_unstable();
-                st.dirty.clear();
+                match *upto {
+                    None => st.dirty.clear(),
+                    Some(p) => {
+                        st.dirty = st
+                            .dirty
+                            .iter()
+                            .filter(|&&(_, b)| b > p)
+                            .map(|&(a, b)| (a.max(p), b))
+                            .collect();
+                    }
+                }
             }
             _ => {}
         }
@@ -291,6 +323,32 @@ fn char_at(doc: &Node, pos: usize) -> Option<char> {
     found
 }
 
+/// The text of document range `a..b` (an inline leaf contributes nothing).
+fn text_of(doc: &Node, a: usize, b: usize) -> String {
+    let mut out = String::new();
+    doc.nodes_between(a, b, &mut |node, at, _| {
+        if let Some(t) = node.text() {
+            let from = a.max(at) - at;
+            let to = b.min(at + node.text_len()).saturating_sub(at);
+            out.extend(t.chars().skip(from).take(to.saturating_sub(from)));
+        }
+        true
+    });
+    out
+}
+
+/// A word the spellchecker marked, as [`EditorHandle::misspelling_at`]
+/// answers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Misspelling {
+    /// Where the word starts.
+    pub from: Pos,
+    /// Where it ends.
+    pub to: Pos,
+    /// The word.
+    pub word: String,
+}
+
 /// Sorted, merged ranges.
 fn merge(mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     ranges.sort_unstable();
@@ -321,6 +379,16 @@ pub(crate) fn jobs(
     skip: &Skip,
     block_off: &dyn Fn(usize) -> bool,
 ) -> Vec<BlockJob> {
+    dirty_blocks(doc, dirty, skip)
+        .into_iter()
+        .filter(|(pos, _)| !block_off(*pos))
+        .filter_map(|(pos, block)| block_job(pos, &block, dirty, skip))
+        .collect()
+}
+
+/// Every textblock of `doc` a dirty range reaches (not inside a skipped
+/// node), with its position, in document order.
+fn dirty_blocks(doc: &Node, dirty: &[(usize, usize)], skip: &Skip) -> Vec<(usize, Node)> {
     let mut blocks: Vec<(usize, Node)> = Vec::new();
     for &(a, b) in dirty {
         let (a, b) = (a.min(doc.content_size()), b.min(doc.content_size()));
@@ -332,7 +400,9 @@ pub(crate) fn jobs(
                     return false;
                 }
                 if node.is_textblock() {
-                    if !blocks.iter().any(|(p, _)| *p == pos) && !block_off(pos) {
+                    // `dirty` is sorted and the walk is in document order, so
+                    // a block already taken is the last one taken.
+                    if blocks.last().is_none_or(|(p, _)| *p < pos) {
                         blocks.push((pos, node.clone()));
                     }
                     false
@@ -342,43 +412,43 @@ pub(crate) fn jobs(
             },
         );
     }
-    let mut out = Vec::new();
-    for (pos, block) in blocks {
-        let start = pos + 1;
-        let mut text = String::new();
-        // Text under a skipped mark is U+FFFC, one per position, so it is
-        // never a word and the positions stay aligned.
-        for i in 0..block.child_count() {
-            let child = block.child(i);
-            let skipped = child
-                .marks()
-                .iter()
-                .any(|m| skip.marks.iter().any(|n| n == m.type_name()));
-            match child.text() {
-                Some(t) if !skipped => text.push_str(t),
-                _ => (0..child.node_size()).for_each(|_| text.push('\u{FFFC}')),
-            }
-        }
-        let chars = text.chars().count();
-        let byte_of = |c: usize| text.char_indices().nth(c).map_or(text.len(), |(i, _)| i);
-        let mut ranges: Vec<Range<usize>> = Vec::new();
-        for &(a, b) in dirty {
-            let (a, b) = (a.max(start), b.min(start + chars));
-            if a > b {
-                continue;
-            }
-            let r = spell::widen_to_tokens(&text, byte_of(a - start)..byte_of(b - start));
-            spell::add_range(&mut ranges, r);
-        }
-        if !ranges.is_empty() {
-            out.push(BlockJob {
-                start,
-                text,
-                ranges,
-            });
+    blocks
+}
+
+/// The check of the textblock `block` at `pos`: its text, and the dirty part
+/// of it widened to white space. `None` when nothing in it is dirty.
+fn block_job(pos: usize, block: &Node, dirty: &[(usize, usize)], skip: &Skip) -> Option<BlockJob> {
+    let start = pos + 1;
+    let mut text = String::new();
+    // Text under a skipped mark is U+FFFC, one per position, so it is
+    // never a word and the positions stay aligned.
+    for i in 0..block.child_count() {
+        let child = block.child(i);
+        let skipped = child
+            .marks()
+            .iter()
+            .any(|m| skip.marks.iter().any(|n| n == m.type_name()));
+        match child.text() {
+            Some(t) if !skipped => text.push_str(t),
+            _ => (0..child.node_size()).for_each(|_| text.push('\u{FFFC}')),
         }
     }
-    out
+    let chars = text.chars().count();
+    let byte_of = |c: usize| text.char_indices().nth(c).map_or(text.len(), |(i, _)| i);
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for &(a, b) in dirty {
+        let (a, b) = (a.max(start), b.min(start + chars));
+        if a > b {
+            continue;
+        }
+        let r = spell::widen_to_tokens(&text, byte_of(a - start)..byte_of(b - start));
+        spell::add_range(&mut ranges, r);
+    }
+    (!ranges.is_empty()).then_some(BlockJob {
+        start,
+        text,
+        ranges,
+    })
 }
 
 /// The document ranges a check covered, and the misspelled words in them.
@@ -402,20 +472,205 @@ pub(crate) fn run_jobs(session: &spell::Session, jobs: &[BlockJob]) -> CheckResu
     (checked, found)
 }
 
-/// The handle's half: when to check, and the trip to the checking thread.
+/// Whether this build checks the editor at all: always off the web; on the
+/// web with the `spellcheck` feature (`rinch-web`'s, on by default). Off,
+/// nothing reaches the checking code and the linker drops it.
+const ON: bool = cfg!(any(feature = "spellcheck", not(target_family = "wasm")));
+
+// The web's slices are configured per app: `SpellcheckConfig::slice_budget_ms`
+// (how long one slice may take, applying its marks included),
+// `slice_max_found` (applying a result builds a `<span>` per new mark, and in
+// a browser that, not the checking, is most of a long slice: 6,400 new marks
+// took 25 ms to apply on #2862's long document) and `slice_chunk_bytes` (the
+// piece checked between two looks at the clock).
+
+thread_local! {
+    /// Native tests take the web's path (slices, the plugin only with the
+    /// app's dictionaries).
+    #[cfg(test)]
+    static WEB_PATH: Cell<bool> = const { Cell::new(false) };
+    /// Native tests check one chunk per slice.
+    #[cfg(test)]
+    static ONE_CHUNK_SLICES: Cell<bool> = const { Cell::new(false) };
+    static STATS: Cell<SliceStats> = const { Cell::new(SliceStats { slices: 0, max_us: 0, total_us: 0, max_apply_us: 0, words: 0 }) };
+}
+
+/// Whether checking runs on the UI thread in slices (the web) rather than on
+/// the checking thread.
+fn web_path() -> bool {
+    #[cfg(test)]
+    if WEB_PATH.with(Cell::get) {
+        return true;
+    }
+    cfg!(target_family = "wasm")
+}
+
+/// Whether a new editor gets the plugin: the thread has a configuration and,
+/// on the web, it is on and has the app's own dictionaries.
+pub(crate) fn wanted() -> bool {
+    if !ON {
+        false
+    } else if web_path() {
+        spell::session().is_some()
+    } else {
+        spell::config().is_some()
+    }
+}
+
+/// An editor made on the web before the app's dictionaries arrived (or
+/// while checking was off, or before the app configured anything at all: a
+/// handle made before `App::run`, an island whose app configures after its
+/// fetch): when a configuration change makes checking possible, the plugin
+/// is added then, keeping the editor's state. One listener, nothing else.
+pub(crate) fn watch_for_dictionaries(handle: &EditorHandle) {
+    if ON && web_path() && handle.spell_peek(|_| ()).is_none() {
+        handle.spell_listen();
+    }
+}
+
+/// What the web's slices cost, for measuring ([`slice_stats`]): each slice
+/// timed from its start to its result applied.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SliceStats {
+    /// Slices run.
+    pub slices: u32,
+    /// The longest one, microseconds.
+    pub max_us: u64,
+    /// All of them, microseconds.
+    pub total_us: u64,
+    /// The longest time one slice spent applying its result (the plugin,
+    /// the decorations, the view), microseconds.
+    pub max_apply_us: u64,
+    /// Words checked.
+    pub words: u64,
+}
+
+/// The cost of the slices run on this thread since [`reset_slice_stats`].
+#[doc(hidden)]
+pub fn slice_stats() -> SliceStats {
+    STATS.with(Cell::get)
+}
+
+/// Start [`slice_stats`] again.
+#[doc(hidden)]
+pub fn reset_slice_stats() {
+    STATS.with(|s| s.set(SliceStats::default()));
+}
+
+/// A check on the web, worked through a slice at a time ([`EditorHandle::spell_slice`]).
+pub(crate) struct Slicer {
+    /// The plugin generation it was taken at: a slice for another is dropped.
+    generation: u64,
+    /// The textblocks to check, in document order, and the next one.
+    blocks: Vec<(usize, Node)>,
+    next: usize,
+    /// The dirty ranges it was taken for.
+    dirty: Vec<(usize, usize)>,
+    skip: Rc<Skip>,
+    /// The block being checked.
+    current: Option<Current>,
+    /// The piece size (`slice_chunk_bytes`).
+    chunk_bytes: usize,
+    /// How long the last slice took to apply its result: the next one stops
+    /// checking that much sooner, so the whole slice keeps to the budget.
+    last_apply: std::time::Duration,
+}
+
+/// The block a [`Slicer`] is in: its text, its remaining pieces, and how far
+/// into its text positions have been counted (`(byte, char)`).
+type Current = (
+    BlockJob,
+    std::collections::VecDeque<Range<usize>>,
+    (usize, usize),
+);
+
+impl Slicer {
+    /// The next piece to check, moving on to the next block (skipping the
+    /// ones `block_off` turns off) when this one is done.
+    fn next_piece(&mut self, block_off: &dyn Fn(usize) -> bool) -> Option<Range<usize>> {
+        loop {
+            if let Some((_, pieces, _)) = &mut self.current
+                && let Some(piece) = pieces.pop_front()
+            {
+                return Some(piece);
+            }
+            let (pos, block) = self.blocks.get(self.next)?.clone();
+            self.next += 1;
+            if block_off(pos) {
+                continue;
+            }
+            self.current = block_job(pos, &block, &self.dirty, &self.skip).map(|job| {
+                let pieces = job
+                    .ranges
+                    .iter()
+                    .flat_map(|r| pieces(&job.text, r.clone(), self.chunk_bytes))
+                    .collect();
+                (job, pieces, (0, 0))
+            });
+        }
+    }
+
+    /// The document position of byte `byte` of the current block's text,
+    /// counting on from the last one asked (bytes are asked in order).
+    fn pos(&mut self, byte: usize) -> usize {
+        let (job, _, (b, c)) = self.current.as_mut().expect("a block is being checked");
+        *c += job.text[*b..byte].chars().count();
+        *b = byte;
+        job.start + *c
+    }
+}
+
+/// `range` of `text` cut at white space into pieces of about `chunk`
+/// bytes.
+fn pieces(text: &str, range: Range<usize>, chunk: usize) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = range.start;
+    while start < range.end {
+        let mut end = (start + chunk.max(1)).min(range.end);
+        while !text.is_char_boundary(end) {
+            end += 1;
+        }
+        if end < range.end {
+            end = text[end..range.end]
+                .find(char::is_whitespace)
+                .map_or(range.end, |i| end + i);
+        }
+        out.push(start..end);
+        start = end;
+    }
+    out
+}
+
+/// The handle's half: when to check, and the trip to the checking thread (or,
+/// on the web, the slices).
 #[derive(Default)]
 pub(crate) struct Driver {
     timer: Option<rinch_core::timer::TimeoutHandle>,
     listener: Option<u64>,
+    /// The web's check in progress, and the timer that runs its next slice.
+    slicer: Option<Slicer>,
+    slice_timer: Option<rinch_core::timer::TimeoutHandle>,
+    /// The user pressed in or typed into the editor before it had the
+    /// plugin (the web, before the app's dictionaries arrived).
+    interacted: bool,
+    /// The [`spell::on_words_accepted`] listener.
+    words: Option<u64>,
 }
 
 impl Drop for Driver {
     fn drop(&mut self) {
-        if let Some(t) = self.timer.take() {
+        for t in [self.timer.take(), self.slice_timer.take()]
+            .into_iter()
+            .flatten()
+        {
             rinch_core::timer::clear_timeout(t);
         }
         if let Some(id) = self.listener.take() {
             spell::remove_config_listener(id);
+        }
+        if let Some(id) = self.words.take() {
+            spell::remove_words_listener(id);
         }
     }
 }
@@ -423,7 +678,13 @@ impl Drop for Driver {
 impl EditorHandle {
     /// The spellchecker's state, when the plugin is installed.
     pub(crate) fn spell_state(&self) -> Option<SpellState> {
-        self.with_state(|s| s.plugin_state::<SpellState>(SPELLCHECK_KEY).cloned())
+        self.spell_peek(SpellState::clone)
+    }
+
+    /// `f` of the spellchecker's state, when the plugin is installed, without
+    /// copying its marks.
+    fn spell_peek<R>(&self, f: impl FnOnce(&SpellState) -> R) -> Option<R> {
+        self.with_state(|s| s.plugin_state::<SpellState>(SPELLCHECK_KEY).map(f))
     }
 
     /// Whether this editor is to be checked now: the plugin is installed, the
@@ -431,7 +692,10 @@ impl EditorHandle {
     /// its container's `spellcheck` state (its own or the nearest ancestor's)
     /// is on.
     fn spell_session(&self) -> Option<spell::Session> {
-        self.spell_state()?;
+        if !ON {
+            return None;
+        }
+        self.spell_peek(|_| ())?;
         let session = spell::session()?;
         if self.is_read_only() {
             return None;
@@ -452,15 +716,72 @@ impl EditorHandle {
         Some(session)
     }
 
+    /// The misspelled word at `pos` (a mark that contains it, its ends
+    /// included), if the spellchecker marked one there. What the text
+    /// context menu asks at a right press (#2862, stage 3).
+    pub fn misspelling_at(&self, pos: Pos) -> Option<Misspelling> {
+        let st = self.spell_state()?;
+        let &(a, b) = st.marks.iter().find(|&&(a, b)| a <= pos.0 && pos.0 <= b)?;
+        let word = self.with_state(|s| text_of(&s.doc, a, b));
+        Some(Misspelling {
+            from: Pos(a),
+            to: Pos(b),
+            word,
+        })
+    }
+
+    /// Every word the spellchecker has marked, in document order. Empty when
+    /// the plugin is not installed or nothing is marked.
+    pub fn misspellings(&self) -> Vec<Misspelling> {
+        let Some(st) = self.spell_state() else {
+            return Vec::new();
+        };
+        self.with_state(|s| {
+            st.marks
+                .iter()
+                .map(|&(a, b)| Misspelling {
+                    from: Pos(a),
+                    to: Pos(b),
+                    word: text_of(&s.doc, a, b),
+                })
+                .collect()
+        })
+    }
+
+    /// The checker accepted more words: drop the marks whose word it now
+    /// takes. Asks only the loaded checker, and only about marked words.
+    fn spell_words_accepted(&self) {
+        let Some(st) = self.spell_state() else {
+            return;
+        };
+        let Some(checker) = spell::session().and_then(|s| s.loaded_checker()) else {
+            return;
+        };
+        let gone: Vec<(usize, usize)> = self.with_state(|s| {
+            st.marks
+                .iter()
+                .copied()
+                .filter(|&(a, b)| checker.check(&text_of(&s.doc, a, b)))
+                .collect()
+        });
+        if !gone.is_empty() {
+            self.spell_meta(SpellMeta::Drop(gone));
+        }
+    }
+
     /// The user focused the editor (a press in it, a Tab onto it): its first
     /// interaction checks the whole document. The runtime calls it; nothing
     /// happens unless the app has spellcheck on (#2862).
     pub fn spell_user_focus(&self) {
         let Some(session) = self.spell_session() else {
+            if self.spell_peek(|_| ()).is_none() {
+                // Remembered for dictionaries that arrive later (the web).
+                self.spell_driver(|d| d.interacted = true);
+            }
             return;
         };
         self.spell_listen();
-        if self.spell_state().is_some_and(|s| !s.activated) {
+        if self.spell_peek(|s| !s.activated) == Some(true) {
             self.spell_meta(SpellMeta::Activate);
             self.spell_check(&session);
         }
@@ -476,7 +797,16 @@ impl EditorHandle {
         if !doc_changed || !input {
             return;
         }
-        if self.spell_state().is_none_or(|s| s.activated) || self.spell_session().is_none() {
+        match self.spell_peek(|s| s.activated) {
+            None => {
+                // Remembered for dictionaries that arrive later (the web).
+                self.spell_driver(|d| d.interacted = true);
+                return;
+            }
+            Some(true) => return,
+            Some(false) => {}
+        }
+        if self.spell_session().is_none() {
             return;
         }
         self.spell_listen();
@@ -493,10 +823,7 @@ impl EditorHandle {
 
     /// Arm the pause again when words are still waiting.
     fn spell_rearm_if_dirty(&self) {
-        if self
-            .spell_state()
-            .is_some_and(|s| s.activated && !s.dirty.is_empty())
-        {
+        if self.spell_peek(|s| s.activated && !s.dirty.is_empty()) == Some(true) {
             self.spell_owed();
         }
     }
@@ -573,12 +900,17 @@ impl EditorHandle {
         }
     }
 
-    /// Send the dirty words to the checking thread.
+    /// Send the dirty words to the checking thread (on the web: start
+    /// checking them in slices).
     pub(crate) fn spell_check(&self, session: &spell::Session) {
         let Some(st) = self.spell_state() else {
             return;
         };
         if st.dirty.is_empty() {
+            return;
+        }
+        if web_path() {
+            self.spell_start_slices(&st);
             return;
         }
         let block_off = |pos: usize| self.spell_block_off(pos);
@@ -592,6 +924,7 @@ impl EditorHandle {
                         generation,
                         checked,
                         found,
+                        upto: None,
                     });
                     // A stale result was dropped and words are still dirty:
                     // check them again after the pause.
@@ -622,13 +955,180 @@ impl EditorHandle {
         let weak = self.downgrade();
         let id = spell::on_config_change(move || {
             if let Some(handle) = weak.upgrade() {
-                handle.spell_meta(SpellMeta::Reset);
-                if let Some(session) = handle.spell_session() {
-                    handle.spell_check(&session);
-                }
+                handle.spell_config_changed();
             }
         });
         self.spell_driver(|d| d.listener = Some(id));
+        let weak = self.downgrade();
+        let words = spell::on_words_accepted(move || {
+            if let Some(handle) = weak.upgrade() {
+                handle.spell_words_accepted();
+            }
+        });
+        self.spell_driver(|d| d.words = Some(words));
+        // The checker's reports from other threads (a word the app adds to
+        // its personal dictionary) are delivered on this one.
+        static WAKE: std::sync::Once = std::sync::Once::new();
+        WAKE.call_once(|| {
+            spell::set_change_wake(|| {
+                rinch_core::dispatch_main_callback(Box::new(spell::deliver_changes));
+            });
+        });
+    }
+
+    fn spell_config_changed(&self) {
+        if self.spell_peek(|_| ()).is_none() {
+            // The web: the app's dictionaries have arrived (or checking was
+            // turned on). The plugin joins the state as it is, history kept;
+            // an editor the user already pressed in or typed into is checked
+            // now.
+            if wanted()
+                && self.install_plugin(Rc::new(SpellcheckPlugin::new()), true, |plugins| {
+                    plugins.len()
+                })
+                && self.spell_driver(|d| d.interacted) == Some(true)
+            {
+                self.spell_user_focus();
+            }
+            return;
+        }
+        self.spell_meta(SpellMeta::Reset);
+        if let Some(session) = self.spell_session() {
+            self.spell_check(&session);
+        }
+    }
+
+    /// Start (or restart) checking the dirty words in slices, the first in
+    /// a task of its own so a press or the debounce's timer returns at once.
+    fn spell_start_slices(&self, st: &SpellState) {
+        let running = self.spell_driver(|d| {
+            d.slicer
+                .as_ref()
+                .is_some_and(|s| s.generation == st.generation)
+        });
+        if running == Some(true) {
+            // Already on it, for this very document.
+            return;
+        }
+        let blocks = self.with_state(|s| dirty_blocks(&s.doc, &st.dirty, &st.skip));
+        let slicer = Slicer {
+            generation: st.generation,
+            blocks,
+            next: 0,
+            dirty: st.dirty.clone(),
+            skip: st.skip.clone(),
+            current: None,
+            chunk_bytes: spell::session()
+                .map_or(spell::DEFAULT_SLICE_CHUNK_BYTES, |s| s.slices().chunk_bytes),
+            last_apply: std::time::Duration::ZERO,
+        };
+        self.spell_driver(|d| d.slicer = Some(slicer));
+        self.spell_schedule_slice();
+    }
+
+    fn spell_schedule_slice(&self) {
+        let weak = self.downgrade();
+        let timer = rinch_core::reactive::unowned(|| {
+            rinch_core::timer::yield_now(move || {
+                if let Some(handle) = weak.upgrade() {
+                    handle.spell_driver(|d| d.slice_timer = None);
+                    handle.spell_slice();
+                }
+            })
+        });
+        if let Some(old) = self
+            .spell_driver(|d| d.slice_timer.replace(timer))
+            .flatten()
+        {
+            rinch_core::timer::clear_timeout(old);
+        }
+    }
+
+    /// One slice of the web's check: words until the configured budget,
+    /// less what applying the last slice's result took, has passed (or the
+    /// configured most misspellings are found), the result applied, the next
+    /// slice scheduled (`yield_now`: one browser task each). A slice for a document that changed since the check was
+    /// taken is dropped with the rest of it: the change put its words on the
+    /// dirty list and armed a check of its own, and the words already
+    /// checked were taken off it.
+    pub(crate) fn spell_slice(&self) {
+        let Some(mut slicer) = self.spell_driver(|d| d.slicer.take()).flatten() else {
+            return;
+        };
+        if self.spell_peek(|s| s.activated && s.generation == slicer.generation) != Some(true) {
+            return;
+        }
+        let Some(session) = self.spell_session() else {
+            return;
+        };
+        let started = rinch_core::timer::now();
+        let limits = session.slices();
+        let budget = std::time::Duration::from_millis(u64::from(limits.budget_ms))
+            .saturating_sub(slicer.last_apply);
+        let one_chunk = {
+            #[cfg(test)]
+            {
+                ONE_CHUNK_SLICES.with(Cell::get)
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        };
+        let block_off = |pos: usize| self.spell_block_off(pos);
+        let mut checked = Vec::new();
+        let mut found = Vec::new();
+        let mut words = 0u64;
+        let mut upto = None;
+        while let Some(piece) = slicer.next_piece(&block_off) {
+            let (from, to) = (piece.start, piece.end);
+            let text = &slicer.current.as_ref().expect("a piece has a block").0.text;
+            let bad = session.check_ranges(text, std::slice::from_ref(&piece));
+            words += 1 + text[piece].matches(char::is_whitespace).count() as u64;
+            let a = slicer.pos(from);
+            for w in bad {
+                let wa = slicer.pos(w.start);
+                found.push((wa, slicer.pos(w.end)));
+            }
+            let b = slicer.pos(to);
+            checked.push((a, b));
+            if one_chunk
+                || found.len() >= limits.max_found
+                || rinch_core::timer::now().saturating_duration_since(started) >= budget
+            {
+                upto = Some(b);
+                break;
+            }
+        }
+        // A budget that ran out on the last piece leaves one more slice,
+        // which finds nothing and clears the dirty list.
+        let generation = slicer.generation;
+        let applying = rinch_core::timer::now();
+        self.spell_meta(SpellMeta::Result {
+            generation,
+            checked,
+            found,
+            upto,
+        });
+        let end = rinch_core::timer::now();
+        if upto.is_some() {
+            slicer.last_apply = end.saturating_duration_since(applying);
+            self.spell_driver(|d| d.slicer = Some(slicer));
+            self.spell_schedule_slice();
+        } else {
+            self.spell_rearm_if_dirty();
+        }
+        let us = end.saturating_duration_since(started).as_micros() as u64;
+        let apply_us = end.saturating_duration_since(applying).as_micros() as u64;
+        STATS.with(|s| {
+            let mut v = s.get();
+            v.slices += 1;
+            v.max_us = v.max_us.max(us);
+            v.max_apply_us = v.max_apply_us.max(apply_us);
+            v.total_us += us;
+            v.words += words;
+            s.set(v);
+        });
     }
 }
 
@@ -695,6 +1195,33 @@ mod tests {
         assert_eq!(marked(&h), ["helo", "wrld", "cta"]);
     }
 
+    /// The menu's questions and answers (#2862, stage 3): the mark under a
+    /// position, ends included, and "Add to dictionary" dropping that word's
+    /// marks in every editor at once while the other words stay marked.
+    #[test]
+    fn add_to_dictionary_drops_the_word_in_every_editor() {
+        configure();
+        let a = crate::create_editor();
+        a.load_html("<p>the helo wrld helo</p>");
+        let b = crate::create_editor();
+        b.load_html("<p>a helo</p>");
+        a.spell_user_focus();
+        b.spell_user_focus();
+        assert_eq!(marked(&a), ["helo", "wrld", "helo"]);
+        assert_eq!(marked(&b), ["helo"]);
+
+        // "the helo": the word is positions 5..9 (paragraph opens at 0).
+        let m = a.misspelling_at(Pos(7)).unwrap();
+        assert_eq!((m.from, m.to, m.word.as_str()), (Pos(5), Pos(9), "helo"));
+        assert_eq!(a.misspelling_at(Pos(9)).unwrap().from, Pos(5), "its end");
+        assert_eq!(a.misspelling_at(Pos(3)), None, "a correct word");
+
+        assert!(spell::add_to_dictionary("helo"));
+        assert_eq!(marked(&a), ["wrld"]);
+        assert!(marked(&b).is_empty());
+        assert_eq!(a.misspelling_at(Pos(7)), None);
+    }
+
     /// The marks map through edits that do not touch them: text inserted
     /// before them, in another paragraph, a whole paragraph added above. An
     /// edit of the word itself drops its mark at once and puts it on the
@@ -742,6 +1269,7 @@ mod tests {
             generation,
             checked: vec![(1, 5)],
             found: vec![(1, 5)],
+            upto: None,
         });
         assert!(marked(&h).is_empty(), "a stale result was applied");
     }
@@ -815,6 +1343,7 @@ mod tests {
             generation: stale,
             checked: vec![(1, 10)],
             found: vec![(1, 5)],
+            upto: None,
         });
         assert!(
             marked(&h).is_empty(),
@@ -897,5 +1426,193 @@ mod tests {
         assert!(marked(&h).is_empty(), "a read-only editor kept its marks");
         h.set_read_only(false);
         assert_eq!(marked(&h), ["helo"]);
+    }
+
+    /// The web's path on this thread: slices of one piece each.
+    fn web_path(on: bool) {
+        WEB_PATH.with(|w| w.set(on));
+        ONE_CHUNK_SLICES.with(|w| w.set(on));
+    }
+
+    /// Run the pending slices as the browser would, one task each; answers
+    /// how many ran.
+    fn run_slices(h: &EditorHandle) -> u32 {
+        let mut n = 0;
+        while let Some(t) = h.spell_driver(|d| d.slice_timer.take()).flatten() {
+            rinch_core::timer::clear_timeout(t);
+            h.spell_slice();
+            n += 1;
+            assert!(n < 10_000, "the slices never end");
+        }
+        n
+    }
+
+    /// A document of `n` paragraphs, every third word misspelled, longer
+    /// than one piece each.
+    fn long_doc(n: usize) -> String {
+        let line = "the cat and the dog helo ".repeat(30);
+        (0..n)
+            .map(|i| format!("<p>{line}wrld{i}x cta</p>"))
+            .collect()
+    }
+
+    /// The web (#2862): the whole-document check of a long document runs in
+    /// many slices, each applied as it comes, and ends with what one
+    /// desktop check marks.
+    #[test]
+    fn the_web_checks_a_long_document_in_slices() {
+        let session = configure();
+        let html = long_doc(6);
+        let desktop = crate::create_editor();
+        desktop.load_html(&html);
+        desktop.spell_meta(SpellMeta::Activate);
+        desktop.spell_check(&session);
+        let want = marked(&desktop);
+        assert_eq!(want.len(), 6 * 31, "{want:?}");
+
+        web_path(true);
+        let h = crate::create_editor();
+        h.load_html(&html);
+        h.spell_meta(SpellMeta::Activate);
+        h.spell_check(&session);
+        assert!(
+            marked(&h).is_empty(),
+            "the first slice ran inside the press"
+        );
+        // One slice in: marks for the first piece only, the rest still dirty.
+        assert!(
+            h.spell_driver(|d| d.slice_timer.take())
+                .flatten()
+                .map(rinch_core::timer::clear_timeout)
+                .is_some()
+        );
+        h.spell_slice();
+        let first = marked(&h).len();
+        assert!(first > 0 && first < want.len(), "{first}");
+        assert!(!h.spell_state().unwrap().dirty.is_empty());
+        let slices = run_slices(&h);
+        assert!(slices > 6, "{slices} slices");
+        assert_eq!(marked(&h), want);
+        assert!(h.spell_state().unwrap().dirty.is_empty());
+        web_path(false);
+    }
+
+    /// An edit between two slices drops the rest of that check; the words
+    /// already checked keep their marks and are not checked again, and the
+    /// edit's own check (after the pause) finishes the document.
+    #[test]
+    fn an_edit_between_slices_keeps_what_was_checked() {
+        let session = configure();
+        web_path(true);
+        let h = crate::create_editor();
+        h.load_html(&long_doc(4));
+        h.spell_meta(SpellMeta::Activate);
+        h.spell_check(&session);
+        take_timer(&h);
+        for _ in 0..3 {
+            let t = h.spell_driver(|d| d.slice_timer.take()).flatten().unwrap();
+            rinch_core::timer::clear_timeout(t);
+            h.spell_slice();
+        }
+        let before = marked(&h);
+        assert!(!before.is_empty());
+        let dirty_start = h.spell_state().unwrap().dirty[0].0;
+        assert!(dirty_start > 1, "nothing was taken off the dirty list");
+        insert(&h, 1, "zzq ");
+        // The edit armed its check; the rest of the old one goes.
+        assert!(take_timer(&h), "the edit armed no check");
+        assert_eq!(run_slices(&h), 1, "a stale slice was not dropped");
+        assert_eq!(marked(&h), before, "marks moved off their words");
+        h.spell_check(&session);
+        run_slices(&h);
+        web_path(false);
+        let fresh = crate::create_editor();
+        fresh.load_html(&long_doc(4).replacen("<p>", "<p>zzq ", 1));
+        fresh.spell_meta(SpellMeta::Activate);
+        fresh.spell_check(&session);
+        let want = marked(&fresh);
+        assert_eq!(want[0], "zzq");
+        assert_eq!(marked(&h), want);
+    }
+
+    /// The web (#2862): with no dictionaries of the app's, an editor has no
+    /// plugin and does nothing; when they arrive, the plugin joins with the
+    /// undo history kept, and an editor the user already pressed in is
+    /// checked.
+    #[test]
+    fn dictionaries_that_arrive_later_install_the_checker() {
+        spell::set_inline_jobs(true);
+        spell::set_config(SpellcheckConfig {
+            dictionaries: spell::Dictionaries::None,
+            ..SpellcheckConfig::default()
+        });
+        web_path(true);
+        let h = crate::create_editor();
+        h.load_html("<p>the cat</p>");
+        assert!(
+            h.spell_state().is_none(),
+            "a plugin with nothing to check against"
+        );
+        insert(&h, 8, " helo");
+        h.spell_user_focus();
+        assert!(h.spell_state().is_none());
+
+        configure();
+        assert!(
+            h.spell_state().is_some(),
+            "the arriving dictionaries installed nothing"
+        );
+        run_slices(&h);
+        assert_eq!(marked(&h), ["helo"]);
+        assert!(h.command("undo"), "the undo history was lost");
+        web_path(false);
+    }
+
+    /// Review of #2930: an editor made before the app configured anything at
+    /// all (a handle made before `App::run`, an island whose app configures
+    /// after its fetch) is checked once dictionaries arrive. Red before: no
+    /// listener was registered without a configuration, and the first
+    /// `set_config` told no listener.
+    #[test]
+    fn an_editor_made_before_any_configuration_is_checked_later() {
+        spell::set_inline_jobs(true);
+        spell::clear_config();
+        web_path(true);
+        let h = crate::create_editor();
+        h.load_html("<p>helo the wrld</p>");
+        h.spell_user_focus();
+        assert!(h.spell_state().is_none());
+        configure();
+        assert!(
+            h.spell_state().is_some(),
+            "the dictionaries installed nothing"
+        );
+        run_slices(&h);
+        assert_eq!(marked(&h), ["helo", "wrld"]);
+        web_path(false);
+    }
+
+    /// The slice settings are the app's: a smaller piece makes more slices.
+    #[test]
+    fn the_slice_settings_are_the_apps() {
+        spell::set_inline_jobs(true);
+        let count = |chunk: usize| {
+            spell::set_config(
+                SpellcheckConfig::new()
+                    .checker(HunspellChecker::from_bytes("en_TEST", AFF, DIC).unwrap())
+                    .debounce_ms(0)
+                    .slice_chunk_bytes(chunk),
+            );
+            let session = spell::session().unwrap();
+            let h = crate::create_editor();
+            h.load_html(&long_doc(2));
+            h.spell_meta(SpellMeta::Activate);
+            h.spell_check(&session);
+            run_slices(&h)
+        };
+        web_path(true);
+        let (big, small) = (count(4096), count(64));
+        assert!(small > big * 4, "{small} slices of 64 bytes, {big} of 4096");
+        web_path(false);
     }
 }

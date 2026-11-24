@@ -875,6 +875,10 @@ pub struct InlineLayout {
     /// #1632). Read by the damage ink and the clip proof
     /// (`paint::text::inline_ink_past_lines`).
     pub(crate) glyph_overflow: Option<[f32; 4]>,
+    /// Where the lines reach horizontally, `[x0, x1]` in CSS px from the
+    /// content origin, `None` for a layout with no lines
+    /// ([`Self::lines_x_reach_of`]). Read through [`Self::lines_x_reach`].
+    pub(crate) lines_x_reach: Option<[f32; 2]>,
 }
 
 /// Where `text-overflow: ellipsis` cuts an IFC root's lines (#1100): what
@@ -990,6 +994,39 @@ impl InlineLayout {
             return None;
         }
         self.layout.get(n - 1)
+    }
+
+    /// Where the lines reach horizontally, `[x0, x1]` in CSS px from the
+    /// content origin: the union of every line's line box
+    /// (`inline_min_coord..inline_max_coord`) and its content, from where it
+    /// is placed (`offset`) to `advance` past that. A line can start left of
+    /// the origin (a negative `text-indent`, an rtl line wider than its box)
+    /// and end past the layout's `width()`, which measures advances, not
+    /// placement. Hit testing's flow extent reads it (#2956), so the prune
+    /// reaches every point a line's text can be hit at. `None` when there
+    /// are no lines.
+    pub fn lines_x_reach(&self) -> Option<[f32; 2]> {
+        self.lines_x_reach
+    }
+
+    /// [`Self::lines_x_reach`] measured over `layout`, once when the lines
+    /// are built. The line box counts for a justified line, whose clusters
+    /// are spread past `advance` (which leaves the justification out); an
+    /// unbounded line box (lines broken in infinite room) is left out, its
+    /// content alone counting.
+    pub(crate) fn lines_x_reach_of(layout: &parley::layout::Layout<Brush>) -> Option<[f32; 2]> {
+        let mut reach: Option<[f32; 2]> = None;
+        for line in layout.lines() {
+            let m = line.metrics();
+            let start = m.inline_min_coord + m.offset;
+            let (mut x0, mut x1) = (start, start + m.advance);
+            if m.inline_min_coord.is_finite() && m.inline_max_coord.is_finite() {
+                x0 = x0.min(m.inline_min_coord);
+                x1 = x1.max(m.inline_max_coord);
+            }
+            reach = Some(reach.map_or([x0, x1], |[a0, a1]| [a0.min(x0), a1.max(x1)]));
+        }
+        reach
     }
 
     /// Where `layout`'s glyphs reach, in CSS px `[x0, y0, x1, y1]` from the
@@ -2074,6 +2111,15 @@ pub struct Node {
     /// were positioned, even at `position: static`, and that needs this fact
     /// about the parent rather than anything the item's own cascade computes.
     pub is_flex_or_grid_item: Cell<bool>,
+    /// Paint's in-flow extent of this box (`paint::phases`, #2276), relative
+    /// to its border-box origin, stamped with the tree's `layout_epoch` it
+    /// was measured in, plus one (`0`: never measured). On the node, so a
+    /// look-up costs a compare, not a borrow (#2958's perf round).
+    pub(crate) phase_extent: Cell<(u64, [f32; 4])>,
+    /// Whether this box's in-flow run paints in Appendix E phases
+    /// (`paint::phases::splits`): `(layout_epoch + 1) << 1 | answer`, `0`
+    /// when never asked.
+    pub(crate) phase_split: Cell<u64>,
     /// [`crate::computed_style::ComputedStyle::has_filter`], cached at the
     /// same cascade-time moment as [`Self::is_flex_or_grid_item`] (#542, perf
     /// review). `creates_stacking_context` and the containing-block
@@ -2511,6 +2557,8 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            phase_extent: Cell::new((0, [0.0; 4])),
+            phase_split: Cell::new(0),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             raster_cache: std::cell::RefCell::new(None),
@@ -2614,6 +2662,8 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            phase_extent: Cell::new((0, [0.0; 4])),
+            phase_split: Cell::new(0),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             raster_cache: std::cell::RefCell::new(None),
@@ -2716,6 +2766,8 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            phase_extent: Cell::new((0, [0.0; 4])),
+            phase_split: Cell::new(0),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             raster_cache: std::cell::RefCell::new(None),
@@ -2816,6 +2868,8 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            phase_extent: Cell::new((0, [0.0; 4])),
+            phase_split: Cell::new(0),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             raster_cache: std::cell::RefCell::new(None),
@@ -3450,6 +3504,25 @@ impl Node {
         InlineFlowRole::InFlowBlock
     }
 
+    /// This node's parent in the **box tree**
+    /// ([`RinchDocument::box_tree_parent`](crate::RinchDocument::box_tree_parent),
+    /// which reads it from the slab), for a caller holding the node.
+    pub fn box_tree_parent(&self) -> Option<RawNodeId> {
+        // A hoisted out-of-flow box is held by its host's lists, not its DOM
+        // parent's (#591): its `layout` is relative to the host, so every
+        // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
+        if let Some(host) = self.hoisted_out_of_flow_to {
+            return Some(host);
+        }
+        if let Some(b) = self.run_box {
+            return Some(b);
+        }
+        // A box needs no arm of its own: it keeps a real `parent` edge to its
+        // container (it is simply absent from that container's `children`), so
+        // the ordinary answer is already right.
+        self.parent
+    }
+
     /// Whether this is a `display: inline` element **broken around** in-flow
     /// block-level content — CSS 2.1 §9.2.1.1's block-in-inline, #513.
     ///
@@ -3671,6 +3744,20 @@ impl IfcRootMeasures {
     }
 }
 
+/// One programmatic scroll a `scroll-behavior: smooth` box asked for
+/// ([`NodeTree::smooth_scroll_requests`], #2291).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SmoothScrollRequest {
+    pub node: RawNodeId,
+    /// The vertical offset (`scrollTop`), else the horizontal (`scrollLeft`).
+    pub vertical: bool,
+    /// The offset asked for, unclamped (the animator clamps it to the range).
+    pub target: f64,
+    /// When it was asked for, on the document's animation clock (ms): the
+    /// animation starts there, as Chrome's starts at the write.
+    pub at_ms: f64,
+}
+
 /// The node tree, stored in a slab for stable IDs.
 pub struct NodeTree {
     /// All nodes, indexed by RawNodeId.
@@ -3718,6 +3805,12 @@ pub struct NodeTree {
     /// the painted state skip the per-run walk that finds the others. Set by
     /// the cascade; sticky — clearing it would need a count nobody keeps.
     pub inline_text_shadows: bool,
+    /// Whether a non-atomic inline element has ever computed an outline
+    /// (#2973). Until one has, paint, damage and the clip proof do not look
+    /// through an IFC's elements for the outlines drawn round their
+    /// fragments (`paint::text::inline_outline_spans`). Set by the cascade;
+    /// sticky, as [`Self::inline_text_shadows`] is.
+    pub inline_outlines: bool,
     /// Whether any element has ever computed a `filter` that moves pixels
     /// (`blur()`, `drop-shadow()`, #2719). Until one has, damage does not
     /// walk a dirty node's ancestors for the blur reach that spreads its
@@ -3893,6 +3986,11 @@ pub struct NodeTree {
     /// current geometry (#2116): `content_extents`' memo of the one walk that
     /// reads Taffy's unrounded rects. Boxed for the reason above.
     pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
+    /// Each scroll container's descendants' overflow below its first boxes
+    /// (#2054), kept until something it read under it changes: `content_extents`' memo
+    /// of the walk through every box that does not clip. Boxed for the
+    /// reason above.
+    pub(crate) deep_overflow: Box<crate::paint::scrollbar::DeepOverflow>,
     /// Each inline element's own font's ascent and descent, by font
     /// (`out_of_flow::InlineFontBoxes`, #2257): filled when an IFC is
     /// shaped, for every inline element it flows, so an inline element's
@@ -3910,6 +4008,13 @@ pub struct NodeTree {
     /// which moves the scroller's content without a layout. With
     /// [`Self::layout_epoch`] it makes [`Self::geometry_epoch`].
     scroll_epoch: u64,
+    /// The programmatic scrolls a `scroll-behavior: smooth` box asked for
+    /// (#2291), one per (box, axis), newest wins: a `scroll_top` /
+    /// `scroll_left` write to such a box lands here instead of on its offset,
+    /// and the app animates it (`rinch::app::smooth_wheel`). A host with no
+    /// animator ([`Self::take_smooth_scroll_requests`] never called) can call
+    /// [`Self::flush_smooth_scroll_requests`] to land them at once.
+    pub smooth_scroll_requests: Vec<SmoothScrollRequest>,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -4634,6 +4739,7 @@ impl NodeTree {
             painted_bars: HashMap::new(),
             whole_document_damaged: false,
             inline_text_shadows: false,
+            inline_outlines: false,
             raster_filters: false,
             backdrop_filters: false,
             backdrop_nodes: Vec::new(),
@@ -4670,9 +4776,11 @@ impl NodeTree {
             placed_absolutes: Vec::new(),
             overflow_absolutes: Default::default(),
             exact_flow: Default::default(),
+            deep_overflow: Default::default(),
             inline_font_boxes: Default::default(),
             layout_epoch: 0,
             scroll_epoch: 0,
+            smooth_scroll_requests: Vec::new(),
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
@@ -5033,6 +5141,70 @@ impl NodeTree {
         self.layout_epoch.wrapping_add(self.scroll_epoch)
     }
 
+    /// Whether a programmatic scroll of `id` animates: its computed
+    /// `scroll-behavior` is `smooth` (#2291). The page scroller (`<body>`,
+    /// which stands for the viewport here) takes the root element's, as
+    /// Chrome's viewport does; `<body>`'s own value does not apply to it.
+    pub fn scroll_behavior_smooth(&self, id: RawNodeId) -> bool {
+        if id == self.body_id {
+            // `<html>`'s `computed_style` is not kept current (it has no
+            // layout box of its own to sync), so read its Stylo style, as
+            // the root font size is read.
+            return self.get_live(self.html_id).is_some_and(|html| {
+                let data = html.stylo_element_data.borrow();
+                data.as_ref()
+                    .and_then(|d| d.styles.get_primary())
+                    .is_some_and(|cv| {
+                        cv.get_box().clone_scroll_behavior()
+                            == style::properties::longhands::scroll_behavior::computed_value::T::Smooth
+                    })
+            });
+        }
+        self.nodes
+            .get(id)
+            .is_some_and(|n| n.computed_style.scroll_behavior_smooth)
+    }
+
+    /// Ask for `id`'s offset on one axis to move to `target` smoothly
+    /// (#2291), from `at_ms` on the animation clock, replacing a request not
+    /// yet taken for the same box and axis.
+    pub fn request_smooth_scroll(
+        &mut self,
+        id: RawNodeId,
+        vertical: bool,
+        target: f64,
+        at_ms: f64,
+    ) {
+        self.smooth_scroll_requests
+            .retain(|r| !(r.node == id && r.vertical == vertical));
+        self.smooth_scroll_requests.push(SmoothScrollRequest {
+            node: id,
+            vertical,
+            target,
+            at_ms,
+        });
+    }
+
+    /// The smooth scroll requests made since the last call, for the animator.
+    pub fn take_smooth_scroll_requests(&mut self) -> Vec<SmoothScrollRequest> {
+        std::mem::take(&mut self.smooth_scroll_requests)
+    }
+
+    /// Land every pending smooth scroll request at once, as an instant write
+    /// would have: for a host that animates nothing.
+    pub fn flush_smooth_scroll_requests(&mut self) {
+        for r in self.take_smooth_scroll_requests() {
+            if let Some(n) = self.nodes.get_mut(r.node) {
+                if r.vertical {
+                    n.scroll_offset.1 = r.target;
+                } else {
+                    n.scroll_offset.0 = r.target;
+                }
+                self.mark_scrolled(r.node);
+            }
+        }
+    }
+
     /// `id`'s `scroll_offset` has just been written, and nothing else about
     /// it: mark it paint-dirty (the whole container repaints, as its content
     /// and its scrollbar thumb both moved) and tell the hit cache.
@@ -5106,6 +5278,15 @@ impl NodeTree {
         self.marker_moves.push((node_id, resized));
     }
 
+    /// Whether ink measures walk an IFC root's inline elements: some inline
+    /// element has had a `text-shadow` or stroke of its own
+    /// ([`Self::inline_text_shadows`]) or an outline
+    /// ([`Self::inline_outlines`], #2973). The `members` flag of
+    /// `paint::ink_outsets_in` and [`PaintedState::of_in`].
+    pub fn walks_inline_members(&self) -> bool {
+        self.inline_text_shadows || self.inline_outlines
+    }
+
     /// The paint that consumed `paint_dirty_nodes` has run: forget them, and
     /// record that each one's pixels are now at its current box
     /// (`prev_layout = layout`, see [`Node::prev_layout`]).
@@ -5128,26 +5309,53 @@ impl NodeTree {
         // before the lists they are read from are drained (#2719): every
         // shell path drains them before it paints.
         crate::paint::raster_cache::invalidate(self);
+        // The descendant walks the moves since the last paint made stale
+        // (#2054), while the lists that name them are still here.
+        self.deep_overflow.before_paint_consumed(self);
         // The containers whose bars this paint may have moved, asked before
         // the painted boxes below are rewritten (`bar_watch_scrollers` reads
         // `prev_layout`), and their bars recorded after.
         let watched = crate::paint::bar_watch_scrollers(self);
-        let members = self.inline_text_shadows;
+        let members = self.walks_inline_members();
         let taffy = &self.taffy;
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
         // reads its inline elements' styles, #1048), then written.
+        // Answers whether the node's subtree reach is to be measured after
+        // the paint: a box painted for the first time, or one that moved —
+        // what a later move would read. A box that changed in place is left
+        // unmeasured until it moves (a text edit does not pay for it).
         let refresh = |nodes: &mut crate::node_slab::NodeSlab, id: RawNodeId, layout: bool| {
             let Some(node) = nodes.get(id) else {
-                return;
+                return false;
             };
+            let measure = layout
+                && (node.painted.is_none()
+                    || node.prev_layout.x != node.layout.x
+                    || node.prev_layout.y != node.layout.y);
             let mut state = PaintedState::of_in(node, members, |i| nodes.get(i));
             state.unrounded = unrounded_rect(taffy, node);
+            // A box that only moved keeps its subtree's reach (#2222): its
+            // size, scroll offset and clip are what of its own the reach
+            // reads beyond its subtree. A change under it drops the reach
+            // below. A whole-document restyle (`layout` false) drops it.
+            state.subtree_reach = node
+                .painted
+                .as_ref()
+                .filter(|old| {
+                    layout
+                        && old.scroll == state.scroll
+                        && (old.clips_x, old.clips_y) == (state.clips_x, state.clips_y)
+                        && node.prev_layout.width == node.layout.width
+                        && node.prev_layout.height == node.layout.height
+                })
+                .and_then(|old| old.subtree_reach);
             let node = &mut nodes[id];
             if layout {
                 node.prev_layout = node.layout;
             }
             node.painted = Some(state);
+            measure
         };
         // A whole-document restyle changes styles without pushing the nodes
         // it changed, and the paint consuming it drew *every* node with the
@@ -5163,7 +5371,7 @@ impl NodeTree {
                 .map(|(id, _)| id)
                 .collect();
             for id in painted {
-                refresh(nodes, id, false);
+                let _ = refresh(nodes, id, false);
             }
         }
         let mut dirty = std::mem::take(&mut self.paint_dirty_nodes);
@@ -5180,8 +5388,11 @@ impl NodeTree {
         // spans' lines, and once per member was quadratic in the pills of a
         // paragraph (review of #1837: one text edit among 500 pills, 500 ms).
         let mut roots: Vec<RawNodeId> = Vec::new();
+        let mut measure: Vec<RawNodeId> = Vec::new();
         for &id in &dirty {
-            refresh(nodes, id, true);
+            if refresh(nodes, id, true) {
+                measure.push(id);
+            }
             if let Some(root) = nodes.get(id).and_then(|n| n.ifc_root)
                 && root != id
             {
@@ -5202,6 +5413,9 @@ impl NodeTree {
                 state.ink = ink;
             }
         }
+        // Before the visits are folded: measuring an IFC root's reach walks
+        // its spans' lines, and those visits belong to this frame.
+        self.record_subtree_reaches(&dirty, &measure);
         self.perf.add(
             crate::perf::Counter::InlineSpanLineVisits,
             crate::paint::take_span_line_visits(),
@@ -5235,6 +5449,75 @@ impl NodeTree {
         }
         self.bar_check_parents.clear();
         self.whole_document_damaged = false;
+        self.deep_overflow.after_paint_consumed();
+    }
+
+    /// Bring [`PaintedState::subtree_reach`] level with the paint that
+    /// consumed `dirty` (#2222): drop it on every ancestor of a changed node
+    /// (and of a parent a subtree left), whose subtree is no longer the one
+    /// it describes, then measure it for each box of `measure` (painted for
+    /// the first time, or moved) that has none, deepest first so a box's walk
+    /// reads its children's fresh reaches.
+    /// Ancestors are measured when they next change themselves; until then a
+    /// move of one walks its subtree. O(depth) per changed node, each
+    /// ancestor once.
+    fn record_subtree_reaches(&mut self, dirty: &[RawNodeId], measure: &[RawNodeId]) {
+        let mut seen: HashSet<RawNodeId> = HashSet::new();
+        let starts = dirty
+            .iter()
+            .map(|&id| self.nodes.get(id).and_then(|n| n.parent))
+            .chain(self.bar_check_parents.iter().map(|&p| Some(p)))
+            .collect::<Vec<_>>();
+        let mut last = None;
+        for start in starts {
+            // A sibling of the last one (a reflow's moved rows): its chain
+            // is done, with no hashing per row.
+            if start.is_none() || start == last {
+                continue;
+            }
+            last = start;
+            let mut cur = start;
+            while let Some(a) = cur {
+                if !seen.insert(a) {
+                    break;
+                }
+                let Some(n) = self.nodes.get_mut(a) else {
+                    break;
+                };
+                if let Some(p) = n.painted.as_mut() {
+                    p.subtree_reach = None;
+                }
+                cur = n.parent;
+            }
+        }
+        let mut todo: Vec<(u32, RawNodeId)> = measure
+            .iter()
+            .filter(|&&id| {
+                self.nodes.get(id).is_some_and(|n| {
+                    n.painted
+                        .as_ref()
+                        .is_some_and(|p| p.subtree_reach.is_none())
+                        && n.layout.width > 0.0
+                        && n.layout.height > 0.0
+                })
+            })
+            .map(|&id| {
+                let mut depth = 0;
+                let mut cur = self.nodes.get(id).and_then(|n| n.parent);
+                while let Some(a) = cur {
+                    depth += 1;
+                    cur = self.nodes.get(a).and_then(|n| n.parent);
+                }
+                (depth, id)
+            })
+            .collect();
+        todo.sort_unstable_by_key(|&(depth, _)| std::cmp::Reverse(depth));
+        for (_, id) in todo {
+            let reach = crate::paint::measure_subtree_reach(self, id);
+            if let Some(p) = self.nodes.get_mut(id).and_then(|n| n.painted.as_mut()) {
+                p.subtree_reach = reach;
+            }
+        }
     }
 
     /// Drop the sizes the measure function cached for IFC root `root`, so the
@@ -5330,6 +5613,9 @@ impl NodeTree {
         // Collect all descendant IDs first
         let mut to_remove = Vec::new();
         self.collect_descendants(id, &mut to_remove);
+        // The scroll ranges' kept walks forget the freed boxes, and the
+        // walks of the freed scroll containers (#2054).
+        self.deep_overflow.forget_freed(&to_remove);
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
             self.active_animations.remove(node_id);
@@ -5795,6 +6081,42 @@ pub struct PaintedState {
     /// list that moves no pixel, #2719): a filter change damages the
     /// subtree's extent grown by the old reach as well as the new.
     pub filter_reach: f32,
+    /// Its scroll offset when painted: a scroll moves its content without
+    /// moving a descendant box, so a recorded [`Self::subtree_reach`] is
+    /// kept only while it holds.
+    pub scroll: (f64, f64),
+    /// What its subtree painted, as `paint::layer_bounds::measure_subtree_reach`
+    /// measured it right after the paint (#2222). `None` when not measured,
+    /// or dropped since: by a change to a node under it, by a new size, scroll
+    /// offset or clip of its own, or by a whole-document restyle. A box that
+    /// only moved keeps it, which is what lets a reflow that shifts a long
+    /// list damage each moved row without walking its subtree.
+    pub subtree_reach: Option<SubtreeReach>,
+}
+
+/// A subtree's painted reach ([`PaintedState::subtree_reach`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SubtreeReach {
+    /// Everything it painted lies in `rect` (`[x0, y0, x1, y1]`), in CSS px
+    /// from its border-box origin, before its own transform, measured with no
+    /// box on the device grid. Contains the box.
+    ///
+    /// Paint snaps each box to the device grid in its own space, before its
+    /// transform (#2368), and the reach is read at any scale and wherever the
+    /// box has moved to. A box no transform inside the subtree moves is
+    /// snapped on the subtree's own grid, so the rect's snapped self bounds
+    /// it. A transformed one moves by at most half a device pixel per edge
+    /// in its own space, and `snap_gain` is how far, per axis (x, y), its
+    /// transforms carry each such pixel: the largest of any transformed box,
+    /// `[0, 0]` when there is none. What the subtree paints is within the
+    /// rect, scaled and placed, snapped out, grown by half a device pixel
+    /// times the gain (`paint::layer_bounds::placed_subtree_reach`).
+    Within { rect: [f32; 4], snap_gain: [f32; 2] },
+    /// A descendant the walk could not place, which a clip above may still
+    /// bound (`position: sticky`).
+    Unknown,
+    /// The walk could not bound it at all.
+    Escapes,
 }
 
 /// `node`'s unrounded Taffy rect `[x, y, width, height]`, in its Taffy
@@ -5853,6 +6175,8 @@ impl PaintedState {
             contains_fixed: node.establishes_fixed_containing_block(),
             order: crate::stacking::PaintOrderKey::of(node),
             unrounded: None,
+            scroll: node.scroll_offset,
+            subtree_reach: None,
             filter_reach: if cs.filter.is_empty() {
                 0.0
             } else {

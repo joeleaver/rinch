@@ -755,9 +755,49 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   wheel to the animating scroller); once it has landed there, the next notch
   chains as a direct one does.
 - **Not here**: the web (the browser scrolls, and smooths, by itself) and
-  Android (its wheels are touch pans and flings, pixels). The OS's
-  reduced-motion setting is not read (#2209); the app passes it. CSS
-  `scroll-behavior` for programmatic and keyboard scrolls is not modelled.
+  Android (its wheels are touch pans and flings, pixels). The
+  reduced-motion preference (`rinch::prefers_reduced_motion`, #2209) does not
+  turn the glide off; an app passes it to `smooth_wheel_scroll`.
+- **Keyboard scrolls** (#2977) ride it too, on `CurveKind::Keyboard`: see
+  `docs/internals/focus-and-keyboard.md`, "Keyboard scrolling".
+- **Programmatic scrolls** (#2291) ride the same machinery: see "Smooth
+  programmatic scrolls" below.
+
+**Smooth programmatic scrolls** (#2291). CSS `scroll-behavior: smooth` is read
+(`ComputedStyle::scroll_behavior_smooth`; Stylo parses it behind
+`layout.unimplemented`). `NodeTree::scroll_behavior_smooth` answers for a box,
+and for the page scroller (`<body>`) from `<html>`'s **Stylo** style, because
+`<html>`'s `computed_style` is not kept current (its rem code reads it the same
+way). Every scroll write goes through `DomDocument::scroll_to_with(node, left,
+top, ScrollBehavior)` (`set_scroll_top`/`set_scroll_left` call it with `Auto`;
+`NodeHandle::scroll_to` passes one): a smooth write does not move the offset but
+queues a `SmoothScrollRequest` (target, and the animation clock's time of the
+write) in `NodeTree::smooth_scroll_requests`, newest per box and axis; an
+instant write drops a pending one. `scroll_into_view::reveal` works out every
+scroller's offset as if it jumped (an outer scroller is placed for the inner
+ones' *final* offsets), then puts each smooth one back and queues its new
+offset. `tick_wheel_scroll` starts the queued requests first
+(`SmoothWheelState::animate_to`): a curve of `CurveKind::Programmatic` that
+starts at the write's time (Chrome starts at the write, not the next frame), or
+a retarget of whatever runs there, a wheel glide included. From there it is a
+glide like a notch's — the same frames, the same "something else moved it"
+cancel — except that the wheel switch does not apply (the page asked for it;
+`set_smooth_programmatic_scroll` is its own switch, for #2209) and a
+`lock_scroll` does not stop it (it keeps gestures off, not the app's writes).
+`wheel_scroll_animating` is true while a request waits, so an embedder's
+`needs_update` keeps turning. The curve was measured in Chrome 158 (headless, a
+smooth `scrollTop` write, `scrollTop` sampled every rAF over CDP): 40 / 400 /
+2500 px took 100 / 317 / 818 ms and 10 000 and 25 000 px both 1.48 s, so the
+duration is `sqrt(|delta|)` frames of 60 Hz capped at 1.5 s; the ease is
+`cubic-bezier(0.42, 0, 0, 1)` (1.1% RMS of the distance over the three runs;
+CSS `ease` is 5.4%, the wheel's `ease-in-out` 24%), from the write. A typing
+caret reveal in a smooth scroller animates in Chrome too (1800 px over about
+700 ms), so the editor's goes the same way. rinch-web needs none of it:
+`scroll_to_with` is `Element::scrollTo({behavior})` and the browser animates.
+Pins: `rinch/tests/smooth_scroll_2291.rs` (the curve frame by frame, `auto`
+unchanged, the duration cap, the explicit behaviours both ways, a retarget, the
+switch, the root element's value for the page, a nested scroll-into-view) and
+the curve's unit tests in `smooth_wheel.rs` (Chrome's samples within 4%, the widest 3.5%).
 
 Tests: `rinch/src/app/smooth_wheel_2287_tests.rs` (the sampled curve at
 100 Hz and idle after, `onscroll` per frame, a retarget keeping its speed,

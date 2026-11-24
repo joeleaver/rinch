@@ -10,7 +10,10 @@
 
 use std::rc::Rc;
 
+pub mod code;
 pub mod table_ops;
+
+pub use code::{exit_code, insert_line_break, newline_in_code};
 
 use crate::Fragment;
 use crate::command::{Command, chain};
@@ -668,17 +671,19 @@ pub fn outdent() -> Command {
     })
 }
 
-/// The alignment values the `text_align` attribute accepts. `"left"` is the
-/// default and is stored/serialized as the absence of a special alignment (it
-/// projects to no `text-align` in HTML), so only the other three ever produce
-/// visible markup.
+/// The alignment values the `text_align` attribute accepts. An **unset**
+/// alignment (the attribute absent) is the default: it projects to no
+/// `text-align`, so the stylesheet decides (a `th`'s, an RTL editor's `start`).
+/// A stored `"left"` is an explicit choice and projects to `text-align: left`
+/// in the view and in HTML (#2210).
 pub const TEXT_ALIGN_VALUES: [&str; 4] = ["left", "center", "right", "justify"];
 
 /// Set the `text_align` attribute of every alignable textblock (paragraph /
 /// heading) overlapping the selection to `align` (`setTextAlignLeft` /
 /// `setTextAlignCenter` / `setTextAlignRight` / `setTextAlignJustify`). Applies
 /// only when at least one block's alignment actually changes, so re-selecting the
-/// current alignment is a no-op (the toolbar button can stay inert). Unlike the
+/// current alignment is a no-op (the toolbar button can stay inert). An unset
+/// alignment is not `left`: align-left on it stores `left` (#2210). Unlike the
 /// margin indent, alignment is fine inside lists and table cells, so no block is
 /// excluded by its parent.
 pub fn set_text_align(align: &'static str) -> Command {
@@ -691,18 +696,15 @@ fn build_set_text_align(state: &EditorState, align: &str) -> Option<Transaction>
     if !TEXT_ALIGN_VALUES.contains(&align) {
         return None;
     }
-    // `(position-before-block, current alignment)` for each alignable textblock.
-    let mut targets: Vec<(usize, String)> = Vec::new();
+    // `(position-before-block, current alignment)` for each alignable textblock;
+    // `None` when unset, which no command value equals (#2210).
+    let mut targets: Vec<(usize, Option<String>)> = Vec::new();
     for (from, to) in sel_ranges(state) {
         state
             .doc
             .nodes_between(from, to, &mut |node, pos, _parent| {
                 if matches!(node.type_name(), "paragraph" | "heading") {
-                    let cur = node
-                        .attrs()
-                        .get_str("text_align")
-                        .unwrap_or("left")
-                        .to_string();
+                    let cur = node.attrs().get_str("text_align").map(str::to_string);
                     targets.push((pos, cur));
                 }
                 true
@@ -715,7 +717,7 @@ fn build_set_text_align(state: &EditorState, align: &str) -> Option<Transaction>
     // `SetNodeAttrStep` has an empty position map, so the collected `pos` values
     // stay valid across every step — no remapping needed (mirrors the indent cmd).
     for (pos, cur) in targets {
-        if cur != align {
+        if cur.as_deref() != Some(align) {
             tr.set_node_attr(pos, "text_align", crate::AttrValue::Str(align.into()))
                 .ok()?;
         }
@@ -728,7 +730,7 @@ fn build_set_text_align(state: &EditorState, align: &str) -> Option<Transaction>
 ///
 /// 1. removes all inline marks (bold/italic/underline/link/…),
 /// 2. converts the block(s) to paragraphs (heading / code block → paragraph),
-/// 3. resets the indent level to 0 and the alignment back to left,
+/// 3. resets the indent level to 0 and unsets the alignment,
 /// 4. lifts the block(s) out of every wrapper (blockquote, list) to the top level.
 ///
 /// A no-op (returns `None`) only when the selection is already plain top-level
@@ -760,9 +762,10 @@ pub fn set_paragraph() -> Command {
             let _ = tr.set_block_type(from, to, para_ty.clone(), Attrs::new());
         }
 
-        // 3. Reset the indent attribute to 0 and the alignment back to left on the
-        //    (now-)paragraphs in range — but only where they aren't already at their
-        //    defaults, so a plain paragraph stays a true no-op.
+        // 3. Reset the indent attribute to 0 and unset the alignment (an explicit
+        //    `left` included, #2210) on the (now-)paragraphs in range — but only
+        //    where they aren't already at their defaults, so a plain paragraph
+        //    stays a true no-op.
         let mut indent_targets: Vec<usize> = Vec::new();
         let mut align_targets: Vec<usize> = Vec::new();
         for &(from, to) in &ranges {
@@ -773,7 +776,7 @@ pub fn set_paragraph() -> Command {
                         if node.attrs().get_int("indent").unwrap_or(0) != 0 {
                             indent_targets.push(pos);
                         }
-                        if node.attrs().get_str("text_align").unwrap_or("left") != "left" {
+                        if node.attrs().get("text_align").is_some() {
                             align_targets.push(pos);
                         }
                     }
@@ -784,7 +787,11 @@ pub fn set_paragraph() -> Command {
             let _ = tr.set_node_attr(pos, "indent", crate::AttrValue::Int(0));
         }
         for pos in align_targets {
-            let _ = tr.set_node_attr(pos, "text_align", crate::AttrValue::Str("left".into()));
+            let _ = tr.step(Box::new(crate::transform::steps::SetNodeAttrStep {
+                pos,
+                attr: "text_align".into(),
+                value: None,
+            }));
         }
 
         // 4. Lift every selected block out of its blockquote/list wrappers to the top
@@ -995,11 +1002,15 @@ pub fn create_paragraph_near() -> Command {
 }
 
 /// The Enter handler (`splitBlock` is the toolbar/programmatic name; Enter binds
-/// here): split a list item into a new item, else put a paragraph at a caret
-/// between blocks, else lift an empty block out of its wrapper, else split the
-/// current block. ProseMirror's base Enter chain, `newlineInCode` aside.
+/// here): in a code block type a newline ([`newline_in_code`], #2993), else
+/// split a list item into a new item, else put a paragraph at a caret between
+/// blocks, else lift an empty block out of its wrapper, else split the current
+/// block. ProseMirror's base Enter chain with its list keymap's
+/// `splitListItem` ahead of it — after `newlineInCode`, so Enter in a code
+/// block inside a list item is a newline, not a new item.
 pub fn split_block_or_list_item() -> Command {
     chain(vec![
+        newline_in_code(),
         split_list_item("list_item"),
         split_list_item("task_item"),
         create_paragraph_near(),
@@ -1645,6 +1656,9 @@ impl Plugin for BaseCommandsPlugin {
             ("indent", indent()),
             ("insertHorizontalRule", insert_horizontal_rule()),
             ("insertHardBreak", insert_hard_break()),
+            ("insertLineBreak", insert_line_break()),
+            ("newlineInCode", newline_in_code()),
+            ("exitCode", exit_code()),
             ("insertTable", insert_table(3, 3)),
             ("addRowBefore", table_ops::add_row_before()),
             ("addRowAfter", table_ops::add_row_after()),
@@ -1696,7 +1710,8 @@ impl Plugin for BaseCommandsPlugin {
             ("Mod-Shift-s", "toggleStrike"),
             ("Mod-e", "toggleCode"),
             ("Enter", "enter"),
-            ("Shift-Enter", "insertHardBreak"),
+            ("Shift-Enter", "insertLineBreak"),
+            ("Mod-Enter", "exitCode"),
             ("Backspace", "deleteCharBackward"),
             ("Delete", "deleteCharForward"),
             ("Tab", "sinkListItem"),
@@ -1722,6 +1737,17 @@ impl Plugin for BaseCommandsPlugin {
         .chain(word_delete_bindings())
         .filter_map(|(b, cmd)| KeyBinding::parse(b).map(|kb| (kb, cmd)))
         .collect()
+    }
+
+    /// The one binding of this keymap that leaves its key alone where its command
+    /// does not apply: Mod-Enter (`exitCode`) outside a code block goes on to the
+    /// app (its interceptor, the page's `keydown` listeners), so an app's
+    /// Ctrl/Cmd+Enter "send" chord works in an editor (#2993). Every other
+    /// binding consumes its key wherever the caret is: an editor that advertises a
+    /// chord owns it, or Ctrl+Shift+R on an already right-aligned paragraph would
+    /// hard-reload the page on the web, and Mod-e would focus the address bar.
+    fn fall_through_keys(&self) -> Vec<KeyBinding> {
+        KeyBinding::parse("Mod-Enter").into_iter().collect()
     }
 }
 
@@ -2389,8 +2415,23 @@ mod tests {
             .run("setTextAlignRight")
             .expect("setTextAlignRight applies");
         assert_eq!(r.doc.child(0).attrs().get_str("text_align"), Some("right"));
-        // Back to the default clears it, and is then a no-op.
+        // Left stores an explicit `left`, and is then a no-op.
         let l = r.run("setTextAlignLeft").expect("setTextAlignLeft applies");
+        assert_eq!(l.doc.child(0).attrs().get_str("text_align"), Some("left"));
+        assert!(l.run("setTextAlignLeft").is_none());
+    }
+
+    /// An unset alignment is not `left` (#2210): align-left on a fresh
+    /// paragraph stores an explicit `left`, which then holds against a `th`'s
+    /// centring, an RTL editor and an app's rules.
+    #[test]
+    fn set_text_align_left_on_an_unset_paragraph_stores_left() {
+        let mut s = editor("hello");
+        s.selection = Selection::cursor(Pos(2));
+        assert_eq!(s.doc.child(0).attrs().get_str("text_align"), None);
+        let l = s
+            .run("setTextAlignLeft")
+            .expect("align-left on an unset alignment applies");
         assert_eq!(l.doc.child(0).attrs().get_str("text_align"), Some("left"));
         assert!(l.run("setTextAlignLeft").is_none());
     }
@@ -2403,10 +2444,14 @@ mod tests {
         assert_eq!(c.doc.child(0).attrs().get_str("text_align"), Some("center"));
         let p = c.run("setParagraph").expect("reset to normal text");
         assert_eq!(
-            p.doc.child(0).attrs().get_str("text_align"),
-            Some("left"),
-            "the Paragraph reset clears alignment back to left"
+            p.doc.child(0).attrs().get("text_align"),
+            None,
+            "the Paragraph reset unsets the alignment"
         );
+        // An explicit `left` is formatting too, so the reset unsets it (#2210).
+        let l = s.run("setTextAlignLeft").expect("left");
+        let p = l.run("setParagraph").expect("reset to normal text");
+        assert_eq!(p.doc.child(0).attrs().get("text_align"), None);
     }
 
     #[test]

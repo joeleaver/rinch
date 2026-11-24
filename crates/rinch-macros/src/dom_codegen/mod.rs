@@ -38,9 +38,12 @@
 pub(crate) mod captures;
 mod component;
 pub mod component_codegen;
+mod component_props;
 mod control_flow;
+mod handler_owner;
 pub mod helpers;
 pub mod html;
+mod html_events;
 mod window_codegen;
 
 use std::collections::HashSet;
@@ -72,6 +75,18 @@ pub struct DomCodegenContext {
     /// effect — which is what makes a name from *outside* it contested
     /// (issue #223). See [`captures`].
     closure_frames: Vec<HashSet<String>>,
+    /// Whether the code being generated is in a **caller-owned region**
+    /// (issue #3030): the children of a re-rendering component, down to the
+    /// next `for`/`if`/`match` body — code the caller wrote but that runs
+    /// inside one render of that component. Its handlers run under the
+    /// caller's owner (`__rinch_caller_owner`, which the render body binds);
+    /// see `handler_owner`. A nested re-rendering component extends the
+    /// region; a control-flow body ends it, since a row or a branch is the
+    /// creator of what is written inside it.
+    caller_region: bool,
+    /// `caller_region` as it was when each frame of `closure_frames` was
+    /// pushed, restored when it pops.
+    saved_regions: Vec<bool>,
 }
 
 impl DomCodegenContext {
@@ -80,17 +95,41 @@ impl DomCodegenContext {
             var_counter: 0,
             in_effect: false,
             closure_frames: vec![HashSet::new()],
+            caller_region: false,
+            saved_regions: Vec::new(),
         }
     }
 
     /// Enter a generated closure body that may run more than once. `bound` is
     /// what the body binds for itself before any of its RSX is generated.
+    ///
+    /// Such a body (a `for` row, an `if` branch, a `match` arm) is the creator
+    /// of the handlers written in it, so it ends any caller-owned region.
     pub(crate) fn push_closure_frame(&mut self, bound: HashSet<String>) {
+        self.saved_regions
+            .push(std::mem::take(&mut self.caller_region));
         self.closure_frames.push(bound);
     }
 
+    /// Enter the children of a re-rendering component: a closure frame that
+    /// starts a caller-owned region, or extends the one it is already in
+    /// (issue #3030).
+    pub(crate) fn push_caller_frame(&mut self) {
+        self.saved_regions.push(self.caller_region);
+        self.caller_region = true;
+        self.closure_frames.push(HashSet::new());
+    }
+
+    /// Leave the frame the last `push_closure_frame` or `push_caller_frame`
+    /// entered.
     pub(crate) fn pop_closure_frame(&mut self) {
         self.closure_frames.pop();
+        self.caller_region = self.saved_regions.pop().unwrap_or(false);
+    }
+
+    /// Whether the code being generated is in a caller-owned region.
+    pub(crate) fn in_caller_region(&self) -> bool {
+        self.caller_region
     }
 
     /// Record the names a `let` statement of the current body binds, so a

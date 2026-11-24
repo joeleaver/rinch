@@ -635,8 +635,10 @@ where
     /// and a blurred `<input>` hides its marks. On by default, as in Chrome:
     /// misspelled words in a `<textarea>`, a prose `<input>` (no type,
     /// `text`, `search`) and the rich-text editor get a red squiggle once the
-    /// user has focused or edited it, checked against the system's Hunspell dictionaries
-    /// for the user's locale (none installed: nothing is marked). A
+    /// user has focused or edited it, checked by the operating system's
+    /// spellchecker on macOS and Windows and against the system's Hunspell
+    /// dictionaries for the user's locale elsewhere (none installed: nothing
+    /// is marked; [`Backend`](crate::spellcheck::Backend) chooses). A
     /// `spellcheck: false` attribute or component prop turns it off for one
     /// field or a subtree. On the web the browser checks, and `false` here
     /// (or a later [`set_enabled(false)`](crate::spellcheck::set_enabled))
@@ -707,6 +709,22 @@ where
     #[cfg(feature = "windowing")]
     pub fn vsync(mut self, on: bool) -> Self {
         self.vsync = Some(on);
+        self
+    }
+
+    /// Force the reduced-motion preference (issue #2209): `Some(true)` makes
+    /// `@media (prefers-reduced-motion: reduce)` match in every window,
+    /// `Some(false)` makes `no-preference` match, and `None` (the default)
+    /// follows the OS's setting, as Chrome does. The theme's reduced-motion
+    /// rule (`Theme::respect_reduced_motion`, on by default) then shortens
+    /// every transition and animation to 0.01ms.
+    ///
+    /// The same as [`rinch::set_reduced_motion`](crate::reduced_motion::set_reduced_motion),
+    /// which it calls and which also changes it while the app runs; read it
+    /// reactively with [`rinch::prefers_reduced_motion`](crate::reduced_motion::prefers_reduced_motion).
+    #[cfg(any(feature = "windowing", feature = "android"))]
+    pub fn reduced_motion(self, value: Option<bool>) -> Self {
+        crate::reduced_motion::set_reduced_motion(value);
         self
     }
 
@@ -1072,6 +1090,11 @@ where
     /// `# Panics`).
     #[cfg(feature = "windowing")]
     pub fn try_run(self) -> Result<(), crate::RunError> {
+        // `rinch::exit` before the run (a signal-watching thread's, #3015):
+        // the app ends before it connects to the display or opens a window.
+        if crate::shell::rinch_runtime::take_exit_before_run() {
+            return Ok(());
+        }
         let Startup {
             component,
             props,
@@ -1102,6 +1125,9 @@ where
         // The app's text rasterization; the OS's settings it follows are read
         // when the first glyph run is painted (#2286, #2773).
         crate::text_rasterization::set_text_rasterization(text_rasterization);
+        // The OS's reduced-motion setting (#2209), read again whenever a
+        // window gains focus.
+        crate::reduced_motion::refresh_from_os();
         // The app's spellcheck settings, for its text fields and editors
         // (#2862). Installing them loads nothing: the dictionaries are read
         // on the checking thread when the user first edits or focuses a field.

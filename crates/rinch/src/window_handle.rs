@@ -234,6 +234,15 @@ pub fn windows() -> Vec<WindowHandle> {
 
 /// End the event loop after this turn, whatever [`ExitWhen`] says. Every
 /// window closes with it.
+///
+/// Callable from any thread. Asked for before the app runs (from a thread
+/// that watches for `SIGTERM`, started before [`App::run`](crate::App::run)),
+/// it is kept, and the run that comes returns at once, `Ok(())` from
+/// [`App::try_run`](crate::App::try_run), without opening a window (#3015).
+///
+/// It takes a lock, so it is not async-signal-safe: never call it from inside
+/// a signal handler itself. Have the handler wake a thread that calls it
+/// (signal-hook's `iterator::Signals`, or its `flag` checked by a thread).
 pub fn exit() {
     send_native_event_for(EventFor::Sender(None), RinchNativeEvent::Exit);
 }
@@ -439,137 +448,6 @@ impl WindowHandle {
     }
 }
 
-// ── The runtime's side ───────────────────────────────────────────────────────
-
-thread_local! {
-    /// What `App::exit_when` set, read when the runtime is made.
-    static EXIT_WHEN: std::cell::Cell<ExitWhen> = const { std::cell::Cell::new(ExitWhen::MainWindowCloses) };
-}
-
-/// `App::exit_when`'s choice, for the runtime about to be made.
-pub(crate) fn set_exit_when(when: ExitWhen) {
-    EXIT_WHEN.with(|w| w.set(when));
-}
-
-/// When the runtime being made ends its event loop.
-pub(crate) fn exit_when() -> ExitWhen {
-    EXIT_WHEN.with(|w| w.get())
-}
-
-thread_local! {
-    /// `App::windowless` was asked for, read when the runtime is made.
-    static WINDOWLESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Whether the runtime about to be made has no main window (`App::windowless`).
-pub(crate) fn set_windowless(on: bool) {
-    WINDOWLESS.with(|w| w.set(on));
-}
-
-/// Whether the runtime being made has no main window.
-pub(crate) fn windowless() -> bool {
-    WINDOWLESS.with(|w| w.get())
-}
-
-/// The main window's handle, made with the runtime.
-pub(crate) fn register_main() -> u64 {
-    let (id, _) = with(|r| {
-        let added = r.add();
-        r.main = Some(added.0);
-        added
-    });
-    publish_list();
-    id
-}
-
-/// The window `open_window` opened as `id`, for the runtime to make, if it is
-/// still waiting (it was not closed first).
-pub(crate) fn take_pending(id: u64) -> Option<Pending> {
-    with(|r| {
-        let at = r.pending.iter().position(|p| p.id == id)?;
-        Some(r.pending.remove(at))
-    })
-}
-
-/// Whether the window `open_window` (or `open_popup`) opened as `id` is
-/// still waiting to be made.
-pub(crate) fn is_pending(id: u64) -> bool {
-    with(|r| r.pending.iter().any(|p| p.id == id))
-}
-
-/// Run `mount`, the mount of window `id`'s document: [`WindowHandle::current`]
-/// in its content is that window from the content's first line.
-pub(crate) fn mounting<R>(id: u64, mount: impl FnOnce() -> R) -> R {
-    struct Restore(Option<u64>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            MOUNTING.with(|m| m.set(self.0));
-        }
-    }
-    let _restore = Restore(MOUNTING.with(|m| m.replace(Some(id))));
-    mount()
-}
-
-/// The window `id` is mounted, as document `doc`: its code finds it with
-/// [`WindowHandle::current`].
-pub(crate) fn note_mounted(id: u64, doc: u64) {
-    with(|r| {
-        if let Some(e) = r.entries.iter_mut().find(|e| e.id == id) {
-            e.doc = Some(doc);
-        }
-    });
-}
-
-/// The window `id` closed: `is_open` turns false and it leaves [`windows`].
-/// One `open_window` closed before it was made is dropped from the pending
-/// list too.
-pub(crate) fn note_closed(id: u64) {
-    let closed = with(|r| {
-        r.pending.retain(|p| p.id != id);
-        r.pressed.retain(|&(p, _)| p != id);
-        let at = r.entries.iter().position(|e| e.id == id)?;
-        Some(r.entries.remove(at))
-    });
-    if let Some(mut entry) = closed {
-        // A popup the system or the user dismissed is told why, once,
-        // whoever closes it after (its owner included).
-        let dismissed = entry.popup.as_mut().and_then(|p| p.take_dismissed());
-        // Its owner keeps nothing of it (a no-op when the owner's going is
-        // what closed it).
-        if let Some(cleanup) = entry.owner_cleanup {
-            cleanup.remove();
-        }
-        // Its readers hear `false`; one woken by it finds no entry and reads
-        // nothing more, so the signal is freed with the window's scope.
-        entry.open.set(false);
-        publish_list();
-        if let Some((on_dismissed, why)) = dismissed {
-            rinch_core::reactive::untracked_handler(|| on_dismissed(why));
-        }
-        entry.scope.dispose();
-        if !entry.owner_gone
-            && let Some(on_closed) = entry.on_closed
-        {
-            rinch_core::reactive::untracked_handler(on_closed);
-        }
-    }
-}
-
-/// How the main window and another are named in a warning: the main window
-/// as such, another by the title it was opened with.
-pub(crate) fn describe(doc: Option<u64>) -> String {
-    let Some(doc) = doc else {
-        return "the main window".to_string();
-    };
-    with(|r| {
-        r.entries
-            .iter()
-            .find(|e| e.doc == Some(doc))
-            .map(|e| format!("the window \"{}\"", e.title))
-            .unwrap_or_else(|| "a window that has closed".to_string())
-    })
-}
-
 /// What `rsx!`'s `Window { … }` element becomes (#2416): its window, opened
 /// with `props` and owned by the scope building it, so it closes when the
 /// element goes; `content` is the element's children, built in the window's
@@ -594,111 +472,17 @@ where
     scope.create_comment("window")
 }
 
-// ── Popups (#2552) ───────────────────────────────────────────────────────────
-//
-// A popup's parent is a window id (`0`: a document that is no window of the
-// registry's, `rinch::testing`'s mounted app). The chain is the parent
-// relation, not ownership: a popup owned by the main window but anchored in a
-// menu is above that menu.
+mod popups;
+mod runtime;
 
-/// The window whose document is `doc`: the window mounted as it, else the
-/// main window, else `0` (a document that is no registry window).
-pub(crate) fn window_of_doc(doc: u64) -> u64 {
-    with(|r| {
-        r.entries
-            .iter()
-            .find(|e| e.doc == Some(doc))
-            .map(|e| e.id)
-            .or(r.main)
-            .unwrap_or(0)
-    })
-}
-
-/// Whether window `id` can be a popup's parent: open (the main window, any
-/// other, a popup), or `0`.
-pub(crate) fn can_parent(id: u64) -> bool {
-    id == 0 || WindowHandle(id).is_open_untracked()
-}
-
-/// A press (a button, a key, a touch) reached `doc`'s window.
-pub(crate) fn note_press(doc: u64) {
-    let id = window_of_doc(doc);
-    with(|r| {
-        let now = rinch_core::timer::now();
-        r.pressed.retain(|&(p, _)| p != id);
-        r.pressed.push((id, now));
-    });
-}
-
-/// `f` on popup `id`'s entry, if it is an open popup.
-pub(crate) fn with_popup<R>(
-    id: u64,
-    f: impl FnOnce(&mut crate::popup::PopupEntry) -> R,
-) -> Option<R> {
-    with(|r| {
-        r.entries
-            .iter_mut()
-            .find(|e| e.id == id)
-            .and_then(|e| e.popup.as_mut())
-            .map(f)
-    })
-}
-
-/// The open popups, `(id, parent, kind)`, oldest first.
-pub(crate) fn popups() -> Vec<(u64, u64, rinch_core::element::PopupKind)> {
-    with(|r| {
-        r.entries
-            .iter()
-            .filter_map(|e| e.popup.as_ref().map(|p| (e.id, p.parent, p.props.kind)))
-            .collect()
-    })
-}
-
-/// Whether the window `id` or a popup below it in its chain received a
-/// press within [`crate::popup::PRESS_RECENT`]: what a menu's grab names. A
-/// press long ago is no cause (a menu opened from D-Bus a minute after a
-/// click would be refused by the compositor, or name a stale press).
-pub(crate) fn chain_pressed(id: u64) -> bool {
-    let links = popups();
-    let pressed = with(|r| r.pressed.clone());
-    let now = rinch_core::timer::now();
-    let chain = crate::popup::chain::ancestors_and_self(id, &links);
-    pressed.iter().any(|&(w, at)| {
-        chain.contains(&w) && now.saturating_duration_since(at) <= crate::popup::PRESS_RECENT
-    })
-}
-
-/// Record why popup `id` goes, unless a cause is recorded already: the
-/// first cause is the one told.
-pub(crate) fn note_dismissal(id: u64, why: rinch_core::element::Dismissal) {
-    with_popup(id, |p| {
-        if p.dismissal.is_none() {
-            p.dismissal = Some(why);
-        }
-    });
-}
-
-/// Popup `id` goes for `why`: recorded, and closed (with every popup above
-/// it, topmost first).
-pub(crate) fn dismiss(id: u64, why: rinch_core::element::Dismissal) {
-    note_dismissal(id, why);
-    WindowHandle(id).close();
-}
-
-/// Forget every window (a runtime is dropped): tests make several runtimes on
-/// one thread.
-pub(crate) fn reset() {
-    let entries = with(|r| {
-        r.pending.clear();
-        r.pressed.clear();
-        r.main = None;
-        std::mem::take(&mut r.entries)
-    });
-    publish_list();
-    for entry in entries {
-        entry.scope.dispose();
-    }
-}
+pub(crate) use popups::{
+    can_parent, chain_pressed, dismiss, note_dismissal, note_press, popups, window_of_doc,
+    with_popup,
+};
+pub(crate) use runtime::{
+    describe, exit_when, is_pending, mounting, note_closed, note_mounted, register_main, reset,
+    set_exit_when, set_windowless, take_pending, windowless,
+};
 
 #[cfg(test)]
 #[path = "window_handle_tests.rs"]

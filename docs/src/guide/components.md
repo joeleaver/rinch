@@ -181,6 +181,26 @@ PasswordInput {
     placeholder: "Enter password"
 }
 
+// Sign-in fields a password manager can fill: `autocomplete` writes the
+// field's HTML attribute (#3028). Empty (the default) writes none, the
+// browser's default. TextInput, Textarea, PasswordInput, NumberInput and
+// ColorInput all take it; ColorInput defaults to "off", since its picker
+// opens where the browser's list would.
+TextInput { label: "Username", autocomplete: "username" }
+PasswordInput {
+    label: "Password",
+    autocomplete: "current-password",
+    // Enter submits, as in a TextInput (#3048).
+    onsubmit: move || sign_in(),
+}
+
+// `inputmode` picks the on-screen keyboard on a phone (#3048): "numeric"
+// brings up a digit pad. Empty (the default) writes no attribute, the
+// browser's default; the same five components take it. On desktop it is
+// kept on the element and changes nothing.
+TextInput { label: "Code", autocomplete: "one-time-code", inputmode: "numeric" }
+TextInput { label: "Phone", inputmode: "tel" }
+
 // NumberInput — uncontrolled: the component owns the number, so the
 // +/- steppers step, clamp to [min, max] and format it themselves,
 // reporting each written value through `oninput` (#501)
@@ -331,9 +351,11 @@ Loader {}
 Loader { size: "lg", color: "cyan" }
 
 // Progress
-Progress { color: "blue" }
-Progress { color: "green", striped: true }
-Progress { striped: true, animated: true }
+Progress { value: 40.0, color: "blue" }
+Progress { value: 60.0, color: "green", striped: true }
+Progress { value: 80.0, striped: true, animated: true }
+Progress {}                        // no value: indeterminate, as <progress>
+Progress { value: 0.3, max: 1.0 }
 
 // Skeleton (loading placeholders)
 Skeleton { height: "12px", width: "80%" }
@@ -701,29 +723,42 @@ Accordion {
     }
 }
 
-// Breadcrumbs
+// Breadcrumbs. An item with `href` is a link, one with `onclick` routes by
+// callback, and one with neither is the current page (`aria-current="page"`).
+// The separator is any text, a Tabler icon (`separator_icon`) or a renderer
+// (`separator_fn`).
 Breadcrumbs {
-    BreadcrumbsItem { "Home" }
-    BreadcrumbsItem { "Products" }
+    BreadcrumbsItem { href: "/", "Home" }
+    BreadcrumbsItem { onclick: move || navigate("/products"), "Products" }
     BreadcrumbsItem { "Component" }
 }
-Breadcrumbs { separator: ">",
-    BreadcrumbsItem { "Docs" }
+Breadcrumbs { separator: "›",
+    BreadcrumbsItem { href: "/docs", "Docs" }
     BreadcrumbsItem { "API" }
 }
 
-// Pagination
+// Pagination. Controls are labelled "First page", "Previous page", ...;
+// translate them with `first_label`, `previous_label`, `next_label`,
+// `last_label`, and the `<nav>` with `aria_label`.
 Pagination {}
-Pagination { with_edges: true }
+Pagination { with_edges: true, previous_label: "Page précédente", next_label: "Page suivante" }
 
 // NavLink
 NavLink { label: "Dashboard", active: true }
 NavLink { label: "Settings", description: "App configuration" }
 NavLink { label: "Disabled", disabled: true }
 NavLink { label: "With handler", onclick: move || navigate("/page") }
+// With children, a click opens and closes them; `opened_fn` +
+// `on_opened_change` make it controlled.
+NavLink { label: "Projects", default_opened: true,
+    NavLink { label: "Rinch" }
+    NavLink { label: "Pimble" }
+}
 
 // Stepper. Each step's state follows its position against `active`, and
-// `{|| …}` makes the whole stepper follow the signal.
+// `{|| …}` makes the whole stepper follow the signal. A step's children are its
+// content, shown below the steps while it is active (`content_for_active_only:
+// false` keeps every step's content inside its step instead).
 let step = Signal::new(1u32);
 Stepper { active: {|| step.get()},
     StepperStep { label: "Account", description: "Create account" }
@@ -1016,7 +1051,10 @@ The component provides:
 - Window control buttons with hover effects
 - Left/right custom sections for menu buttons or additional controls
 - Proper theming via CSS variables
-- `--rinch-window-top-inset` published for overlays (36px for the titlebar, plus
+- Window controls placed by the platform's convention (macOS on the left, the
+  desktop's own layout on Linux, the right elsewhere), or by `controls_layout`
+- A titlebar height you set with `titlebar_height` (default 36px)
+- `--rinch-window-top-inset` published for overlays (the titlebar height, plus
   the menu bar height when one sits below it)
 
 The titlebar is an in-flow element, so your content sits below it automatically.
@@ -1279,7 +1317,12 @@ fn main() {
 
 ## Component CSS Injection
 
-Component CSS is automatically injected when you use `ThemeProvider`. If you need the CSS separately:
+Component CSS is automatically injected when you use `ThemeProvider`. To put it
+in a cascade layer any app rule outranks, or to leave it out and style the
+components yourself, set `ThemeProviderProps::component_styles`
+(`ComponentStyles::Layered` / `Off`; see
+[Layering and unstyled components](theming.md#layering-and-unstyled-components)).
+If you need the CSS separately:
 
 ```rust
 use rinch::components::generate_component_css;
@@ -1295,6 +1338,44 @@ use my_components::generate_css;
 // Add to your HTML head or inject via ThemeProvider
 let custom_css = generate_css();
 ```
+
+## Replacing the built-in glyphs
+
+The close X, the chevrons and the check that the components draw themselves
+(not the ones they take as an icon prop) come from an `IconSet` you can provide
+once, near the root:
+
+```rust
+use rinch::prelude::*;
+use rinch_tabler_icons::TablerIcon;
+
+create_context(
+    IconSet::default()
+        .close(IconSet::tabler(TablerIcon::SquareX))
+        .chevron_down(IconSet::tabler(TablerIcon::CaretDown)),
+);
+```
+
+| Slot | Drawn by |
+|---|---|
+| `close` | CloseButton (with no `icon`), Alert's close button, Modal, Drawer and Notification close buttons |
+| `chevron_down` | Accordion's chevron |
+| `chevron_left`, `chevron_right` | Pagination's previous/next; `chevron_right` also Tree's expander |
+| `chevrons_left`, `chevrons_right` | Pagination's first/last |
+| `check` | Stepper's completed step (with no `completed_icon`) |
+
+A slot is any `Rc<dyn Fn(&mut RenderScope) -> NodeHandle>` (`SectionRenderer`);
+`IconSet::tabler` draws a Tabler outline icon without its inline `1em` size so
+the component's CSS sizes it. A replacement is drawn where the built-in `<svg>`
+was: the component's CSS sizes an `svg` there (Accordion's replacement also
+gets the `rinch-accordion__chevron` class the rotation targets, and CloseButton's
+and Alert's get the `width`/`height` the built-in had), so draw an `<svg>` with
+`stroke="currentColor"` to take the component's color. A slot left `None` keeps
+the built-in glyph, and a component's own icon prop still wins over the set.
+The set is read once, when a component renders (as the theme's other
+component defaults are), and the glyph closure runs untracked: providing a
+different set later changes the glyphs of components rendered after it, not
+of those already on screen.
 
 ## Custom Components with #[component]
 
@@ -1480,7 +1561,9 @@ write `icon: TablerIcon::Check`, not `icon: Some(TablerIcon::Check)`.
 | `ListItem` | `icon` |
 | `Stepper` | `completed_icon`, `progress_icon` |
 | `StepperStep` | `icon`, `completed_icon`, `progress_icon` |
-| `NavLink` | `left_section`, `right_section` |
+| `NavLink` | `left_section`, `right_section`, `chevron_icon` |
+| `Breadcrumbs` | `separator_icon` |
+| `Pagination` | `first_icon`, `previous_icon`, `next_icon`, `last_icon` |
 | `DropdownMenuItem` | `left_section`, `right_section` |
 | `Tab` | `left_section`, `right_section` |
 
@@ -1618,6 +1701,7 @@ rsx! {
 | `Radio` | `checked_fn` | Toggle checked class reactively |
 | `TextInput` | `value_fn` | Reactive value binding |
 | `NavLink` | `active_fn` | Toggle active class reactively |
+| `NavLink` | `opened_fn` | Open/close nested links reactively (controlled) |
 | `Progress` | `value_fn` | Update progress bar width reactively |
 | `Modal` | `opened_fn` | Show/hide modal reactively |
 | `Drawer` | `opened_fn` | Show/hide drawer reactively |

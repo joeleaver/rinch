@@ -74,8 +74,13 @@ impl EditorState {
                 }
                 commands.insert(name.to_string(), cmd);
             }
+            let fall_through = p.fall_through_keys();
             for (binding, command) in p.keymap() {
-                keymap.add(binding, command);
+                if fall_through.contains(&binding) {
+                    keymap.add_fall_through(binding, command);
+                } else {
+                    keymap.add(binding, command);
+                }
             }
             input_rules.extend(p.input_rules());
         }
@@ -103,6 +108,23 @@ impl EditorState {
             stored_marks: None,
             plugin_state,
         }
+    }
+
+    /// This state with `plugins` instead of its own (ProseMirror's
+    /// `reconfigure`): the document, selection and stored marks are kept, a
+    /// plugin already installed keeps its folded state (undo history
+    /// included), and only a new one starts from its
+    /// [`init_state`](Plugin::init_state).
+    pub fn reconfigure(&self, plugins: Vec<Rc<dyn Plugin>>) -> EditorState {
+        let mut next = EditorState::create(self.config.schema.clone(), self.doc.clone(), plugins);
+        for (key, st) in &self.plugin_state {
+            if next.config.plugins.iter().any(|p| p.key() == *key) {
+                next.plugin_state.insert(*key, st.clone());
+            }
+        }
+        next.selection = self.selection.clone();
+        next.stored_marks = self.stored_marks.clone();
+        next
     }
 
     /// A fresh [`Transaction`] starting from this state.

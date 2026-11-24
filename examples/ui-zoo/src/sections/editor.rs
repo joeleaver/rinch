@@ -78,6 +78,8 @@ pub fn editor_section() -> NodeHandle {
 #[cfg(feature = "desktop")]
 fn editor_body(__scope: &mut RenderScope) -> NodeHandle {
     let editor = create_editor();
+    // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
+    editor.set_markdown_shortcuts(true);
 
     // One handle clone per toolbar action (EditorHandle is cheap to clone).
     let ed_bold = editor.clone();

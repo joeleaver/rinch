@@ -2511,20 +2511,7 @@ impl RinchDocument {
         nodes: &crate::node_slab::NodeSlab,
         node_id: RawNodeId,
     ) -> Option<RawNodeId> {
-        let node = nodes.get_live(node_id)?;
-        // A hoisted out-of-flow box is held by its host's lists, not its DOM
-        // parent's (#591): its `layout` is relative to the host, so every
-        // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
-        if let Some(host) = node.hoisted_out_of_flow_to {
-            return Some(host);
-        }
-        if let Some(b) = node.run_box {
-            return Some(b);
-        }
-        // A box needs no arm of its own: it keeps a real `parent` edge to its
-        // container (it is simply absent from that container's `children`), so
-        // the ordinary answer is already right.
-        node.parent
+        nodes.get_live(node_id)?.box_tree_parent()
     }
 
     /// `node_id`'s children as the **box tree** sees them: its DOM children,

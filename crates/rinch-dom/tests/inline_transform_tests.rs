@@ -267,7 +267,8 @@ fn a_display_flip_under_a_standing_transform_resyncs_the_absolute() {
 /// The damage walk replays each node's *painted* state (`PaintedState`,
 /// written when a paint consumes the region), so it must record no transform
 /// for the span either: the inline-block's previous painted rect is its
-/// untransformed box, exactly where paint drew it. Kills a `PaintedState` that
+/// untransformed box (its reach, the box and its snapped self), exactly where
+/// paint drew it. Kills a `PaintedState` that
 /// still records the span's transform (the rect lands 30px right).
 #[test]
 fn the_painted_state_records_no_transform_for_an_inline_span() {
@@ -298,7 +299,14 @@ fn the_painted_state_records_no_transform_for_an_inline_span() {
     let (x, y) = rinch_dom::paint::compute_absolute_position(&doc.tree, ib.0, 1.0);
     let r = rinch_dom::paint::previous_painted_rect(&doc.tree, ib.0, 1.0).expect("painted");
     assert!(x > 0.0, "positive control: the child sits after text");
-    assert_eq!((r.x0, r.y0, r.width(), r.height()), (x, y, 20.0, 10.0));
+    // The box and its snapped self (#2368): x is fractional here (after
+    // text), and the rect covers where paint drew the box's edges.
+    let want = rinch_dom::paint::pixel_snap::box_reach(x, y, 20.0, 10.0);
+    assert_eq!(r, want);
+    assert!(
+        r.x0 <= x && r.x1 >= x + 20.0,
+        "the untransformed box: {r:?} at {x}"
+    );
 }
 
 // ── paint, in pixels ─────────────────────────────────────────────────────────

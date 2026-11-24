@@ -311,7 +311,10 @@ fn app() -> NodeHandle {
 **Props:**
 | Prop | Type | Description |
 |------|------|-------------|
-| `title` | `String` | Window title displayed in titlebar (empty = not set) |
+| `title` | `String` | Window title displayed in titlebar, as plain text (empty = not set) |
+| `title_section` | `Option<SectionRenderer>` | Renders the title as nodes in place of `title` |
+| `controls_layout` | `Option<WindowControlsLayout>` | Which controls go at which end; `None` follows the platform |
+| `titlebar_height` | `u32` | Titlebar height in px (default 36) |
 | `radius` | `String` | Corner radius: none, xs, sm, md, lg, xl (empty = default `md`) |
 | `show_minimize` | `bool` | Show minimize button (default: true) |
 | `show_maximize` | `bool` | Show maximize button (default: true) |
@@ -322,8 +325,38 @@ fn app() -> NodeHandle {
 | `on_maximize` | `Option<Callback>` | Callback for maximize button |
 | `on_close` | `Option<Callback>` | Callback for close button |
 
+**Title, controls and height (#2196).** The title is plain text in
+`--rinch-titlebar-text` in both layouts. In the inline layout it used to be a
+fixed six-colour rainbow pill, one inline-styled span per character (demo
+branding from UI Zoo that leaked into the component; UI Zoo now draws it
+through `title_section`). The window controls are built per
+`WindowControlsLayout`, a `left` and a `right` list:
+`.rinch-borderlesswindow__controls--left` opens the titlebar row (in the inline
+layout it opens the menu row instead, since that row is drawn over the
+titlebar's left end) and `--right` closes it; the right box is rendered even
+when empty. `WindowControlsLayout::platform()` is read once per process
+(`OnceLock`): macOS `macos()`; Linux `WindowControlsLayout::linux(desktop,
+gsettings, settings_ini)` — `gsettings get org.gnome.desktop.wm.preferences
+button-layout` when `$XDG_CURRENT_DESKTOP` names GNOME, Unity, Budgie or
+Pantheon (on GNOME the XSettings daemon overrides `settings.ini`, so GTK apps
+follow gsettings there; `gsettings` is a closure, so the process is spawned
+only on such a desktop, and the module is
+`borderless_window/controls_layout.rs`), else `gtk-decoration-layout` from
+`$XDG_CONFIG_HOME/gtk-3.0/settings.ini` (KDE Plasma's kde-gtk-config writes the
+KWin button order there), else `windows()`; every other target `windows()`.
+The rounded-corner rule follows the outer control at each end
+(`--right > :last-child`, `--left > :first-child`), no longer the close button.
+The height is the `titlebar_height` prop, written as `--rinch-titlebar-height`
+on the window; the titlebar, the control buttons and
+`.rinch-app-menu-bar__inline-row` read it (36px fallback), and the same number
+goes into `--rinch-window-top-inset`. The shell builds the below-titlebar menu
+bar with the default 36 (`app_builder`), so `BorderlessWindow` sets that bar's
+`top` to its own height. Not done (still open on #2196): localized control
+labels, a restore glyph while maximized, double-click to maximize, a
+`draggable` prop.
+
 **With `WindowProps::menu_in_titlebar` (Linux in-app menu bar)** the menu row —
-`left_section`, the branded `title` and the top-level labels — is an absolutely
+`left_section`, the `title` and the top-level labels — is an absolutely
 positioned layer drawn over the titlebar, and an empty
 `.rinch-borderlesswindow__menu-spacer` in the titlebar's flex row holds that
 space open for the right section and the controls. The spacer is sized from the
@@ -1897,6 +1930,30 @@ process; one process can also open both as windows, #2416), checked in a nested
   the main window's close as before; `LastWindowCloses` closes the main window as a
   hide plus a document disposal (`close_main`, `main_closed`) and exits when no other
   is left; `Explicitly` only on `rinch::exit()` (`RinchNativeEvent::Exit`).
+- **An exit before the run** (#3015). A native event sent before any
+  `RinchRuntime` exists is kept for the one to come (`Drainer::Coming` in
+  `wake/queue.rs`), and that runtime's first wake delivers it (`owe_startup_wake`).
+  At most `KEPT_BEFORE_RUN` (1024) are kept, so a process that never runs cannot
+  grow the queue; past it a request is dropped with one warning, and an `Exit` is
+  kept past the bound, once. `App::try_run` first calls `take_exit_before_run`: a
+  kept `Exit` empties the queue and the run returns `Ok(())` before the display is
+  connected to. The entry point (`try_run_rinch_with_window_props_and_menu`) looks
+  again just before `run_app`, after `note_runtime_made`, for an exit another thread
+  sent while the display was connected to (`wake::run_unless_exit_asked`: the
+  component is mounted by then, no window is made); one sent after that is the running
+  loop's, so a window may already be open. When the run ends (its loop returns, or it
+  ends at that second look) `note_run_ended` drops what the runtime left queued (a
+  second exit sent as the loop stopped must not end the next run) and returns the
+  drainer to `Coming`, or `EmbedHost` if a context was ever made: what is sent after a
+  run is kept for the next, bounded again. Emptying the queue replaces its `VecDeque`
+  with a fresh one, so a cleared queue holds no memory. The drainer state lives under the queue's lock,
+  so a send racing the runtime's construction is kept or queued, never lost. #2801
+  had dropped every event sent with no runtime made, which lost an exit from a
+  signal-watching thread started before the run (deskrinch: the app ran on until
+  killed). What is dropped now is an embed host's (a `RinchContext` made and no
+  runtime), but never its exit: see `game-engine.md`. Pins: `wake/queue/tests.rs`,
+  `wake/tests.rs` (the second look), `rinch/tests/exit_before_run_3015.rs` and
+  `exit_before_run_embed_3015.rs` (each its own process).
 - **Each turn,** every open window gets its `AboutToWait` (`about_to_wait_others`),
   so a process-wide change (a theme, a shared signal) restyles every window in the
   turn after it.
@@ -2743,6 +2800,21 @@ does. The fork's commit `34f153bd` makes its workspace take crates.io
 crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
 `dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
 bump.
+
+**Features: winit's defaults, with skrifa-drawn decoration titles (#2434).**
+rinch depends on winit with `default-features = false` and names `x11`,
+`wayland`, `wayland-dlopen` and `wayland-csd-adwaita-skrifa`. winit's
+`default` has `wayland-csd-adwaita` in that last place, and it draws the
+client-side decorations' title text (sctk-adwaita, used on compositors without
+server-side decorations, such as GNOME) with `ab_glyph`, which brings in
+`owned_ttf_parser` and `ttf-parser`. `ttf-parser` is unmaintained
+(RUSTSEC-2026-0192), and every app on rinch with `desktop` got the advisory.
+The skrifa flavour draws the same titled decorations with skrifa 0.44, the
+version parley already links, so it adds no crate. The lockfile lost those
+three crates and `ab_glyph_rasterizer`. Keep the four flags in step with the
+fork's `default` on a bump. The other advisory the issue names,
+`proc-macro-error` (RUSTSEC-2024-0370, through muda's gtk-rs 0.18 on Linux),
+is still in the graph.
 
 On a winit bump: rebase the branch's commits onto the new tag on a new branch
 (apps on the old one keep building), move the rev here, and read upstream's

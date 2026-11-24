@@ -284,25 +284,3 @@ fn a_box_that_does_not_scroll_counts_its_descendants_overflow() {
     }
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
 }
-
-/// A scroll container keeps the range its bar and the wheel use: its
-/// grandchild's overflow is not counted there yet (#2054; Chrome 158 gives
-/// 460), so `scroll_width` agrees with the bar rather than with the walk a
-/// box that does not scroll takes.
-#[test]
-fn a_scroll_container_answers_its_bar_range() {
-    let mut d = RinchDocument::new();
-    d.load_css("body { margin: 0 } div { margin: 0; padding: 0 }");
-    let body = d.body();
-    d.set_inner_html(
-        body,
-        r#"<div id="s" style="width:260px;height:30px;overflow:auto"><div style="width:260px;height:10px"><div style="width:460px;height:5px"></div></div></div>"#,
-    );
-    d.resolve_layout(800.0, 600.0);
-    let s = d.query_selector("#s").expect("#s");
-    assert_eq!(
-        d.scroll_width(s),
-        rinch_dom::paint::scrollbar::content_extents(&d.tree, s.0).0
-    );
-    assert_eq!(d.scroll_width(s), 260.0, "#2054 still open");
-}

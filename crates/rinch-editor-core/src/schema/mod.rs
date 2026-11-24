@@ -91,9 +91,12 @@ impl Schema {
                 // Indent level (0 = flush left); rendered as a left margin. Bumped by
                 // the indent / outdent commands when the cursor isn't in a list.
                 .attr("indent", AttrSpec::optional(AttrValue::Int(0)))
-                // Horizontal alignment of the block's text: "left" (default), "center",
-                // "right", or "justify". Set by the setTextAlign* commands; projects to
-                // `text-align` in the view and copy-out HTML (omitted when "left").
+                // Horizontal alignment of the block's text: "left", "center", "right"
+                // or "justify", or unset (the attribute absent, the default). Set by the
+                // setTextAlign* commands; a stored value projects to `text-align` in the
+                // view and copy-out HTML, an unset one to none, so the stylesheet decides
+                // (a `th` centres, an RTL editor starts right). A stored "left" is an
+                // explicit choice, kept apart from unset (#2210).
                 .attr("text_align", AttrSpec::optional("left"))
                 .parse_html(vec!["p".into()])
                 .build(),

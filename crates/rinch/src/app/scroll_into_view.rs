@@ -24,6 +24,13 @@
 //! - The walk stops above a `position: fixed` box: the viewport holds it, and
 //!   no scroller outside it can move it.
 //!
+//! A scroller whose `scroll-behavior` is `smooth` (#2291) is not moved here:
+//! every scroller's new offset is worked out as if it jumped (an outer one
+//! needs the inner ones placed), then each smooth one is put back where it
+//! was and its new offset queued as a smooth request, which the app animates
+//! — Chrome animates a scroll-into-view, the caret reveal of typing included,
+//! in a smooth scroller.
+//!
 //! A placed request (`NodeHandle::scroll_to_fraction`) places the target in
 //! the nearest scroller that scrolls vertically and is then `nearest` in every
 //! other scroller and on the other axis — what the web backend does by setting
@@ -41,9 +48,11 @@ const EDGE_SLOP: f64 = 1e-3;
 
 /// Bring `target` into view of every scroller it is in. `placement` is
 /// `Some((fraction, margin))` for a placed request. Returns whether any
-/// scroller moved.
+/// scroller moved now (a smooth one moves from the next frame).
 pub(super) fn reveal(d: &mut RinchDocument, target: u64, placement: Option<(f32, f32)>) -> bool {
     let mut moved = false;
+    // The smooth scrollers moved below, with where they were.
+    let mut smooth: Vec<(u64, (f64, f64))> = Vec::new();
     let mut placement = placement;
     // The scrollers already adjusted: their scrollports clip what the next one
     // out brings into view.
@@ -70,13 +79,31 @@ pub(super) fn reveal(d: &mut RinchDocument, target: u64, placement: Option<(f32,
             rect = rect.intersect(scrollport_in_window(d, inner));
         }
         let place = if on_y { placement.take() } else { None };
+        let before = d.tree.nodes[scroller].scroll_offset;
         match scroll_one(d, scroller, rect, (on_x, on_y), place) {
+            Some(true) if d.tree.scroll_behavior_smooth(scroller) => {
+                smooth.push((scroller, before));
+            }
             Some(changed) => moved |= changed,
             // A non-invertible transform on the chain: the subtree paints to
             // zero area, so no scroll position makes it visible.
             None => break,
         }
         passed.push(scroller);
+    }
+    // Each smooth scroller goes back to where it was, and animates to where
+    // the walk put it.
+    let now = d.animation_now_ms();
+    for (scroller, before) in smooth {
+        let after = d.tree.nodes[scroller].scroll_offset;
+        d.tree.nodes[scroller].scroll_offset = before;
+        d.tree.mark_scrolled(scroller);
+        if after.0 != before.0 {
+            d.tree.request_smooth_scroll(scroller, false, after.0, now);
+        }
+        if after.1 != before.1 {
+            d.tree.request_smooth_scroll(scroller, true, after.1, now);
+        }
     }
     moved
 }

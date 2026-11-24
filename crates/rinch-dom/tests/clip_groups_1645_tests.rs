@@ -167,14 +167,40 @@ fn bands_of_panes_apart_are_gathered_and_look_the_same() {
     assert_eq!(px(&p, 96, y), [0, 0, 0, 0], "nothing between the panes");
 }
 
-/// At 1.5x a seam at 67px is at 100.5: both panes antialias device pixel 100,
-/// so A's top band and B's band composite there in their true order. At 2x the
-/// same seam is a pixel edge.
+/// At 1.5x a seam at 67px is at 100.5 device px, and both panes' clip edges
+/// round to 101 (#2368, as Chrome's clip rects do), so they meet on a whole
+/// pixel and are gathered. Moved by `translateX(0.5px)` (0.75 device px), the
+/// same seam is at 101.75: a transform is not snapped, both panes antialias
+/// device pixel 101, and A's top band and B's band must composite there in
+/// their true order. At 2x the transform is one whole device pixel and the
+/// moved seam (135) is a pixel edge again.
 #[test]
 fn panes_meeting_inside_a_device_pixel_are_not_gathered() {
     let mut doc = alternating((13.0, 54.0), (67.0, 101.0));
-    assert_eq!(clips(&mut doc, 1.5), 3, "the seam is shared at 1.5x");
-    assert_eq!(clips(&mut doc, 2.0), 2, "the seam is not shared at 2x");
+    assert_eq!(
+        clips(&mut doc, 1.5),
+        2,
+        "the snapped seam is on a whole pixel"
+    );
+
+    let (mut doc, body) = page();
+    let root = el(
+        &mut doc,
+        body,
+        "position: relative; z-index: 0; width: 300px; height: 200px; \
+         transform: translateX(0.5px)",
+    );
+    let pa = pane(&mut doc, root, 13.0, 54.0);
+    let pb = pane(&mut doc, root, 67.0, 101.0);
+    band(&mut doc, pa, 1, RED);
+    band(&mut doc, pb, 2, GREEN);
+    band(&mut doc, pa, 3, BLUE);
+    assert_eq!(clips(&mut doc, 1.5), 3, "the moved seam is shared at 1.5x");
+    assert_eq!(
+        clips(&mut doc, 2.0),
+        2,
+        "the moved seam is a pixel edge at 2x"
+    );
 }
 
 /// A drag ghost's scene is appended at a fractional offset, so "whole device

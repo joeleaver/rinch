@@ -49,11 +49,12 @@
 //!
 //! One latent hazard in the parser rather than the rule: [`top_level_items`]
 //! ends an item at a column-0 `}` or `;`, so a raw string containing column-0
-//! CSS in a `src/*.rs` file would corrupt the item ranges. None does today —
-//! the CSS all lives in `src/styles/`, which this scan does not read.
+//! CSS in a scanned file (any `.rs` under `src/` outside `styles/`, child
+//! module directories included) would corrupt the item ranges. None does
+//! today — the CSS all lives in `src/styles/`, which this scan does not read.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Props that are declared, documented, and still not wired — the debt #474
 /// catalogued, with the sub-cluster each belongs to. Every entry must name a
@@ -198,6 +199,58 @@ fn pub_fields(item: &Item) -> Vec<String> {
         .collect()
 }
 
+/// The `.rs` files under `dir`, recursively, sorted.
+fn rs_files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .expect("a readable directory")
+        .map(|e| e.expect("a readable dir entry").path())
+        .collect();
+    entries.sort();
+    let mut out = Vec::new();
+    for path in entries {
+        if path.is_dir() {
+            out.extend(rs_files_under(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// The crate's top-level modules, each as the files that make it up: `foo.rs`
+/// together with everything under `foo/` (its child modules, such as
+/// `color_input/classes.rs`), or a `foo/` directory module on its own
+/// (`stepper/mod.rs` and its children). A component's impls may sit in any
+/// file of its module. `styles/` is not read: the CSS lives there (see the
+/// parser hazard in the module docs), and it declares no component.
+fn module_sources(src_dir: &Path) -> Vec<Vec<PathBuf>> {
+    let mut entries: Vec<_> = std::fs::read_dir(src_dir)
+        .expect("the crate has a src/ directory")
+        .map(|e| e.expect("a readable dir entry").path())
+        .collect();
+    entries.sort();
+    let mut modules = Vec::new();
+    for path in &entries {
+        if path.file_name().is_some_and(|n| n == "styles") {
+            continue;
+        }
+        if path.is_dir() {
+            // A directory module, unless the `foo.rs` beside it owns it.
+            if !path.with_extension("rs").exists() {
+                modules.push(rs_files_under(path));
+            }
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let mut files = vec![path.clone()];
+            let children = path.with_extension("");
+            if children.is_dir() {
+                files.extend(rs_files_under(&children));
+            }
+            modules.push(files);
+        }
+    }
+    modules
+}
+
 /// Every `<Struct>::<field>` in this crate that no impl of `<Struct>` reads.
 fn unread_props() -> BTreeSet<String> {
     // The run-time `CARGO_MANIFEST_DIR`, which `cargo test` sets for the test
@@ -212,16 +265,17 @@ fn unread_props() -> BTreeSet<String> {
     let mut unread = BTreeSet::new();
     let mut components_seen = 0usize;
 
-    let mut files: Vec<_> = std::fs::read_dir(&src_dir)
-        .expect("the crate has a src/ directory")
-        .map(|e| e.expect("a readable dir entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-        .collect();
-    files.sort();
-
-    for path in files {
-        let src = std::fs::read_to_string(&path).expect("a readable source file");
-        let items = top_level_items(&src);
+    for files in module_sources(&src_dir) {
+        // Each file is split on its own, since an item cannot span two files;
+        // the items of a module and its child modules are then scanned as one,
+        // so a field read in `color_input/classes.rs` counts as read.
+        let items: Vec<Item> = files
+            .iter()
+            .flat_map(|path| {
+                let src = std::fs::read_to_string(path).expect("a readable source file");
+                top_level_items(&src)
+            })
+            .collect();
 
         // Structs with an `impl Component for S`.
         let component_names: BTreeSet<String> = items

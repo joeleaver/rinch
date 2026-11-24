@@ -234,13 +234,12 @@ define_counters! {
     /// ended after a hung NBSP.
     IfcHangLines = "ifc_hang_lines",
     /// Parley layouts broken once more to drop the empty line parley commits
-    /// after an inline box placed by an emergency break (#1050), or after a
-    /// forced break (`<br>`, a preserved newline) that ends the text (#1172)
-    /// (`ifc::phantom_last_line`). Every min-content measure of a paragraph
-    /// that ends in an atomic inline pays one: at width 0 every box takes the
-    /// emergency branch; so does every measure and build of a paragraph
-    /// ending in a forced break. On the `pre-wrap` route it is the second hanging
-    /// pass, which `ifc_hang_passes` does not count again.
+    /// after a forced break (`<br>`, a preserved newline) that ends the text
+    /// (#1172) (`ifc::phantom_last_line`): every measure and build of a
+    /// paragraph ending in a forced break pays one. (An inline box too wide for
+    /// its line that ended a paragraph paid one too until parley's empty line
+    /// after it went, #1050 / #2944.) On the `pre-wrap` route it is the second
+    /// hanging pass, which `ifc_hang_passes` does not count again.
     IfcPhantomRebreaks = "ifc_phantom_rebreaks",
     /// Breaks of a single line `ifc::unglue` made to move a line break
     /// parley put after a no-break space it hung (#1218): a few per such

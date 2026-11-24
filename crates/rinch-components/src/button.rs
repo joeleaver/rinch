@@ -203,7 +203,9 @@ impl Button {
                  --rinch-button-color-hover: color-mix(in srgb, {c} 90%, black); \
                  --rinch-button-color-light: color-mix(in srgb, {c} 10%, transparent); \
                  --rinch-button-color-light-hover: color-mix(in srgb, {c} 15%, transparent); \
-                 --rinch-button-color-light-color: {c};"
+                 --rinch-button-color-light-color: {c}; \
+                 --rinch-button-color-contrast: {};",
+                crate::color_utils::contrast_for(c)
             ))
         } else {
             Some(format!(
@@ -211,7 +213,8 @@ impl Button {
                  --rinch-button-color-hover: var(--rinch-color-{c}-7); \
                  --rinch-button-color-light: var(--rinch-color-{c}-light); \
                  --rinch-button-color-light-hover: var(--rinch-color-{c}-light-hover); \
-                 --rinch-button-color-light-color: var(--rinch-color-{c}-light-color);"
+                 --rinch-button-color-light-color: var(--rinch-color-{c}-light-color); \
+                 --rinch-button-color-contrast: var(--rinch-color-{c}-contrast);"
             ))
         }
     }

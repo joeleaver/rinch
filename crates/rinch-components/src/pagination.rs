@@ -2,8 +2,16 @@
 //!
 //! Page navigation controls.
 
+use std::rc::Rc;
+
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{Component, ValueCallback};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+
+/// Renders a page button's content: called with the page number and whether it
+/// is the active page. The button around it (its classes, `data-page`,
+/// `aria-current` and click wiring) stays the component's.
+pub type PaginationItemRenderer = Rc<dyn Fn(&mut RenderScope, u32, bool) -> NodeHandle>;
 
 /// Pagination size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -56,7 +64,6 @@ impl std::str::FromStr for PaginationSize {
 ///     }
 /// }
 /// ```
-#[derive(Debug)]
 pub struct Pagination {
     /// Total number of pages.
     pub total: u32,
@@ -82,6 +89,63 @@ pub struct Pagination {
     pub gap: String,
     /// Callback when page changes - receives the new page number.
     pub onchange: Option<ValueCallback<u32>>,
+    /// The `<nav>`'s accessible name. Empty means `"Pagination"`.
+    pub aria_label: String,
+    /// The first-page control's accessible name. Empty means `"First page"`.
+    pub first_label: String,
+    /// The previous-page control's accessible name. Empty means
+    /// `"Previous page"`.
+    pub previous_label: String,
+    /// The next-page control's accessible name. Empty means `"Next page"`.
+    pub next_label: String,
+    /// The last-page control's accessible name. Empty means `"Last page"`.
+    pub last_label: String,
+    /// Icon for the first-page control, in place of the double chevron.
+    pub first_icon: Option<TablerIcon>,
+    /// Icon for the previous-page control, in place of the chevron.
+    pub previous_icon: Option<TablerIcon>,
+    /// Icon for the next-page control, in place of the chevron.
+    pub next_icon: Option<TablerIcon>,
+    /// Icon for the last-page control, in place of the double chevron.
+    pub last_icon: Option<TablerIcon>,
+    /// Text drawn for a gap in the page list. Empty means `"..."`.
+    pub dots: String,
+    /// The escape hatch: renders each page button's content in place of its
+    /// number. See [`PaginationItemRenderer`].
+    pub render_item: Option<PaginationItemRenderer>,
+}
+
+impl std::fmt::Debug for Pagination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pagination")
+            .field("total", &self.total)
+            .field("value", &self.value)
+            .field("siblings", &self.siblings)
+            .field("boundaries", &self.boundaries)
+            .field("size", &self.size)
+            .field("radius", &self.radius)
+            .field("with_edges", &self.with_edges)
+            .field("with_controls", &self.with_controls)
+            .field("color", &self.color)
+            .field("disabled", &self.disabled)
+            .field("gap", &self.gap)
+            .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
+            .field("aria_label", &self.aria_label)
+            .field("first_label", &self.first_label)
+            .field("previous_label", &self.previous_label)
+            .field("next_label", &self.next_label)
+            .field("last_label", &self.last_label)
+            .field("first_icon", &self.first_icon)
+            .field("previous_icon", &self.previous_icon)
+            .field("next_icon", &self.next_icon)
+            .field("last_icon", &self.last_icon)
+            .field("dots", &self.dots)
+            .field(
+                "render_item",
+                &self.render_item.as_ref().map(|_| "<renderer>"),
+            )
+            .finish()
+    }
 }
 
 impl Default for Pagination {
@@ -99,6 +163,17 @@ impl Default for Pagination {
             disabled: false,
             gap: String::new(),
             onchange: None,
+            aria_label: String::new(),
+            first_label: String::new(),
+            previous_label: String::new(),
+            next_label: String::new(),
+            last_label: String::new(),
+            first_icon: None,
+            previous_icon: None,
+            next_icon: None,
+            last_icon: None,
+            dots: String::new(),
+            render_item: None,
         }
     }
 }
@@ -204,19 +279,102 @@ enum PageItem {
     Dots,
 }
 
+/// Which of the four controls a button is.
+#[derive(Clone, Copy)]
+enum ControlKind {
+    First,
+    Previous,
+    Next,
+    Last,
+}
+
+/// `label` unless it is empty, then `default`.
+fn or_default<'a>(label: &'a str, default: &'a str) -> &'a str {
+    if label.is_empty() { default } else { label }
+}
+
+impl Pagination {
+    /// One prev/next/first/last button.
+    fn control(&self, scope: &mut RenderScope, kind: ControlKind) -> NodeHandle {
+        let total = self.total;
+        let (data, label, icon, at_edge, target) = match kind {
+            ControlKind::First => (
+                "data-first",
+                or_default(&self.first_label, "First page"),
+                self.first_icon,
+                self.value <= 1,
+                1,
+            ),
+            ControlKind::Previous => (
+                "data-prev",
+                or_default(&self.previous_label, "Previous page"),
+                self.previous_icon,
+                self.value <= 1,
+                self.value.saturating_sub(1).max(1),
+            ),
+            ControlKind::Next => (
+                "data-next",
+                or_default(&self.next_label, "Next page"),
+                self.next_icon,
+                self.value >= total,
+                (self.value + 1).min(total),
+            ),
+            ControlKind::Last => (
+                "data-last",
+                or_default(&self.last_label, "Last page"),
+                self.last_icon,
+                self.value >= total,
+                total,
+            ),
+        };
+        let disabled = at_edge || self.disabled;
+
+        let btn = scope.create_element("button");
+        btn.set_attribute(
+            "class",
+            if disabled {
+                "rinch-pagination__control disabled"
+            } else {
+                "rinch-pagination__control"
+            },
+        );
+        btn.set_attribute(data, "");
+        btn.set_attribute("aria-label", label);
+
+        let glyph = match icon {
+            Some(icon) => render_tabler_icon(scope, icon, TablerIconStyle::Outline),
+            None => match kind {
+                ControlKind::First => crate::icons::chevrons_left_dom(scope),
+                ControlKind::Previous => crate::icons::chevron_left_dom(scope),
+                ControlKind::Next => crate::icons::chevron_right_dom(scope),
+                ControlKind::Last => crate::icons::chevrons_right_dom(scope),
+            },
+        };
+        btn.append_child(&glyph);
+
+        if self.disabled {
+            btn.set_attribute("disabled", "");
+        }
+
+        if let Some(ref cb) = self.onchange
+            && !disabled
+        {
+            let cb = cb.clone();
+            let handler_id = scope.register_handler(move || cb.invoke(target));
+            btn.set_attribute("data-rid", &handler_id.0.to_string());
+        }
+        btn
+    }
+}
+
 impl Component for Pagination {
     fn render(&self, __scope: &mut RenderScope, _children: &[NodeHandle]) -> NodeHandle {
         let mut style_parts = Vec::new();
         if !self.color.is_empty() {
-            let c = &self.color;
-            if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                style_parts.push(format!("--rinch-pagination-color: {}", c));
-            } else {
-                style_parts.push(format!(
-                    "--rinch-pagination-color: var(--rinch-color-{}-6)",
-                    c
-                ));
-            }
+            style_parts.push(crate::color_utils::accent_vars(
+                "--rinch-pagination",
+                &self.color,
+            ));
         }
         if !self.gap.is_empty() {
             style_parts.push(format!("gap: {}", self.gap));
@@ -224,6 +382,7 @@ impl Component for Pagination {
 
         let nav = rinch_macros::rsx! { nav { class: "rinch-pagination" } };
         nav.set_attribute("class", &self.class_string());
+        nav.set_attribute("aria-label", or_default(&self.aria_label, "Pagination"));
 
         if !style_parts.is_empty() {
             nav.set_attribute("style", &style_parts.join("; "));
@@ -231,65 +390,11 @@ impl Component for Pagination {
 
         let controls = rinch_macros::rsx! { div { class: "rinch-pagination__controls" } };
 
-        // First button
         if self.with_edges {
-            let first_disabled = self.value <= 1 || self.disabled;
-            let mut first_class = "rinch-pagination__control".to_string();
-            if first_disabled {
-                first_class.push_str(" disabled");
-            }
-
-            let first_btn = rinch_macros::rsx! { button { class: "rinch-pagination__control" } };
-            first_btn.set_attribute("class", &first_class);
-            first_btn.set_attribute("data-first", "");
-
-            let icon = crate::icons::chevrons_left_dom(__scope);
-            first_btn.append_child(&icon);
-
-            if self.disabled {
-                first_btn.set_attribute("disabled", "");
-            }
-
-            // Register click handler for first page
-            if let Some(ref cb) = self.onchange
-                && !first_disabled
-            {
-                let cb = cb.clone();
-                let handler_id = __scope.register_handler(move || cb.invoke(1));
-                first_btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
-            controls.append_child(&first_btn);
+            controls.append_child(&self.control(__scope, ControlKind::First));
         }
-
-        // Previous button
         if self.with_controls {
-            let prev_disabled = self.value <= 1 || self.disabled;
-            let mut prev_class = "rinch-pagination__control".to_string();
-            if prev_disabled {
-                prev_class.push_str(" disabled");
-            }
-
-            let prev_btn = rinch_macros::rsx! { button { class: "rinch-pagination__control" } };
-            prev_btn.set_attribute("class", &prev_class);
-            prev_btn.set_attribute("data-prev", "");
-
-            let icon = crate::icons::chevron_left_dom(__scope);
-            prev_btn.append_child(&icon);
-
-            if self.disabled {
-                prev_btn.set_attribute("disabled", "");
-            }
-
-            // Register click handler for previous page
-            if let Some(ref cb) = self.onchange
-                && !prev_disabled
-            {
-                let cb = cb.clone();
-                let prev_page = self.value.saturating_sub(1).max(1);
-                let handler_id = __scope.register_handler(move || cb.invoke(prev_page));
-                prev_btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
-            controls.append_child(&prev_btn);
+            controls.append_child(&self.control(__scope, ControlKind::Previous));
         }
 
         // Page items container
@@ -298,8 +403,9 @@ impl Component for Pagination {
         for item in self.generate_pages() {
             match item {
                 PageItem::Page(n) => {
+                    let active = n == self.value;
                     let mut page_class = "rinch-pagination__item".to_string();
-                    if n == self.value {
+                    if active {
                         page_class.push_str(" rinch-pagination__item--active");
                     }
 
@@ -307,9 +413,15 @@ impl Component for Pagination {
                         rinch_macros::rsx! { button { class: "rinch-pagination__item" } };
                     page_btn.set_attribute("class", &page_class);
                     page_btn.set_attribute("data-page", &n.to_string());
+                    if active {
+                        page_btn.set_attribute("aria-current", "page");
+                    }
 
-                    let page_text_node = rinch_core::IntoNode::into_node(n.to_string(), __scope);
-                    page_btn.append_child(&page_text_node);
+                    let content = match &self.render_item {
+                        Some(render) => render(__scope, n, active),
+                        None => rinch_core::IntoNode::into_node(n.to_string(), __scope),
+                    };
+                    page_btn.append_child(&content);
 
                     if self.disabled {
                         page_btn.set_attribute("disabled", "");
@@ -326,8 +438,9 @@ impl Component for Pagination {
                     items_container.append_child(&page_btn);
                 }
                 PageItem::Dots => {
+                    let dots = or_default(&self.dots, "...");
                     let dots_span =
-                        rinch_macros::rsx! { span { class: "rinch-pagination__dots", "..." } };
+                        rinch_macros::rsx! { span { class: "rinch-pagination__dots", {dots} } };
                     items_container.append_child(&dots_span);
                 }
             }
@@ -335,66 +448,11 @@ impl Component for Pagination {
 
         controls.append_child(&items_container);
 
-        // Next button
         if self.with_controls {
-            let next_disabled = self.value >= self.total || self.disabled;
-            let mut next_class = "rinch-pagination__control".to_string();
-            if next_disabled {
-                next_class.push_str(" disabled");
-            }
-
-            let next_btn = rinch_macros::rsx! { button { class: "rinch-pagination__control" } };
-            next_btn.set_attribute("class", &next_class);
-            next_btn.set_attribute("data-next", "");
-
-            let icon = crate::icons::chevron_right_dom(__scope);
-            next_btn.append_child(&icon);
-
-            if self.disabled {
-                next_btn.set_attribute("disabled", "");
-            }
-
-            // Register click handler for next page
-            if let Some(ref cb) = self.onchange
-                && !next_disabled
-            {
-                let cb = cb.clone();
-                let next_page = (self.value + 1).min(self.total);
-                let handler_id = __scope.register_handler(move || cb.invoke(next_page));
-                next_btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
-            controls.append_child(&next_btn);
+            controls.append_child(&self.control(__scope, ControlKind::Next));
         }
-
-        // Last button
         if self.with_edges {
-            let last_disabled = self.value >= self.total || self.disabled;
-            let mut last_class = "rinch-pagination__control".to_string();
-            if last_disabled {
-                last_class.push_str(" disabled");
-            }
-
-            let last_btn = rinch_macros::rsx! { button { class: "rinch-pagination__control" } };
-            last_btn.set_attribute("class", &last_class);
-            last_btn.set_attribute("data-last", "");
-
-            let icon = crate::icons::chevrons_right_dom(__scope);
-            last_btn.append_child(&icon);
-
-            if self.disabled {
-                last_btn.set_attribute("disabled", "");
-            }
-
-            // Register click handler for last page
-            if let Some(ref cb) = self.onchange
-                && !last_disabled
-            {
-                let cb = cb.clone();
-                let total = self.total;
-                let handler_id = __scope.register_handler(move || cb.invoke(total));
-                last_btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
-            controls.append_child(&last_btn);
+            controls.append_child(&self.control(__scope, ControlKind::Last));
         }
 
         nav.append_child(&controls);

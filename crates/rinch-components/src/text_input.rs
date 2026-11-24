@@ -91,6 +91,20 @@ pub struct TextInput {
     /// (the default) inherits the nearest ancestor's `spellcheck`, which is
     /// on unless something above says otherwise.
     pub spellcheck: Option<bool>,
+    /// The field's HTML `autocomplete` attribute (#3028): a token list such as
+    /// `"username"`, `"current-password"`, `"new-password"`, `"email"` or
+    /// `"one-time-code"`, which password managers and the browser's autofill
+    /// read. Empty (the default) writes no attribute, the browser's default.
+    /// On desktop the attribute is kept on the element for the DOM; there is
+    /// no autofill there.
+    pub autocomplete: String,
+    /// The field's HTML `inputmode` attribute (#3048): which on-screen
+    /// keyboard a touch device shows, one of `"none"`, `"text"`, `"decimal"`,
+    /// `"numeric"`, `"tel"`, `"search"`, `"email"` or `"url"` (`"numeric"`
+    /// brings up a digit pad for a one-time code). Empty (the default) writes
+    /// no attribute, the browser's default. On desktop the attribute is kept
+    /// on the element for the DOM; it changes nothing there.
+    pub inputmode: String,
 }
 
 impl std::fmt::Debug for TextInput {
@@ -111,6 +125,8 @@ impl std::fmt::Debug for TextInput {
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
             .field("spellcheck", &self.spellcheck)
+            .field("autocomplete", &self.autocomplete)
+            .field("inputmode", &self.inputmode)
             .field("onsubmit", &self.onsubmit.as_ref().map(|_| "<callback>"))
             .finish()
     }
@@ -177,6 +193,7 @@ impl Component for TextInput {
             input.set_attribute("spellcheck", if on { "true" } else { "false" });
         }
         input.set_attribute("type", input_type);
+        crate::entry_attrs::write_entry_hints(&input, &self.autocomplete, &self.inputmode);
 
         if !self.placeholder.is_empty() {
             input.set_attribute("placeholder", &self.placeholder);
@@ -220,13 +237,7 @@ impl Component for TextInput {
         }
 
         // Submit handler (Enter key)
-        if let Some(callback) = &self.onsubmit {
-            let callback = callback.clone();
-            let handler_id = __scope.register_handler(move || {
-                callback.invoke();
-            });
-            input.set_attribute("data-onsubmit", &handler_id.0.to_string());
-        }
+        crate::entry_attrs::bind_submit(__scope, &input, &self.onsubmit);
 
         container.append_child(&input);
 

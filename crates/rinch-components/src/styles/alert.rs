@@ -67,95 +67,95 @@ pub fn styles() -> String {
 
 .rinch-alert__close:hover {
     opacity: 1;
-    background-color: rgba(0, 0, 0, 0.05);
+    background-color: var(--rinch-alert-close-hover, rgba(0, 0, 0, 0.05));
+}
+
+/* Colour (#2200). Every variant reads the --rinch-alert-* variables; a
+   built-in colour's class below sets them, and any other colour (a palette
+   name, an app's token family, a raw CSS colour) sets them inline:
+     --rinch-alert-color         solid colour (filled background, outline)
+     --rinch-alert-light         light background
+     --rinch-alert-light-text    text on the light background
+     --rinch-alert-light-strong  title on the light background
+     --rinch-alert-filled-text   text on the filled background (the
+                                 colour's contrast token, #2208)
+     --rinch-alert-outline-text  text of the outline variant (the colour)
+   Each colour sets all six, so an Alert nested in another never inherits the
+   outer one's values. */
+.rinch-alert--blue {
+    --rinch-alert-color: var(--rinch-color-blue-6);
+    --rinch-alert-light: var(--rinch-color-blue-light);
+    --rinch-alert-light-text: var(--rinch-color-blue-light-text);
+    --rinch-alert-light-strong: var(--rinch-color-blue-light-color-strong);
+    --rinch-alert-filled-text: var(--rinch-color-blue-contrast, white);
+    --rinch-alert-outline-text: var(--rinch-color-blue-6);
+}
+.rinch-alert--green {
+    --rinch-alert-color: var(--rinch-color-green-6);
+    --rinch-alert-light: var(--rinch-color-green-light);
+    --rinch-alert-light-text: var(--rinch-color-green-light-text);
+    --rinch-alert-light-strong: var(--rinch-color-green-light-color-strong);
+    --rinch-alert-filled-text: var(--rinch-color-green-contrast, white);
+    --rinch-alert-outline-text: var(--rinch-color-green-6);
+}
+.rinch-alert--yellow {
+    --rinch-alert-color: var(--rinch-color-yellow-6);
+    --rinch-alert-light: var(--rinch-color-yellow-light);
+    --rinch-alert-light-text: var(--rinch-color-yellow-light-text);
+    --rinch-alert-light-strong: var(--rinch-color-yellow-light-color-strong);
+    --rinch-alert-filled-text: var(--rinch-color-yellow-9);
+    --rinch-alert-outline-text: var(--rinch-color-yellow-7);
+}
+.rinch-alert--red {
+    --rinch-alert-color: var(--rinch-color-red-6);
+    --rinch-alert-light: var(--rinch-color-red-light);
+    --rinch-alert-light-text: var(--rinch-color-red-light-text);
+    --rinch-alert-light-strong: var(--rinch-color-red-light-color-strong);
+    --rinch-alert-filled-text: var(--rinch-color-red-contrast, white);
+    --rinch-alert-outline-text: var(--rinch-color-red-6);
+}
+.rinch-alert--gray {
+    --rinch-alert-color: var(--rinch-color-gray-6);
+    --rinch-alert-light: var(--rinch-color-filled);
+    --rinch-alert-light-text: var(--rinch-color-text);
+    --rinch-alert-light-strong: var(--rinch-color-gray-light-color-strong);
+    --rinch-alert-filled-text: var(--rinch-color-gray-contrast, white);
+    --rinch-alert-outline-text: var(--rinch-color-gray-6);
+}
+.rinch-alert--primary {
+    --rinch-alert-color: var(--rinch-primary-color);
+    --rinch-alert-light: var(--rinch-primary-color-light);
+    --rinch-alert-light-text: var(--rinch-primary-color-light-text);
+    --rinch-alert-light-strong: var(--rinch-primary-color-light-color-strong);
+    --rinch-alert-filled-text: var(--rinch-primary-color-contrast, white);
+    --rinch-alert-outline-text: var(--rinch-primary-color);
 }
 
 /* Light variant (default) */
 .rinch-alert--light {
     border: 1px solid transparent;
+    background-color: var(--rinch-alert-light);
+    color: var(--rinch-alert-light-text);
 }
+.rinch-alert--light .rinch-alert__title { color: var(--rinch-alert-light-strong); }
 
-.rinch-alert--light.rinch-alert--blue {
-    background-color: var(--rinch-color-blue-light);
-    color: var(--rinch-color-blue-light-text);
-}
-.rinch-alert--light.rinch-alert--blue .rinch-alert__title { color: var(--rinch-color-blue-light-color-strong); }
-
-.rinch-alert--light.rinch-alert--green {
-    background-color: var(--rinch-color-green-light);
-    color: var(--rinch-color-green-light-text);
-}
-.rinch-alert--light.rinch-alert--green .rinch-alert__title { color: var(--rinch-color-green-light-color-strong); }
-
-.rinch-alert--light.rinch-alert--yellow {
-    background-color: var(--rinch-color-yellow-light);
-    color: var(--rinch-color-yellow-light-text);
-}
-.rinch-alert--light.rinch-alert--yellow .rinch-alert__title { color: var(--rinch-color-yellow-light-color-strong); }
-
-.rinch-alert--light.rinch-alert--red {
-    background-color: var(--rinch-color-red-light);
-    color: var(--rinch-color-red-light-text);
-}
-.rinch-alert--light.rinch-alert--red .rinch-alert__title { color: var(--rinch-color-red-light-color-strong); }
-
-.rinch-alert--light.rinch-alert--gray {
-    background-color: var(--rinch-color-filled);
-    color: var(--rinch-color-text);
-}
-.rinch-alert--light.rinch-alert--gray .rinch-alert__title { color: var(--rinch-color-gray-light-color-strong); }
-
-.rinch-alert--light.rinch-alert--primary {
-    background-color: var(--rinch-primary-color-light);
-    color: var(--rinch-primary-color-light-text);
-}
-.rinch-alert--light.rinch-alert--primary .rinch-alert__title { color: var(--rinch-primary-color-light-color-strong); }
-
-/* Filled variant */
+/* Filled variant. With no colour class (hand-written markup) it falls back
+   to the primary fill and its contrast token, as a filled Badge does. */
 .rinch-alert--filled {
-    color: white;
+    background-color: var(--rinch-alert-color, var(--rinch-primary-color));
+    color: var(--rinch-alert-filled-text, var(--rinch-primary-color-contrast, white));
 }
-.rinch-alert--filled .rinch-alert__title { color: white; }
-.rinch-alert--filled .rinch-alert__close { color: white; }
-.rinch-alert--filled .rinch-alert__close:hover { background-color: rgba(255, 255, 255, 0.15); }
-
-.rinch-alert--filled.rinch-alert--blue { background-color: var(--rinch-color-blue-6); }
-.rinch-alert--filled.rinch-alert--green { background-color: var(--rinch-color-green-6); }
-.rinch-alert--filled.rinch-alert--yellow { background-color: var(--rinch-color-yellow-6); color: var(--rinch-color-yellow-9); }
-.rinch-alert--filled.rinch-alert--yellow .rinch-alert__title { color: var(--rinch-color-yellow-9); }
-.rinch-alert--filled.rinch-alert--yellow .rinch-alert__close { color: var(--rinch-color-yellow-9); }
-.rinch-alert--filled.rinch-alert--red { background-color: var(--rinch-color-red-6); }
-.rinch-alert--filled.rinch-alert--gray { background-color: var(--rinch-color-gray-6); }
-.rinch-alert--filled.rinch-alert--primary { background-color: var(--rinch-primary-color); }
+.rinch-alert--filled .rinch-alert__title { color: var(--rinch-alert-filled-text, var(--rinch-primary-color-contrast, white)); }
+.rinch-alert--filled .rinch-alert__close { color: var(--rinch-alert-filled-text, var(--rinch-primary-color-contrast, white)); }
+.rinch-alert--filled .rinch-alert__close:hover {
+    background-color: var(--rinch-alert-close-hover, rgba(255, 255, 255, 0.15));
+}
 
 /* Outline variant */
 .rinch-alert--outline {
     background-color: transparent;
-}
-
-.rinch-alert--outline.rinch-alert--blue {
-    border: 1px solid var(--rinch-color-blue-6);
-    color: var(--rinch-color-blue-6);
-}
-.rinch-alert--outline.rinch-alert--green {
-    border: 1px solid var(--rinch-color-green-6);
-    color: var(--rinch-color-green-6);
-}
-.rinch-alert--outline.rinch-alert--yellow {
-    border: 1px solid var(--rinch-color-yellow-6);
-    color: var(--rinch-color-yellow-7);
-}
-.rinch-alert--outline.rinch-alert--red {
-    border: 1px solid var(--rinch-color-red-6);
-    color: var(--rinch-color-red-6);
-}
-.rinch-alert--outline.rinch-alert--gray {
-    border: 1px solid var(--rinch-color-gray-6);
-    color: var(--rinch-color-gray-6);
-}
-.rinch-alert--outline.rinch-alert--primary {
-    border: 1px solid var(--rinch-primary-color);
-    color: var(--rinch-primary-color);
+    border: 1px solid var(--rinch-alert-color);
+    color: var(--rinch-alert-outline-text, var(--rinch-alert-color));
 }
 
 /* Radius variants */
@@ -164,5 +164,6 @@ pub fn styles() -> String {
 .rinch-alert--radius-md { border-radius: var(--rinch-radius-md); }
 .rinch-alert--radius-lg { border-radius: var(--rinch-radius-lg); }
 .rinch-alert--radius-xl { border-radius: var(--rinch-radius-xl); }
-"#.to_string()
+"#
+    .to_string()
 }

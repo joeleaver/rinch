@@ -302,6 +302,21 @@ pub(super) fn paint_inline_layout(
             }
         }
     }
+
+    // The outlines of its inline elements, over everything they hold
+    // (#2973). Nothing to look for until an inline element has had one.
+    if tree.inline_outlines {
+        paint_inline_outlines(
+            tree,
+            painter,
+            scale,
+            parent_x,
+            parent_y,
+            inline_layout,
+            transform,
+            scope,
+        );
+    }
 }
 
 /// Draw the "…" of every line a `text-overflow: ellipsis` cut ends (#1100):
@@ -541,6 +556,299 @@ fn paint_inline_backgrounds(
     );
 }
 
+/// The inline elements of these lines that draw an outline (#2973), each as
+/// a span over its bytes with its padding, as its style is now: an outline
+/// is drawn round its fragments' border boxes, which are a background's. A
+/// focus ring is a restyle, which re-shapes nothing, so these are found at
+/// paint rather than recorded with the lines' background spans.
+///
+/// Its bytes are those of its text and the places of its atomic inlines, so
+/// a link holding only an `<img>`, an `<svg>` or an inline-block icon is
+/// outlined round it (review of #2986). An element holding neither (an
+/// empty `<a>`) and a split inline (#513, whose blocks are boxes of their
+/// own) are left out.
+/// Called only once some inline element has had an outline
+/// ([`NodeTree::inline_outlines`]).
+pub(crate) fn inline_outline_spans<'a>(
+    get: impl Fn(RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+) -> Vec<crate::node::InlineBackgroundSpan> {
+    let owners: Vec<&Node> = inline_layout
+        .child_positions
+        .iter()
+        .filter_map(|&(id, _)| get(id))
+        .filter(|n| {
+            n.is_element()
+                && n.display_mode == crate::node::DisplayMode::Inline
+                && !n.is_split_inline()
+                && crate::ifc::has_outline(&n.computed_style)
+        })
+        .collect();
+    if owners.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for owner in owners {
+        // Its bytes: those of every text node under it, and the place of
+        // every atomic inline under it (an `<img>`, an `<svg>`, an
+        // inline-block icon), whose box holds no text (review of #2986).
+        let mut range: Option<(usize, usize)> = None;
+        let mut take = |a: usize, b: usize| {
+            let (x, y) = range.unwrap_or((a, b));
+            range = Some((x.min(a), y.max(b)));
+        };
+        for r in &inline_layout.text_ranges {
+            if is_inside(&get, r.node_id, owner.id) {
+                take(r.flat_start, r.flat_end);
+            }
+        }
+        for b in inline_layout.layout.inline_boxes() {
+            if !crate::ifc::is_edge_box(b.id) && is_inside(&get, b.id as RawNodeId, owner.id) {
+                take(b.index, b.index);
+            }
+        }
+        let Some((start, end)) = range else {
+            continue;
+        };
+        let cs = &owner.computed_style;
+        out.push(crate::node::InlineBackgroundSpan {
+            owner: owner.id,
+            start,
+            end,
+            color: peniko::Color::TRANSPARENT,
+            padding_left: cs.padding_left.to_px(),
+            padding_right: cs.padding_right.to_px(),
+            padding_top: cs.padding_top.to_px(),
+            padding_bottom: cs.padding_bottom.to_px(),
+            border_radius: cs.border_radius_top_left.to_px(),
+        });
+    }
+    out
+}
+
+/// Whether node `id` is under element `owner` (not `owner` itself).
+fn is_inside<'a>(
+    get: impl Fn(RawNodeId) -> Option<&'a Node>,
+    id: RawNodeId,
+    owner: RawNodeId,
+) -> bool {
+    let mut up = get(id).and_then(|n| n.parent);
+    for _ in 0..256 {
+        match up {
+            Some(p) if p == owner => return true,
+            Some(p) => up = get(p).and_then(|n| n.parent),
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Each outline [`paint_inline_outlines`] draws, as `(owner, fragment border
+/// boxes)`, in device px relative to the IFC root's content origin, for the
+/// elements `scope` shows. A fragment holding an atomic inline is as tall as
+/// the line's content area, so it holds the box (Chrome outlines the box and
+/// the element's own font box, review of #2986: the same where the box is
+/// alone in the element).
+fn inline_outline_fragments<'a>(
+    get: impl Fn(RawNodeId) -> Option<&'a Node> + Copy,
+    inline_layout: &crate::node::InlineLayout,
+    scale: f64,
+    window: Option<(usize, usize)>,
+    mut shows: impl FnMut(RawNodeId) -> bool,
+) -> Vec<(RawNodeId, Vec<Rect>)> {
+    let spans = inline_outline_spans(get, inline_layout);
+    let mut out: Vec<(RawNodeId, Vec<Rect>)> = Vec::new();
+    span_box_rects(get, inline_layout, &spans, false, scale, window, |frag| {
+        let owner = frag.span.owner;
+        if !shows(owner) {
+            return;
+        }
+        match out.last_mut() {
+            Some((o, rects)) if *o == owner => rects.push(frag.rect),
+            _ => out.push((owner, vec![frag.rect])),
+        }
+    });
+    out
+}
+
+/// The outlines of the inline elements of these lines (#2973), round their
+/// fragments as Chrome 158 draws them: a fragment whose outline meets no
+/// other's is outlined on its own, as a box is (any style); fragments whose
+/// outlines meet — lines close enough that the bands touch or overlap — are
+/// outlined as one shape, the band round the union of the fragments grown by
+/// `outline-offset`, with the gaps between them inside it
+/// ([`outline_union_ring`]). Drawn after the lines' text and boxes.
+#[allow(clippy::too_many_arguments)]
+fn paint_inline_outlines(
+    tree: &NodeTree,
+    painter: &mut dyn Painter,
+    scale: f64,
+    parent_x: f64,
+    parent_y: f64,
+    inline_layout: &crate::node::InlineLayout,
+    css_transform: Affine,
+    scope: InlineScope<'_>,
+) {
+    let get = |id| tree.get(id);
+    let outlines = inline_outline_fragments(get, inline_layout, scale, scope.window(), |id| {
+        scope.shows(tree, id)
+    });
+    let transform = css_transform * Affine::translate((parent_x, parent_y));
+    for (owner, rects) in outlines {
+        let Some(node) = tree.get(owner) else {
+            continue;
+        };
+        let cs = &node.computed_style;
+        let Some(color) = cs.outline_color else {
+            continue;
+        };
+        let reach = (cs.outline_offset + cs.outline_width) as f64 * scale;
+        for group in outline_groups(&rects, reach) {
+            if let [r] = group.as_slice() {
+                super::borders::paint_outline(
+                    painter,
+                    node,
+                    scale,
+                    r.x0,
+                    r.y0,
+                    r.width(),
+                    r.height(),
+                    super::radii::BorderRadii::ZERO,
+                    transform,
+                );
+            } else if let Some(ring) = outline_union_ring(
+                &group,
+                cs.outline_offset as f64 * scale,
+                cs.outline_width as f64 * scale,
+            ) {
+                painter.fill_color(Fill::NonZero, transform, color, &ring.into());
+            }
+        }
+    }
+}
+
+/// `rects` split into the groups whose outlines meet: two fragments are in
+/// one group when their boxes grown by `reach` (the outline's offset and
+/// width) touch or overlap, directly or through others.
+fn outline_groups(rects: &[Rect], reach: f64) -> Vec<Vec<Rect>> {
+    let grown: Vec<Rect> = rects.iter().map(|r| r.inflate(reach, reach)).collect();
+    let meet = |a: &Rect, b: &Rect| a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1;
+    let mut group: Vec<usize> = (0..rects.len()).collect();
+    fn find(g: &mut [usize], mut i: usize) -> usize {
+        while g[i] != i {
+            g[i] = g[g[i]];
+            i = g[i];
+        }
+        i
+    }
+    for i in 0..rects.len() {
+        for j in i + 1..rects.len() {
+            if meet(&grown[i], &grown[j]) {
+                let (a, b) = (find(&mut group, i), find(&mut group, j));
+                group[a] = b;
+            }
+        }
+    }
+    let mut out: Vec<(usize, Vec<Rect>)> = Vec::new();
+    for (i, r) in rects.iter().enumerate() {
+        let g = find(&mut group, i);
+        match out.iter_mut().find(|(k, _)| *k == g) {
+            Some((_, v)) => v.push(*r),
+            None => out.push((g, vec![*r])),
+        }
+    }
+    out.into_iter().map(|(_, v)| v).collect()
+}
+
+/// The band an outline `width` wide draws round fragments `rects` grown by
+/// `offset`, taken as one shape (#2973): the union `O` of the rects grown by
+/// `offset + width`, less `O` shrunk by `width` — so a gap between two
+/// fragments that the outer union closes is inside the shape and drawn
+/// over by nothing, as Chrome 158 draws two lines' fragments whose outlines
+/// meet (one band round both, none between them). As rectangles on the grid
+/// of the shapes' edges, one path. `None` when it is empty.
+fn outline_union_ring(rects: &[Rect], offset: f64, width: f64) -> Option<peniko::kurbo::BezPath> {
+    use peniko::kurbo::{BezPath, Shape};
+    const EPS: f64 = 1e-6;
+    let outer: Vec<Rect> = rects
+        .iter()
+        .map(|r| r.inflate(offset + width, offset + width))
+        .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+        .collect();
+    if outer.is_empty() || width <= 0.0 {
+        return None;
+    }
+    let sorted = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v.dedup_by(|a, b| (*a - *b).abs() < EPS);
+        v
+    };
+    // The grid of `O`'s own edges, and whether each of its cells is in `O`.
+    let ox = sorted(outer.iter().flat_map(|r| [r.x0, r.x1]).collect());
+    let oy = sorted(outer.iter().flat_map(|r| [r.y0, r.y1]).collect());
+    let in_outer = |x: f64, y: f64| {
+        outer
+            .iter()
+            .any(|r| x > r.x0 && x < r.x1 && y > r.y0 && y < r.y1)
+    };
+    let o_cell: Vec<Vec<bool>> = (0..oy.len().saturating_sub(1))
+        .map(|j| {
+            (0..ox.len().saturating_sub(1))
+                .map(|i| in_outer((ox[i] + ox[i + 1]) / 2.0, (oy[j] + oy[j + 1]) / 2.0))
+                .collect()
+        })
+        .collect();
+    // Whether the square `width` round a point is inside `O`: every cell of
+    // `O`'s grid that the square overlaps is in `O`.
+    let square_inside = |x: f64, y: f64| {
+        let (x0, x1, y0, y1) = (x - width, x + width, y - width, y + width);
+        if x0 < ox[0] - EPS || x1 > ox[ox.len() - 1] + EPS {
+            return false;
+        }
+        if y0 < oy[0] - EPS || y1 > oy[oy.len() - 1] + EPS {
+            return false;
+        }
+        for j in 0..oy.len() - 1 {
+            if oy[j + 1] <= y0 + EPS || oy[j] >= y1 - EPS {
+                continue;
+            }
+            for i in 0..ox.len() - 1 {
+                if ox[i + 1] <= x0 + EPS || ox[i] >= x1 - EPS {
+                    continue;
+                }
+                if !o_cell[j][i] {
+                    return false;
+                }
+            }
+        }
+        true
+    };
+    // The ring's grid: `O`'s edges and the same moved in by `width`, where
+    // the shrunk shape's edges are.
+    let gx = sorted(ox.iter().flat_map(|&x| [x, x - width, x + width]).collect());
+    let gy = sorted(oy.iter().flat_map(|&y| [y, y - width, y + width]).collect());
+    let mut path = BezPath::new();
+    for j in 0..gy.len().saturating_sub(1) {
+        let my = (gy[j] + gy[j + 1]) / 2.0;
+        let mut run: Option<f64> = None;
+        for i in 0..gx.len() {
+            let ring = i + 1 < gx.len() && {
+                let mx = (gx[i] + gx[i + 1]) / 2.0;
+                in_outer(mx, my) && !square_inside(mx, my)
+            };
+            match (ring, run) {
+                (true, None) => run = Some(gx[i]),
+                (false, Some(x0)) => {
+                    path.extend(Rect::new(x0, gy[j], gx[i], gy[j + 1]).path_elements(0.1));
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    (!path.elements().is_empty()).then_some(path)
+}
+
 /// The union of the opaque backgrounds that layered span `span`'s entry fills
 /// (its own, and those of the inline elements in it that it draws), in device px
 /// relative to the IFC root's content origin: where its background covers
@@ -640,9 +948,35 @@ pub(super) fn inline_background_rects<'a>(
     inline_layout: &crate::node::InlineLayout,
     scale: f64,
     window: Option<(usize, usize)>,
+    f: impl FnMut(InlineBoxFragment<'_>),
+) {
+    span_box_rects(
+        get,
+        inline_layout,
+        &inline_layout.background_spans,
+        true,
+        scale,
+        window,
+        f,
+    );
+}
+
+/// [`inline_background_rects`] for the elements `spans` names: their
+/// fragments' border boxes, snapped as a background's are. `live` re-reads
+/// each recorded span from its owner's style as it is now (and skips an
+/// owner that no longer draws a background or border), as a recorded
+/// background span needs; `false` takes `spans` as they are, for spans
+/// built from the styles of this paint ([`inline_outline_spans`]).
+fn span_box_rects<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+    spans: &[crate::node::InlineBackgroundSpan],
+    live: bool,
+    scale: f64,
+    window: Option<(usize, usize)>,
     mut f: impl FnMut(InlineBoxFragment<'_>),
 ) {
-    if inline_layout.background_spans.is_empty() {
+    if spans.is_empty() {
         return;
     }
     // What each line holds, read in one pass over the lines: asking every
@@ -650,9 +984,9 @@ pub(super) fn inline_background_rects<'a>(
     // quadratic (500 pills in 1500 runs took a second a paint).
     let lines = FragmentLines::of(inline_layout);
     // The atomic inlines each element holds, by line (#2597).
-    let held = atomic_boxes_held(&get, &inline_layout.background_spans, &lines);
+    let held = atomic_boxes_held(&get, spans, &lines);
 
-    for bg_span in &inline_layout.background_spans {
+    for bg_span in spans {
         // Only the elements in a span's window, for its entry (#2819).
         if !touches(window, bg_span.start, bg_span.end) {
             continue;
@@ -668,13 +1002,14 @@ pub(super) fn inline_background_rects<'a>(
         // transition or animation frame writes its colour, padding and radius
         // with no re-shape (#679). A background faded out to nothing draws
         // nothing; only an owner that is gone falls back to what was recorded.
-        let live;
+        let current;
         let bg_span = match owner {
+            Some(_) if !live => bg_span,
             Some(owner) => {
                 match crate::ifc::inline_background_span(owner, bg_span.start, bg_span.end) {
                     Some(span) => {
-                        live = span;
-                        &live
+                        current = span;
+                        &current
                     }
                     None => continue,
                 }
@@ -686,8 +1021,9 @@ pub(super) fn inline_background_rects<'a>(
         note_span_line_visits(on.len());
         // Each edge on the nearest device pixel, as Chrome 156 snaps a
         // fragment's box (#2607): the IFC root's content origin is on the
-        // device grid, so its own grid is the device's.
-        let snap = |v: f64| (v * scale).round();
+        // device grid, so its own grid is the device's. The rule a block
+        // box's edges snap by (#2368).
+        let snap = |v: f64| super::pixel_snap::snap_edge(v * scale);
         span_fragment_rects(
             &get,
             inline_layout,
@@ -1523,19 +1859,41 @@ fn line_reach(m: &parley::layout::LineMetrics) -> (f64, f64) {
 /// and glyphs are measured by their fonts' ascent and descent, not their
 /// outlines. `get` looks a node up.
 pub(crate) fn inline_ink_past_lines<'a>(
-    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node> + Copy,
     inline_layout: &crate::node::InlineLayout,
     scale: f64,
+    outlines: bool,
 ) -> Option<Rect> {
+    // The outlines round inline fragments (#2973), each fragment grown by
+    // its owner's offset and width: looked for only once an inline element
+    // has had an outline (`outlines`, `NodeTree::inline_outlines`).
+    let outline_ink: Option<Rect> = outlines
+        .then(|| {
+            let mut ink: Option<Rect> = None;
+            for (owner, rects) in
+                inline_outline_fragments(get, inline_layout, scale, None, |_| true)
+            {
+                let Some(cs) = get(owner).map(|n| &n.computed_style) else {
+                    continue;
+                };
+                let reach = ((cs.outline_offset + cs.outline_width) as f64 * scale).max(0.0);
+                for r in rects {
+                    let r = r.inflate(reach, reach);
+                    ink = Some(ink.map_or(r, |i| i.union(r)));
+                }
+            }
+            ink
+        })
+        .flatten();
     if !inline_layout.shifts_glyphs()
         && inline_layout.background_spans.is_empty()
         && inline_layout.decoration_spans.is_empty()
         && inline_layout.glyph_overflow.is_none()
     {
-        return None;
+        return outline_ink;
     }
     let layout = &inline_layout.layout;
-    let mut ink: Option<Rect> = None;
+    let mut ink: Option<Rect> = outline_ink;
     let mut add = |r: Rect| ink = Some(ink.map_or(r, |i| i.union(r)));
     if let Some([x0, y0, x1, y1]) = inline_layout.glyph_overflow {
         let (mut x0, mut x1) = (x0 as f64, x1 as f64);
@@ -1605,7 +1963,7 @@ pub(crate) fn inline_ink_past_lines<'a>(
     }
 
     if !inline_layout.background_spans.is_empty() {
-        inline_background_rects(&get, inline_layout, scale, None, |frag| add(frag.rect));
+        inline_background_rects(get, inline_layout, scale, None, |frag| add(frag.rect));
     }
 
     for span in &inline_layout.decoration_spans {
@@ -2190,6 +2548,7 @@ pub(crate) fn layered_span_extent<'a>(
     span: RawNodeId,
     margin: f64,
     scale: f64,
+    outlines: bool,
 ) -> Option<Rect> {
     let s = inline_layout
         .relative_spans
@@ -2215,7 +2574,7 @@ pub(crate) fn layered_span_extent<'a>(
         ink = Some(ink.map_or(r, |i| i.union(r)));
     }
     let ink = ink?;
-    let ink = match inline_ink_past_lines(get, inline_layout, scale) {
+    let ink = match inline_ink_past_lines(get, inline_layout, scale, outlines) {
         Some(past) => ink.union(past),
         None => ink,
     };

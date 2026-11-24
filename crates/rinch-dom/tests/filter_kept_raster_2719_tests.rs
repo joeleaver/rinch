@@ -149,6 +149,9 @@ html, body { margin: 0; background: #fff; }
     assert_eq!(n, 0);
 }
 
+/// A move by part of a pixel. Box edges round to the nearest device pixel
+/// (#2368, as Chrome's do), so 61.3px would paint where 61px does and change
+/// nothing; 61.6px rounds to 62, a picture the kept raster must not hide.
 #[test]
 fn p7_subpixel_move() {
     let page = r#"<!doctype html><html><head><style>
@@ -157,7 +160,7 @@ html, body { margin: 0; background: #fff; }
 </style></head><body><div id="f"></div></body></html>"#;
     let n = probe(page, 1.0, |doc| {
         let s = by_id(doc, "f");
-        doc.set_attribute(s, "style", "left: 61.3px");
+        doc.set_attribute(s, "style", "left: 61.6px");
     });
     assert_eq!(n, 0);
 }

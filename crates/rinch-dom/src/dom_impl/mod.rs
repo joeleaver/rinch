@@ -166,6 +166,13 @@ pub struct RinchDocument {
     /// are the web's `<head>` sheets: after the theme slot, before every
     /// `<style>` element's sheet.
     pub(crate) author_stylesheets: Vec<style::stylesheets::DocumentStyleSheet>,
+    /// The reduced-motion preference this document's sheets were parsed with
+    /// (#2209, `crate::reduced_motion`). Starts as the process's.
+    pub(crate) reduced_motion: bool,
+    /// Every author sheet whose source names `prefers-reduced-motion`, with
+    /// that source, so a change of preference can re-parse it. Entries for
+    /// sheets that left the document are dropped when it changes.
+    pub(crate) motion_sheets: Vec<(style::stylesheets::DocumentStyleSheet, String)>,
     /// Every `<style>` element created in this document (#884), so the sheets
     /// can follow them in and out of it. May hold ids since freed or reused;
     /// [`Self::sync_style_element_sheets`] drops those.
@@ -303,6 +310,8 @@ impl RinchDocument {
             device_params,
             theme_stylesheet: None,
             author_stylesheets: Vec::new(),
+            reduced_motion: crate::reduced_motion::prefers_reduced_motion(),
+            motion_sheets: Vec::new(),
             style_elements: Vec::new(),
             style_element_sheets: Vec::new(),
             style_elements_stale: false,
@@ -1086,6 +1095,10 @@ impl RinchDocument {
         if let Some(parent) = self.tree.get(node_id).and_then(|n| n.parent) {
             self.tree.bar_check_parents.push(parent);
         }
+        // The scroll ranges' kept walks drop what they recorded of it, and
+        // the walks of the scroll containers in it (#2054): put back, it is
+        // recorded again where it is.
+        self.tree.deep_overflow.forget_detached(&self.tree, node_id);
         self.mark_subtree_paint_dirty_below(node_id);
     }
 

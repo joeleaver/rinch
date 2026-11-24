@@ -152,6 +152,8 @@ mod editor_caret_affinity_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_caret_content_area_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_code_newline_2993_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_decoration_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_file_drop_caret_1649_tests;
@@ -214,9 +216,13 @@ mod editor_shared_mark_wrappers_1833_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_spellcheck_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_tab_2210_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_table_keys_1847_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod editor_th_align_2210_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_word_delete_tests;
 #[cfg(all(test, feature = "windowing"))]
@@ -294,18 +300,24 @@ mod implicit_focus_tests;
 mod inline_draggable_2233_tests;
 #[cfg(test)]
 mod inline_drop_target_2246_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod spellcheck_menu_tests;
 // A window's input region (#2741): the desktop shell's alone.
 #[cfg(feature = "windowing")]
 pub(crate) mod input_region;
 #[cfg(all(test, feature = "windowing"))]
 mod input_region_tests;
 // Uses `perf_expect`, which exists only with the software shell.
+#[cfg(test)]
+mod display_props_2207_tests;
 #[cfg(all(test, software_shell))]
 mod inline_hover_2648_tests;
 #[cfg(all(test, software_shell))]
 mod inline_ink_damage_1815_tests;
 #[cfg(all(test, software_shell, feature = "windowing", target_os = "linux"))]
 mod inline_menu_spacer_529_tests;
+#[cfg(test)]
+mod inline_tab_stops_2963_tests;
 #[cfg(test)]
 mod input_commit_tests;
 #[cfg(all(test, software_shell))]
@@ -324,6 +336,7 @@ mod key_event_data_tests;
 mod key_repeat_tests;
 #[cfg(test)]
 mod key_up_redraw_486_tests;
+mod keyboard_scroll;
 #[cfg(test)]
 mod label_activation_866_tests;
 #[cfg(test)]
@@ -384,6 +397,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
+#[cfg(test)]
+mod stepper_window_2195_tests;
 // Uses `perf_expect` (software shell) and names the pointer (desktop).
 #[cfg(all(test, software_shell, feature = "windowing"))]
 mod rehover_2766_tests;
@@ -484,6 +499,9 @@ mod text_selection_copy_gesture_tests;
 mod text_selection_copy_tests;
 #[cfg(test)]
 mod text_selection_gestures_tests;
+mod text_selection_keys;
+#[cfg(test)]
+mod text_selection_keys_tests;
 #[cfg(test)]
 mod text_selection_leaf_tests;
 #[cfg(test)]
@@ -533,7 +551,9 @@ pub use devtools_keys::{DEVTOOLS_DEFAULT, DEVTOOLS_ENV, set_devtools_default};
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
 pub use smooth_wheel::set_smooth_wheel_scroll_default;
-pub use text_context_menu::{TextContextMenuPresentation, TextEditAction, TextEditState};
+pub use text_context_menu::{
+    TextContextMenuPresentation, TextEditAction, TextEditState, TextSpelling,
+};
 pub use title_tooltip::{TITLE_TOOLTIP_DELAY, set_title_tooltips_default};
 
 use std::cell::RefCell;
@@ -1022,6 +1042,9 @@ pub(crate) struct TextSelection {
     /// Shift+click after it extends by that unit (#2256). `None` for a
     /// selection made by a single press.
     pub(crate) unit: Option<SelectionUnit>,
+    /// The window x a Shift+Up / Shift+Down aims at, kept across a run of
+    /// them (`text_selection_keys`); any other change drops it.
+    pub(crate) goal_x: Option<f32>,
 }
 
 /// One end of a read-only selection: a root, a byte offset in its text,
@@ -1289,6 +1312,9 @@ pub struct RinchApp {
     pub(crate) last_click_time: Instant,
     /// Position of last mouse click.
     pub(crate) last_click_pos: (f32, f32),
+    /// The node the last press landed on: where a keyboard scroll starts
+    /// when nothing has focus (#2977), as Chrome's does.
+    pub(crate) keyboard_scroll_anchor: Option<u64>,
     /// Current click count (1 = single, 2 = double, 3 = triple).
     pub(crate) click_count: u8,
     /// Font context for hit testing (reused across frames).
@@ -1530,6 +1556,12 @@ pub struct RinchApp {
     /// Who presents the text context menu — the runtime's DOM menu, or the
     /// shell through [`AppAction::ShowTextContextMenu`].
     pub(crate) text_menu_presentation: TextContextMenuPresentation,
+    /// The misspelled word the last context gesture landed on, and its
+    /// suggestions (#2862, stage 3): what the menu's spelling rows and
+    /// [`TextEditState::spelling`] show while the word stays selected.
+    pub(crate) text_spell: Option<text_context_menu::SpellTarget>,
+    /// Counts suggestion requests, so a late answer finds its own.
+    pub(crate) text_spell_requests: u64,
     /// The "goal column" (a window-space x) preserved across consecutive vertical
     /// cursor moves (Up/Down) in the focused new editor, so the caret keeps its
     /// horizontal position through short lines instead of drifting to line ends.
@@ -1662,6 +1694,7 @@ impl RinchApp {
             owned_theme_generation: 0,
             last_click_time: rinch_core::timer::now(),
             last_click_pos: (0.0, 0.0),
+            keyboard_scroll_anchor: None,
             click_count: 0,
             hit_test_font_cx: rinch_dom::fonts::new_font_context(),
             hit_test_layout_cx: parley::LayoutContext::new(),
@@ -1725,6 +1758,8 @@ impl RinchApp {
             text_menu_dismiss_handle: None,
             text_menu_css_injected: false,
             text_menu_presentation: TextContextMenuPresentation::default(),
+            text_spell: None,
+            text_spell_requests: 0,
             #[cfg(feature = "windowing")]
             editor_goal_x: None,
             hovered_surface: None,
@@ -1967,6 +2002,33 @@ impl RinchApp {
             doc.note_fonts_registered();
         }
         self.pending_fonts.push(font);
+    }
+
+    /// Whether the document answers `prefers-reduced-motion` other than the
+    /// process's preference says (#2209): the OS's setting or the app's
+    /// override changed since it was parsed.
+    pub(crate) fn reduced_motion_owed(&self) -> bool {
+        self.doc.as_ref().is_some_and(|d| {
+            d.borrow().prefers_reduced_motion()
+                != rinch_dom::reduced_motion::prefers_reduced_motion()
+        })
+    }
+
+    /// Re-answer `prefers-reduced-motion` in the document when it is owed
+    /// ([`Self::reduced_motion_owed`]): its sheets that name the feature are
+    /// re-parsed and everything restyles. Returns whether it changed.
+    pub(crate) fn adopt_reduced_motion(&mut self) -> bool {
+        if !self.reduced_motion_owed() {
+            return false;
+        }
+        if let Some(doc) = &self.doc {
+            doc.borrow_mut()
+                .set_prefers_reduced_motion(rinch_dom::reduced_motion::prefers_reduced_motion());
+        }
+        self.scene_dirty = true;
+        #[cfg(software_shell)]
+        self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::Invalidated);
+        true
     }
 
     /// Whether the shared system-font scan was refreshed
@@ -2376,6 +2438,9 @@ impl RinchApp {
         // Fonts installed since the scan (#2486): rebuilt before anything
         // resolves, so this frame lays out with them.
         let fonts_adopted = self.adopt_refreshed_system_fonts();
+        // The reduced-motion preference changed (#2209): this sets the
+        // document's styles dirty, so the frame does not short-circuit.
+        self.adopt_reduced_motion();
         let Some(doc) = self.doc.clone() else {
             return false;
         };
@@ -4262,6 +4327,7 @@ impl RinchApp {
             || self.has_owed_editor_overlay_pass()
             || self.theme_change_owed()
             || self.system_fonts_owed()
+            || self.reduced_motion_owed()
     }
 
     /// Whether a `NodeHandle::scroll_into_view` / `scroll_to_fraction` is
@@ -4322,6 +4388,7 @@ impl RinchApp {
             || self.has_owed_editor_overlay_pass()
             || self.theme_change_owed()
             || self.system_fonts_owed()
+            || self.reduced_motion_owed()
     }
 
     /// Whether a wake of the event loop that ran queued work — main-thread
@@ -4682,6 +4749,20 @@ impl RinchApp {
         let Some(action) = text_key_action(self.text_keymap, key, modifiers) else {
             return;
         };
+        // With no field holding the keyboard, a Shift chord extends the
+        // read-only selection (#2953).
+        // Alt is no text chord on Windows and Linux (Alt+Arrow is a
+        // browser's history keys): Chrome 158 extends nothing with it.
+        if let TextKeyAction::Move {
+            motion,
+            extend: true,
+        } = action
+            && !(self.text_keymap == TextKeymap::Standard && modifiers.alt)
+            && self.live_focused_input_handler().is_none()
+            && self.extend_text_selection_by_key(motion)
+        {
+            return;
+        }
         let password = self.focused_input_is_password();
         match action {
             TextKeyAction::Move { motion, extend } => {
@@ -5951,22 +6032,33 @@ impl RinchApp {
             .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
     }
 
-    /// Whether a node has a box the user could reach — a non-zero layout, and
-    /// not `visibility: hidden`/`collapse`.
+    /// Whether a node has a box the user could reach — a non-zero layout (or,
+    /// for a flowed inline element, a place in an inline formatting context),
+    /// and not `visibility: hidden`/`collapse`.
     ///
     /// Shared by the focusable collector and the trap-root search so the two
     /// cannot drift: a closed `Modal`'s root is `display: none`, which is a zero
     /// box, and a trap the collector would find nothing inside must not be
     /// chosen as the root in the first place — that would leave Tab dead for
     /// the rest of the session.
+    ///
+    /// **A flowed inline element** (`<a href>` in a paragraph, a
+    /// `<span tabindex="0">`) owns no Taffy box: its `layout` is a `0x0` ghost
+    /// while its text is painted (issue #2963). It is rendered when it is
+    /// content of an inline formatting context —
+    /// [`rinch_dom::Node::is_flowed_inline_element`], whose `ifc_root` every
+    /// IFC pass recomputes, and which an element under a `display: none`
+    /// ancestor (inline or block) does not keep. Its width does not matter:
+    /// Chrome 158 stops Tab on an empty `<a href></a>`, whose rect is `0x17`.
     fn node_is_visible(node: &rinch_dom::Node) -> bool {
-        node.layout.width > 0.0
-            && node.layout.height > 0.0
-            && !matches!(
-                node.computed_style.visibility,
-                rinch_dom::computed_style::VisibilityValue::Hidden
-                    | rinch_dom::computed_style::VisibilityValue::Collapse
-            )
+        if matches!(
+            node.computed_style.visibility,
+            rinch_dom::computed_style::VisibilityValue::Hidden
+                | rinch_dom::computed_style::VisibilityValue::Collapse
+        ) {
+            return false;
+        }
+        node.is_flowed_inline_element() || (node.layout.width > 0.0 && node.layout.height > 0.0)
     }
 
     /// The live focus trap Tab is confined to, if any (issue #474).

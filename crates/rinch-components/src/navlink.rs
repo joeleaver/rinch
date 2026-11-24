@@ -18,16 +18,24 @@
 //! }
 //! ```
 
-use rinch_core::Component;
 use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::{Component, Signal, ValueCallback};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::rc::Rc;
+
+use crate::SectionRenderer;
 
 /// Reactive callback type for boolean state.
 pub type ReactiveBool = Rc<dyn Fn() -> bool>;
 
 /// The class the active state adds to a navlink's anchor or button.
 const ACTIVE_CLASS: &str = "rinch-navlink--active";
+
+/// The class an open navlink's chevron (or rotating right section) carries.
+const CHEVRON_OPENED_CLASS: &str = "rinch-navlink__chevron--opened";
+
+/// The class a closed navlink's children container carries.
+const CHILDREN_COLLAPSED_CLASS: &str = "rinch-navlink__children--collapsed";
 
 /// NavLink variant style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -101,16 +109,31 @@ pub struct NavLink {
     pub color: String,
     /// Left section icon.
     pub left_section: Option<TablerIcon>,
-    /// Right section icon.
+    /// Right section icon. On a navlink with children it takes the chevron's
+    /// place, and rotates with it unless `disable_right_section_rotation`.
     pub right_section: Option<TablerIcon>,
+    /// Icon drawn as the expand chevron of a navlink with children, in place of
+    /// the built-in one. It points right when closed and turns 90° when open.
+    pub chevron_icon: Option<TablerIcon>,
+    /// Keep the right section (chevron included) still when the navlink opens.
+    pub disable_right_section_rotation: bool,
+    /// The escape hatch for the label: renders the label slot's content (a
+    /// badge, a count) in place of `label`'s text.
+    pub label_fn: Option<SectionRenderer>,
     /// Whether link is disabled.
     pub disabled: bool,
     /// Whether this navlink has nested children (makes it expandable).
     pub children_offset: String,
-    /// Whether children are visible (expanded).
+    /// Whether children start visible (expanded). With children, clicking the
+    /// navlink toggles them from there; see `opened_fn` for a controlled one.
     pub opened: bool,
-    /// Default opened state (uncontrolled).
+    /// Default opened state (uncontrolled). Means the same as `opened`.
     pub default_opened: bool,
+    /// Controlled open state: the children follow this getter, and a click
+    /// only reports the wanted state through `on_opened_change`.
+    pub opened_fn: Option<ReactiveBool>,
+    /// Called with the new open state when a click toggles the children.
+    pub on_opened_change: Option<ValueCallback<bool>>,
     /// Disable text wrapping.
     pub no_wrap: bool,
     /// Click handler.
@@ -129,10 +152,21 @@ impl std::fmt::Debug for NavLink {
             .field("color", &self.color)
             .field("left_section", &self.left_section)
             .field("right_section", &self.right_section)
+            .field("chevron_icon", &self.chevron_icon)
+            .field(
+                "disable_right_section_rotation",
+                &self.disable_right_section_rotation,
+            )
+            .field("label_fn", &self.label_fn.as_ref().map(|_| "<renderer>"))
             .field("disabled", &self.disabled)
             .field("children_offset", &self.children_offset)
             .field("opened", &self.opened)
             .field("default_opened", &self.default_opened)
+            .field("opened_fn", &self.opened_fn.as_ref().map(|_| "<reactive>"))
+            .field(
+                "on_opened_change",
+                &self.on_opened_change.as_ref().map(|_| "<callback>"),
+            )
             .field("no_wrap", &self.no_wrap)
             .field("onclick", &self.onclick.as_ref().map(|_| "<callback>"))
             .finish()
@@ -190,12 +224,10 @@ impl Component for NavLink {
         // Build style parts
         let mut style_parts = Vec::new();
         if !self.color.is_empty() {
-            let c = &self.color;
-            if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
-                style_parts.push(format!("--rinch-navlink-color: {}", c));
-            } else {
-                style_parts.push(format!("--rinch-navlink-color: var(--rinch-color-{}-6)", c));
-            }
+            style_parts.push(crate::color_utils::accent_vars(
+                "--rinch-navlink",
+                &self.color,
+            ));
         }
         if !self.children_offset.is_empty() {
             style_parts.push(format!(
@@ -222,12 +254,23 @@ impl Component for NavLink {
         }
 
         // Body with label and optional description
+        let label_span = if let Some(render) = &self.label_fn {
+            let span = rinch_macros::rsx! { span { class: "rinch-navlink__label" } };
+            let content = render(__scope);
+            span.append_child(&content);
+            Some(span)
+        } else if !self.label.is_empty() {
+            Some(
+                rinch_macros::rsx! { span { class: "rinch-navlink__label", {self.label.clone()} } },
+            )
+        } else {
+            None
+        };
         if !self.description.is_empty() {
             let body = rinch_macros::rsx! { div { class: "rinch-navlink__body" } };
 
-            if !self.label.is_empty() {
-                let label_span = rinch_macros::rsx! { span { class: "rinch-navlink__label", {self.label.clone()} } };
-                body.append_child(&label_span);
+            if let Some(label_span) = &label_span {
+                body.append_child(label_span);
             }
 
             let desc = &self.description;
@@ -236,35 +279,55 @@ impl Component for NavLink {
             body.append_child(&desc_span);
 
             inner.append_child(&body);
-        } else if !self.label.is_empty() {
-            let label_span =
-                rinch_macros::rsx! { span { class: "rinch-navlink__label", {self.label.clone()} } };
-            inner.append_child(&label_span);
+        } else if let Some(label_span) = &label_span {
+            inner.append_child(label_span);
         }
 
-        // Right section - chevron for expandable items or custom icon
+        // The initial open state. With `opened_fn` it is the getter's; without,
+        // `opened`/`default_opened` seed the navlink's own state, which a click
+        // toggles (issue #2192: it used to choose the first class and nothing
+        // more, so a nested NavLink never opened).
+        let initial_open = match &self.opened_fn {
+            Some(opened_fn) => opened_fn(),
+            None => self.opened || self.default_opened,
+        };
+
+        // Right section - chevron for expandable items or custom icon. With
+        // children, the app's `right_section` takes the chevron's place (as in
+        // Mantine) where it used to be dropped silently (#2192).
+        let mut rotating: Option<NodeHandle> = None;
         if has_children {
-            let chevron_class = if self.opened || self.default_opened {
-                "rinch-navlink__chevron rinch-navlink__chevron--opened"
-            } else {
-                "rinch-navlink__chevron"
-            };
             let right_span = rinch_macros::rsx! { span { class: "rinch-navlink__right" } };
 
-            let svg = rinch_macros::rsx! {
-                svg {
-                    viewBox: "0 0 24 24",
-                    fill: "none",
-                    stroke: "currentColor"
-                }
+            let glyph = if let Some(icon) = self.right_section {
+                render_tabler_icon(__scope, icon, TablerIconStyle::Outline)
+            } else if let Some(icon) = self.chevron_icon {
+                let svg = render_tabler_icon(__scope, icon, TablerIconStyle::Outline);
+                svg.add_class("rinch-navlink__chevron");
+                svg
+            } else {
+                let svg = rinch_macros::rsx! {
+                    svg {
+                        viewBox: "0 0 24 24",
+                        fill: "none",
+                        stroke: "currentColor"
+                    }
+                };
+                svg.set_attribute("class", "rinch-navlink__chevron");
+                svg.set_attribute("stroke-width", "2");
+
+                let polyline = rinch_macros::rsx! { polyline { points: "9 18 15 12 9 6" } };
+                svg.append_child(&polyline);
+                svg
             };
-            svg.set_attribute("class", chevron_class);
-            svg.set_attribute("stroke-width", "2");
+            if !self.disable_right_section_rotation {
+                if initial_open {
+                    glyph.add_class(CHEVRON_OPENED_CLASS);
+                }
+                rotating = Some(glyph.clone());
+            }
 
-            let polyline = rinch_macros::rsx! { polyline { points: "9 18 15 12 9 6" } };
-            svg.append_child(&polyline);
-
-            right_span.append_child(&svg);
+            right_span.append_child(&glyph);
             inner.append_child(&right_span);
         } else if let Some(icon) = self.right_section {
             let right_span = rinch_macros::rsx! { span { class: "rinch-navlink__right" } };
@@ -310,13 +373,12 @@ impl Component for NavLink {
                 });
             }
 
-            // Click handler
-            if let Some(ref cb) = self.onclick {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
-                });
-                a.set_attribute("data-rid", &handler_id.0.to_string());
+            // A disabled anchor is not clickable from the keyboard either
+            // (#2192): `pointer-events: none` stopped only the mouse, so no
+            // handler is registered, as for a disabled `<button>`.
+            if self.disabled {
+                a.set_attribute("aria-disabled", "true");
+                a.set_attribute("tabindex", "-1");
             }
 
             a.append_child(&inner);
@@ -351,15 +413,6 @@ impl Component for NavLink {
                 btn.set_attribute("disabled", "");
             }
 
-            // Click handler
-            if let Some(ref cb) = self.onclick {
-                let handler_id = __scope.register_handler({
-                    let cb = cb.clone();
-                    move || cb.invoke()
-                });
-                btn.set_attribute("data-rid", &handler_id.0.to_string());
-            }
-
             btn.append_child(&inner);
             btn
         };
@@ -367,21 +420,84 @@ impl Component for NavLink {
         wrapper.append_child(&link_or_button);
 
         // Render nested children
+        let mut toggle: Option<Rc<dyn Fn()>> = None;
         if has_children {
-            let collapsed_class = if self.opened || self.default_opened {
-                "rinch-navlink__children"
-            } else {
-                "rinch-navlink__children rinch-navlink__children--collapsed"
-            };
             let children_container =
                 rinch_macros::rsx! { div { class: "rinch-navlink__children" } };
-            children_container.set_attribute("class", collapsed_class);
+            if !initial_open {
+                children_container.add_class(CHILDREN_COLLAPSED_CLASS);
+                children_container.set_style("display", "none");
+            }
+            link_or_button
+                .set_attribute("aria-expanded", if initial_open { "true" } else { "false" });
 
             for child in children {
                 children_container.append_child(child);
             }
 
             wrapper.append_child(&children_container);
+
+            // The open state: the navlink's own signal, or the app's getter.
+            let own = Signal::new(initial_open);
+            let opened_fn = self.opened_fn.clone();
+            let is_open: Rc<dyn Fn() -> bool> = match opened_fn {
+                Some(f) => f,
+                None => Rc::new(move || own.get()),
+            };
+
+            {
+                let is_open = is_open.clone();
+                let container = children_container.clone();
+                let control = link_or_button.clone();
+                let rotating = rotating.clone();
+                __scope.create_effect(move || {
+                    let open = is_open();
+                    // Closed children are not displayed, as a closed
+                    // `<details>` and Accordion's panel are, so Tab skips them.
+                    if open {
+                        container.remove_class(CHILDREN_COLLAPSED_CLASS);
+                        container.set_style("display", "");
+                    } else {
+                        container.add_class(CHILDREN_COLLAPSED_CLASS);
+                        container.set_style("display", "none");
+                    }
+                    if let Some(glyph) = &rotating {
+                        if open {
+                            glyph.add_class(CHEVRON_OPENED_CLASS);
+                        } else {
+                            glyph.remove_class(CHEVRON_OPENED_CLASS);
+                        }
+                    }
+                    control.set_attribute("aria-expanded", if open { "true" } else { "false" });
+                });
+            }
+
+            let controlled = self.opened_fn.is_some();
+            let on_change = self.on_opened_change.clone();
+            toggle = Some(Rc::new(move || {
+                let next = !is_open();
+                if !controlled {
+                    own.set(next);
+                }
+                if let Some(cb) = &on_change {
+                    cb.invoke(next);
+                }
+            }));
+        }
+
+        // Click handler: the app's `onclick`, then the toggle. None at all on a
+        // disabled navlink (#2192).
+        if !self.disabled && (self.onclick.is_some() || toggle.is_some()) {
+            let onclick = self.onclick.clone();
+            let handler_id = __scope.register_handler(move || {
+                if let Some(cb) = &onclick {
+                    cb.invoke();
+                }
+                if let Some(toggle) = &toggle {
+                    toggle();
+                }
+            });
+            link_or_button.set_attribute("data-rid", &handler_id.0.to_string());
         }
 
         wrapper

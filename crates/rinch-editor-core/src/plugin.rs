@@ -105,7 +105,28 @@ pub trait Plugin {
     }
 
     /// Key bindings this plugin contributes, as `(binding, command name)` pairs.
+    ///
+    /// A binding consumes its key whether or not its command applies: the
+    /// editor owns every chord it advertises (Tab at the top level sinks no list
+    /// item and still never moves the focus; Ctrl+Shift+R on a right-aligned
+    /// paragraph never reaches the browser's reload). Name a binding in
+    /// [`fall_through_keys`](Self::fall_through_keys) to leave its key alone where
+    /// the command answers `false`.
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
+        Vec::new()
+    }
+
+    /// The bindings of this plugin's [`keymap`](Self::keymap) that leave their
+    /// key alone where the command does not apply ([`Keymap::add_fall_through`](
+    /// crate::keymap::Keymap::add_fall_through)), as ProseMirror's keymap does
+    /// with every binding: the key goes on as if unbound — on the web to the
+    /// page's `keydown` listeners and the browser's default. For a chord an app
+    /// may want for itself where the editor has nothing to do with it, such as
+    /// the base keymap's Mod-Enter (`exitCode`) outside a code block. A binding
+    /// listed here that this plugin's keymap does not contain is ignored; a later
+    /// plugin that binds the same key replaces it with its own declaration, so a
+    /// rebinding consumes its key unless that plugin lists it here too.
+    fn fall_through_keys(&self) -> Vec<KeyBinding> {
         Vec::new()
     }
 

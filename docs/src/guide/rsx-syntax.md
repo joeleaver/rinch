@@ -419,10 +419,11 @@ It is a choice an app can turn off: `App::new(app).smooth_wheel_scroll(false)`
 makes every notch scroll its whole distance at once, and
 `RinchApp::set_smooth_wheel_scroll` changes it while the app runs (an embedded
 `RinchContext`: through `app_mut()`; send `PlatformEvent::MouseWheelLines` for a
-line wheel and it glides there too). rinch does not read the OS's
-reduced-motion setting on the desktop yet
-([#2209](https://github.com/joeleaver/rinch/issues/2209)); an app that reads it
-can pass the answer to `smooth_wheel_scroll`. On the web the browser scrolls,
+line wheel and it glides there too). Smooth scrolling does not follow the
+reduced-motion preference by itself. An app that wants it to can pass the
+preference to `smooth_wheel_scroll(!rinch::prefers_reduced_motion())`; the
+preference comes from the OS or `App::reduced_motion`, #2209; the getter is native-only
+(it does not exist in a web build). On the web the browser scrolls,
 with its own smoothing and its own settings, and none of this applies.
 
 ### Pointer moves are coalesced
@@ -496,6 +497,45 @@ div {
 ```
 
 [`ScrollEvent`]: https://docs.rs/rinch/latest/rinch/prelude/struct.ScrollEvent.html
+
+**`scroll-behavior: smooth`** (issue #2291) animates a *programmatic* scroll of
+the box it is on, as a browser does: a `set_scroll_top`/`set_scroll_left`, a
+`scroll_into_view()` / `scroll_to_fraction()` (the editor's caret reveal as you
+type included) and `NodeHandle::scroll_to`. The page scroller takes it from the
+root element (`html { scroll-behavior: smooth }`), as the viewport does in a
+browser. The scroll glides on the curve Chrome uses for it — `sqrt(distance)`
+frames of 60 Hz, so 400 px in a third of a second, never longer than 1.5 s —
+with `onscroll` on every frame. Right after a smooth write `scroll_top()` still
+reads the old offset, as `scrollTop` does in a browser. A second write mid-way
+retargets the glide; a wheel, a scrollbar drag or an instant write stops it.
+
+```rust
+// `scrollTo({top: 0, behavior})`: overrides the stylesheet either way.
+list.scroll_to(None, Some(0.0), ScrollBehavior::Instant);   // jump
+list.scroll_to(None, Some(0.0), ScrollBehavior::Smooth);    // glide
+list.scroll_to(None, Some(0.0), ScrollBehavior::Auto);      // as the CSS says
+```
+
+`RinchApp::set_smooth_programmatic_scroll(false)` makes every such scroll land
+on the next frame, with no glide (the hook for the OS reduced-motion setting, #2209, which rinch does
+not read on the desktop yet). On the web the browser does all of this itself.
+
+**Keyboard scrolling** (issue #2977). When no text field or editor has the key
+and no handler took it, the keys scroll as they do in Chrome: an arrow 40 px,
+Page Up / Page Down and Space / Shift+Space seven-eighths of the scrollport,
+Home / End (Ctrl too; Cmd+Up / Cmd+Down on macOS, Option+Up / Down a page) to
+the start or the end. What scrolls is the focused box's nearest scroller that
+can still move that way, else the scroller you last pressed in, else the page; a
+scroller at its end hands the key on to the one around it, and a fixed box
+(a header) hands it to the page. Space on a focused button, form control or
+`<summary>` (or a node with its own `onclick`)
+still activates it; on a focused link it scrolls, as in Chrome (Enter follows
+the link). The scroll glides over 150 ms, Chrome's keyboard curve, with
+`onscroll` on every frame; `smooth_wheel_scroll(false)` (one switch for every
+user scroll, as Chrome has one) makes it jump. CSS `scroll-behavior` does not
+apply to it: it is for programmatic scrolls, in Chrome as here. A key handler
+that consumes the key (an element's `on_key`, the app's key listeners)
+keeps it from scrolling.
 
 On desktop a scroll offset is kept on the **device pixel grid** (issue #1543),
 so scrolled text moves by whole device pixels and does not re-space as it

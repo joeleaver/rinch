@@ -235,12 +235,7 @@ impl Component for ActionIcon {
 
         // Color style
         if !self.color.is_empty() {
-            let c = &self.color;
-            let style = if crate::color_utils::is_raw_css_color(c) {
-                format!("--rinch-action-icon-color: {}", c)
-            } else {
-                format!("--rinch-action-icon-color: var(--rinch-color-{}-6)", c)
-            };
+            let style = crate::color_utils::accent_vars("--rinch-action-icon", &self.color);
             container.set_attribute("style", &style);
         }
 

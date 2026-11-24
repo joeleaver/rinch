@@ -76,6 +76,9 @@ background covers.
 | `content` | `String` | Initial content as schema-whitelisted HTML, parsed into the document once on mount. |
 | `read_only` | `bool` | Mount the editor [read-only](#read-only). `false` (the default) leaves the handle's switch as it is, so a handle locked before mount stays locked. Change it afterwards with `handle.set_read_only(..)`. |
 | `spellcheck` | `Option<bool>` | Spellchecking for this editor (#2862): `false` turns it off, `true` turns it on inside a subtree that turned it off, `None` (the default) inherits the nearest ancestor's `spellcheck` (on by default). See [Spellcheck](./spellcheck.md). |
+| `placeholder` | `String` | The prompt shown while the editor is empty, as `<textarea placeholder>`. Empty (the default) leaves the handle as it is. Change it live with `handle.set_placeholder(..)` — see [Placeholder](#placeholder). |
+| `markdown_shortcuts` | `Option<bool>` | `Some(true)` turns on the [markdown shortcuts](#markdown-shortcuts), which are **off** by default. `None` leaves the handle as it is. |
+| `tab_behavior` | `Option<TabBehavior>` | What Tab does — see [Tab](#tab). `None` leaves the handle as it is (`IndentInListsAndTables` for a fresh one). |
 
 Like every rinch component, `Editor {}` also accepts the universal `style:` and
 `class:` props, applied to its host element. Its **children** are an overlay slot that
@@ -126,7 +129,14 @@ Command names are case-sensitive. The full catalogue:
 below for `addRowBefore`, the row above for `addRowAfter`): under a cell two columns
 wide the new row has a cell two columns wide, and a cell that spans across the new
 row's line (a `rowspan` reaching past it) grows by one row and keeps those columns.
-The new cells are empty, plain `table_cell`s, even beside a header row. In a table
+The new cells are empty, plain `table_cell`s, even beside a header row, each aligned
+like the cell of the row beside it in its column. `addColumnBefore` and `addColumnAfter`
+model each new cell on the cell beside it in its row, in the column on its left (at the
+table's left edge, the column it pushes right; past a header column, the column on the
+other side): it takes that cell's type, so the header row gets a header cell, and its
+alignment. `splitCell` fills the slots it frees with cells of the merged cell's type and
+alignment, and clearing a cell selection keeps each cell's alignment. So a column keeps
+one alignment through these commands, and a Markdown pipe table stays a pipe table. In a table
 with no merged cells that is one cell per column, the row these commands have always
 added. Before #1244 a new row was always one cell per grid column, so a row added
 under a row of 2,100 cells each `colspan = 1000` wide built 2 million cells; it now
@@ -976,6 +986,72 @@ your views key app state to an attribute (a sheet id), give the copy a new one i
 attribute on the atoms, and `tr.replace_selection(slice)`
 (`rinch-editor-view/tests/node_view_paste.rs` does exactly this).
 
+### Placeholder
+
+`set_placeholder(text)` shows `text` while the document is empty (a single empty
+paragraph), as `<textarea placeholder>` does, and is as live: call it again from an
+effect and the shown text changes at once, with the document and its undo history
+untouched. Empty text shows none.
+
+```rust
+let editor = create_editor();
+editor.set_placeholder("Write a comment…");          // or Editor { placeholder: "…" }
+let ed = editor.clone();
+Effect::new(move || { ed.set_placeholder(&tr("comment.prompt", lang.get())); });
+```
+
+The prompt is a `div.rinch-editor-placeholder[data-pm-placeholder]` overlaying the
+first line, styled by the built-in stylesheet and hidden while read-only. The first
+non-empty call installs a `PlaceholderPlugin` (which restarts the undo history, like
+any `add_plugin`), so set it before content is typed; the prop does.
+
+### Tab
+
+Tab and Shift+Tab are what `set_tab_behavior(TabBehavior)` (or
+`Editor { tab_behavior: … }`) says:
+
+| `TabBehavior` | Tab / Shift+Tab |
+|---|---|
+| `IndentInListsAndTables` (default) | In a table cell: the next / previous cell (Tab in the last cell adds a row). In a list item: the keymap's `Tab` / `Shift-Tab` (`sinkListItem` / `liftListItem`). Anywhere they do nothing — a plain paragraph, a first item that cannot sink — the focus moves to the next / previous Tab stop. |
+| `MoveFocus` | Always move the focus, as in a Chrome `contenteditable`. Lists are indented from the toolbar or the `indent` / `sinkListItem` commands. |
+
+The default is a deliberate difference from Chrome, whose `contenteditable` never keeps
+Tab: a document editor indents with it (Google Docs). Under both, a keyboard user can
+always leave the editor by keyboard. A [read-only](#read-only) editor's Tab always
+moves the focus. An `on_key` callback sees Tab first and may claim it.
+
+### Colours of the caret, the selection and the composition
+
+The overlays the editor draws read CSS custom properties, which an app sets on the
+editor or on any ancestor (they inherit), so no rule has to out-rank an inline style:
+
+| Variable | Paints | Default |
+|---|---|---|
+| `--rinch-editor-caret-color` | the caret | `currentColor`, the editor's text colour (Chrome's `caret-color: auto`) |
+| `--rinch-editor-drop-caret-color` | the drag-and-drop drop point | the caret's colour |
+| `--rinch-editor-selection-bg` | the selection highlight | `rgba(26,115,232,0.3)` |
+| `--rinch-editor-node-outline` | a selected image / rule / embed (a `border` shorthand; `none` drops it) | `2px solid #1a73e8` |
+| `--rinch-editor-node-selection-bg` | that node's tint | `rgba(26,115,232,0.15)` |
+| `--rinch-editor-preedit-bg` | the IME composition's background | the editor's background (`--rinch-editor-bg`) |
+| `--rinch-editor-preedit-underline` | its underline (a `border-bottom` shorthand) | `1px solid currentColor` |
+| `--rinch-editor-bg` | the editor's background | `#ffffff`, or the dark scheme's |
+| `--rinch-editor-indent-step` | one level of paragraph / heading indent | `2em` |
+
+```css
+.comment-box { --rinch-editor-caret-color: #d6336c; --rinch-editor-selection-bg: #fcc2d7; }
+```
+
+A paragraph or heading at the default alignment and indent carries no inline
+`text-align` / `margin-left`: the alignment and indent commands write them, and
+going back takes them off. So an app rule (`[data-pm-editor] h1 { text-align:
+center }`) and the inherited `start` of an RTL editor decide the defaults, as in
+Chrome. An unset alignment is not `left`: `setTextAlignLeft` stores and writes
+an explicit `text-align: left` (exported to HTML as well), which holds in a
+header cell, in an RTL editor and against an app's rules; the Paragraph reset
+(`setParagraph`) unsets it. The default stylesheet start-aligns header cells
+(`[data-pm-editor] th { text-align: start }`), so a table's headers line up
+with its body cells rather than taking the browser's centred `th`.
+
 ### Dark mode
 
 The editor's built-in stylesheet has light and dark color schemes; toggle between
@@ -1036,9 +1112,10 @@ Tab and Shift+Tab move the focus on, as from a `readonly` field: to the next and
 previous Tab stop from the editor's place in the page, on desktop and on the web (inside
 a focus trap, within the trap). Past the last or the first Tab stop, desktop wraps round,
 as every Tab there does; the web behaves as a native field: Tab is left to the browser,
-and Shift+Tab sends the focus to the document. An editable editor keeps them for table
-cells and list indentation, so a reader who comes in by keyboard can always leave by keyboard. An
-`on_key` callback still sees Tab first and may claim it.
+and Shift+Tab sends the focus to the document. An editable editor keeps them only
+where they do something (table cells, list indentation; see [Tab](#tab)), so a reader
+who comes in by keyboard can always leave by keyboard. An `on_key` callback still sees
+Tab first and may claim it.
 
 The caret stays visible — a reader selects and copies with it. The mounted container
 carries `data-pm-readonly="true"` while the switch is on, for your own styling; the
@@ -1532,12 +1609,35 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Mod+Shift+B | Blockquote |
 | Mod+Shift+L / E / R / J | Align left / center / right / justify |
 | Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
-| Enter | Split block / new list item (between two blocks: a new empty paragraph there) |
-| Shift+Enter | Insert a hard break (line break within the block) |
-| Tab / Shift+Tab | Move between table cells, else indent / outdent a list item. Consumed even where neither applies, so Tab never leaves an editable editor; an app that wants it to claims it in `on_key`. In a [read-only](#read-only) editor: move the focus to the next / previous Tab stop |
+| Enter | Split block / new list item (between two blocks: a new empty paragraph there); in a code block, a new line (`newlineInCode`) |
+| Shift+Enter | Insert a hard break (line break within the block); in a code block, a new line (`insertLineBreak`) |
+| Mod+Enter | In a code block: leave it for a new paragraph after it (`exitCode`) |
+| Tab / Shift+Tab | Move between table cells, else indent / outdent a list item; where neither applies, move the focus to the next / previous Tab stop. `TabBehavior::MoveFocus` always moves the focus, and so does a [read-only](#read-only) editor. See [Tab](#tab) |
 | Backspace / Delete | Delete backward / forward |
 | Ctrl+Backspace / Ctrl+Delete (Alt on macOS) | Delete the word backward / forward |
 | Page Up / Page Down (Option+ on macOS) | Move the caret about a page (0.875 of the scroller's height) up / down at its column, scrolling the same amount; Shift extends. At the first / last line: the document's start / end. Read-only: scroll only. Plain Page Up / Down on macOS: scroll only |
+
+In a code block a line is a `"\n"` in its text (a code block holds no hard
+break), as in ProseMirror: Enter and Shift+Enter type one over the selection,
+and Mod+Enter leaves the block for an empty paragraph after it, the caret in
+it. Each is a command of its own — `newlineInCode`, `insertLineBreak` (a new
+line in a code block, else a hard break) and `exitCode` — for a toolbar or
+your own binding. Outside a code block Mod+Enter does nothing and is not the
+editor's: the key goes on to your app (the keyboard interceptor, an
+`onkeydown`, a page `keydown` listener), so Ctrl/Cmd+Enter can still mean
+"send".
+
+**Every shortcut in the table is the editor's key wherever the caret is**,
+whether or not its command applies there: Ctrl+Shift+R on a paragraph that is
+already right-aligned, or any chord in a [read-only](#read-only) editor, does
+nothing and is still consumed, so it never reaches the browser (on the web, Ctrl+Shift+R would hard-reload the page and
+lose unsaved edits). The one exception is Mod+Enter, which goes on to your app
+where it does not apply, as above. A plugin's bindings consume their key the
+same way — a plugin that rebinds Enter keeps it consumed — unless the plugin
+names them in `Plugin::fall_through_keys`, which gives them ProseMirror's
+keymap semantics: where the command answers `false`, the key goes on as if the
+editor had no binding for it (on the web it is not `preventDefault`ed, so the
+page's listeners and the browser's default see it).
 
 The four alignment chords are the Google Docs ones, and some of them are also
 chords of the browser or the platform, which may take the key before the editor
@@ -1793,9 +1893,25 @@ fetch_something(move |content| {
 
 ## Markdown shortcuts
 
-As you type, the editor rewrites markdown shortcuts in place (the default
-`MarkdownInputRulesPlugin`, on by default). Block shortcuts fire on a space at the
-start of a line; inline mark shortcuts fire when you type the closing delimiter:
+**Off by default** (#2210): like a Chrome `contenteditable`, a fresh editor inserts
+what is typed literally. Turn them on per editor:
+
+```rust
+let editor = create_editor();
+editor.set_markdown_shortcuts(true);   // or Editor { markdown_shortcuts: true, … }
+```
+
+> **Migrating:** before #2210 every `create_editor()` had them on. An app that relies
+> on them (a notes app, a markdown-style editor) must now opt in as above.
+
+`set_markdown_shortcuts` installs or removes the `MarkdownInputRulesPlugin`, so it is a
+construction-time call like `add_plugin` (the undo history restarts). `remove_plugin(key)`
+takes any installed plugin out the same way: the history, to put a
+`HistoryPlugin::with(delay, depth)` in its place, or to leave undo to an outer stack.
+
+With them on, the editor rewrites markdown shortcuts in place. Block shortcuts fire on
+a space at the start of a line; inline mark shortcuts fire when you type the closing
+delimiter:
 
 | Type | Becomes |
 |------|---------|
@@ -1819,9 +1935,11 @@ after it (inside the same blockquote or list item) when nothing follows.
 
 Inside a task list, **Enter** adds a new (unchecked) item, and **Enter** on an empty
 item exits the list — just like bullet/ordered lists. **Click a task's checkbox** to
-toggle it done (works on desktop and web). To add your own shortcut, append
-a `mark_input_rule` / `wrapping_input_rule` / `textblock_type_input_rule` to
-`markdown_input_rules()` (or contribute an `input_rules()` set from your own plugin).
+toggle it done (works on desktop and web). To add your own shortcut, contribute an
+`input_rules()` set from your own plugin (`add_plugin`), built from
+`mark_input_rule` / `wrapping_input_rule` / `textblock_type_input_rule`; to change the
+built-in set, `remove_plugin` the markdown plugin and add one of your own whose
+`input_rules()` returns `markdown_input_rules()` with your changes.
 
 ## A complete toolbar
 

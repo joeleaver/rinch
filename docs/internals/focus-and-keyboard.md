@@ -296,6 +296,19 @@ lock stops the page and no scroll container inside it.) The rules are one functi
 which one a reader uses, so every desktop reader pins it
 (`data-backdrop`'s on both backends).
 
+**What counts as rendered** for Tab, the trap-root search and a parked
+focus (`RinchApp::node_is_visible`): not `visibility: hidden`/`collapse`, and
+either a non-zero layout box or a place in an inline formatting context
+(`Node::is_flowed_inline_element`, #2963). A flowed inline element owns no
+Taffy box, its `layout` is a `0x0` ghost, and the box test alone skipped every
+`<a href>` in a paragraph and every `<span tabindex="0">`. Its `ifc_root` is
+recomputed by each IFC pass and is not kept under a `display: none` ancestor,
+inline or block, so membership is the rendered-ness test; width is not
+consulted, since Chrome 158 stops Tab on an empty `<a href></a>` (a `0x17`
+rect). Pins: `rinch/src/app/inline_tab_stops_2963_tests.rs` (Chrome-measured
+order). The `:focus-visible` outline of an inline element is drawn round its
+line fragments (#2973; `paint-and-damage.md`, "Outlines of inline elements").
+
 A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
 only the node from the Tab order, not its subtree. A **mouse press claims
@@ -620,8 +633,10 @@ its content-box height (#1367): a caret in a scroller below the fold of a
 scrolling page was scrolled into its scroller and left off screen. Not
 modelled: the containing-block chain (an `absolute` box is walked through its
 DOM ancestors, so a scroller between it and its containing block is moved
-although it cannot move the box), and smooth scrolling (neither backend
-animates it). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
+although it cannot move the box), and `overflow: hidden` scrollers (above). A
+scroller whose `scroll-behavior` is `smooth` animates its part from the next
+frame (#2291; `docs/internals/pointer-drag-tooltips.md`, "Smooth programmatic
+scrolls"). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
 two and three levels of padded, bordered scrollers in a scrolling page, both
 axes, a placed target, a scroller taller than the window, a fixed boundary,
 #1367's padded rows), `app/mod.rs` `scroll_into_view_tests` (transforms), and
@@ -877,6 +892,21 @@ shell with its own toolbar: `RinchApp::text_edit_state()`,
 `AppAction::ShowTextContextMenu` instead of opening the DOM menu — what the
 Android half of #813 builds on.
 
+**A right press on a misspelled word adds spelling rows above the edit rows**
+(#2862 stage 3; detail in `spellcheck.md`, "The context menu"). The caret rule
+gains one case, Chrome's: a press on a word the spellchecker marked **selects
+the word** (unless it landed inside a wider selection, which is kept and gets no
+spelling rows). The menu then shows the word's suggestions (up to
+`SpellcheckConfig::menu_suggestions`, default 3), a separator, "Add to
+dictionary", a separator, and the edit rows. The seam carries them:
+`TextEditState::spelling` (no longer `Copy`) and
+`TextEditAction::Suggestion(i)` / `AddToDictionary`, which `perform_text_edit`
+runs (a suggestion goes in as `EditCommand::InsertText` / `insert_text`, the
+typing path). The spelling rows are built at the first menu that needs them, so
+a menu over an unmarked word has exactly the panel it had; a row is found by its
+node among the open rows (`text_menu_hit`), since the spelling rows shift the
+edit rows' places. Pins: `app/spellcheck_menu_tests.rs`.
+
 **An open runtime popup owns the input** (#822, the rule for the text menu and
 the native `<select>` popup alike, as a native popup menu holds the pointer and
 the keyboard until it closes). Pointer events and `KeyDown` were already
@@ -1085,6 +1115,31 @@ fallback for a drag over no text) is not drawn to them.
   extends by characters, where Chrome extends by the unit.
 - A press on an `<img>` (without Shift) starts no selection and clears the
   one there is: Chrome starts an image drag from it (#2259).
+- The keys extend a selection (`app/text_selection_keys.rs`, #2953), from
+  `handle_text_key`: a Shift chord of the text keymap, with no field holding
+  the keyboard (`live_focused_input_handler` is `None`; the editor's keys
+  never reach it), and only a selection that selects something (a click
+  leaves no caret in read-only text: Chrome extends nothing from one). The
+  focus moves, the anchor stays, the multi-click unit is dropped.
+  Shift+Left/Right step a grapheme, logically by the focus root's
+  direction (Left is forward in an RTL root, as Blink's
+  `ModifyExtendingLeft` reads the enclosing block); a root's edge to the
+  next root (`next_root`/`prev_root`, outermost for a previous paragraph)
+  is one step, and an in-flow `inline-block`'s text is stepped through
+  (entering and leaving it costs nothing: its edges are the same place as
+  the offset it stands at, the focus's side saying which side of it the
+  focus is on). The word chord (`text_key_action`'s: Ctrl, Option on
+  macOS) goes to `rinch_words::text_word_boundary` in the root's text, a
+  root's edge stepping on first; Alt on Windows/Linux extends nothing
+  (Chrome 158). Shift+Up/Down go to the line above or below at a window x
+  kept across a run (`TextSelection::goal_x`), past margins into the next
+  or previous root's nearest line, and from the first or last line of all
+  to the text's start or end. Shift+Home/End go to the visual line's
+  edges (`visual_line_edge`; a wrapped line's end before its hung space);
+  the document keys to the first or last selectable text. Not modelled: a
+  word motion through an `inline-block`'s text (it stays in the root's own
+  text), and Windows' word-right to the next word's start (rinch's text
+  fields do the same).
 - Atomic inlines count as drawn for the white space a root's lines drop
   (`InlineLayout::atomic_inline_offsets`): the space between two
   `inline-block` columns, or two pictures, is copied, as Chrome copies it.
@@ -1130,3 +1185,54 @@ fallback for a drag over no text) is not drawn to them.
   tab.
 - The walk runs only on copy; a drag's move reads `runs` and the roots
   cache, never the walk.
+
+## Keyboard scrolling (#2977)
+
+`app/keyboard_scroll.rs`. `handle_unclaimed_key_fallback` asks
+`keyboard_scroll` first, so after the registered widget's `on_key`, the
+element key handlers and the app-wide listeners, and only when no text field
+holds the keyboard (`live_focused_input_handler`), the focus is not a
+`<select>` (its arrows are its own) and, for Space, the focused node does not
+activate (`focused_node_activates`: its own `data-rid`, or a `<button>`,
+`<input>`, `<select>`, `<textarea>`, `<summary>` or `<option>`; measured in
+Chrome 158, Space on a focused link, `role="button"` box, plain `tabindex` box
+or box inside an element with a click handler scrolls the page and fires no
+click, so an ancestor's `data-rid` does not count; review of #2987). The rich-text editor's keys
+never get here. A key that scrolls asks for a redraw and is consumed; one that
+finds nothing to scroll falls through to the text keys as before.
+
+- **Bindings** (`key_scroll`): Standard: bare arrows (vertical and
+  horizontal), Page Up / Page Down (Shift allowed), Home / End (Ctrl
+  allowed), Space / Shift+Space. macOS: the same, plus Cmd+Up / Cmd+Down to
+  the edges and Option+Up / Option+Down by a page. Shift+arrows are left to
+  the read-only selection (#2953).
+- **Which scroller** (`keyboard_scroller`): from the focused node, else
+  `keyboard_scroll_anchor` (the node the last press of any button landed on,
+  recorded at the top of `handle_event` before any intercept), else
+  `<body>`: the nearest box that overflows on the axis, is not
+  `scroll_locked_out`, and can still move that way. "Can move" reads the
+  running animation's target (`SmoothWheelState::heading_to`) when one
+  runs, so a key pressed while a scroll is headed for the end goes to the
+  scroller around it. At a `position: fixed` box the walk goes straight to `<body>`, as Chrome
+  hands a fixed header's key to the viewport and rinch's wheel walk does
+  (review of #2987: it used to stop there, so nothing scrolled).
+- **Amounts**: an arrow 40 px (`kPixelsPerLineStep`), a page 0.875 of the
+  scroller's client height (`kMinFractionToStepWhenPaging`), Home / End the
+  range's ends.
+- **Motion**: with the smooth switch on (`set_smooth_wheel_scroll`, the one
+  user-scroll switch), `animate_by` / `animate_to` with `CurveKind::Keyboard`:
+  150 ms whatever the distance, `ease-in-out`, a repeat adding to the target.
+  Off, one `scroll_vertically_by` / `scroll_horizontally_by` write and its
+  `onscroll`. A `lock_scroll` taken mid-scroll stops it (a user scroll, as a
+  wheel glide).
+
+Measured in Chrome 158 (headless; a focused 200x300 `tabindex` scroller at
+5000 px; `Input.dispatchKeyEvent` over CDP; `scrollTop` every rAF): ArrowDown
+40 px, PageDown and Space 262 px, End 24 700 px, each landing about 150 ms
+after the key on `ease-in-out` (0.8% RMS of the distance over the four runs).
+Not modelled: Chrome's keyboard scroll from a focused `<input>` (Page Up /
+Page Down in a single-line field scroll the page there; here the field keeps
+every key), and the editor's own Page Up / Page Down (#2020), which still
+jumps (its caret placement reads the scrolled offset at once). Pins:
+`rinch/tests/keyboard_scroll_2977.rs`.
+
