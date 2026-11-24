@@ -258,9 +258,16 @@ sites suspend the whole stack. With one slot there is no frame below to expose,
 so `untracked` and `untracked_handler` now do the same thing. They keep separate
 names because they record different decisions.
 
-A suspension that found no observer restores nothing, so two
-`suspend_tracking` guards dropped out of order still leave the outer observer in
-place. Pinned by `crates/rinch-core/tests/effect_own_reads_3047.rs` (nested
+Suspensions are counted per run (`Suspensions`), not saved and restored, so
+they end in any order: the run's observer stays hidden until the last
+suspension taken in that run ends. Each suspension remembers the run it was
+taken in. Released in that run, it lowers the count; released after that run
+finished (a `suspend_tracking` guard kept past it), it does nothing, so a
+finished run's observer never comes back as current; released inside a run
+nested in its own (the guard moved there), it is recorded and taken off the
+count when the outer run is current again. An observer that runs inside an
+`untracked` region starts with no suspensions and tracks normally. Pinned by
+the `suspension` and `guard` tests in `tracking.rs`. Pinned by `crates/rinch-core/tests/effect_own_reads_3047.rs` (nested
 flush, batch exit flush, memo, effect created in a run) and
 `crates/rinch-macros/tests/rsx_effect_own_reads_3047.rs` (the issue's `match`
 and `if let` screens). The path is the same on desktop and rinch-web: nothing

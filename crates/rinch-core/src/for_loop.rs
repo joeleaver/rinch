@@ -655,8 +655,8 @@ where
                         // don't subscribe the for-loop's parent effect. Items create
                         // their own effects for reactivity via {|| expr} closures.
                         //
-                        // The owner guard is a separate stack from `untracked`'s
-                        // observer stack (issue #141). It must stay inside this
+                        // The owner guard is independent of the observer
+                        // `untracked` hides (issue #141). It must stay inside this
                         // match arm: the `Remove` arm disposes scopes, and that
                         // must run under the reconcile effect's owner.
                         let node = {

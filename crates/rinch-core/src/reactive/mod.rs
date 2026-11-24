@@ -128,7 +128,8 @@ use effect::flush_effects;
 // Global runtime state for tracking reactive subscriptions.
 //
 // The runtime maintains:
-// - A stack of observers (effects/memos currently being computed)
+// - The current observer (the effect/memo run in progress) and the
+//   suspensions in force (`tracking`)
 // - A queue of pending effects to run
 // - Batching state
 thread_local! {
@@ -140,6 +141,11 @@ pub(crate) struct Runtime {
     /// recompute in progress, or none. One slot, not a stack: a run nested
     /// inside another hides the outer one entirely (see [`tracking`], #3047).
     pub(crate) observer: Option<ObserverId>,
+
+    /// The `untracked` / `suspend_tracking` suspensions in force, per run; a
+    /// read subscribes [`observer`](Self::observer) only while there are none
+    /// in the current run (see [`tracking::Suspensions`]).
+    pub(crate) suspensions: tracking::Suspensions,
 
     /// Effects that need to run, drained front-to-back.
     ///
@@ -198,6 +204,7 @@ impl Runtime {
     fn new() -> Self {
         Self {
             observer: None,
+            suspensions: tracking::Suspensions::default(),
             pending_effects: VecDeque::new(),
             pending_effects_set: HashSet::default(),
             definite_effects: HashSet::default(),

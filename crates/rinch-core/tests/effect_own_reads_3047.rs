@@ -4,7 +4,7 @@
 //! down its own stack (outside a batch, which is where a batch's exit flush
 //! runs effects too). Those nested runs used to sit *on top of* the writing
 //! effect on the observer stack, and the frame boundary between them was only
-//! a push: `untracked` pops one frame, so an `untracked` read inside the
+//! a push: `untracked` popped one frame, so an `untracked` read inside the
 //! nested run subscribed the **writer**. Every `match` / `if let` swap renders
 //! its new branch under `untracked`, so an effect that wrote the signal a
 //! branch reads picked up the branch's reads, and re-ran when they changed —

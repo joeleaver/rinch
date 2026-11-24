@@ -254,7 +254,10 @@ mod tests {
         );
 
         // Positive control: with the borrow released it runs and answers.
-        let depth = with_runtime_on_drop("a test value", |rt| rt.observer.is_none());
-        assert!(depth.is_ok(), "an unborrowed runtime runs the restore");
+        let no_observer = with_runtime_on_drop("a test value", |rt| rt.observer.is_none());
+        assert!(
+            no_observer.is_ok(),
+            "an unborrowed runtime runs the restore"
+        );
     }
 }

@@ -1097,8 +1097,8 @@ mod nested_read_tests {
 
     #[test]
     fn a_memo_computation_can_nest_reads_of_different_signals() {
-        // A memo's refresh runs with the memo's marker on the observer stack
-        // too, so `track()` takes the mutable path there as well.
+        // A memo's refresh runs with the memo's marker as the current
+        // observer too, so `track()` takes the mutable path there as well.
         use crate::reactive::Memo;
 
         let a = Signal::new(1i32);

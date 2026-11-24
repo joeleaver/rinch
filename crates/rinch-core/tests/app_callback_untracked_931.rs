@@ -12,10 +12,11 @@
 //! `dom/late_child.rs`'s unit tests: they need the crate-private mock.)
 //!
 //! Every fixture calls from an effect created **inside another effect's run**,
-//! so the call sits two frames deep on the observer stack. That is what tells
-//! the fix apart from plain `untracked`, which hides only the top frame and
-//! would hand the callback's reads to the outer effect (#932): the fixture
-//! asserts that *neither* effect re-runs.
+//! so the call sits two observer runs deep. That told the fix apart from plain
+//! `untracked` while the observers were a stack, when `untracked` hid only the
+//! top frame and handed the callback's reads to the outer effect (#932); since
+//! #3047 the two behave the same, and the fixture still asserts that *neither*
+//! effect re-runs.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

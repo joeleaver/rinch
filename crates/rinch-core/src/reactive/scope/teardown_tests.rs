@@ -219,7 +219,7 @@ fn a_cascading_disposals_teardown_reads_do_not_subscribe_the_disposing_effect() 
 /// have handed the cleanup's read to `outer`; since #3047 a nested run
 /// hides the outer one, and this pins that neither subscribes.
 #[test]
-fn a_teardown_read_subscribes_no_observer_at_any_stack_depth() {
+fn a_teardown_read_subscribes_no_observer_at_any_nesting_depth() {
     let probe = Signal::new(0u32);
     let outer_trigger = Signal::new(0u32);
     let outer_runs = Rc::new(Cell::new(0usize));

@@ -26,10 +26,71 @@
 
 use super::{ObserverId, RUNTIME, restore};
 
-/// The observer a read made now subscribes, if any.
+/// The observer a read made now subscribes, if any: the current run's, unless
+/// a suspension taken during that run is still alive.
 #[inline]
 pub(super) fn current_observer() -> Option<ObserverId> {
-    RUNTIME.with(|rt| rt.borrow().observer)
+    RUNTIME.with(|rt| {
+        let rt = rt.borrow();
+        if rt.suspensions.count == 0 {
+            rt.observer
+        } else {
+            None
+        }
+    })
+}
+
+/// The suspensions in force, counted per **frame** (one observer run, or the
+/// top level outside every run).
+///
+/// A count rather than a saved observer, so suspensions end in any order: the
+/// observer is hidden while at least one suspension taken in its run is alive,
+/// whichever is released first. Each suspension remembers the frame it was
+/// taken in, and its release counts only there:
+///
+/// - released in its own frame, it lowers the count;
+/// - released after its frame ended (the guard outlived the run, held in a
+///   struct or a thread-local), it does nothing — the count ended with the
+///   frame, so a finished run's observer can never come back as current;
+/// - released while a run nested inside its frame is current (the guard moved
+///   into that run), it is recorded in [`deferred`](Self::deferred) and taken
+///   off the count when its frame is current again.
+///
+/// Frames nest strictly (each run's [`ObserverGuard`] is a scoped value), and
+/// frame ids grow, so the frames still alive are the current one and frames
+/// with *smaller* ids; a deferred release for a larger id than the current
+/// frame's belongs to a frame that has ended.
+#[derive(Debug, Default)]
+pub(crate) struct Suspensions {
+    /// Suspensions alive in the current frame.
+    count: u32,
+    /// The current frame's id; `0` is the top level.
+    frame: u64,
+    /// The last frame id handed out.
+    last_frame: u64,
+    /// Frames whose suspensions were released while a run nested inside them
+    /// was current, one entry per release.
+    deferred: Vec<u64>,
+}
+
+impl Suspensions {
+    /// Take off the count the releases recorded for the frame now current, and
+    /// forget those recorded for frames that have ended.
+    fn settle_deferred(&mut self) {
+        let current = self.frame;
+        let mut released = 0u32;
+        self.deferred.retain(|&frame| {
+            if frame == current {
+                released += 1;
+            }
+            frame < current
+        });
+        debug_assert!(
+            released <= self.count,
+            "a frame released more suspensions than it took"
+        );
+        self.count = self.count.saturating_sub(released);
+    }
 }
 
 /// Makes an observer current for one run, and puts back the one it displaced
@@ -40,16 +101,29 @@ pub(super) fn current_observer() -> Option<ObserverId> {
 /// rest of the thread's life (issue #141).
 ///
 /// The displaced observer is *hidden*, not stacked under: nothing read during
-/// this run is its, at any depth (issue #3047).
+/// this run is its, at any depth (issue #3047). The run starts a frame of its
+/// own with no suspensions (see [`Suspensions`]), so it tracks even when it
+/// runs inside an `untracked` region, and the displaced frame's suspensions
+/// come back with it.
 pub(super) struct ObserverGuard {
     displaced: Option<ObserverId>,
+    displaced_count: u32,
+    displaced_frame: u64,
 }
 
 impl ObserverGuard {
     /// Make `id` the current observer.
     pub(super) fn push(id: ObserverId) -> Self {
-        let displaced = RUNTIME.with(|rt| rt.borrow_mut().observer.replace(id));
-        ObserverGuard { displaced }
+        RUNTIME.with(|rt| {
+            let rt = &mut *rt.borrow_mut();
+            let s = &mut rt.suspensions;
+            s.last_frame += 1;
+            ObserverGuard {
+                displaced: rt.observer.replace(id),
+                displaced_count: std::mem::replace(&mut s.count, 0),
+                displaced_frame: std::mem::replace(&mut s.frame, s.last_frame),
+            }
+        })
     }
 
     /// Make `id` current for a pass that re-reads its dependencies — an effect
@@ -69,9 +143,16 @@ impl ObserverGuard {
 
 impl Drop for ObserverGuard {
     fn drop(&mut self) {
-        let displaced = self.displaced;
+        let (displaced, count, frame) =
+            (self.displaced, self.displaced_count, self.displaced_frame);
         let _ = restore::with_runtime_on_drop("the current observer", |rt| {
             rt.observer = displaced;
+            let s = &mut rt.suspensions;
+            s.count = count;
+            s.frame = frame;
+            if !s.deferred.is_empty() {
+                s.settle_deferred();
+            }
         });
     }
 }
@@ -80,31 +161,41 @@ impl Drop for ObserverGuard {
 /// [`untracked`], [`untracked_handler`] and [`suspend_tracking`], and the
 /// guard disposal holds over teardown code (issue #494).
 ///
-/// A guard that found no observer restores nothing, so two suspensions
-/// dropped out of order still leave the outer observer in place.
+/// Suspensions may end in any order and outlive the run they were taken in;
+/// [`Suspensions`] says how each case is counted. Tracking resumes when the
+/// last suspension taken in the run ends, never earlier.
 ///
 /// Observers that *run* during the suspension track normally — a write in it
-/// flushes effects synchronously, and code in it may create one; each makes
-/// itself current for its run and restores "none" afterwards.
+/// flushes effects synchronously, and code in it may create one; each starts
+/// a frame of its own for its run.
 pub(in crate::reactive) struct SuspendObservers {
-    saved: Option<ObserverId>,
+    /// The frame this suspension was taken in.
+    frame: u64,
 }
 
 impl SuspendObservers {
     pub(in crate::reactive) fn take() -> Self {
-        SuspendObservers {
-            saved: RUNTIME.with(|rt| rt.borrow_mut().observer.take()),
-        }
+        RUNTIME.with(|rt| {
+            let s = &mut rt.borrow_mut().suspensions;
+            s.count += 1;
+            SuspendObservers { frame: s.frame }
+        })
     }
 }
 
 impl Drop for SuspendObservers {
     fn drop(&mut self) {
-        let Some(saved) = self.saved.take() else {
-            return;
-        };
+        let frame = self.frame;
         let _ = restore::with_runtime_on_drop("the observer a suspension hid", |rt| {
-            rt.observer = Some(saved);
+            let s = &mut rt.suspensions;
+            if frame == s.frame {
+                debug_assert!(s.count > 0, "a suspension released twice");
+                s.count = s.count.saturating_sub(1);
+            } else if frame < s.frame {
+                // Possibly a frame a nested run is hiding: settle it there.
+                s.deferred.push(frame);
+            }
+            // A larger id is a frame that has ended; its count ended with it.
         });
     }
 }
@@ -181,9 +272,11 @@ pub fn untracked_handler<R>(f: impl FnOnce() -> R) -> R {
 /// the caller's code calls in that window (an `update` closure calling
 /// `state.apply(..)`) is tracked, as the caller's.
 ///
-/// Drop guards in the reverse order they were taken, as scoped guards are, and
-/// on the thread that took them: the guard is `!Send` and `!Sync`, because the
-/// observer it restores is thread-local.
+/// Guards may be dropped in any order: tracking resumes when the last one
+/// taken in the run is dropped. A guard dropped after the run that took it has
+/// finished resumes nothing, since that run's observer is no longer current.
+/// The guard is `!Send` and `!Sync`: the tracking state it releases is
+/// thread-local.
 ///
 /// ```compile_fail
 /// fn assert_send<T: Send>(_: T) {}
@@ -297,10 +390,11 @@ mod tests {
         assert_eq!(runs.get(), 2, "the read after the caught panic is tracked");
     }
 
-    /// Suspensions dropped out of order (two editor guards, say) leave the
-    /// outer observer current, not "none".
+    /// Suspensions dropped out of order (two editor guards, say) keep the
+    /// observer hidden until the last one goes, and then restore it.
     #[test]
-    fn suspensions_dropped_out_of_order_restore_the_observer() {
+    fn suspensions_dropped_out_of_order_stay_suspended_until_the_last() {
+        let between = Signal::new(0);
         let later = Signal::new(0);
         let runs = Rc::new(Cell::new(0u32));
         let _e = Effect::new({
@@ -310,11 +404,91 @@ mod tests {
                 let first = suspend_tracking();
                 let second = suspend_tracking();
                 drop(first);
+                between.get(); // `second` is still alive: untracked
                 drop(second);
                 later.get();
             }
         });
+        between.set(1);
+        assert_eq!(
+            runs.get(),
+            1,
+            "a read while one guard is alive is untracked"
+        );
         later.set(1);
         assert_eq!(runs.get(), 2, "the read after both guards is tracked");
+    }
+
+    /// A guard that outlives the run it was taken in does not bring that
+    /// run's observer back when it is dropped.
+    #[test]
+    fn a_guard_dropped_after_its_run_restores_nothing() {
+        let stash: Rc<std::cell::RefCell<Option<TrackingSuspended>>> = Rc::default();
+        let read_at_top = Signal::new(0);
+        let runs = Rc::new(Cell::new(0u32));
+        let _e = Effect::new({
+            let (stash, runs) = (stash.clone(), runs.clone());
+            move || {
+                runs.set(runs.get() + 1);
+                *stash.borrow_mut() = Some(suspend_tracking());
+            }
+        });
+        drop(stash.borrow_mut().take());
+        assert_eq!(current_observer(), None, "no observer outside every run");
+        read_at_top.get();
+        read_at_top.set(1);
+        assert_eq!(runs.get(), 1, "a top-level read subscribed nobody");
+    }
+
+    /// A guard released inside a run nested in the one that took it leaves
+    /// the nested run's tracking alone, and the outer run tracks again once
+    /// the nested one returns.
+    #[test]
+    fn a_guard_released_in_a_nested_run_resumes_its_own_run() {
+        let stash: Rc<std::cell::RefCell<Option<TrackingSuspended>>> = Rc::default();
+        let (wake, inner_dep, outer_dep) = (Signal::new(0), Signal::new(0), Signal::new(0));
+        let (inner_runs, outer_runs) = (Rc::new(Cell::new(0u32)), Rc::new(Cell::new(0u32)));
+        let _inner = Effect::new({
+            let (stash, inner_runs) = (stash.clone(), inner_runs.clone());
+            move || {
+                inner_runs.set(inner_runs.get() + 1);
+                wake.get();
+                drop(stash.borrow_mut().take());
+                inner_dep.get();
+            }
+        });
+        let _outer = Effect::new({
+            let (stash, outer_runs) = (stash.clone(), outer_runs.clone());
+            move || {
+                outer_runs.set(outer_runs.get() + 1);
+                if outer_runs.get() > 1 {
+                    return;
+                }
+                *stash.borrow_mut() = Some(suspend_tracking());
+                // Outside a batch: the inner effect runs right here, nested,
+                // and drops the guard.
+                wake.set(1);
+                outer_dep.get();
+            }
+        });
+        assert_eq!(
+            inner_runs.get(),
+            2,
+            "the inner effect ran nested in the outer"
+        );
+        assert!(stash.borrow().is_none(), "the nested run dropped the guard");
+
+        inner_dep.set(1);
+        assert_eq!(
+            (inner_runs.get(), outer_runs.get()),
+            (3, 1),
+            "the nested run's read after the release is its own"
+        );
+        outer_dep.set(1);
+        assert_eq!(
+            outer_runs.get(),
+            2,
+            "the outer run tracked again after the nested one"
+        );
     }
 }

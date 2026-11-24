@@ -156,7 +156,7 @@ fn my_component(__scope: &mut RenderScope) -> NodeHandle {
 
 > **Note:** `RenderScope` is what application code sees — it tracks effects and child scopes for automatic cleanup. Underneath, each `RenderScope` owns a reactive `Scope`, and `Scope::run(f)` makes that scope the **ambient owner** for `f`: signals, memos, effects and event handlers created inside are attributed to it. **Disposing the scope frees everything it owns** — attribution is acted on, not merely recorded ([issue #141](https://github.com/joeleaver/rinch/issues/141)). Disposal is a priority fixpoint rather than a linear pass: handlers, then effects, then cleanups, then memos, then signals, then the values themselves — restarting from the top whenever a step enqueues more work, because dropping a value can own the only handle to a child scope.
 >
-> Two independent stacks are in play, and they are easy to confuse: `untracked` suspends the *observer* stack (who subscribes to a read), while `unowned` suspends the *owner* stack (who owns an allocation). **With no ambient owner, a resource has app lifetime** — which is why signals created in `main()` or in startup code keep working untouched.
+> Two independent pieces of ambient state are in play, and they are easy to confuse: `untracked` hides the *current observer* (who subscribes to a read), while `unowned` suspends the *owner* stack (who owns an allocation). **With no ambient owner, a resource has app lifetime** — which is why signals created in `main()` or in startup code keep working untouched.
 
 ### Ownership
 
