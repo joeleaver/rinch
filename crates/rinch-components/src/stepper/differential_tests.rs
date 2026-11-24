@@ -161,7 +161,10 @@ impl World {
     }
 
     fn steps(&self) -> Vec<NodeHandle> {
-        self.containers.iter().flat_map(collect_steps).collect()
+        self.containers
+            .iter()
+            .flat_map(|c| collect_steps(c).0)
+            .collect()
     }
 
     /// Put `step` into parent `p` in front of that parent's child `at`, or

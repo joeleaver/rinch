@@ -15,6 +15,11 @@ use super::*;
 pub(super) struct ContentRegion {
     pub(super) region: NodeHandle,
     pub(super) shown: Rc<RefCell<Vec<Shown>>>,
+    /// Whether the region carries `--completed`. Kept here rather than read
+    /// back from the region's `class`: the region is this render's own node,
+    /// and a read per pass would cost every change to the list one more
+    /// attribute read (the #748 cost pins).
+    pub(super) completed: Rc<Cell<bool>>,
 }
 
 /// A step's content the [`ContentRegion`] has taken in.
@@ -70,30 +75,6 @@ pub(super) fn step_content(step: &NodeHandle) -> Option<NodeHandle> {
         .find(|child| has_class(child, STEP_CONTENT_CLASS))
 }
 
-/// Every [`StepperCompleted`] block under `node` that belongs to this stepper:
-/// the walk [`collect_steps`] makes, collecting the blocks it skips.
-pub(super) fn collect_completed(node: &NodeHandle) -> Vec<NodeHandle> {
-    fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
-        let class = node.get_attribute("class").unwrap_or_default();
-        let carries = |wanted: &str| class.split_whitespace().any(|c| c == wanted);
-        if carries(COMPLETED_CLASS) {
-            out.push(node.clone());
-            return;
-        }
-        if carries(STEP_CLASS) {
-            return;
-        }
-        for child in node.children() {
-            walk(&child, out);
-        }
-    }
-    let mut out = Vec::new();
-    for child in node.children() {
-        walk(&child, &mut out);
-    }
-    out
-}
-
 /// Bring the content region into line with `active` (issue #2195).
 ///
 /// Mantine's rule: the content of the step at `active`; once `active` is past
@@ -114,7 +95,7 @@ pub(super) fn collect_completed(node: &NodeHandle) -> Vec<NodeHandle> {
 ///
 /// Idempotent, as [`settle_steps`] is, and it runs at the end of every pass: a
 /// pass with nothing to change moves nothing and writes nothing.
-pub(super) fn settle_content(steps_container: &NodeHandle, steps: &[NodeHandle], d: &Derivation) {
+pub(super) fn settle_content(steps: &[NodeHandle], completed: &[NodeHandle], d: &Derivation) {
     let region = &d.content.region;
     let region_id = region.node_id();
     let mut shown = d.content.shown.borrow_mut();
@@ -144,12 +125,12 @@ pub(super) fn settle_content(steps_container: &NodeHandle, steps: &[NodeHandle],
         });
     }
 
-    for block in collect_completed(steps_container) {
-        region.append_child(&block);
+    for block in completed {
+        region.append_child(block);
     }
 
-    let completed = target.is_none();
-    if has_class(region, CONTENT_COMPLETED_CLASS) != completed {
+    let past_the_end = target.is_none();
+    if d.content.completed.replace(past_the_end) != past_the_end {
         region.toggle_class(CONTENT_COMPLETED_CLASS);
     }
 }

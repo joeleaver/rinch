@@ -181,7 +181,10 @@ pub(super) fn has_class(node: &NodeHandle, class: &str) -> bool {
 /// editing content inside a completed block does not re-walk the whole stepper.
 pub(super) const STEP_BOUNDARY: &[&str] = &[STEP_CLASS, COMPLETED_CLASS];
 
-/// Every step in `node`'s subtree, in document order.
+/// Every step in `node`'s subtree, in document order, and the
+/// [`StepperCompleted`] blocks the walk skips: the ones that belong to this
+/// stepper, which the content region takes in (issue #2195). One walk for both,
+/// so the region adds no class read per step to a pass (the #748 cost pins).
 ///
 /// Steps are found by class rather than taken as `children` directly: a `for`
 /// loop or a conditional puts wrapper nodes between the stepper and its steps.
@@ -201,8 +204,8 @@ pub(super) const STEP_BOUNDARY: &[&str] = &[STEP_CLASS, COMPLETED_CLASS];
 /// all: no step numbered, every step inactive, and two steps both drawing the
 /// number `1`. So the block is skipped and the walk goes on, and a step after it
 /// is a position like any other.
-pub(super) fn collect_steps(node: &NodeHandle) -> Vec<NodeHandle> {
-    fn walk(node: &NodeHandle, out: &mut Vec<NodeHandle>) {
+pub(super) fn collect_steps(node: &NodeHandle) -> (Vec<NodeHandle>, Vec<NodeHandle>) {
+    fn walk(node: &NodeHandle, steps: &mut Vec<NodeHandle>, completed: &mut Vec<NodeHandle>) {
         // One read for both questions: this walk runs over every step on every
         // change to the list (issue #748).
         let class = node.get_attribute("class").unwrap_or_default();
@@ -210,19 +213,20 @@ pub(super) fn collect_steps(node: &NodeHandle) -> Vec<NodeHandle> {
         // Asked first, so a node somehow carrying both classes is not a
         // position — the narrower answer.
         if carries(COMPLETED_CLASS) {
+            completed.push(node.clone());
             return;
         }
         if carries(STEP_CLASS) {
-            out.push(node.clone());
+            steps.push(node.clone());
             return;
         }
         for child in node.children() {
-            walk(&child, out);
+            walk(&child, steps, completed);
         }
     }
-    let mut out = Vec::new();
-    walk(node, &mut out);
-    out
+    let (mut steps, mut completed) = (Vec::new(), Vec::new());
+    walk(node, &mut steps, &mut completed);
+    (steps, completed)
 }
 
 /// A step's icon box, which is its first child.

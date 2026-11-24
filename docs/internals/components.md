@@ -309,7 +309,9 @@ The pieces that follow from it:
   every step behind it otherwise (three writes each when only renumbered).
   Counted on `MockDomDocument`, appending to a 40-step stepper went from 1005
   attribute reads and 126 attribute writes to 142 and 4, and growing one from 0
-  to 40 steps from 2650 writes to 238. Growing or shrinking one step at a time
+  to 40 steps from 2650 writes to 238 (239 since #2195: the step that makes
+  `active: 3` a real step takes the content region out of `--completed`, one
+  class write). Growing or shrinking one step at a time
   is still quadratic in the three reads, and a `for` row edited in place still
   renumbers the steps behind it twice (an insertion, then a removal).
   `crates/rinch-components/tests/stepper_cost_748.rs` pins the per-step

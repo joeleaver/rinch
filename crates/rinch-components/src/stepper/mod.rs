@@ -329,6 +329,7 @@ impl Component for Stepper {
             content: ContentRegion {
                 region: content_region.clone(),
                 shown: Rc::new(RefCell::new(Vec::new())),
+                completed: Rc::new(Cell::new(false)),
             },
         };
         settle_steps(__scope, &steps_container, &derivation);

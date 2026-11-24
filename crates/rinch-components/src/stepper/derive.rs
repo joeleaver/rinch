@@ -122,7 +122,7 @@ impl Derivation {
 /// record of what the last pass happened to draw.
 pub(super) fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle, d: &Derivation) {
     let skips = skips_settled_steps();
-    let steps = collect_steps(steps_container);
+    let (steps, completed) = collect_steps(steps_container);
     for (position, step) in steps.iter().enumerate() {
         let position = position as u32;
         let position_str = position.to_string();
@@ -242,7 +242,7 @@ pub(super) fn settle_steps(scope: &mut RenderScope, steps_container: &NodeHandle
         }
     }
 
-    settle_content(steps_container, &steps, d);
+    settle_content(&steps, &completed, d);
 }
 
 /// Bring one step's clickability — the class, the keyboard reach, and the
