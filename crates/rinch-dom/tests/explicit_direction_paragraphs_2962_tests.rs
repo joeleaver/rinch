@@ -16,7 +16,7 @@
 //! `.t` elements, `[x, y, w, h]` relative to the host. No expected number
 //! depends on a Hebrew glyph's width (Inter has none).
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::{get_node_summary, query_selector};
 
