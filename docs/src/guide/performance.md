@@ -808,3 +808,14 @@ A full run takes about 40 seconds on a 24-core workstation with
 `--parallel=4`. Valgrind runs code about 50 times slower than native, and the
 benchmarks are sized for that: 500 rows where the operation touches one row,
 200 where it touches every row.
+
+### Measuring your own app under Valgrind
+
+A rinch app runs under Callgrind and Memcheck (`valgrind --tool=callgrind
+./my-app`). Until #3016 it did not: the font warm-up thread's first
+`clock_gettime` went through rustix, which read the kernel's aux vector rather
+than the one Valgrind gives the process and faulted on the host's vDSO. rinch
+now builds rustix with `use-libc-auxv`; `docs/internals/platform.md` has the
+mechanism. The warm-up thread (#2552) still runs, after the first frame, and
+its font look-ups are in the counts; to leave them out of a measurement, build
+the app with `App::font_warmup(FontWarmup::Off)`.
