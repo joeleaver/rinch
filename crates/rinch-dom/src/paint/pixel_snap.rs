@@ -35,7 +35,7 @@
 //! What paint snaps, what reaches the snapped box, and what stays where it
 //! is: `docs/internals/paint-and-damage.md` ("Box edges on device pixels").
 
-use peniko::kurbo::Rect;
+use peniko::kurbo::{Affine, Rect};
 
 /// A box edge (physical px, in the box's own untransformed space) on the
 /// nearest device pixel, a tie rounding up, as Chrome's `LayoutUnit::Round`
@@ -91,6 +91,24 @@ pub fn reach_of(r: Rect) -> Rect {
     r.union(snapped_rect(r))
 }
 
+/// How far a box edge can move when paint snaps it: half a device pixel, in
+/// the box's own space before its transform ([`snap_edge`]).
+pub const SNAP_SLACK: f64 = 0.5;
+
+/// The snap gain ([`crate::node::SubtreeReach::Within`]) of a box whose own
+/// space reaches the measured space through `t`, when its own extent can
+/// grow by `inner` times `d` (`[1.0, 1.0]` for a box alone): a rect grown by `d` per edge in
+/// the box's space has a bounding box under `t` grown by `d * |a| + d * |c|`
+/// in x and `d * |b| + d * |d|` in y (`t`'s linear part `[a c; b d]`), so a
+/// box whose own extent grows by `d * inner` grows by this times `d`.
+pub fn snap_gain_through(t: Affine, inner: [f64; 2]) -> [f64; 2] {
+    let [a, b, c, d, _, _] = t.as_coeffs();
+    [
+        a.abs() * inner[0] + c.abs() * inner[1],
+        b.abs() * inner[0] + d.abs() * inner[1],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +132,22 @@ mod tests {
         // rounding the width alone (16.25 → 16) would end at 32.
         let r = snapped_box(16.25, 11.25, 16.25, 37.5);
         assert_eq!(r, Rect::new(16.0, 11.0, 33.0, 49.0));
+    }
+
+    #[test]
+    fn the_snap_gain_follows_the_transform() {
+        assert_eq!(snap_gain_through(Affine::IDENTITY, [1.0, 1.0]), [1.0, 1.0]);
+        assert_eq!(
+            snap_gain_through(Affine::scale_non_uniform(12.0, 3.0), [1.0, 2.0]),
+            [12.0, 6.0]
+        );
+        // A quarter turn swaps the axes; a translation adds nothing.
+        let turn = Affine::translate((40.0, 7.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2);
+        let g = snap_gain_through(turn, [2.0, 5.0]);
+        assert!(
+            (g[0] - 5.0).abs() < 1e-9 && (g[1] - 2.0).abs() < 1e-9,
+            "{g:?}"
+        );
     }
 
     #[test]

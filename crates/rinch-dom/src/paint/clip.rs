@@ -320,6 +320,34 @@ pub fn padding_box_radii(node: &Node, scale: f64) -> BorderRadii {
 /// a radius to round against on that axis — measured in Chrome 153, not
 /// assumed (see the module doc).
 pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, BorderRadii)> {
+    clip_shape_with(node, scale, x, y, padding_edges)
+}
+
+/// [`clip_shape`] with the edges where layout put them, off the device grid:
+/// for the walk that measures a subtree's reach at no particular scale
+/// (`layer_bounds::measure_subtree_reach`), whose snap gain bounds the
+/// snapped clip at the scale it is read at.
+pub(crate) fn unsnapped_clip_shape(
+    node: &Node,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> Option<(Rect, BorderRadii)> {
+    clip_shape_with(node, scale, x, y, |start, size, near, far| {
+        let a = start + near;
+        (a, a + (size - near - far).max(0.0))
+    })
+}
+
+/// [`clip_shape`], each clipped axis's edges from `edges` (`padding_edges`'
+/// arguments).
+fn clip_shape_with(
+    node: &Node,
+    scale: f64,
+    x: f64,
+    y: f64,
+    edges: impl Fn(f64, f64, f64, f64) -> (f64, f64),
+) -> Option<(Rect, BorderRadii)> {
     let (clip_x, clip_y) = node.clip_axes();
     if !clip_x && !clip_y {
         return None;
@@ -334,12 +362,12 @@ pub fn clip_shape(node: &Node, scale: f64, x: f64, y: f64) -> Option<(Rect, Bord
         bottom as f64 * scale,
     );
     let (x0, x1) = if clip_x {
-        padding_edges(x, w, left, right)
+        edges(x, w, left, right)
     } else {
         (x - AXIS_UNBOUNDED, x + AXIS_UNBOUNDED)
     };
     let (y0, y1) = if clip_y {
-        padding_edges(y, h, top, bottom)
+        edges(y, h, top, bottom)
     } else {
         (y - AXIS_UNBOUNDED, y + AXIS_UNBOUNDED)
     };

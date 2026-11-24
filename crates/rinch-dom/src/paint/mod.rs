@@ -368,16 +368,13 @@ fn compute_damage_impl(
                 // was and where it is, while nothing under it has changed
                 // (#2222). Otherwise walked, its fixed descendants left out:
                 // they do not move with it.
+                // The reach is unsnapped; placing it adds what snapping its
+                // boxes to this scale's device grid can (#2368).
                 match node.painted.as_ref().and_then(|p| p.subtree_reach) {
-                    Some(crate::node::SubtreeReach::Within([x0, y0, x1, y1]))
+                    Some(crate::node::SubtreeReach::Within { rect, snap_gain })
                         if !has_dirty_below(node_id) =>
                     {
-                        Rect::new(
-                            ax + x0 as f64 * scale,
-                            ay + y0 as f64 * scale,
-                            ax + x1 as f64 * scale,
-                            ay + y1 as f64 * scale,
-                        )
+                        layer_bounds::placed_subtree_reach(rect, snap_gain, scale, ax, ay)
                     }
                     _ => layer_bounds::moved_subtree_bounds(tree, node_id, scale, ax, ay),
                 }

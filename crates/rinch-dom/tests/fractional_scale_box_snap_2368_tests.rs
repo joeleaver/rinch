@@ -70,3 +70,77 @@ fn box_edges_and_clips_are_on_device_pixels_at_125_percent() {
 fn box_edges_and_clips_are_on_device_pixels_at_150_percent() {
     matches_chrome(1.5, &scene::CHROME_15);
 }
+
+/// A hard `box-shadow` (`4px 4px 0`, whole device pixels at both scales) on
+/// a box with no background, at (13, 9) and 40x30: the shadow is the snapped
+/// border box moved by its offset, so its far edges are hard, and the part
+/// under the box is cut out along the snapped box. Chrome 158 at 1.25x and
+/// 1.5x, read across the shadow's right edge (a row at y 30) and its bottom
+/// edge (a column at x 30): drawn from the unsnapped box, the shadow's far
+/// edges blend (191 at 1.25x, 127 at 1.5x) a pixel past Chrome's.
+#[test]
+fn a_box_shadow_is_drawn_from_the_snapped_box() {
+    use rinch_core::dom::DomDocument;
+    const PAGE: &str = "<div style=\"position:absolute;left:13px;top:9px;width:40px;\
+                        height:30px;box-shadow:4px 4px 0 #000\"></div>";
+    // (scale, first pixel of the row and column, Chrome's pixels from it).
+    let chrome: [(f64, usize, &[u8]); 2] = [
+        (
+            1.25,
+            60,
+            &[
+                255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 255, 255, 255, 255,
+            ],
+        ),
+        (
+            1.5,
+            73,
+            &[
+                255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255,
+            ],
+        ),
+    ];
+    let column_from = [43, 52];
+    for ((scale, row_from, want), col_from) in chrome.into_iter().zip(column_from) {
+        let (vw, vh) = (100.0_f32, 60.0_f32);
+        let mut doc = rinch_dom::RinchDocument::new();
+        doc.set_device_pixel_ratio(scale as f32);
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin:0;background:#fff");
+        doc.set_inner_html(body, PAGE);
+        doc.resolve_layout(vw, vh);
+        let (w, h) = (
+            (vw as f64 * scale).round() as u32,
+            (vh as f64 * scale).round() as u32,
+        );
+        let mut painter = TinySkiaPainter::new(w, h);
+        painter.fill_white();
+        let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            scale,
+            (vw, vh),
+            &mut doc.font_cx,
+            &mut cx,
+        );
+        let px = painter.pixels();
+        let at = |x: usize, y: usize| px[(y * w as usize + x) * 4 + 1];
+        let line = (30.0 * scale) as usize;
+        let row: Vec<u8> = (row_from..row_from + want.len())
+            .map(|x| at(x, line))
+            .collect();
+        let col: Vec<u8> = (col_from..col_from + want.len())
+            .map(|y| at(line, y))
+            .collect();
+        let close = |got: &[u8]| got.iter().zip(want).all(|(&a, &b)| a.abs_diff(b) <= 3);
+        assert!(
+            close(&row),
+            "at {scale}x, across the right edge: rinch {row:?}, Chrome {want:?}"
+        );
+        assert!(
+            close(&col),
+            "at {scale}x, across the bottom edge: rinch {col:?}, Chrome {want:?}"
+        );
+    }
+}
