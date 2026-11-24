@@ -43,6 +43,77 @@ transitional `libgdk-pixbuf2.0-dev` was gone, and `libspa` 0.8's bindgen output 
 (#1902 tracks 26.04). The apt cache key carries `ImageOS`, so a new image starts with a
 cold `.deb` cache.
 
+## The cargo caches
+
+Every cargo cache in the workflows is **`Swatinem/rust-cache`, pinned by commit SHA**, and
+holds third-party dependency artifacts only. Do not add an `actions/cache` of `target/` (or of
+any directory a workspace crate builds into); `actions/cache` remains only for things that are
+not cargo build output (`.deb` packages, the `gungraun-runner` binary).
+
+**Why a cached `target/` is wrong.** Cargo decides that a path crate (every workspace member) is
+fresh by comparing mtimes: the crate's dep-info file in its fingerprint directory against every
+source file that dep-info lists. Its fingerprint hash covers the compiler, flags, features and
+dependency fingerprints, but not the source contents. A checkout writes every source file with
+the checkout time as its mtime, and `actions/cache` restores `target/` with tar, which keeps the
+mtimes of the run that built it. The cache key (`Cargo.lock`, toolchain) says nothing about the
+workspace sources. So:
+
+- an entry built **before** this job's checkout has older artifacts than the sources, and every
+  workspace crate rebuilds: correct, and the cached workspace artifacts were dead weight;
+- an entry built **after** this job's checkout (a `main` run that built and saved it while this
+  job was still installing apt packages) has newer artifacts, and cargo takes a workspace crate
+  built from **another commit** as fresh. A crate whose own fingerprint changed for another
+  reason is rebuilt against the stale one; a crate that did not is not checked at all.
+
+That is what happened to `clippy` on PR #3017 (job 138257410415) and #3018 (job 138257638967) on
+2026-11-24. The job checked out at 07:02:01, spent 35 minutes in `apt-install`, and restored the
+cache at 07:37:31 through the restore-key prefix. The entry it got, key
+`Linux-cargo-clippy-1.99.0-50d96d98…`, had been saved at 07:30:54 by `main`'s run 45311422899
+(main `100412bcd`, checked out at 06:46, a cold build from 07:20). The log printed
+`Compiling rinch` but no `Checking rinch-core`, and `rinch-components` failed with E0599 on
+`NodeHandle::is_retired`, which the PR had added to `rinch-core` and `100412bcd` lacked. The same
+mechanism in `docs.yml` was #1836. The failure is a matter of timing, and it can as easily
+**pass** a check wrongly: an unchanged-fingerprint crate that the PR broke is never re-checked.
+
+**What rust-cache does.** Before it saves, it deletes from each profile directory of the target
+dir (`.fingerprint/`, `build/`, `deps/`, target-triple directories included) every entry not
+named for a package whose manifest lies **outside the workspace root** (`cargo metadata
+--all-features`): registry and git dependencies stay, workspace members go. Nothing in the entry
+describes workspace source, so no timing can make one look fresh. The alternative, keeping
+whole `target/` caches and touching every source after the restore so that workspace crates
+always rebuild, was rejected: it caches gigabytes that are never used (members rebuild on every
+run anyway), it must catch every file any build script or `include_str!` reads, and it leaves
+correctness resting on mtimes again.
+
+**Rules that follow.**
+
+- **One target dir per job, registered as the workspace's.** rust-cache keeps packages outside
+  the root it is given, so a separate workspace (an excluded example such as
+  `examples/menu-bar-web`) registered with its own target dir would keep the rinch crates it
+  reaches by `path`, which lie outside *its* root, and cache them stale. `clippy-wasm` therefore
+  builds `menu-bar-web` with `--target-dir target`, inside the main workspace's target, where
+  the main workspace's pruning removes them.
+- **Only `main` writes** (`save-if: github.event_name == 'push'`; `visual-tests.yml`, which is
+  dispatch-only, saves on `refs/heads/main`). A PR or batch run reads `main`'s entry (the
+  cache scope falls back to the base branch) and never writes its own, which used to put an
+  entry of up to 1.3 GB per job per PR into the repository's 10 GB budget and evict `main`'s.
+- Each job has its own `shared-key` (`clippy`, `clippy-wasm`, `clippy-android`, `test-wasm`,
+  `android`, `macos`, `test`, `test-gpu`, `docs`, `perf`, `visual`). The key also hashes the
+  toolchain, every `Cargo.toml`/`Cargo.lock` and the `CARGO_*`/`RUST*` environment.
+
+**Cost.** None in the steady state: workspace crates were already rebuilt on every run that got
+the cache the ordinary way round, which is every run but the unlucky ones. The first run of each
+job after this change is cold (no rust-cache entry exists yet), and so is a PR run whose base
+`main` has not yet saved for the current lockfile. Measured on `main` (2026-11-24): the two
+`clippy` steps took about 4.5 minutes cold (run 45311422899, a cache miss) and 1.4–2.2 minutes
+warm.
+
+After this landed, the old `Linux-cargo-*` / `macOS-cargo-*` entries (about 6.7 GB) were deleted
+with `gh cache delete`: until they expired they used the 10 GB budget and could evict `main`'s
+new entries. A `workflow_dispatch` run of CI never saves, and a runner-image update to its
+preinstalled stable toolchain changes the key (rust-cache hashes every installed toolchain)
+until `main` saves again.
+
 ## The `test` shards
 
 The four `test (…)` shards together run exactly what the single `test` job ran

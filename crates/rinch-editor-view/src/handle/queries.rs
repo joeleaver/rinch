@@ -94,21 +94,30 @@ impl EditorHandle {
     }
 
     /// Look up `binding` in the editor's aggregated keymap and run the bound command.
-    /// Returns `Some(applied)` when a binding matched (the key is **consumed** either
-    /// way — the caller must key "consumed" on `is_some()`, not on the bool, so a no-op
-    /// binding like `Tab` at top level never falls through to text insertion), or `None`
-    /// when nothing is bound. This is the single keymap entry point: both the desktop
-    /// and web key dispatchers translate their native event into a platform-agnostic
-    /// [`KeyBinding`] and route through here, so a binding added in editor-core works on
-    /// every platform (design §5).
+    /// Returns `Some(applied)` when the key is **consumed**, `None` when it is not:
+    /// the caller keys "consumed" on `is_some()` and lets a `None` key go on as if
+    /// the editor had no binding for it (on the web: not `preventDefault`ed, so it
+    /// reaches the page's `keydown` listeners and the browser's default).
+    ///
+    /// A matched binding is consumed whether or not its command applied
+    /// (`Some(false)`: Tab at the top level sinks nothing and is still the
+    /// editor's; Ctrl+Shift+R on a right-aligned paragraph never reaches the
+    /// browser's reload), unless the binding is declared fall-through
+    /// ([`Plugin::fall_through_keys`]) and its command answered `false`: that
+    /// answers `None`, as ProseMirror's keymap does — Mod-Enter (`exitCode`) in a
+    /// paragraph. Unbound keys answer `None`. This is the single keymap entry
+    /// point: both the desktop and web key dispatchers translate their native
+    /// event into a platform-agnostic [`KeyBinding`] and route through here, so a
+    /// binding added in editor-core works on every platform (design §5).
     pub fn dispatch_key(&self, binding: KeyBinding) -> Option<bool> {
-        let name = self
-            .core()
-            .state
-            .keymap()
-            .command_for(&binding)
-            .map(str::to_string);
-        name.map(|n| self.command(&n))
+        let (name, falls_through) = {
+            let core = self.core();
+            let keymap = core.state.keymap();
+            let name = keymap.command_for(&binding)?.to_string();
+            (name, keymap.falls_through_when_inapplicable(&binding))
+        };
+        let applied = self.command(&name);
+        (applied || !falls_through).then_some(applied)
     }
 
     /// Whether the mark named `mark` is active for the current selection (toolbar

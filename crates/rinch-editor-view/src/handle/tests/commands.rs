@@ -149,6 +149,95 @@ fn dispatch_key_returns_none_when_unbound() {
     );
 }
 
+/// #2993's review: Mod-Enter is the base keymap's one fall-through binding
+/// (ProseMirror's keymap semantics), so Ctrl/Cmd+Enter in a paragraph, where
+/// `exitCode` has no code block to leave, goes on to the page. At
+/// 5f10b1475 it answered `Some(false)` — consumed.
+#[test]
+fn mod_enter_falls_through_where_it_does_not_apply() {
+    let s = schema();
+    let h = mount(doc_node(&s, vec![para(&s, "abcd")]));
+    h.handle.set_selection(Selection::cursor(Pos(3)));
+    let before = h.handle.doc();
+    assert_eq!(
+        h.handle
+            .dispatch_key(KeyBinding::parse("Mod-Enter").unwrap()),
+        None,
+        "Mod-Enter outside a code block falls through"
+    );
+    assert!(h.handle.doc().same_ref(&before), "and changes nothing");
+    // In a code block the same binding applies and is consumed.
+    let code = s
+        .branch("code_block", Fragment::from_node(s.text("x").unwrap()))
+        .unwrap();
+    let h = mount(doc_node(&s, vec![code]));
+    h.handle.set_selection(Selection::cursor(Pos(2)));
+    assert_eq!(
+        h.handle
+            .dispatch_key(KeyBinding::parse("Mod-Enter").unwrap()),
+        Some(true)
+    );
+}
+
+/// #2993's second review: every base binding but Mod-Enter consumes its key
+/// where its command does not apply, so a chord the editor advertises never
+/// reaches the browser — Ctrl+Shift+R on a paragraph that is already
+/// right-aligned would hard-reload the page, Mod-e in a read-only editor
+/// would focus the address bar. At b7d5350ad (which consumed only a declared list)
+/// these chords answered `None`.
+#[test]
+fn every_base_binding_but_mod_enter_keeps_its_key_where_it_does_not_apply() {
+    let s = schema();
+    let code = s
+        .branch("code_block", Fragment::from_node(s.text("ab").unwrap()))
+        .unwrap();
+    let h = mount(doc_node(&s, vec![para(&s, "x"), code]));
+    let key = |k: &str| h.handle.dispatch_key(KeyBinding::parse(k).unwrap());
+    h.handle.set_selection(Selection::cursor(Pos(1)));
+    // A top-level, left-aligned paragraph at the document's start: no list
+    // item to sink or lift, nothing to delete backward, undo or redo, and
+    // already a paragraph.
+    for k in [
+        "Tab",
+        "Shift-Tab",
+        "Backspace",
+        "Mod-z",
+        "Mod-y",
+        "Mod-Shift-z",
+        "Mod-Shift-0",
+    ] {
+        assert_eq!(key(k), Some(false), "{k} is consumed although it no-ops");
+    }
+    // Ctrl+Shift+R applies once, then the paragraph is right-aligned and the
+    // command answers `false`: still the editor's key.
+    assert_eq!(key("Mod-Shift-r"), Some(true), "aligns right");
+    assert_eq!(key("Mod-Shift-r"), Some(false), "already right: consumed");
+    // At the code block's end (the document's): the alignment chord refuses
+    // (a code block has no alignment) and Delete deletes nothing.
+    let end = h.handle.doc().content_size();
+    h.handle.set_selection(Selection::cursor(Pos(end - 1)));
+    for k in ["Mod-Shift-r", "Delete"] {
+        assert_eq!(key(k), Some(false), "{k} in a code block is consumed");
+    }
+    // A read-only editor refuses every command: every binding but Mod-Enter
+    // is still the editor's.
+    h.handle.set_read_only(true);
+    h.handle.set_selection(Selection::text(Pos(1), Pos(2)));
+    for k in [
+        "Mod-b",
+        "Mod-i",
+        "Mod-u",
+        "Mod-e",
+        "Mod-Shift-8",
+        "Mod-Shift-b",
+        "Mod-Shift-r",
+        "Mod-Alt-1",
+    ] {
+        assert_eq!(key(k), Some(false), "{k} is consumed although refused");
+    }
+    assert_eq!(key("Mod-Enter"), None, "Mod-Enter falls through");
+}
+
 #[test]
 fn insert_text_with_a_selection_skips_input_rules() {
     // Input rules only fire at a collapsed cursor: typing "**" over a selection just

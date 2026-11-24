@@ -65,11 +65,13 @@ name: Perf
 #     A PR from a fork gets a read-only token, so its report is the job
 #     summary only.
 #
-# Cache (D3). Only the registry dependencies are worth caching. Cargo judges a
-# workspace crate's freshness by source mtimes, and a fresh checkout makes
-# every workspace crate look stale, so those crates rebuild on every run
-# whatever the cache holds. `Swatinem/rust-cache` caches the dependency
-# artifacts and prunes the workspace crates' ones before saving, which keeps the
+# Cache (D3). Only the registry dependencies are safe to cache. Cargo judges a
+# workspace crate's freshness by source mtimes: a fresh checkout usually makes
+# every cached workspace crate look stale, but not when the entry was built
+# after this job's checkout, and then a crate from another commit passes as
+# fresh (#3017, docs/internals/ci.md "The cargo caches"). `Swatinem/rust-cache`
+# caches the dependency artifacts and prunes the workspace crates' ones before
+# saving, which rules that out and keeps the
 # entry to one dependency tree rather than two full release target dirs. That
 # matters because this entry shares the repository's 10 GB Actions cache with
 # ci.yml's. Only a push to `main` writes it (`seed-cache`), and only when
@@ -144,7 +146,7 @@ jobs:
 
       - name: Restore cargo cache
         id: cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: perf
           workspaces: head -> ../target-head
@@ -252,7 +254,7 @@ jobs:
       # under the workspace into its key, and the seed job has only `head/`.
       # With `base/` present too, no key could ever match the seeded one.
       - name: Restore cargo cache (read-only; `seed-cache` writes it)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: perf
           workspaces: head -> ../target-head
