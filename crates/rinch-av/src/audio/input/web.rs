@@ -35,23 +35,34 @@ pub(super) struct WasmAudioInputState {
 /// fires (#3007), so a status read from `state` alone said
 /// `WaitingForGesture` with samples already delivered.
 ///
-/// A `statechange` to `suspended` is different: the context really stopped
-/// (it was running, or the event would not fire). The status says held and
-/// the gesture listener is armed again, and a buffer the context queued
-/// before it stopped does not say `Running` again; only a `statechange`
-/// back to `running` does.
+/// A `statechange` to `suspended` (or Safari's `interrupted`) is different:
+/// the context really stopped (it was running, or the event would not fire).
+/// The status says held and the gesture listener is armed again, and a
+/// buffer the context queued before it stopped does not say `Running`
+/// again. What ends that is the next `resume()`: a `statechange` back to
+/// `running`, or the gesture listener asking for it. Any buffer after a
+/// resume is asked for is the resumed context's: one queued before the stop
+/// was dispatched before the stop's `statechange`, and so before any later
+/// gesture. Firefox delivers the resumed context's first buffers while
+/// `state` still reads `suspended` (the #3007 order again), so waiting for
+/// `statechange` would drop them with the status still saying held.
+///
+/// A `statechange` to `closed` ends capture for good: the status says
+/// `Failed` and the tracks are stopped, as after a failed setup.
 #[derive(Clone)]
 struct Reporter {
     ctx: web_sys::AudioContext,
     status: Weak<RefCell<AudioInputStatus>>,
     state: Weak<RefCell<Option<WasmAudioInputState>>>,
-    /// The last `statechange` said `suspended`.
+    /// The last `statechange` said the context stopped, and nothing has
+    /// asked it to resume since: a buffer now was queued before the stop.
     stopped: Rc<Cell<bool>>,
 }
 
 impl Reporter {
-    /// A buffer arrived: the context is running, unless a `statechange`
-    /// since said it stopped (this buffer was queued before that).
+    /// A buffer arrived: the context is running, unless it stopped and has
+    /// not been asked to resume since (this buffer was queued before the
+    /// stop).
     fn delivered(&self) {
         if self.stopped.get() {
             return;
@@ -65,20 +76,45 @@ impl Reporter {
         }
     }
 
-    /// The context's `state` changed. `closed` and `interrupted` leave the
-    /// status as it is.
+    /// The context's `state` changed. Read as a string: web-sys has no
+    /// variant for Safari's `interrupted` (another app or a call took the
+    /// audio session), which stops delivery as `suspended` does.
     fn state_changed(&self) {
-        match self.ctx.state() {
-            web_sys::AudioContextState::Running => {
+        let state = js_sys::Reflect::get(&self.ctx, &"state".into())
+            .ok()
+            .and_then(|s| s.as_string());
+        match state.as_deref() {
+            Some("running") => {
                 self.stopped.set(false);
                 self.running();
             }
-            web_sys::AudioContextState::Suspended => {
+            Some("suspended" | "interrupted") => {
                 self.stopped.set(true);
                 self.held();
             }
+            Some("closed") => self.closed(),
             _ => {}
         }
+    }
+
+    /// The context closed (not by this stream: its drop detaches the
+    /// handler first). Nothing will be delivered again: `Failed`, the
+    /// tracks stopped and the gesture listener gone, as after a failed
+    /// setup.
+    fn closed(&self) {
+        // A buffer still queued must not say `Running` again.
+        self.stopped.set(true);
+        self.set(AudioInputStatus::Failed(AvError::Backend(
+            "the capture AudioContext closed".into(),
+        )));
+        if let Some(state) = self.state.upgrade()
+            && let Some(state) = state.borrow().as_ref()
+        {
+            for track in &state.tracks {
+                track.stop();
+            }
+        }
+        self.disarm_gesture();
     }
 
     fn set(&self, s: AudioInputStatus) {
@@ -90,6 +126,11 @@ impl Reporter {
     /// `Running`, and the gesture listener has done its job.
     fn running(&self) {
         self.set(AudioInputStatus::Running);
+        self.disarm_gesture();
+    }
+
+    /// Remove the gesture listener, if it is armed.
+    fn disarm_gesture(&self) {
         let Some(state) = self.state.upgrade() else {
             return;
         };
@@ -119,8 +160,13 @@ impl Reporter {
              press (autoplay policy); no samples until then"
         );
         let ctx = self.ctx.clone();
+        let stopped = self.stopped.clone();
         let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
-            move |_e: web_sys::Event| quiet(ctx.resume()),
+            move |_e: web_sys::Event| {
+                // From here a buffer is the resumed context's (see `Reporter`).
+                stopped.set(false);
+                quiet(ctx.resume());
+            },
         );
         if let Some(w) = web_sys::window() {
             for ev in GESTURES {

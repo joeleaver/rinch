@@ -83,16 +83,21 @@ pub enum AudioInputStatus {
     Starting,
     /// Samples are being delivered. On the web a delivered buffer makes it
     /// `Running` whatever the context's `state` says: Firefox delivers a
-    /// context's first buffers before `state` reads `running` (#3007).
+    /// context's first buffers, and its first after a resume, before
+    /// `state` reads `running` (#3007). The one exception is a buffer the
+    /// context queued before it stopped, arriving after the stop.
     Running,
     /// Web: the browser's autoplay policy holds the capture `AudioContext`
     /// suspended, so no samples arrive (the track itself is live), or a
-    /// context that ran has stopped. Capture resumes by itself on the
-    /// page's next click, tap or key press. The usual way to never see this
-    /// is to open capture from a click handler.
+    /// context that ran has stopped (suspended, or interrupted: Safari's
+    /// state while another app or a call holds the audio session). Capture
+    /// resumes by itself on the page's next click, tap or key press, or
+    /// when the browser resumes the context (an interruption ending). The
+    /// usual way to never see this is to open capture from a click handler.
     WaitingForGesture,
-    /// Setup failed. On the web the stream's tracks have been stopped and
-    /// nothing is delivered.
+    /// Setup failed, or (web) the capture `AudioContext` was closed under
+    /// it. On the web the stream's tracks have been stopped and nothing is
+    /// delivered.
     Failed(AvError),
 }
 
