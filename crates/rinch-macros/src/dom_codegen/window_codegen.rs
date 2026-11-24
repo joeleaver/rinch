@@ -79,9 +79,10 @@ pub fn element_to_dom_window(element: &RsxElement, ctx: &mut DomCodegenContext) 
                     fields.push(quote! { #field: #value });
                 } else {
                     fields.extend(
-                        super::component_codegen::generate_component_field_assignments(
+                        super::component_props::generate_component_field_assignments(
                             &[prop],
-                            false,
+                            super::component_props::PropMode::Once,
+                            ctx,
                         ),
                     );
                 }

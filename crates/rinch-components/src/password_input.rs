@@ -123,6 +123,15 @@ pub struct PasswordInput {
     /// modification, or Enter) — HTML `change` semantics, receives the final
     /// value. Fires only if the value changed since focus (issue #226).
     pub onchange: Option<InputCallback>,
+    /// The field's HTML `autocomplete` attribute (#3028): a token list such as
+    /// `"username"`, `"current-password"`, `"new-password"`, `"email"` or
+    /// `"one-time-code"`, which password managers and the browser's autofill
+    /// read. Empty (the default) writes no attribute, the browser's default,
+    /// so a password manager may fill the field; it used to be hard-coded
+    /// `"off"`.
+    /// On desktop the attribute is kept on the element for the DOM; there is
+    /// no autofill there.
+    pub autocomplete: String,
 }
 
 impl std::fmt::Debug for PasswordInput {
@@ -156,6 +165,7 @@ impl std::fmt::Debug for PasswordInput {
             .field("ontoggle", &self.ontoggle.as_ref().map(|_| "<callback>"))
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
+            .field("autocomplete", &self.autocomplete)
             .finish()
     }
 }
@@ -181,6 +191,7 @@ impl Default for PasswordInput {
             ontoggle: None,
             oninput: None,
             onchange: None,
+            autocomplete: String::new(),
         }
     }
 }
@@ -263,7 +274,6 @@ impl Component for PasswordInput {
         let input = rinch_macros::rsx! {
             input {
                 class: "rinch-password-input__input",
-                autocomplete: "off",
                 spellcheck: "false"
             }
         };
@@ -271,6 +281,9 @@ impl Component for PasswordInput {
         // Set initial type based on visibility
         let input_type = if initial_visible { "text" } else { "password" };
         input.set_attribute("type", input_type);
+        if !self.autocomplete.is_empty() {
+            input.set_attribute("autocomplete", &self.autocomplete);
+        }
 
         // Reactive value binding (matching the TextInput pattern). The value is
         // written raw, never HTML-escaped: `set_attribute` goes through the DOM

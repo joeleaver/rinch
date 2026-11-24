@@ -181,6 +181,15 @@ PasswordInput {
     placeholder: "Enter password"
 }
 
+// Sign-in fields a password manager can fill: `autocomplete` writes the
+// field's HTML attribute (#3028). Empty (the default) writes none, the
+// browser's default. TextInput, Textarea, PasswordInput, NumberInput and
+// ColorInput all take it; ColorInput defaults to "off", since its picker
+// opens where the browser's list would.
+TextInput { label: "Username", autocomplete: "username" }
+PasswordInput { label: "Password", autocomplete: "current-password" }
+TextInput { label: "Code", autocomplete: "one-time-code" }
+
 // NumberInput — uncontrolled: the component owns the number, so the
 // +/- steppers step, clamp to [min, max] and format it themselves,
 // reporting each written value through `oninput` (#501)

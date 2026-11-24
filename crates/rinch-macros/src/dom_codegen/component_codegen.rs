@@ -3,8 +3,6 @@
 //! Handles code generation for PascalCase components, including
 //! static components and reactive components that re-render when signals change.
 
-use std::collections::HashSet;
-
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
@@ -17,6 +15,7 @@ use crate::prop::RsxProp;
 use super::captures::{
     collect_body_captures, collect_capture_idents, is_move_closure, shadow_clones, wrap_site,
 };
+use super::component_props::{PropMode, generate_component_field_assignments};
 use super::html::{
     generate_attr_code, generate_class_code, generate_ref_code, generate_shorthand_code,
     generate_style_code,
@@ -70,6 +69,29 @@ pub fn has_reactive_component_props(element: &RsxElement) -> bool {
     })
 }
 
+/// The call that places a re-rendering component under `parent` with the
+/// render closure `render`.
+///
+/// Outside a caller-owned region, `reactive_component_dom`, which captures the
+/// ambient owner as the component's caller. Inside one (`nested`: the
+/// component is written among another re-rendering component's children, and
+/// so built in that one's render) the caller is the outer component's caller,
+/// passed on as `__rinch_caller_owner` (issue #3030).
+fn placement_call(nested: bool, parent: &syn::Ident, render: &TokenStream2) -> TokenStream2 {
+    if nested {
+        quote! {
+            rinch::core::dom::reactive_component_dom_for_caller(
+                __scope,
+                &#parent,
+                __rinch_caller_owner.clone(),
+                #render,
+            );
+        }
+    } else {
+        quote! { rinch::core::reactive_component_dom(__scope, &#parent, #render); }
+    }
+}
+
 /// Generate reactive component code as a statement that inserts directly into parent_var.
 ///
 /// This is the preferred path when we know the parent (inside `generate_child_code`).
@@ -112,16 +134,20 @@ pub fn generate_reactive_component_stmt(
     }
 
     let field_assignments: Vec<TokenStream2> =
-        generate_component_field_assignments(&comp_props, true);
+        generate_component_field_assignments(&comp_props, PropMode::PerRender, ctx);
 
     let children_var = ctx.next_var("children");
     let temp_var = ctx.next_var("temp");
     let comp_var = ctx.next_var("comp");
     let result_var = ctx.next_var("result");
 
+    // A nested re-rendering component's caller is the caller of the one it
+    // is written in (issue #3030): decided before the children's frame opens.
+    let nested = ctx.in_caller_region();
     // The render closure runs again on every prop change, so what it names is
     // captured from the body it was built in and moved out of it (issue #223).
-    ctx.push_closure_frame(HashSet::new());
+    // Its children are a caller-owned region (issue #3030).
+    ctx.push_caller_frame();
     let children_code: Vec<TokenStream2> = element
         .children
         .iter()
@@ -145,6 +171,9 @@ pub fn generate_reactive_component_stmt(
     // This is the statement path: no return value, the function handles insertion.
     let body = quote! {
         let __scope = __child_scope;
+        // The owner of the code placing this component (issue #3027).
+        #[allow(unused_variables)]
+        let __rinch_caller_owner = __scope.caller_owner();
 
         #[allow(clippy::needless_update)]
         let #comp_var = #comp_name {
@@ -186,10 +215,11 @@ pub fn generate_reactive_component_stmt(
         #result_var
     };
     let (binding_fns, render) = bindings.finish(ctx, &body);
+    let placement = placement_call(nested, parent_var, &render);
     quote! {
         {
             #binding_fns
-            rinch::core::reactive_component_dom(__scope, &#parent_var, #render);
+            #placement
         }
     }
 }
@@ -258,7 +288,7 @@ pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContex
 
     // Generate field assignments only for component props (not style/class)
     let field_assignments: Vec<TokenStream2> =
-        generate_component_field_assignments(&comp_props, false);
+        generate_component_field_assignments(&comp_props, PropMode::Once, ctx);
 
     // Generate children rendering code - Show/For use marker-based insertion
     let children_var = ctx.next_var("children");
@@ -338,7 +368,7 @@ pub fn element_to_dom_component_reactive(
     // Inside the render closure, closure props are called (tracking signal deps),
     // and the result is used as a static value for the component struct.
     let field_assignments: Vec<TokenStream2> =
-        generate_component_field_assignments(comp_props, true);
+        generate_component_field_assignments(comp_props, PropMode::PerRender, ctx);
 
     // Generate children code - children are re-rendered each time too
     let children_var = ctx.next_var("children");
@@ -346,9 +376,13 @@ pub fn element_to_dom_component_reactive(
     let comp_var = ctx.next_var("comp");
     let result_var = ctx.next_var("result");
 
+    // A nested re-rendering component's caller is the caller of the one it
+    // is written in (issue #3030): decided before the children's frame opens.
+    let nested = ctx.in_caller_region();
     // The render closure runs again on every prop change, so what it names is
     // captured from the body it was built in and moved out of it (issue #223).
-    ctx.push_closure_frame(HashSet::new());
+    // Its children are a caller-owned region (issue #3030).
+    ctx.push_caller_frame();
     let children_code: Vec<TokenStream2> = element
         .children
         .iter()
@@ -373,6 +407,9 @@ pub fn element_to_dom_component_reactive(
     // then appends to the actual parent — avoiding __scope.parent() misrouting.
     let body = quote! {
         let __scope = __child_scope;
+        // The owner of the code placing this component (issue #3027).
+        #[allow(unused_variables)]
+        let __rinch_caller_owner = __scope.caller_owner();
 
         #[allow(clippy::needless_update)]
         let #comp_var = #comp_name {
@@ -414,12 +451,13 @@ pub fn element_to_dom_component_reactive(
         #result_var
     };
     let (binding_fns, render) = bindings.finish(ctx, &body);
+    let placement = placement_call(nested, &wrapper_var, &render);
     quote! {
         {
             #binding_fns
             let #wrapper_var = __scope.create_element("div");
             #wrapper_var.set_attribute("style", "display:contents");
-            rinch::core::reactive_component_dom(__scope, &#wrapper_var, #render);
+            #placement
             #wrapper_var
         }
     }
@@ -650,93 +688,4 @@ impl RootBindings {
         };
         (lets, render)
     }
-}
-
-/// Generate field assignment tokens for component props.
-///
-/// When `invoke_closures` is true (reactive mode), closure props are invoked to get
-/// their current value (tracking signals), then wrapped like static values.
-pub fn generate_component_field_assignments(
-    comp_props: &[&RsxProp],
-    invoke_closures: bool,
-) -> Vec<TokenStream2> {
-    comp_props
-        .iter()
-        .map(|prop| {
-            let name = prop.name_as_ident();
-            let name_str = prop.name.clone();
-            let value = &prop.value;
-
-            if name_str == "oninput" || name_str.starts_with("on") {
-                // Use IntoEventHandler trait so the field can be either T or Option<T>
-                // (e.g., Callback, Option<Callback>, ValueCallback<T>, Option<ValueCallback<T>>).
-                quote! { #name: IntoEventHandler::into_event_handler(#value) }
-            } else if name_str == "icon" || name_str.ends_with("_icon") {
-                // #718: on the reactive path a closure must be INVOKED before
-                // being wrapped in `Some(...)` — the icon field is
-                // `Option<TablerIcon>`, never `Option<impl Fn() -> TablerIcon>`.
-                // `has_reactive_component_props`/`has_reactive_props` route a
-                // component with a closure-valued `icon`/`*_icon` prop onto the
-                // reactive path (`invoke_closures == true`); the static path
-                // (`invoke_closures == false`) is only reached when no comp
-                // prop is a closure, so `value` here is never a closure there
-                // and the plain `Some(#value)` wrap is unchanged.
-                if invoke_closures {
-                    if let Some(closure) = get_closure_expr(value) {
-                        if is_move_closure(closure) {
-                            let fire = shadow_clones(collect_capture_idents(closure).iter());
-                            quote! { #name: Some({ #fire (#closure)() }) }
-                        } else {
-                            quote! { #name: Some((#closure)()) }
-                        }
-                    } else {
-                        quote! { #name: Some(#value) }
-                    }
-                } else {
-                    quote! { #name: Some(#value) }
-                }
-            } else if name_str.ends_with("_fn") {
-                quote! { #name: Some(std::rc::Rc::new(#value)) }
-            } else if crate::helpers::is_literal_bool(value)
-                || crate::helpers::is_literal_int(value)
-                || crate::helpers::is_literal_float(value)
-            {
-                // Literal bool/int/float fall through to `.into()` so the same expression
-                // works whether the destination field is `T` or `Option<T>`:
-                //   - `T` field: `From<T> for T` (trivial blanket) gives identity.
-                //   - `Option<T>` field: `From<T> for Option<T>` in std gives `Some(v)`.
-                // The destination field type drives inference, so unsuffixed literals
-                // like `12.0` resolve correctly against the field type.
-                quote! { #name: (#value).into() }
-            } else if crate::helpers::is_literal_string(value) {
-                quote! { #name: String::from(#value) }
-            } else if crate::helpers::is_option_expr(value) {
-                // Some(...) and None pass through directly to preserve
-                // unsizing coercion (e.g. Some(Rc::new(|| ...)) for Option<Rc<dyn Fn()>>).
-                quote! { #name: #value }
-            } else if invoke_closures {
-                if let Some(closure) = get_closure_expr(value) {
-                    // Invoke the closure to get current value, using .into() so
-                    // &str → String, bool → bool, etc. all work correctly.
-                    // A `move` closure rebuilt here on every render would move
-                    // what it names out of the render closure's captures, so it
-                    // gets a fresh shadow per render (issue #223).
-                    if is_move_closure(closure) {
-                        let fire = shadow_clones(collect_capture_idents(closure).iter());
-                        quote! { #name: ({ #fire ((#closure)()).into() }) }
-                    } else {
-                        quote! { #name: ((#closure)()).into() }
-                    }
-                } else {
-                    // Use .into() so T auto-wraps into Option<T> via From<T>,
-                    // while same-type assignments stay identity conversions.
-                    quote! { #name: (#value).into() }
-                }
-            } else {
-                // Use .into() so T auto-wraps into Option<T> via From<T>,
-                // while same-type assignments stay identity conversions.
-                quote! { #name: (#value).into() }
-            }
-        })
-        .collect()
 }

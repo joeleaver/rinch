@@ -182,3 +182,49 @@ fn the_app_sets_the_contrast_token() {
         assert_eq!(got.text, got.reference, "{}", p.name);
     }
 }
+
+/// #3020: a filled Alert with no colour class (hand-written markup; the
+/// component always writes one) falls back to the primary fill and its
+/// contrast token, its title and close button included, as a filled Badge
+/// with no `data-color` does. It used to paint no fill and plain white text.
+#[test]
+fn a_colourless_filled_alert_falls_back_like_a_badge() {
+    let badge = probe("badge", "rinch-badge rinch-badge--filled");
+    let alert = probe("alert", "rinch-alert rinch-alert--filled");
+    let title = support::Probe {
+        swatch: "rinch-alert__title",
+        ..alert
+    };
+    let close = support::Probe {
+        swatch: "rinch-alert__close",
+        ..alert
+    };
+    for dark in [false, true] {
+        // A yellow primary's contrast token is black, so white is wrong.
+        let t = theme(dark, ColorName::Yellow);
+        let [a, b] = sheets(&t);
+        let want = paint(&[&a, &b], &badge, None, None, "var(--rinch-primary-color)");
+        assert_eq!(want.fill, want.reference, "dark={dark}: the badge control");
+        assert_eq!(want.text, BLACK, "dark={dark}: the badge control");
+        for p in [&alert, &title] {
+            let got = paint(&[&a, &b], p, None, None, "var(--rinch-primary-color)");
+            let swatch = p.swatch;
+            assert_eq!(got.fill, want.fill, "dark={dark} {swatch}: fill");
+            assert_eq!(got.text, want.text, "dark={dark} {swatch}: text");
+        }
+        // The close button is drawn at `opacity: 0.7`, so its text is the
+        // badge's text blended 70% over the fill.
+        let got = paint(&[&a, &b], &close, None, None, "var(--rinch-primary-color)");
+        assert_eq!(got.fill, want.fill, "dark={dark} close: fill");
+        for i in 0..3 {
+            let blend = 0.7 * f32::from(want.text[i]) + 0.3 * f32::from(want.fill[i]);
+            assert!(
+                (f32::from(got.text[i]) - blend).abs() <= 2.0,
+                "dark={dark} close: text {:?}, want {:?} at 70% over {:?}",
+                got.text,
+                want.text,
+                want.fill
+            );
+        }
+    }
+}
