@@ -29,7 +29,16 @@ pub(super) struct Shown {
 
 impl Shown {
     /// Put the content back into its step.
+    ///
+    /// Not when the step now sits **inside** the content (an app moved it
+    /// there while the content was shown): putting the content into it would
+    /// make the content its own ancestor, a cycle every tree walk then spins
+    /// in for ever. The content stays where it is and is forgotten, as content
+    /// something else took out of the region is.
     fn return_home(&self) {
+        if is_inclusive_ancestor(&self.node, &self.home) {
+            return;
+        }
         match &self.before {
             Some(before)
                 if before.parent_node().map(|p| p.node_id()) == Some(self.home.node_id()) =>
@@ -39,6 +48,19 @@ impl Shown {
             _ => self.home.append_child(&self.node),
         }
     }
+}
+
+/// Whether `node` is `ancestor` or lies under it.
+fn is_inclusive_ancestor(ancestor: &NodeHandle, node: &NodeHandle) -> bool {
+    let target = ancestor.node_id();
+    let mut current = Some(node.clone());
+    while let Some(n) = current {
+        if n.node_id() == target {
+            return true;
+        }
+        current = n.parent_node();
+    }
+    false
 }
 
 /// The `.rinch-stepper__step-content` child of a step, if it is still there.

@@ -185,6 +185,48 @@ fn removing_the_active_step_takes_its_content_with_it() {
     );
 }
 
+/// An app moves the active step **into its own shown content** (the extended
+/// differential test's seed 7 found this). The content cannot go back into a
+/// step that sits inside it: that made the content its own ancestor, and every
+/// later tree walk spun for ever. It stays where it is, the step with it, and
+/// the step now at `active` gets the region.
+#[test]
+fn a_step_moved_into_its_own_shown_content_makes_no_cycle() {
+    let tree = Tree::build(|scope| {
+        let kids = [step(scope, "one"), step(scope, "two"), step(scope, "three")];
+        stepper(scope, 1, &kids)
+    });
+
+    let two = tree.steps()[1].clone();
+    let shown_marker = find_by_class(&tree.region(), "marker").expect("step two's marker");
+    shown_marker.append_child(&two);
+
+    // No node is its own ancestor.
+    let mut seen = 0;
+    let mut cur = Some(two.clone());
+    while let Some(n) = cur {
+        seen += 1;
+        assert!(seen < 64, "the step's ancestor chain loops");
+        cur = n.parent_node();
+    }
+
+    let region = tree.region();
+    let in_region = |class: &str| {
+        let mut out = Vec::new();
+        collect_by_class(&region, class, &mut out);
+        out.len()
+    };
+    assert_eq!(
+        in_region("rinch-stepper__step-content"),
+        2,
+        "step two's content stays (holding step two), and `three`, now at `active`, is shown"
+    );
+    let steps = tree.steps();
+    assert_eq!(steps.len(), 2, "step two left the stepper");
+    assert_eq!(Tree::markers(&steps[0]), ["one"]);
+    assert_eq!(Tree::markers(&steps[1]), Vec::<String>::new());
+}
+
 #[test]
 fn the_completed_block_shows_only_past_the_last_step() {
     for (active, past_the_end) in [(1, false), (2, false), (3, true)] {
