@@ -12554,9 +12554,18 @@ impl RinchDocument {
         let mut hang = HangStats::default();
         let mut float_drop: f32;
         let mut builds = 0u32;
+        // The controls rinch wrote for `unicode-bidi` (#2588). parley reopens
+        // those still open at a forced break after it, as Blink reopens an
+        // element's bidi context, where controls typed in the text end there
+        // (UAX #9 X8, #2962).
+        let reopened_controls: Vec<std::ops::Range<usize>> = bidi_control_ranges
+            .iter()
+            .map(|&(start, end, _)| start..end)
+            .collect();
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
             builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
+            builder.set_reopened_bidi_controls(&reopened_controls);
             // A block's paragraph runs in the block's `direction` whatever
             // its text (parley 0.12 takes a base direction): an rtl one's
             // trailing spaces are at its visual left, inside the box (Chrome
