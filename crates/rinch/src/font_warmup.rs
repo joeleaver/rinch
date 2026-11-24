@@ -166,4 +166,67 @@ mod tests {
         window_presented();
         assert!(app_started(FontWarmup::AtStart).is_none(), "once");
     }
+
+    /// #3016: a process with the warm-up thread runs under Valgrind. This
+    /// test binary runs [`at_start_the_warm_up_runs_with_no_window_2552`]
+    /// again under Callgrind and under Memcheck, which must pass it.
+    ///
+    /// The thread's first `thread_cpu` was rustix's first `clock_gettime`,
+    /// which looks the vDSO up in the aux vector. rustix read the vector
+    /// with `prctl(PR_GET_AUXV)`, which Valgrind passes to the kernel, and
+    /// the kernel's vector names the host's vDSO, which the guest has not
+    /// mapped: SIGSEGV in `check_elf_base` (deskrinch's Callgrind run
+    /// failed an assertion in its signal code instead). rinch's rustix now
+    /// has `use-libc-auxv`, so it reads the vector Valgrind gave the
+    /// process through `getauxval`.
+    ///
+    /// Valgrind is `$RINCH_VALGRIND` or `valgrind` on `PATH`. Without it the
+    /// test says so and passes, unless `RINCH_REQUIRE_VALGRIND` is set and
+    /// not empty (CI's `test (unit)` shard sets it and installs valgrind),
+    /// when it fails.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_warm_up_runs_under_valgrind_3016() {
+        use std::process::Command;
+        let valgrind = std::env::var_os("RINCH_VALGRIND").unwrap_or_else(|| "valgrind".into());
+        let found = Command::new(&valgrind)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !found {
+            assert!(
+                std::env::var_os("RINCH_REQUIRE_VALGRIND").is_none_or(|v| v.is_empty()),
+                "RINCH_REQUIRE_VALGRIND is set and there is no {valgrind:?}"
+            );
+            eprintln!("the_warm_up_runs_under_valgrind_3016: no {valgrind:?}, not run");
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let test = "font_warmup::tests::at_start_the_warm_up_runs_with_no_window_2552";
+        for tool in [
+            ["--tool=callgrind", "--callgrind-out-file=/dev/null"],
+            ["--tool=memcheck", "--leak-check=no"],
+        ] {
+            // A crash leaves a `vgcore.<pid>` in the working directory.
+            let out = Command::new(&valgrind)
+                .current_dir(std::env::temp_dir())
+                .args(tool)
+                .args(["--num-callers=30", "--quiet", "--"])
+                .arg(&exe)
+                .args([test, "--exact", "--test-threads=1"])
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // Valgrind's report ends with every thread's stack: its head
+            // names the fault, so keep the first lines.
+            let stderr: String = stderr.lines().take(60).collect::<Vec<_>>().join("\n");
+            assert!(
+                out.status.success() && stdout.contains("test result: ok. 1 passed"),
+                "{}: {}\n--- stdout\n{stdout}\n--- stderr\n{stderr}",
+                tool[0],
+                out.status
+            );
+        }
+    }
 }

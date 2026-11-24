@@ -154,7 +154,19 @@ libc = { version = "0.2", optional = true }
 # The system font watch (#2537): inotify on the font directories, woken by an
 # eventfd, so an idle app makes no wake-ups for it. Already in Cargo.lock with
 # both features, through calloop, polling and smithay-client-toolkit.
-rustix = { version = "1.1", features = ["fs", "event", "time"], optional = true }
+#
+# `use-libc-auxv` (#3016): rustix reads the aux vector through libc's
+# `getauxval` instead of `prctl(PR_GET_AUXV)`. The prctl reaches the kernel,
+# which answers with the real process's vector; under Valgrind that names the
+# host's vDSO, which the guest has not mapped, so the first rustix call that
+# reads the vector (the vDSO `clock_gettime` behind the font warm-up's
+# `thread_cpu`, `param::page_size`, …) died with SIGSEGV in
+# `check_elf_base` (or, where a handler caught that, Callgrind failed its
+# `threads.c` signal assertion, as deskrinch saw).
+# `getauxval` reads the vector Valgrind gave the process. Features unify, so
+# this covers every rustix 1.x user linked with rinch (calloop, polling,
+# wayland-backend, …).
+rustix = { version = "1.1", features = ["fs", "event", "time", "use-libc-auxv"], optional = true }
 gtk = { version = "0.18", optional = true }
 ksni = { workspace = true, optional = true }
 # AT-SPI (D-Bus) accessibility adapter for Linux. Pulls zbus/atspi/async-io; only

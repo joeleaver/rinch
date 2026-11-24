@@ -1572,6 +1572,30 @@ main window: the thread then makes the scan itself when no document has
 refresh (#2486) gives the families new ids and is not warmed again. Pin:
 `rinch-dom/tests/font_warmup_2552.rs`.
 
+**rustix reads the aux vector through libc** (#3016). The warm-up's
+`thread_cpu` (only for the `[PERF]` line and its `tracing::debug!` twin) was
+the process's first rustix `clock_gettime`, which looks up the vDSO in the aux
+vector. rustix 1.x reads that vector with `prctl(PR_GET_AUXV)` unless told
+otherwise; Valgrind passes the prctl to the kernel, which answers with the real
+process's vector, whose `AT_SYSINFO_EHDR` is the host's vDSO, unmapped in the
+guest. So under Callgrind and Memcheck every rinch app died once the warm-up
+started: SIGSEGV in `rustix::backend::param::auxv::check_elf_base` on any
+thread, or Callgrind's `threads.c:247` signal assertion where a handler caught
+it (deskrinch). It was not the warm-up thread as such: `clock_gettime` on the
+main thread, or `rustix::param::page_size`, dies the same way, while libc's
+`clock_gettime` and `getrusage(RUSAGE_THREAD)` run. rinch's rustix dependency
+(`crates/rinch/Cargo.toml`) now has `use-libc-auxv`: glibc's `getauxval`
+returns the vector Valgrind built. Features unify, so it covers every rustix
+1.x user in the process (calloop, polling, wayland-backend, x11rb). Keep it
+when the dependency line is touched. Pin:
+`font_warmup::tests::the_warm_up_runs_under_valgrind_3016`, which runs the
+at-start pin above under both tools; it skips without valgrind, except in CI's
+`test (unit)` shard (`RINCH_REQUIRE_VALGRIND=1`, valgrind installed). An app
+measured under Callgrind that wants the warm-up's own work out of its counts
+sets `App::font_warmup(FontWarmup::Off)`; the measurement itself no longer
+needs turning off. rinch-bench drives `RinchApp` directly, never
+`RinchRuntime` or `App::run`, so its benchmarks start no warm-up thread.
+
 What it leaves per document (measured with `perf` and gdb on the popup menu,
 release, about 1.5–3 ms of a 4–6 ms software popup): `SystemFonts::fallback`
 is not cached across collections (a new collection's `data.fallbacks` starts
