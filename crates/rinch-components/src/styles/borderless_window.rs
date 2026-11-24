@@ -45,8 +45,10 @@ pub fn styles() -> String {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    height: 36px;
-    min-height: 36px;
+    /* `--rinch-titlebar-height` is written by BorderlessWindow from its
+       `titlebar_height` prop (issue #2196), which also feeds the top inset. */
+    height: var(--rinch-titlebar-height, 36px);
+    min-height: var(--rinch-titlebar-height, 36px);
     padding: 0 var(--rinch-spacing-xs);
     background-color: var(--rinch-titlebar-bg);
     border-bottom: none;
@@ -77,19 +79,17 @@ pub fn styles() -> String {
     width: var(--rinch-menu-spacer-width, 0px);
 }
 
-/* Branded title in inline menu row — bold with multi-color letters in a pill */
+/* The title in the inline menu row: plain text in the titlebar's text colour,
+   as a client-side-decorated titlebar draws it (issue #2196; it used to be a
+   rainbow pill). `title_section` puts the app's own nodes here instead. */
 .rinch-borderlesswindow__brand {
     display: flex;
     align-items: center;
     font-size: var(--rinch-font-size-sm);
-    font-weight: 700;
+    font-weight: 600;
     white-space: nowrap;
-    padding: 2px 10px;
-    margin: 0 4px;
-    letter-spacing: 0.5px;
-    background: var(--rinch-color-default);
-    border-radius: var(--rinch-radius-sm);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    padding: 0 var(--rinch-spacing-xs);
+    color: var(--rinch-titlebar-text);
 }
 
 /* Title text */
@@ -143,7 +143,7 @@ pub fn styles() -> String {
     align-items: center;
     justify-content: center;
     width: 46px;
-    height: 36px;
+    height: var(--rinch-titlebar-height, 36px);
     border: none;
     background: transparent;
     color: var(--rinch-titlebar-icon);
@@ -217,25 +217,47 @@ pub fn styles() -> String {
     border-top-right-radius: 16px;
 }
 
-/* Close button at right edge needs rounded corner when window has radius */
-.rinch-borderlesswindow--radius-xs .rinch-borderlesswindow__control--close {
+/* The control at each outer edge of the titlebar follows the window's rounded
+   corner: the last one on the right, the first one on the left (issue #2196:
+   the controls can sit at either end). */
+.rinch-borderlesswindow--radius-xs .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--right > .rinch-borderlesswindow__control:last-child {
     border-top-right-radius: 4px;
 }
 
-.rinch-borderlesswindow--radius-sm .rinch-borderlesswindow__control--close {
+.rinch-borderlesswindow--radius-xs .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--left > .rinch-borderlesswindow__control:first-child {
+    border-top-left-radius: 4px;
+}
+
+.rinch-borderlesswindow--radius-sm .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--right > .rinch-borderlesswindow__control:last-child {
     border-top-right-radius: 6px;
 }
 
-.rinch-borderlesswindow--radius-md .rinch-borderlesswindow__control--close {
+.rinch-borderlesswindow--radius-sm .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--left > .rinch-borderlesswindow__control:first-child {
+    border-top-left-radius: 6px;
+}
+
+.rinch-borderlesswindow--radius-md .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--right > .rinch-borderlesswindow__control:last-child {
     border-top-right-radius: 8px;
 }
 
-.rinch-borderlesswindow--radius-lg .rinch-borderlesswindow__control--close {
+.rinch-borderlesswindow--radius-md .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--left > .rinch-borderlesswindow__control:first-child {
+    border-top-left-radius: 8px;
+}
+
+.rinch-borderlesswindow--radius-lg .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--right > .rinch-borderlesswindow__control:last-child {
     border-top-right-radius: 12px;
 }
 
-.rinch-borderlesswindow--radius-xl .rinch-borderlesswindow__control--close {
+.rinch-borderlesswindow--radius-lg .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--left > .rinch-borderlesswindow__control:first-child {
+    border-top-left-radius: 12px;
+}
+
+.rinch-borderlesswindow--radius-xl .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--right > .rinch-borderlesswindow__control:last-child {
     border-top-right-radius: 16px;
+}
+
+.rinch-borderlesswindow--radius-xl .rinch-borderlesswindow__titlebar > .rinch-borderlesswindow__controls--left > .rinch-borderlesswindow__control:first-child {
+    border-top-left-radius: 16px;
 }
 "#
     .to_string()

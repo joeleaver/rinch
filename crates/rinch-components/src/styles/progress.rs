@@ -20,18 +20,20 @@ pub fn styles() -> String {
     height: 100%;
     background-color: var(--rinch-progress-color, var(--rinch-primary-color));
     border-radius: inherit;
-    transition: width 200ms ease;
+    /* A value change animates, as Mantine's Progress does (#2204);
+       `--rinch-progress-transition: none` makes it jump, as <progress>. */
+    transition: var(--rinch-progress-transition, width 200ms ease);
 }
 
 /* Striped pattern */
 .rinch-progress__bar--striped {
     background-image: linear-gradient(
         45deg,
-        rgba(255, 255, 255, 0.15) 25%,
+        var(--rinch-progress-stripe-color, rgba(255, 255, 255, 0.15)) 25%,
         transparent 25%,
         transparent 50%,
-        rgba(255, 255, 255, 0.15) 50%,
-        rgba(255, 255, 255, 0.15) 75%,
+        var(--rinch-progress-stripe-color, rgba(255, 255, 255, 0.15)) 50%,
+        var(--rinch-progress-stripe-color, rgba(255, 255, 255, 0.15)) 75%,
         transparent 75%,
         transparent
     );
@@ -46,6 +48,25 @@ pub fn styles() -> String {
 @keyframes rinch-progress-stripes {
     from { background-position: 1rem 0; }
     to { background-position: 0 0; }
+}
+
+/* Indeterminate (#2204): no value, as a <progress> without one. A segment
+   40% of the track wide sweeps across it; `translateX` is relative to the
+   segment, so 250% puts its left edge at the track's right edge. */
+.rinch-progress--indeterminate .rinch-progress__bar {
+    width: 40%;
+    animation: rinch-progress-indeterminate
+        var(--rinch-progress-indeterminate-duration, 1.5s) ease-in-out infinite;
+}
+.rinch-progress--indeterminate .rinch-progress__bar--animated {
+    animation: rinch-progress-indeterminate
+            var(--rinch-progress-indeterminate-duration, 1.5s) ease-in-out infinite,
+        rinch-progress-stripes 1s linear infinite;
+}
+
+@keyframes rinch-progress-indeterminate {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(250%); }
 }
 
 /* Progress radius */

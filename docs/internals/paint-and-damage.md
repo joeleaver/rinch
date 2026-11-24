@@ -1610,6 +1610,45 @@ column through six line-throughs and six underlines at fractional tops is
 fully covered, at 1x and 1.5x, in `paint_decorations_2396_tests` and
 `gpu_paint_decorations_2396`.
 
+### Outlines of inline elements (#2973)
+
+A flowed inline element (`<a>`, `<span>`) owns no box, so the box path's
+`paint_outline` never reaches it; its outline, the keyboard focus ring among
+them, is drawn by its IFC root's paint, after the lines' text and atomic
+inlines (`text::paint_inline_outlines`). The fragments are the element's
+background fragments (`span_box_rects`, which `inline_background_rects`
+calls with the recorded background spans): border boxes snapped to the device
+grid. A focus ring is a restyle that re-shapes nothing, so the outlined
+elements are found at paint from the lines' `child_positions` and their
+bytes from `text_ranges` and the places of the atomic inlines under them
+(`text::inline_outline_spans`), not recorded at the build. So a link
+holding only an `<img>`, an `<svg>` or an inline-block icon is outlined
+round it, as Chrome 158 draws it: the box and the line's font box over it
+(review of #2986). Left out: an element holding neither text nor an atomic
+inline (an empty `<a>`) and a split inline.
+Known difference: a link holding an image and text is one rectangle round
+the line's content area, where Chrome's ring is stepped (the text's own
+font box beside the taller image), the fragment-height difference
+"What an inline element's fragment holds" describes. Nothing is looked for until some inline element has
+computed an outline (`NodeTree::inline_outlines`, set by the cascade, sticky).
+
+Measured in Chrome 158 (`rinch-dom/tests/inline_outline_2973_tests.rs`): a
+fragment whose band meets no other's is outlined alone, as a box (any style,
+square corners); fragments whose bands touch or overlap (`outline_groups`)
+are outlined as one shape: the union `O` of the fragments grown by
+`outline-offset + outline-width`, less `O` shrunk by the width
+(`outline_union_ring`). The shrink matters: two lines 2px apart under a 2px
+outline get one band round both and none in the gap. A group is drawn solid
+whatever its style (no Chrome measurement of a dashed group yet).
+
+Damage and the clip proof see the outlines through
+`text::inline_ink_past_lines(.., outlines)`: each fragment grown by its
+owner's offset and width. `ink_outsets_in`'s members flag is
+`NodeTree::walks_inline_members()` (text shadows, strokes, or outlines), so
+the root's damage ink and its painted state count a ring now and as it was
+painted; the partial-frame cases (focus onto and off a link, one line and
+wrapped, at 1x and 2x) are in the same test file.
+
 ### Text stroke and `background-clip: text` (#2719)
 
 Both painters, through the `Painter` trait alone (no new trait method):

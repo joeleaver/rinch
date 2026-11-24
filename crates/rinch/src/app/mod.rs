@@ -214,9 +214,13 @@ mod editor_shared_mark_wrappers_1833_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_spellcheck_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_tab_2210_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_table_keys_1847_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod editor_th_align_2210_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_word_delete_tests;
 #[cfg(all(test, feature = "windowing"))]
@@ -388,6 +392,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
+#[cfg(test)]
+mod stepper_window_2195_tests;
 // Uses `perf_expect` (software shell) and names the pointer (desktop).
 #[cfg(all(test, software_shell, feature = "windowing"))]
 mod rehover_2766_tests;
@@ -488,6 +494,9 @@ mod text_selection_copy_gesture_tests;
 mod text_selection_copy_tests;
 #[cfg(test)]
 mod text_selection_gestures_tests;
+mod text_selection_keys;
+#[cfg(test)]
+mod text_selection_keys_tests;
 #[cfg(test)]
 mod text_selection_leaf_tests;
 #[cfg(test)]
@@ -1028,6 +1037,9 @@ pub(crate) struct TextSelection {
     /// Shift+click after it extends by that unit (#2256). `None` for a
     /// selection made by a single press.
     pub(crate) unit: Option<SelectionUnit>,
+    /// The window x a Shift+Up / Shift+Down aims at, kept across a run of
+    /// them (`text_selection_keys`); any other change drops it.
+    pub(crate) goal_x: Option<f32>,
 }
 
 /// One end of a read-only selection: a root, a byte offset in its text,
@@ -4696,6 +4708,20 @@ impl RinchApp {
         let Some(action) = text_key_action(self.text_keymap, key, modifiers) else {
             return;
         };
+        // With no field holding the keyboard, a Shift chord extends the
+        // read-only selection (#2953).
+        // Alt is no text chord on Windows and Linux (Alt+Arrow is a
+        // browser's history keys): Chrome 158 extends nothing with it.
+        if let TextKeyAction::Move {
+            motion,
+            extend: true,
+        } = action
+            && !(self.text_keymap == TextKeymap::Standard && modifiers.alt)
+            && self.live_focused_input_handler().is_none()
+            && self.extend_text_selection_by_key(motion)
+        {
+            return;
+        }
         let password = self.focused_input_is_password();
         match action {
             TextKeyAction::Move { motion, extend } => {

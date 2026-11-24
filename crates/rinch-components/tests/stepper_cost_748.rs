@@ -376,5 +376,14 @@ fn growing_a_stepper_one_step_at_a_time_writes_in_proportion_to_its_size() {
         "#748: twenty more steps cost twice what ten more do — {a}, {b}, {c} \
          writes for 10, 20 and 40 steps"
     );
-    assert_eq!((a, b, c), (88, 138, 238), "the totals CLAUDE.md quotes");
+    // 88/138/238 before #2195. One write more since: the stepper is built
+    // with `active: 3` and no steps, so its content region starts in
+    // `--completed` (showing the completed block), and the fourth appended
+    // step makes `active` a real step, which takes the modifier off. That is
+    // the region doing its job, once per stepper, not a per-step cost.
+    assert_eq!(
+        (a, b, c),
+        (89, 139, 239),
+        "the totals docs/internals/components.md quotes"
+    );
 }

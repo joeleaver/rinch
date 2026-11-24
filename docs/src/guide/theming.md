@@ -343,10 +343,9 @@ as it includes any generated box (#1629); `query_selector`, structural selectors
 (`:first-child`, `:nth-child`) and copying a selection skip it. Still not Chrome's: a number is drawn without Chrome's
 tabular digits (its far edge is up to 3px in); an `inside` disc's glyph sits
 about 0.12em right of Chrome's shape; a marker whose own line is taller
-than the first line it sits on does not push the item's content down; and a
-later block's background pulled up over the item (a negative margin) hides the
-marker, as it hides any earlier text in rinch, where Chrome paints inline
-content above in-flow backgrounds (#2276). The
+than the first line it sits on does not push the item's content down. A later
+block's background pulled up over the item (a negative margin) is painted
+under the marker, as under any earlier line content, as in Chrome (#2276). The
 rich-text editor's task-list checkbox is a `::before` hung against the item's
 left edge the same way (#1246).
 
@@ -471,7 +470,7 @@ var(--rinch-window-top-inset)  /* Height of the chrome rinch draws above your co
 
 Rinch sometimes draws window chrome itself: the DOM menu bar (28px — on Linux,
 and on the web under `rinch_web::mount_with_menu_bar`) and the
-`BorderlessWindow` titlebar (36px). That chrome reserves space with
+`BorderlessWindow` titlebar (its `titlebar_height`, 36px by default). That chrome reserves space with
 in-document padding, so **normal flow content clears it automatically**.
 
 A `position: fixed` element does not. Fixed elements resolve against the real
@@ -646,7 +645,11 @@ or paragraphs after a double or triple click), and Ctrl+A (Cmd+A) with no
 field focused selects all the text the selection is in. A `user-select: all`
 element is selected whole. Text inside that is `user-select: none` or
 `visibility: hidden` is neither highlighted nor copied. A press on an
-`<img>` starts no selection. A press on a link in selectable text follows it on release, and
+`<img>` starts no selection. With no field focused, Shift+Arrow extends
+the selection by a character (by the paragraph's direction on a
+right-to-left line), Ctrl+Shift+Arrow (Option+Shift on macOS) by a word,
+Shift+Up/Down by a line and Shift+Home/End to the line's edges, as Chrome
+extends one; a plain arrow leaves it. A press on a link in selectable text follows it on release, and
 a drag across it selects it instead.
 
 Ctrl+C (Cmd+C) copies what Chrome's `getSelection().toString()` gives for
