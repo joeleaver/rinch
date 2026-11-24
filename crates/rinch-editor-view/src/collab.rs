@@ -6,7 +6,7 @@
 //! drives it from an [`EditorHandle`](super::EditorHandle):
 //!
 //! * **outbound** — every *local* edit funnels through `EditorCore::commit`
-//!   (`handle.rs`), which projects the `before → after` change onto the CRDT
+//!   (`handle/editor_core.rs`), which projects the `before → after` change onto the CRDT
 //!   ([`CollabSession::record_local`](rinch_editor_collab::CollabSession::record_local))
 //!   and hands the resulting delta to this bridge's `outbound` sink.
 //! * **inbound** — a peer's delta arrives via

@@ -557,6 +557,15 @@ impl RinchApp {
             actions.push(AppAction::RequestRedraw);
         }
 
+        // Where a keyboard scroll starts while nothing has focus (#2977): the
+        // node the last press, of any button, landed on.
+        if let PlatformEvent::MouseDown { x, y, .. } = event {
+            self.keyboard_scroll_anchor = self.doc.as_ref().and_then(|doc| {
+                let d = doc.borrow();
+                self.shared_target(&d, x, y)
+            });
+        }
+
         // An open runtime popup's resize, file drag and composition (#822).
         if self.runtime_popup_intercept(&event, vp_w, vp_h, &mut actions) {
             return actions;
@@ -2747,6 +2756,21 @@ impl RinchApp {
         // Alt+I: toggle inspect mode
         if devtools && key == KeyCode::KeyI && alt && !ctrl && !shift {
             actions.push(AppAction::ToggleInspectMode);
+            return true;
+        }
+
+        // Keyboard scrolling (#2977): with no text field holding the keyboard,
+        // an arrow, Page Up / Down, Home / End or Space scrolls, as Chrome's
+        // default action does, after every handler has had the key. Space on
+        // a focused activation target keeps its activation below (a focused
+        // box that is not one scrolls, as in Chrome), and a focused
+        // `<select>` keeps its keys.
+        if !(key == KeyCode::Space && self.focused_node_activates())
+            && !self.focused_node_is_select()
+            && self.live_focused_input_handler().is_none()
+            && self.keyboard_scroll(key, modifiers)
+        {
+            actions.push(AppAction::RequestRedraw);
             return true;
         }
 

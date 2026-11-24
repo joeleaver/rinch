@@ -424,7 +424,7 @@ puts a native unit test on the web's path):
   `<span data-pm-deco class="pm-spell-error">`, and `styles.rs`'s rule
   (`text-decoration: underline var(--rinch-spellcheck-style, wavy)
   var(--rinch-spellcheck-color, #ff0000)`) is drawn by the browser.
-- **Interaction**: `handle_mousedown` (`rinch-web/src/editor_input.rs`) calls
+- **Interaction**: `handle_mousedown` (`rinch-web/src/editor_input/pointer.rs`) calls
   `spell_user_focus` after it gives the editor the keyboard; typing activates
   through `spell_after_dispatch`, as on the desktop. The web editor is no Tab
   stop of its own, so there is no Tab path.

@@ -44,37 +44,51 @@ fn paint(doc: &mut RinchDocument, p: &mut TinySkiaPainter, scale: f64) {
 /// fresh full paint after the same change.
 #[track_caller]
 fn partial_matches_full(page: &str, scale: f64, change: &dyn Fn(&mut RinchDocument)) {
+    partials_match_full(page, scale, &[change]);
+}
+
+/// [`partial_matches_full`] for a run of changes, each followed by a partial
+/// repaint of its damage alone, compared once all have been applied.
+#[track_caller]
+fn partials_match_full(page: &str, scale: f64, changes: &[&dyn Fn(&mut RinchDocument)]) {
     let mut doc = document(page);
     let (pw, ph) = ((W as f64 * scale) as u32, (H as f64 * scale) as u32);
     let mut p = TinySkiaPainter::new(pw, ph);
     p.fill_white();
     paint(&mut doc, &mut p, scale);
     let before = p.pixels().to_vec();
-    doc.tree.consume_paint_dirty();
-    change(&mut doc);
-    doc.resolve_layout(W, H);
-    let damage = rinch_dom::paint::compute_damage(&doc.tree, scale, pw as f64, ph as f64);
-    assert!(!damage.is_full(), "the change damaged the whole frame");
-    let rects: Vec<Rect> = damage.rects().to_vec();
-    assert!(!rects.is_empty(), "the change named no damage");
-    for r in &rects {
-        let r = r
-            .intersect(Rect::new(0.0, 0.0, pw as f64, ph as f64))
-            .expand();
-        p.clear_rect_white(
-            r.x0 as u32,
-            r.y0 as u32,
-            r.width() as u32,
-            r.height() as u32,
-        );
+    let mut rects: Vec<Rect> = Vec::new();
+    for change in changes {
+        doc.tree.consume_paint_dirty();
+        change(&mut doc);
+        doc.resolve_layout(W, H);
+        let damage = rinch_dom::paint::compute_damage(&doc.tree, scale, pw as f64, ph as f64);
+        assert!(!damage.is_full(), "the change damaged the whole frame");
+        rects = damage.rects().to_vec();
+        assert!(!rects.is_empty(), "the change named no damage");
+        for r in &rects {
+            let r = r
+                .intersect(Rect::new(0.0, 0.0, pw as f64, ph as f64))
+                .expand();
+            p.clear_rect_white(
+                r.x0 as u32,
+                r.y0 as u32,
+                r.width() as u32,
+                r.height() as u32,
+            );
+        }
+        p.push_damage_clip(&damage);
+        rinch_dom::paint::set_dirty_rects(Some(&rects));
+        paint(&mut doc, &mut p, scale);
+        rinch_dom::paint::set_dirty_region(None);
+        // Closed before the next frame's, as the shell's frame does.
+        rinch_dom::paint::painter::Painter::pop_layer(&mut p);
     }
-    p.push_damage_clip(&damage);
-    rinch_dom::paint::set_dirty_rects(Some(&rects));
-    paint(&mut doc, &mut p, scale);
-    rinch_dom::paint::set_dirty_region(None);
     let partial = p.pixels().to_vec();
     let mut fresh = document(page);
-    change(&mut fresh);
+    for change in changes {
+        change(&mut fresh);
+    }
     fresh.resolve_layout(W, H);
     let mut full = TinySkiaPainter::new(pw, ph);
     full.fill_white();
@@ -89,7 +103,7 @@ fn partial_matches_full(page: &str, scale: f64, change: &dyn Fn(&mut RinchDocume
         .collect();
     assert!(
         bad.is_empty(),
-        "{} pixels of the partial repaint are not the new state, first {:?} (damage {rects:?})",
+        "{} pixels of the partial repaint are not the new state, first {:?} (last damage {rects:?})",
         bad.len(),
         &bad[..bad.len().min(5)]
     );
@@ -422,4 +436,31 @@ fn partial_matches_full_twice(
         bad, 0,
         "{bad} pixels of the second partial repaint are not the new state"
     );
+}
+
+/// A box moved whose child's `scale(12)` magnifies what snapping does at a
+/// fractional scale (#2368): paint snaps the child's edges to the device
+/// grid in its own space, before the transform, so half a device pixel there
+/// is six on screen. The reach the moved box recorded (#2222) is measured at
+/// no particular scale and read at 1.25x and 1.5x, so it has to carry what
+/// that half pixel becomes through the transform; grown by half a pixel
+/// after the transform, it left 338 stale pixels at 1.25x (458 after a
+/// second move). The child's 1.5px margin puts its edges off the grid.
+const SCALED_CHILD: &str = r#"<div style="margin: 0; padding: 0"><div id="b" style="margin: 13px 0 0 40px; width: 60px; height: 30px"><div style="margin-left: 1.5px; width: 11px; height: 10px; transform: scale(12); background: rgb(255, 0, 0)"></div></div></div>"#;
+
+/// [`SCALED_CHILD`] one level down, inside a plain box: the moved box's reach
+/// is measured from that box's recorded one, which has to carry the scaled
+/// box's gain up with it.
+const SCALED_GRANDCHILD: &str = r#"<div style="margin: 0; padding: 0"><div id="b" style="margin: 13px 0 0 40px; width: 60px; height: 30px"><div style="width: 20px; height: 12px"><div style="margin-left: 1.5px; width: 11px; height: 10px; transform: scale(12); background: rgb(255, 0, 0)"></div></div></div></div>"#;
+
+#[test]
+fn a_scaled_up_childs_snapped_edges_move_with_its_parent_at_a_fractional_scale() {
+    let first = restyle("b", "margin: 13px 0 0 80px; width: 60px; height: 30px");
+    let second = restyle("b", "margin: 21px 0 0 57px; width: 60px; height: 30px");
+    for page in [SCALED_CHILD, SCALED_GRANDCHILD] {
+        for scale in [1.25, 1.5] {
+            partial_matches_full(page, scale, &first);
+            partials_match_full(page, scale, &[&first, &second]);
+        }
+    }
 }

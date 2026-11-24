@@ -4465,8 +4465,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
     // cancel this very event): app paste logic hangs off the paste, not off the key.
     //
     // A `defaultPrevented` event is skipped throughout: that is the built-in
-    // editor's hidden capture textarea having already claimed it (`editor_input.rs`),
-    // and it reads `clipboardData` itself.
+    // editor's hidden capture textarea having already claimed it (`on_paste` in
+    // `editor_input/clipboard.rs`), and it reads `clipboardData` itself.
     let paste_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
         // This root's code (#2811): see `crate::mark_event_root`.
         let _root = crate::mark_event_root(&event);

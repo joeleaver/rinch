@@ -757,8 +757,9 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
 - **Not here**: the web (the browser scrolls, and smooths, by itself) and
   Android (its wheels are touch pans and flings, pixels). The
   reduced-motion preference (`rinch::prefers_reduced_motion`, #2209) does not
-  turn the glide off; an app passes it to `smooth_wheel_scroll`. Keyboard
-  scrolling is not modelled on the desktop at all.
+  turn the glide off; an app passes it to `smooth_wheel_scroll`.
+- **Keyboard scrolls** (#2977) ride it too, on `CurveKind::Keyboard`: see
+  `docs/internals/focus-and-keyboard.md`, "Keyboard scrolling".
 - **Programmatic scrolls** (#2291) ride the same machinery: see "Smooth
   programmatic scrolls" below.
 
