@@ -116,7 +116,10 @@ impl DeepOverflow {
         if from == state.checked {
             return;
         }
-        state.entries.retain(|&id, _| tree.get_live(id).is_some());
+        // The memo's keys and the two lists can outlive their nodes (the
+        // lists are not pruned when a node is freed, `NodeTree::remove_subtree`),
+        // and a freed slot may hold a new node: checked lookups.
+        state.entries.retain(|&id, _| tree.get(id).is_some());
         let mut chain: Vec<RawNodeId> = Vec::new();
         for (&id, forced) in dirty[from.0..]
             .iter()
@@ -126,7 +129,7 @@ impl DeepOverflow {
             if state.entries.is_empty() {
                 return;
             }
-            let Some(node) = tree.get_live(id) else {
+            let Some(node) = tree.get(id) else {
                 continue;
             };
             let now = WalkSnap::of(tree, node, false);
