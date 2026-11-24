@@ -1,4 +1,26 @@
-// ── Free functions (platform-agnostic hit testing) ───────────────────────────
+//! Hit testing: which node a point lands on, and the pointer questions built
+//! on that answer (scroll containers, scrollbars, window resize edges, event
+//! targets). Platform-agnostic free functions over a laid-out
+//! `rinch_dom::NodeTree`; the event loop and the tests call them.
+//!
+//! - `walk` — [`hit_test`] and the recursive `hit_test_node` walk, with
+//!   `descend` (the per-node offset, `position: fixed` hoist and transform
+//!   inverse every probe shares).
+//! - `paint_order` — stacking-context sequences in paint order (cached in
+//!   `rinch_dom::hit_cache`), and the phased probe of a run whose children
+//!   paint in CSS 2.1 Appendix E passes (#2276).
+//! - `extent` — the flow extent of a subtree, which lets the walk prune
+//!   subtrees the point cannot reach.
+//! - `probe` — the `Probe` trait: what a walk is looking for (the plain hit,
+//!   a scrollbar under the point, a scroll container).
+//! - `targets` — what a hit means for events: text under the point, inline
+//!   boxes outside their parent, the event target, [`painted_element_box`].
+//! - `scroll` — scroll containers, the wheel target and scrollbar hits.
+//! - `resize` — window resize edges, the cursor for them, and the scrollbar
+//!   thumb check that keeps a resize from starting on a thumb.
+//!
+//! Tests: `tests/` (by topic), the pruned-vs-unpruned oracle
+//! (`../hit_test_prune_tests/`), and the per-issue files below.
 
 mod extent;
 mod paint_order;
@@ -11,21 +33,22 @@ mod walk;
 #[cfg(feature = "windowing")]
 pub(super) use paint_order::plain_paint_order;
 pub(super) use resize::cursor_value_to_style;
-pub(crate) use resize::{
+pub(super) use resize::{
     detect_resize_edge, is_corner_resize, pointer_on_scrollbar_thumb, resize_direction_to_cursor,
 };
 #[cfg(feature = "windowing")]
-pub(crate) use scroll::page_scroller;
+pub(super) use scroll::page_scroller;
 #[cfg(test)]
-pub(crate) use scroll::{
+pub(super) use scroll::{
     SCROLLBAR_HIT_THICKNESS, find_horizontal_scroll_container,
     find_horizontal_scroll_container_at_point, find_scroll_container,
     find_scroll_container_at_point,
 };
-pub(crate) use scroll::{ScrollbarHit, find_scrollbar_hit, wheel_scroll_target};
-pub(crate) use targets::{
-    element_of_target, event_target_at, painted_element_box, pointer_in_node, text_node_at,
-};
+pub(super) use scroll::{ScrollbarHit, find_scrollbar_hit, wheel_scroll_target};
+pub(super) use targets::{element_of_target, event_target_at, pointer_in_node, text_node_at};
+// The two used outside `app/` (the shell, the embed API, the menu bar,
+// `testing`).
+pub(crate) use targets::painted_element_box;
 pub(crate) use walk::hit_test;
 
 #[cfg(test)]
@@ -40,7 +63,7 @@ use targets::{inline_box_outside, visible_text_at};
 use walk::{Frame, descend};
 
 #[cfg(test)]
-#[path = "../hit_test_prune_tests.rs"]
+#[path = "../hit_test_prune_tests/mod.rs"]
 mod prune_tests;
 
 #[cfg(test)]
