@@ -1739,36 +1739,15 @@ impl Plugin for BaseCommandsPlugin {
         .collect()
     }
 
-    /// The keys this keymap consumes even where their command does not apply.
-    /// Every other binding (Mod-Enter, Mod-e, the Mod-Shift and Mod-Alt block
-    /// chords) leaves an inapplicable key to the page, as ProseMirror does.
-    ///
-    /// - **The keys a browser's editing host handles itself** in a
-    ///   `contenteditable` (Blink's editing key bindings): Enter, Shift-Enter,
-    ///   Backspace, Delete, the word deletes and Mod-a/b/i/u. A native editable
-    ///   consumes them wherever the caret is, and on the web, left unconsumed,
-    ///   their default would edit the editor's hidden capture textarea instead
-    ///   (and Ctrl+U would open the page source).
-    /// - **Tab and Shift-Tab**: Tab never leaves an editable editor, whether or
-    ///   not a list item sinks (a read-only editor's Tab is the platform's, which
-    ///   moves the focus before the keymap is asked).
-    fn consumed_keys(&self) -> Vec<KeyBinding> {
-        [
-            "Mod-a",
-            "Mod-b",
-            "Mod-i",
-            "Mod-u",
-            "Enter",
-            "Shift-Enter",
-            "Backspace",
-            "Delete",
-            "Tab",
-            "Shift-Tab",
-        ]
-        .into_iter()
-        .chain(word_delete_bindings().into_iter().map(|(b, _)| b))
-        .filter_map(KeyBinding::parse)
-        .collect()
+    /// The one binding of this keymap that leaves its key alone where its command
+    /// does not apply: Mod-Enter (`exitCode`) outside a code block goes on to the
+    /// app (its interceptor, the page's `keydown` listeners), so an app's
+    /// Ctrl/Cmd+Enter "send" chord works in an editor (#2993). Every other
+    /// binding consumes its key wherever the caret is: an editor that advertises a
+    /// chord owns it, or Ctrl+Shift+R on an already right-aligned paragraph would
+    /// hard-reload the page on the web, and Mod-e would focus the address bar.
+    fn fall_through_keys(&self) -> Vec<KeyBinding> {
+        KeyBinding::parse("Mod-Enter").into_iter().collect()
     }
 }
 

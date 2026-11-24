@@ -74,10 +74,10 @@ impl EditorState {
                 }
                 commands.insert(name.to_string(), cmd);
             }
-            let consuming = p.consumed_keys();
+            let fall_through = p.fall_through_keys();
             for (binding, command) in p.keymap() {
-                if consuming.contains(&binding) {
-                    keymap.add_consuming(binding, command);
+                if fall_through.contains(&binding) {
+                    keymap.add_fall_through(binding, command);
                 } else {
                     keymap.add(binding, command);
                 }

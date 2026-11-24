@@ -2746,10 +2746,11 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         _ => {
             // 3. THE KEYMAP — the single source of truth for every command key. Letters
             //    resolve logically (`key`, layout-correct), digits/symbols physically
-            //    (`code`). A binding is consumed when its command applies, or when it
-            //    is declared consuming (Tab, Enter, Backspace…: `Plugin::consumed_keys`);
-            //    any other inapplicable binding (Mod+Enter in a paragraph) is left
-            //    unconsumed, so the page's `keydown` listeners hear it (#2993).
+            //    (`code`). A matched binding is consumed even if its command no-op'd
+            //    here (Ctrl+Shift+R on a right-aligned paragraph must not reload the
+            //    page), except a fall-through one (`Plugin::fall_through_keys`: the
+            //    base keymap's Mod+Enter in a paragraph), which is left unconsumed so
+            //    the page's `keydown` listeners hear it (#2993).
             if let Some(binding) = editor_key_binding(&key, &code, ctrl, shift, alt)
                 && handle.dispatch_key(binding).is_some()
             {

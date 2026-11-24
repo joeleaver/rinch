@@ -4823,11 +4823,12 @@ impl RinchApp {
         }
         // 4. THE KEYMAP — the single source of truth for every command key (marks, block
         //    types, lists, blockquote, headings, hr / hard break, enter, backspace /
-        //    delete, undo / redo, select-all). A binding is consumed when its command
-        //    applies, or when it is declared consuming (`Plugin::consumed_keys`: Tab
-        //    at top level never falls through to text insertion); an inapplicable
-        //    one (Mod+Enter in a paragraph) goes on, as an unbound key (#2993). The
-        //    app's `on_key` and the interceptor heard every key before this.
+        //    delete, undo / redo, select-all). A matched binding is consumed even if
+        //    the command no-op'd at this position (an editor owns every chord it
+        //    advertises: Ctrl+Shift+R on a right-aligned paragraph), except a
+        //    fall-through one (`Plugin::fall_through_keys`: Mod+Enter in a
+        //    paragraph), which goes on as an unbound key (#2993). The app's `on_key`
+        //    and the interceptor heard every key before this.
         if let Some(binding) = editor_key_binding(key, logical_key, ctrl, shift, alt)
             && handle.dispatch_key(binding).is_some()
         {

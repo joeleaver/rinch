@@ -972,13 +972,6 @@ impl Plugin for HistoryPlugin {
         .collect()
     }
 
-    /// Undo and redo consume their key with nothing to undo or redo, as a
-    /// browser's editing host does: left to the web page, the key's default would
-    /// run the hidden capture textarea's own undo.
-    fn consumed_keys(&self) -> Vec<KeyBinding> {
-        self.keymap().into_iter().map(|(b, _)| b).collect()
-    }
-
     fn init_state(&self, _doc: &Node) -> Option<Rc<dyn Any>> {
         Some(Rc::new(HistoryState::default()))
     }

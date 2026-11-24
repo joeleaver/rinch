@@ -136,6 +136,13 @@ impl Fixture {
     /// (Cmd on a Mac, else Ctrl) as given; answers whether the editor
     /// consumed it.
     fn enter(&self, shift: bool, primary: bool) -> bool {
+        self.key("Enter", "Enter", shift, primary)
+    }
+
+    /// A `keydown` of `key` / `code` with Shift and the platform's primary
+    /// modifier as given, on the capture textarea; answers whether the editor
+    /// consumed it (`preventDefault`ed).
+    fn key(&self, key: &str, code: &str, shift: bool, primary: bool) -> bool {
         // The platform test `rinch-web` makes (`navigator.platform`).
         let mac = js_sys::Reflect::get(&web_sys::window().unwrap(), &"navigator".into())
             .and_then(|n| js_sys::Reflect::get(&n, &"platform".into()))
@@ -145,8 +152,8 @@ impl Fixture {
         let init = web_sys::KeyboardEventInit::new();
         init.set_bubbles(true);
         init.set_cancelable(true);
-        init.set_key("Enter");
-        init.set_code("Enter");
+        init.set_key(key);
+        init.set_code(code);
         init.set_shift_key(shift);
         init.set_ctrl_key(primary && !mac);
         init.set_meta_key(primary && mac);
@@ -332,22 +339,78 @@ fn mod_enter_outside_a_code_block_reaches_the_page() {
     );
 }
 
-/// Tab is consumed where it sinks no list item (a consuming binding): a top
-/// level paragraph keeps the key, so it never moves the focus off an editable
-/// editor, and the page does not hear it.
+/// #2993's second review: Ctrl/Cmd+Shift+R on a paragraph that is already
+/// right-aligned (`setTextAlignRight` answers `false`) is still the editor's
+/// key — left to Chrome it hard-reloads the page and the unsaved edits are
+/// lost. It is `preventDefault`ed and a page `keydown` listener never hears
+/// it. At b7d5350ad (every binding but a declared few fell through where
+/// inapplicable) the second press was left to the browser.
 #[wasm_bindgen_test]
-fn tab_at_the_top_level_is_still_consumed() {
+fn ctrl_shift_r_on_a_right_aligned_paragraph_is_the_editors() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use wasm_bindgen::closure::Closure;
+
     let f = Fixture::focused(DOC);
-    f.handle.set_selection(Selection::cursor(Pos(2)));
-    let init = web_sys::KeyboardEventInit::new();
-    init.set_bubbles(true);
-    init.set_cancelable(true);
-    init.set_key("Tab");
-    init.set_code("Tab");
-    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
-    f.capture().dispatch_event(&ev).unwrap();
+    let page_heard = Rc::new(RefCell::new(0usize));
+    let ph = page_heard.clone();
+    let listener =
+        Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
+            if ev.code() == "KeyR" {
+                *ph.borrow_mut() += 1;
+            }
+        });
+    document()
+        .add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref())
+        .unwrap();
+    f.handle.set_selection(Selection::cursor(Pos(1)));
+    let before = f.handle.doc();
+    // The control: the first press applies (the paragraph becomes right-aligned).
+    let first = f.key("R", "KeyR", true, true);
+    let aligned = !f.handle.doc().same_ref(&before);
+    let after_first = f.handle.doc();
+    // Now the command has nothing to do.
+    let second = f.key("R", "KeyR", true, true);
+    let unchanged = f.handle.doc().same_ref(&after_first);
+    let heard = *page_heard.borrow();
+    document()
+        .remove_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref())
+        .unwrap();
     let blocks = f.blocks();
     f.teardown();
-    assert!(ev.default_prevented(), "Tab is the editor's");
+
+    assert!(first && aligned, "control: the first press aligns right");
+    assert!(
+        second,
+        "the second press is consumed although it does nothing"
+    );
+    assert!(unchanged, "and changes nothing");
+    assert_eq!(heard, 0, "the page hears neither press");
     assert_eq!(blocks, [b("p", "x"), b("pre", "abcd"), b("p", "y")]);
+}
+
+/// Mod+E where `toggleCode` refuses — a read-only editor — is still the
+/// editor's key; left to Chrome, Ctrl+E focuses the address bar. At
+/// b7d5350ad it was not `preventDefault`ed. In a code block it is consumed
+/// too (there `toggleCode` applies: rinch's mark toggles do not check the
+/// parent's allowed marks).
+#[wasm_bindgen_test]
+fn mod_e_in_a_read_only_editor_or_a_code_block_is_the_editors() {
+    let f = Fixture::focused(DOC);
+    f.handle.set_selection(Selection::text(Pos(4), Pos(6)));
+    let in_code = f.key("e", "KeyE", false, true);
+    f.handle.set_read_only(true);
+    let before = f.handle.doc();
+    f.handle.set_selection(Selection::text(Pos(1), Pos(2)));
+    let read_only = f.key("e", "KeyE", false, true);
+    let unchanged = f.handle.doc().same_ref(&before);
+    // The control: editable again, the same chord applies in the paragraph.
+    f.handle.set_read_only(false);
+    let editable = f.key("e", "KeyE", false, true);
+    let toggled = !f.handle.doc().same_ref(&before);
+    f.teardown();
+    assert!(in_code, "Mod+E in a code block is preventDefaulted");
+    assert!(read_only, "Mod+E in a read-only editor is preventDefaulted");
+    assert!(unchanged, "and changes nothing");
+    assert!(editable && toggled, "control: applies when editable");
 }

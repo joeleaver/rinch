@@ -1627,14 +1627,17 @@ editor's: the key goes on to your app (the keyboard interceptor, an
 `onkeydown`, a page `keydown` listener), so Ctrl/Cmd+Enter can still mean
 "send".
 
-**A binding whose command does not apply leaves its key alone**, as in
-ProseMirror: the key goes on as if the editor had no binding for it (on the
-web it is not `preventDefault`ed, so the page's listeners and the browser's
-default see it). The exceptions are the keys the editor owns wherever the caret
-is: Enter, Shift+Enter, Backspace, Delete, the word deletes, Mod+A / B / I / U
-and undo / redo (the keys a browser's own editing host handles in a
-`contenteditable`), and Tab / Shift+Tab. A plugin declares its own such keys
-with `Plugin::consumed_keys`.
+**Every shortcut in the table is the editor's key wherever the caret is**,
+whether or not its command applies there: Ctrl+Shift+R on a paragraph that is
+already right-aligned, or any chord in a [read-only](#read-only) editor, does
+nothing and is still consumed, so it never reaches the browser (on the web, Ctrl+Shift+R would hard-reload the page and
+lose unsaved edits). The one exception is Mod+Enter, which goes on to your app
+where it does not apply, as above. A plugin's bindings consume their key the
+same way — a plugin that rebinds Enter keeps it consumed — unless the plugin
+names them in `Plugin::fall_through_keys`, which gives them ProseMirror's
+keymap semantics: where the command answers `false`, the key goes on as if the
+editor had no binding for it (on the web it is not `preventDefault`ed, so the
+page's listeners and the browser's default see it).
 
 The four alignment chords are the Google Docs ones, and some of them are also
 chords of the browser or the platform, which may take the key before the editor
