@@ -777,8 +777,20 @@ fn hit_test_node<P: Probe>(
         && !clip_x
         && !clip_y
         && inline_box_outside(tree, node, x - nx, y - ny);
+    // Text on a line that overflows the root's box (#2956): Chrome 158 hits
+    // the line's text, as it draws it, wherever the line is. Not where the
+    // root clips, per axis as paint does: `check_children` is the region its
+    // clip lets through (all of it on an axis that does not clip), so an
+    // `overflow-x: clip` root's line below it is hit and one past its right
+    // edge is not. `flow_extent` holds the lines on the open axes, so the
+    // prune reaches them.
+    let on_overflowing_line = !point_in_bounds
+        && !in_inline_box
+        && check_children
+        && node.text_layout.is_some()
+        && visible_text_at(tree, node, x - nx, y - ny);
     if clipped.is_some()
-        || !(point_in_bounds || in_inline_box)
+        || !(point_in_bounds || in_inline_box || on_overflowing_line)
         || (hidden && !visible_text_at(tree, node, x - nx, y - ny))
     {
         return None;
@@ -1097,25 +1109,32 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
         e[2] = e[2].max(r2 + ox - sx);
         e[3] = e[3].max(r3 + oy - sy);
     }
-    // An IFC root's lines, which a run painted in Appendix E phases hits
-    // where they overflow the box (#2276, `PhasedRun::member`).
-    // Lines no larger than the box are taken to be inside it (the common
-    // case, asked first so a page of paragraphs pays a compare each); a line
-    // pushed past the box by its padding alone is missed by the prune.
-    if !clip_x
-        && !clip_y
+    // An IFC root's lines, which are hit wherever they overflow the box: in
+    // a run painted in Appendix E phases (#2276, `PhasedRun::member`) and by
+    // `hit_test_node`'s own bounds test (#2956), on each axis the root does
+    // not clip. Placed at the content origin, so a line no larger than the
+    // box still overflows it when the root's padding or border pushes it
+    // out; a size-only shortcut here would let the prune skip that line,
+    // which the hit test answers. Across, the lines' own reach
+    // (`InlineLayout::lines_x_reach`, measured when they are built): a line
+    // can start left of the origin (a negative `text-indent`, an rtl line
+    // wider than its box), which `0..width()` would miss.
+    if (!clip_x || !clip_y)
         && let Some(inline) = node.text_layout.as_ref()
-        && (inline.layout.width() > node.layout.width
-            || inline.layout.height() > node.layout.height)
+        && let Some([lx0, lx1]) = inline.lines_x_reach()
     {
         let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
         let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
-        let (lw, lh) = (inline.layout.width(), inline.layout.height());
-        if lw > 0.0 && lh > 0.0 {
-            e[0] = e[0].min(ox - sx);
-            e[1] = e[1].min(oy - sy);
-            e[2] = e[2].max(ox - sx + lw);
-            e[3] = e[3].max(oy - sy + lh);
+        let lh = inline.layout.height();
+        if lx1 > lx0 && lh > 0.0 {
+            if !clip_x {
+                e[0] = e[0].min(ox - sx + lx0);
+                e[2] = e[2].max(ox - sx + lx1);
+            }
+            if !clip_y {
+                e[1] = e[1].min(oy - sy);
+                e[3] = e[3].max(oy - sy + lh);
+            }
         }
     }
     if !clip_x || !clip_y {
@@ -1897,6 +1916,10 @@ mod hidden_ancestor_hit_843_tests;
 #[cfg(test)]
 #[path = "paint_phases_hit_2276_tests.rs"]
 mod paint_phases_hit_2276_tests;
+
+#[cfg(test)]
+#[path = "overflow_line_hit_2956_tests.rs"]
+mod overflow_line_hit_2956_tests;
 
 #[cfg(test)]
 #[path = "relative_inline_hit_2346_tests.rs"]
