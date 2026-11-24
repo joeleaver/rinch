@@ -148,14 +148,17 @@ fn apply_type_attrs(dom: &NodeHandle, node: &Node) {
             } else {
                 dom.remove_style("margin-left");
             }
-            // Horizontal alignment: only the three non-default values are
-            // written. The default (`left`, the attribute's default, which the
-            // align-left command writes back) takes a previous value off rather
-            // than writing `text-align: left` (#2210), so the app's stylesheet
-            // (a justified body, a centred `h1`) and the inherited `start` of an
-            // RTL editor decide it, as they do in Chrome.
+            // Horizontal alignment: an alignment the block holds is written,
+            // `left` included (the align-left command stores it), so it holds
+            // inside a `th`, in an RTL editor and against an app's rules. An
+            // unset alignment takes a previous value off rather than writing
+            // `text-align: left` (#2210), so the app's stylesheet (a justified
+            // body, a centred `h1`) and the inherited `start` of an RTL editor
+            // decide it, as they do in Chrome.
             match node.attrs().get_str("text_align") {
-                Some(a @ ("center" | "right" | "justify")) => dom.set_style("text-align", a),
+                Some(a @ ("left" | "center" | "right" | "justify")) => {
+                    dom.set_style("text-align", a)
+                }
                 _ => dom.remove_style("text-align"),
             }
         }

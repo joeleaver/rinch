@@ -191,6 +191,10 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
   padding: 0.45em 0.7em; border: 1px solid #d0d7de;
 }
 [data-pm-editor] th { font-weight: 600; background: #f6f8fa; }
+/* A header cell's text starts like a body cell's (#2210). The UA sheet's
+   `th { text-align: center }` would otherwise reach the paragraphs inside it,
+   which are blocks here, and centre every header an app has not styled. */
+[data-pm-editor] th { text-align: start; }
 
 /* ── Inline decorations ─────────────────────────────────────
    A `Decoration::Inline` wraps its range in `<span data-pm-deco class="…">`

@@ -163,7 +163,9 @@ fn the_placeholder_is_live_and_changing_it_keeps_the_history() {
 
 /// A block at the default alignment and indent carries no inline
 /// `text-align` / `margin-left`, so the app's stylesheet (and RTL `start`)
-/// decides them; a command writes them, and going back takes them off.
+/// decides them; a command writes them, and going back takes them off. An
+/// explicit align-left is written as `text-align: left`, so it holds in a
+/// `th` and an RTL editor; the Paragraph reset unsets it.
 #[test]
 fn default_alignment_and_indent_write_no_inline_style() {
     let h = editor_with("<p>abc</p>");
@@ -185,8 +187,42 @@ fn default_alignment_and_indent_write_no_inline_style() {
     assert!(h.command("setTextAlignLeft"));
     assert!(h.command("outdent"));
     let style = style_of(&host, first_block(&host));
-    assert!(!style.contains("text-align"), "back to default: {style:?}");
+    assert!(
+        style.contains("text-align: left"),
+        "explicit left: {style:?}"
+    );
     assert!(!style.contains("margin-left"), "back to default: {style:?}");
+
+    assert!(h.command("setParagraph"));
+    let style = style_of(&host, first_block(&host));
+    assert!(!style.contains("text-align"), "unset again: {style:?}");
+}
+
+/// An explicit `left` loaded from HTML projects as `text-align: left`
+/// (#2210); a fresh block's unset alignment projects as nothing.
+#[test]
+fn an_explicit_left_from_html_is_written_inline() {
+    let h = editor_with(r#"<p style="text-align:left">abc</p>"#);
+    let host = attach(&h);
+    let style = style_of(&host, first_block(&host));
+    assert!(style.contains("text-align: left"), "{style:?}");
+
+    assert!(h.command("setTextAlignCenter"));
+    assert!(h.command("setTextAlignLeft"));
+    let style = style_of(&host, first_block(&host));
+    assert!(style.contains("text-align: left"), "{style:?}");
+}
+
+/// The default stylesheet start-aligns a header cell (#2210), so the UA
+/// sheet's `th { text-align: center }` does not reach its paragraphs.
+#[test]
+fn the_default_stylesheet_start_aligns_header_cells() {
+    let css = crate::styles::DEFAULT_EDITOR_CSS;
+    assert!(
+        css.lines()
+            .any(|l| l.trim() == "[data-pm-editor] th { text-align: start; }"),
+        "a `th` text-align rule"
+    );
 }
 
 // ── Overlay colours ─────────────────────────────────────────────────────────

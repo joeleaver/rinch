@@ -256,12 +256,13 @@ const TASK_ITEM: &str = "taskItem";
 pub(super) const TASK_CHECKED: &str = "data-checked";
 
 /// The ` style="text-align:…"` fragment for a textblock's `text_align` attribute,
-/// or an empty string for the default (`left`) or an unrecognized value. Whitelisted
-/// to the three non-default alignments so a hostile `text_align` from an untrusted
+/// or an empty string for an unset or unrecognized value. An explicit `left` is
+/// written (#2210): it is a choice, which a `th` or an RTL reader must not undo.
+/// Whitelisted to the four alignments so a hostile `text_align` from an untrusted
 /// `DocNode` can never inject arbitrary CSS into the exported markup.
 fn align_style_attr(node: &Node) -> String {
     match node.attrs().get_str("text_align") {
-        Some(a @ ("center" | "right" | "justify")) => format!(" style=\"text-align:{a}\""),
+        Some(a @ ("left" | "center" | "right" | "justify")) => format!(" style=\"text-align:{a}\""),
         _ => String::new(),
     }
 }
@@ -2334,14 +2335,14 @@ fn heading_level(tag: &str) -> i64 {
 ///
 /// The inverse of [`align_style_attr`]: it lets a textblock survive an HTML
 /// round-trip (copy/paste, `load_html` of previously exported markup) with its
-/// alignment intact. Whitelisted to the same three non-default values, so a
-/// hostile `style` cannot smuggle an arbitrary value into the attribute — and
-/// `left` is skipped because it is the schema default.
+/// alignment intact. Whitelisted to the same four values, so a hostile `style`
+/// cannot smuggle an arbitrary value into the attribute; an explicit `left` is
+/// kept as `left`, distinct from unset (#2210).
 fn align_attrs(attributes: &[(String, String)]) -> Attrs {
     let align = attr(attributes, "style")
         .and_then(|s| parse_style(s, "text-align"))
         .map(|a| a.trim().to_ascii_lowercase())
-        .filter(|a| matches!(a.as_str(), "center" | "right" | "justify"));
+        .filter(|a| matches!(a.as_str(), "left" | "center" | "right" | "justify"));
     match align {
         Some(a) => Attrs::from_iter([("text_align", AttrValue::Str(a.into()))]),
         None => Attrs::new(),
@@ -2773,8 +2774,8 @@ mod tests {
                 Fragment::from_node(schema.text(text).unwrap()),
             )
         };
-        // Center / right / justify project to a `text-align` inline style; the default
-        // `left` (and any unrecognized value) is omitted so plain text stays clean.
+        // Every stored alignment projects to a `text-align` inline style, an explicit
+        // `left` included (#2210); an unrecognized value is omitted.
         assert_eq!(
             node_to_html(&block("paragraph", "center", "c")),
             r#"<p style="text-align:center">c</p>"#
@@ -2787,7 +2788,10 @@ mod tests {
             node_to_html(&block("heading", "justify", "j")),
             r#"<h1 style="text-align:justify">j</h1>"#
         );
-        assert_eq!(node_to_html(&block("paragraph", "left", "l")), "<p>l</p>");
+        assert_eq!(
+            node_to_html(&block("paragraph", "left", "l")),
+            r#"<p style="text-align:left">l</p>"#
+        );
         assert_eq!(
             node_to_html(&block("paragraph", "bogus; color:red", "x")),
             "<p>x</p>",
@@ -2805,6 +2809,9 @@ mod tests {
             (r#"<p style="text-align:center">hi</p>"#, Some("center")),
             (r#"<p style="text-align:right">hi</p>"#, Some("right")),
             (r#"<h2 style="text-align:justify">hi</h2>"#, Some("justify")),
+            // An explicit left survives, distinct from unset (#2210).
+            (r#"<p style="text-align:left">hi</p>"#, Some("left")),
+            (r#"<p>hi</p>"#, None),
         ] {
             let slice = slice_from_html(&schema, html).unwrap();
             let block = slice.content.child(0);
@@ -2840,8 +2847,7 @@ mod tests {
         // is not materialized to its default — the view and the serializer resolve a
         // missing alignment to left-aligned at the point of use.
         for html in [
-            r#"<p style="text-align:left">x</p>"#, // the default, stated explicitly
-            r#"<p style="text-align:end">x</p>"#,  // valid CSS, outside the whitelist
+            r#"<p style="text-align:end">x</p>"#, // valid CSS, outside the whitelist
             r#"<p style="text-align:inherit">x</p>"#,
             r#"<p>x</p>"#, // no style at all
         ] {

@@ -1038,7 +1038,12 @@ A paragraph or heading at the default alignment and indent carries no inline
 `text-align` / `margin-left`: the alignment and indent commands write them, and
 going back takes them off. So an app rule (`[data-pm-editor] h1 { text-align:
 center }`) and the inherited `start` of an RTL editor decide the defaults, as in
-Chrome.
+Chrome. An unset alignment is not `left`: `setTextAlignLeft` stores and writes
+an explicit `text-align: left` (exported to HTML as well), which holds in a
+header cell, in an RTL editor and against an app's rules; the Paragraph reset
+(`setParagraph`) unsets it. The default stylesheet start-aligns header cells
+(`[data-pm-editor] th { text-align: start }`), so a table's headers line up
+with its body cells rather than taking the browser's centred `th`.
 
 ### Dark mode
 

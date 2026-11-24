@@ -440,10 +440,13 @@ impl<'a> MdBuilder<'a> {
                     .copied()
                     .unwrap_or(Alignment::None);
                 let mut attrs = Attrs::new();
+                // `:---` is an explicit left (GFM's `align="left"`), kept apart
+                // from an unaligned `---` column, as in HTML (#2210).
                 let align = match align {
+                    Alignment::Left => Some("left"),
                     Alignment::Center => Some("center"),
                     Alignment::Right => Some("right"),
-                    Alignment::Left | Alignment::None => None,
+                    Alignment::None => None,
                 };
                 if let Some(a) = align
                     && self
@@ -1600,7 +1603,10 @@ fn pipe_table(table: &Node) -> Option<String> {
     if width == 0 {
         return None;
     }
-    let mut aligns: Vec<Option<&str>> = vec![None; width];
+    // Each column's alignment, `Some(None)` for unset: a column whose cells
+    // disagree (an explicit left beside an unset one, #2210) has no delimiter
+    // that says so, and falls back to HTML.
+    let mut aligns: Vec<Option<Option<&str>>> = vec![None; width];
     let mut lines: Vec<String> = Vec::with_capacity(rows.len() + 1);
     for (r, row) in rows.iter().enumerate() {
         if row.child_count() != width {
@@ -1631,8 +1637,8 @@ fn pipe_table(table: &Node) -> Option<String> {
                 return None;
             }
             let align = match para.attrs().get_str("text_align") {
-                None | Some("left") => "left",
-                Some(a @ ("center" | "right")) => a,
+                None => None,
+                Some(a @ ("left" | "center" | "right")) => Some(a),
                 Some(_) => return None,
             };
             match aligns[c] {
@@ -1646,7 +1652,8 @@ fn pipe_table(table: &Node) -> Option<String> {
         if r == 0 {
             let delims: Vec<String> = aligns
                 .iter()
-                .map(|a| match a {
+                .map(|a| match a.flatten() {
+                    Some("left") => ":---".to_string(),
                     Some("center") => ":---:".to_string(),
                     Some("right") => "---:".to_string(),
                     _ => "---".to_string(),
@@ -3090,6 +3097,9 @@ mod tests {
         assert_eq!(qty.type_name(), "paragraph");
         assert_eq!(qty.attrs().get_str("text_align"), Some("right"));
         assert_eq!(qty.child(0).text(), Some("3"));
+        // `:---` is an explicit left (#2210).
+        let apple = tb.child(1).child(0).child(0);
+        assert_eq!(apple.attrs().get_str("text_align"), Some("left"));
         let pear = tb.child(2).child(0).child(0).child(0);
         assert_eq!(pear.marks()[0].type_name(), "bold");
         // An empty cell still holds a paragraph.
@@ -3097,7 +3107,7 @@ mod tests {
         let out = doc_to_markdown(&d);
         assert_eq!(
             out,
-            "| Name | Qty |\n| --- | ---: |\n| apple | 3 |\n| **pear** |  |"
+            "| Name | Qty |\n| :--- | ---: |\n| apple | 3 |\n| **pear** |  |"
         );
         rt(&schema, &d);
     }
@@ -3125,6 +3135,25 @@ mod tests {
             )],
         );
         assert_eq!(rt(&schema, &d), "| a | b |\n| --- | --- |\n| 1 | 2 |");
+    }
+
+    /// A column whose header is an explicit left (`:---`) and whose body cell
+    /// is unset has no delimiter that says so: it falls back to HTML (#2210).
+    #[test]
+    fn a_column_mixing_left_and_unset_is_an_html_table() {
+        let schema = s();
+        let read = doc_from_markdown_strict(&schema, "| a |\n| :--- |\n| 1 |").unwrap();
+        let header = read.child(0).child(0).clone();
+        let d = doc(
+            &schema,
+            vec![table(
+                &schema,
+                vec![header, row(&schema, vec![text_cell(&schema, false, "1")])],
+            )],
+        );
+        let md = doc_to_markdown(&d);
+        assert!(md.contains("<table"), "{md:?}");
+        assert!(md.contains(r#"style="text-align:left""#), "{md:?}");
     }
 
     #[test]
