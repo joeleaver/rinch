@@ -1609,12 +1609,35 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Mod+Shift+B | Blockquote |
 | Mod+Shift+L / E / R / J | Align left / center / right / justify |
 | Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
-| Enter | Split block / new list item (between two blocks: a new empty paragraph there) |
-| Shift+Enter | Insert a hard break (line break within the block) |
+| Enter | Split block / new list item (between two blocks: a new empty paragraph there); in a code block, a new line (`newlineInCode`) |
+| Shift+Enter | Insert a hard break (line break within the block); in a code block, a new line (`insertLineBreak`) |
+| Mod+Enter | In a code block: leave it for a new paragraph after it (`exitCode`) |
 | Tab / Shift+Tab | Move between table cells, else indent / outdent a list item; where neither applies, move the focus to the next / previous Tab stop. `TabBehavior::MoveFocus` always moves the focus, and so does a [read-only](#read-only) editor. See [Tab](#tab) |
 | Backspace / Delete | Delete backward / forward |
 | Ctrl+Backspace / Ctrl+Delete (Alt on macOS) | Delete the word backward / forward |
 | Page Up / Page Down (Option+ on macOS) | Move the caret about a page (0.875 of the scroller's height) up / down at its column, scrolling the same amount; Shift extends. At the first / last line: the document's start / end. Read-only: scroll only. Plain Page Up / Down on macOS: scroll only |
+
+In a code block a line is a `"\n"` in its text (a code block holds no hard
+break), as in ProseMirror: Enter and Shift+Enter type one over the selection,
+and Mod+Enter leaves the block for an empty paragraph after it, the caret in
+it. Each is a command of its own — `newlineInCode`, `insertLineBreak` (a new
+line in a code block, else a hard break) and `exitCode` — for a toolbar or
+your own binding. Outside a code block Mod+Enter does nothing and is not the
+editor's: the key goes on to your app (the keyboard interceptor, an
+`onkeydown`, a page `keydown` listener), so Ctrl/Cmd+Enter can still mean
+"send".
+
+**Every shortcut in the table is the editor's key wherever the caret is**,
+whether or not its command applies there: Ctrl+Shift+R on a paragraph that is
+already right-aligned, or any chord in a [read-only](#read-only) editor, does
+nothing and is still consumed, so it never reaches the browser (on the web, Ctrl+Shift+R would hard-reload the page and
+lose unsaved edits). The one exception is Mod+Enter, which goes on to your app
+where it does not apply, as above. A plugin's bindings consume their key the
+same way — a plugin that rebinds Enter keeps it consumed — unless the plugin
+names them in `Plugin::fall_through_keys`, which gives them ProseMirror's
+keymap semantics: where the command answers `false`, the key goes on as if the
+editor had no binding for it (on the web it is not `preventDefault`ed, so the
+page's listeners and the browser's default see it).
 
 The four alignment chords are the Google Docs ones, and some of them are also
 chords of the browser or the platform, which may take the key before the editor

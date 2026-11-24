@@ -25,7 +25,7 @@ fn enter_and_shift_enter_split_and_break() {
     assert_eq!(edit_intent("insertParagraph"), EditIntent::Command("enter"));
     assert_eq!(
         edit_intent("insertLineBreak"),
-        EditIntent::Command("insertHardBreak")
+        EditIntent::Command("insertLineBreak")
     );
 }
 

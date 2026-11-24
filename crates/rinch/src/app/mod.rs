@@ -152,6 +152,8 @@ mod editor_caret_affinity_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_caret_content_area_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_code_newline_2993_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_decoration_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_file_drop_caret_1649_tests;
