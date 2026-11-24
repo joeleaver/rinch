@@ -350,6 +350,14 @@ pub fn deep_overflow_measured(tree: &NodeTree) -> u64 {
     tree.deep_overflow.measured()
 }
 
+/// How many nodes the scroll ranges' kept walks have looked at to drop walks
+/// and records (#2054): a subtree taken out walks its own nodes, and each
+/// purge the records it drops, so a test reads it to see a removal cost its
+/// subtree, not the number of walks kept elsewhere.
+pub fn deep_overflow_forget_steps(tree: &NodeTree) -> u64 {
+    tree.deep_overflow.forget_steps()
+}
+
 /// How many walks, and records of the boxes they met, the scroll ranges'
 /// kept walks hold (#2054): a test reads it to see a record go with its box.
 pub fn deep_overflow_held(tree: &NodeTree) -> (usize, usize) {

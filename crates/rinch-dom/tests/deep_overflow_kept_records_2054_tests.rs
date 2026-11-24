@@ -1,13 +1,16 @@
 //! #2054: what a scroll container's kept descendant walk holds, and what it
 //! costs, as boxes come and go: a record goes with its box (taken out,
 //! moved or freed), a walk goes with its container, and a box resized among
-//! many siblings is brought up to date without visiting them.
+//! many siblings is brought up to date without visiting them, and a removal
+//! costs its own subtree, not the number of walks kept.
 //! (`testing::deep_overflow_held`, `deep_overflow_walks`,
-//! `deep_overflow_measured`.)
+//! `deep_overflow_measured`, `deep_overflow_forget_steps`.)
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
-use rinch_dom::testing::{deep_overflow_held, deep_overflow_measured, deep_overflow_walks};
+use rinch_dom::testing::{
+    deep_overflow_forget_steps, deep_overflow_held, deep_overflow_measured, deep_overflow_walks,
+};
 
 fn kept_doc(html: &str) -> RinchDocument {
     let mut d = RinchDocument::new();
@@ -280,4 +283,107 @@ fn one_child_resized_among_many_is_brought_up_to_date_alone() {
         (400.0, 500.0),
         "control: back to the row"
     );
+}
+
+/// A row that is itself a scroll container, holding two boxes past its
+/// width.
+fn scroller_row(d: &mut RinchDocument) -> NodeId {
+    let row = d.create_element("div");
+    d.set_attribute(row, "style", "width:100px;height:20px;overflow:auto");
+    for _ in 0..2 {
+        let inner = d.create_element("div");
+        d.set_attribute(inner, "style", "width:230px;height:10px");
+        d.append_child(row, inner);
+    }
+    row
+}
+
+/// `n` scroller rows in `#l`, each one's range read so its walk is kept,
+/// then taken out one by one: what each removal looked at to drop walks and
+/// records (`deep_overflow_forget_steps`).
+fn forget_steps_per_removal(n: usize) -> Vec<u64> {
+    let mut d = kept_doc(LIST);
+    frame(&mut d);
+    let base = deep_overflow_held(&d.tree);
+    let l = by_id(&d, "l");
+    let rows: Vec<NodeId> = (0..n)
+        .map(|_| {
+            let r = scroller_row(&mut d);
+            d.append_child(l, r);
+            r
+        })
+        .collect();
+    frame(&mut d);
+    for &r in &rows {
+        assert_eq!(d.scroll_width(r), 230.0, "control: each row's range");
+    }
+    assert_eq!(
+        deep_overflow_held(&d.tree).0,
+        base.0 + n,
+        "control: every row's walk is kept"
+    );
+    let mut steps = Vec::with_capacity(n);
+    for &r in &rows {
+        let before = deep_overflow_forget_steps(&d.tree);
+        d.remove_child(l, r);
+        steps.push(deep_overflow_forget_steps(&d.tree) - before);
+    }
+    assert_eq!(
+        deep_overflow_held(&d.tree).0,
+        base.0,
+        "control: every row's walk went with it"
+    );
+    steps
+}
+
+/// Taking out N rows that each hold a kept walk costs each removal its own
+/// subtree, whatever N is and however many walks are still kept. It used to
+/// ask every kept walk whether its container was in the removed subtree,
+/// climbing from each, so N removals cost O(N² · depth): 329 ms for 2000
+/// rows, against 7.7 ms with no walks kept.
+///
+/// Each removal looks at 7: the walk visits the row and its two boxes (3);
+/// the row's walk drops its two records (2); the row's own record goes, and
+/// the purge looks at its two boxes, whose records are already gone (2).
+#[test]
+fn removing_rows_that_hold_walks_costs_each_its_own_subtree() {
+    for n in [40, 80] {
+        let steps = forget_steps_per_removal(n);
+        assert_eq!(steps, vec![7; n], "n = {n}");
+    }
+}
+
+/// An out-of-flow scroll container inside an inline is hoisted to the block
+/// above the inline (`Node::hoisted_out_of_flow_to`), so its box-tree
+/// parent is outside the inline taken out: its walk and its record go with
+/// the inline all the same. The search climbed the box tree from each kept
+/// container and missed it, and its walk stayed while the inline was out.
+#[test]
+fn a_hoisted_scroller_taken_out_with_its_inline_leaves_no_walk() {
+    let mut d = kept_doc(&format!(r#"{LIST}<div id="b"></div>"#));
+    frame(&mut d);
+    let held = deep_overflow_held(&d.tree);
+    let b = by_id(&d, "b");
+    for _ in 0..20 {
+        let span = d.create_element("span");
+        let text = d.create_text("text");
+        d.append_child(span, text);
+        let x = scroller_row(&mut d);
+        d.set_attribute(
+            x,
+            "style",
+            "position:absolute;width:100px;height:20px;overflow:auto",
+        );
+        d.append_child(span, x);
+        d.append_child(b, span);
+        frame(&mut d);
+        assert_eq!(d.scroll_width(x), 230.0, "control: its range");
+        assert!(
+            deep_overflow_held(&d.tree).0 > held.0,
+            "control: its walk kept"
+        );
+        d.remove_child(b, span);
+        frame(&mut d);
+    }
+    assert_eq!(deep_overflow_held(&d.tree), held);
 }

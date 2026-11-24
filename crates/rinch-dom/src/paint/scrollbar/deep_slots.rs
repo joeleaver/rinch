@@ -110,11 +110,6 @@ impl<T> Slots<T> {
         self.recs.iter().map(|(id, v)| (id, v))
     }
 
-    /// Each id with a value, in no particular order.
-    pub(super) fn keys(&self) -> impl Iterator<Item = &RawNodeId> {
-        self.recs.iter().map(|(id, _)| id)
-    }
-
     /// Drop every value; the slot index keeps its length, all vacant.
     pub(super) fn clear(&mut self) {
         self.slots.fill(VACANT);
@@ -159,7 +154,7 @@ mod tests {
         assert_eq!(r.remove(&b), Some(21));
         assert_eq!(r.get(&c), Some(&30));
         assert!(!r.is_empty());
-        assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![c]);
+        assert_eq!(r.iter().map(|(&id, _)| id).collect::<Vec<_>>(), vec![c]);
         assert_eq!(
             r.iter().map(|(&k, &v)| (k, v)).collect::<Vec<_>>(),
             vec![(c, 30)]

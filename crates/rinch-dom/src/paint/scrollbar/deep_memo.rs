@@ -94,6 +94,9 @@ pub(super) struct DeepOverflowState {
     walks: u64,
     /// Boxes measured, walked or brought up to date.
     measured: u64,
+    /// Nodes looked at to drop walks and records: by
+    /// [`DeepOverflow::forget_detached`]'s walk, and by every purge.
+    forget_steps: u64,
 }
 
 impl DeepOverflow {
@@ -190,10 +193,21 @@ impl DeepOverflow {
         }
     }
 
-    /// Called before box `root`'s subtree is taken out of the tree (every
+    /// Called before node `root`'s subtree is taken out of the tree (every
     /// removal and move records its pixels first, `mark_subtree_paint_dirty`):
     /// the walks of the scroll containers in it, and the records of the
     /// boxes in it, go. Put back, it is walked again where it is.
+    ///
+    /// Found by walking the subtree, not by asking each kept walk whether its
+    /// container is in it: that climbed from every container on every
+    /// removal, so taking out N rows that each held a scroller cost
+    /// O(N² · depth). This costs the subtree's nodes plus the records
+    /// dropped (`testing::deep_overflow_forget_steps` counts both). The walk follows the
+    /// element tree, which holds every scroll container below `root` (an
+    /// anonymous block box never scrolls, `ComputedStyle::for_anonymous_box`),
+    /// and with it each out-of-flow box hoisted past `root` to a host above
+    /// it (`Node::hoisted_out_of_flow_to`), which the box tree under `root`
+    /// does not hold: its records are purged from it.
     pub(crate) fn forget_detached(&self, tree: &NodeTree, root: RawNodeId) {
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
@@ -201,16 +215,30 @@ impl DeepOverflow {
             // Nothing is kept: the next check drops any records left.
             return;
         }
-        let inside: Vec<RawNodeId> = state
-            .entries
-            .keys()
-            .copied()
-            .filter(|&e| within(tree, e, root))
-            .collect();
-        for container in inside {
-            state.drop_entry(tree, container);
+        let mut hoisted = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let Some(node) = tree.get(id) else {
+                continue;
+            };
+            state.forget_steps += 1;
+            // The walks first: `purge` below then notes no container whose
+            // walk is gone as one that lost a child.
+            if state.entries.contains_key(&id) {
+                state.drop_entry(tree, id);
+            }
+            if id != root && node.hoisted_out_of_flow_to.is_some() {
+                hoisted.push(id);
+            }
+            stack.extend_from_slice(&node.children);
         }
         state.purge(tree, root);
+        // A hoisted box whose host is under `root` went with it (`purge`
+        // finds no record); one whose host is above it is purged here, and
+        // its host noted as one that lost a child.
+        for id in hoisted {
+            state.purge(tree, id);
+        }
     }
 
     /// Check what was pushed since the last check, and bring each entry it
@@ -343,6 +371,12 @@ impl DeepOverflow {
         self.state.borrow().measured
     }
 
+    /// How many nodes the memo has looked at to drop walks and records
+    /// (`testing::deep_overflow_forget_steps`).
+    pub(crate) fn forget_steps(&self) -> u64 {
+        self.state.borrow().forget_steps
+    }
+
     /// How many walks and records the memo holds
     /// (`testing::deep_overflow_held`).
     pub(crate) fn held(&self) -> (usize, usize) {
@@ -393,9 +427,21 @@ impl DeepOverflowState {
     /// scroll container whose walk's records they were ([`Self::purge`]).
     fn drop_below(&mut self, tree: &NodeTree, id: RawNodeId) {
         for &child in crate::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
+            self.forget_steps += 1;
             let Some(rec) = self.drop_rec(child) else {
                 continue;
             };
+            // A kept walk below `id` lost the records of its children: it
+            // sums them again. Reached only from a box that moved since it
+            // was met (`deep_mark::Marker::note`): `forget_detached` drops
+            // the walks below its root before it purges, so `entries` no
+            // longer holds this owner there. On a DOM move the insertion
+            // also pushes every node of the moved subtree paint-dirty
+            // (`mark_subtree_paint_dirty_ids`), whose climbs reach this walk
+            // anyway, so no move test fails without this noting. A box whose
+            // box-tree parent changes with no insertion (an out-of-flow box
+            // hoisted or un-hoisted by its inline's restyle) has no such
+            // push of its children, and relies on this.
             if rec.parent == rec.owner
                 && self.lost.last() != Some(&rec.owner)
                 && self.entries.contains_key(&rec.owner)
@@ -415,22 +461,11 @@ impl DeepOverflowState {
     /// Drop the records `owner`'s walk made below box `id`.
     fn purge_owned(&mut self, tree: &NodeTree, owner: RawNodeId, id: RawNodeId) {
         for &child in crate::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
+            self.forget_steps += 1;
             if self.recs.get(&child).is_some_and(|r| r.owner == owner) {
                 self.recs.remove(&child);
                 self.purge_owned(tree, owner, child);
             }
         }
     }
-}
-
-/// Whether box `id` is `root` or below it in the box tree.
-fn within(tree: &NodeTree, id: RawNodeId, root: RawNodeId) -> bool {
-    let mut at = Some(id);
-    while let Some(a) = at {
-        if a == root {
-            return true;
-        }
-        at = tree.get(a).and_then(|n| n.box_tree_parent());
-    }
-    false
 }
