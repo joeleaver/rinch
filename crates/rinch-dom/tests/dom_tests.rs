@@ -1,6 +1,6 @@
 //! Comprehensive tests for RinchDocument's DomDocument implementation.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomScroll, DomTree};
 use rinch_dom::RinchDocument;
 
 // === Node Creation ===

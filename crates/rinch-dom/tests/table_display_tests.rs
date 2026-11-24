@@ -13,7 +13,7 @@
 //! Only font-independent facts are asserted: the ellipsis string is far wider
 //! than 90px in any face, and every line box is declared.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const CSS: &str = "

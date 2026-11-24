@@ -10,7 +10,7 @@
 //! bundled Inter registered as `ProbeFace` through `@font-face`, `16px/20px`,
 //! a 400px block), `getBoundingClientRect` relative to the block.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

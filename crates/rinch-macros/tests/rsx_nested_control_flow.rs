@@ -11,7 +11,7 @@
 //! reports is a screen that stops changing.
 
 use rinch::prelude::*;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_core::dom::mock::MockDomDocument;
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -13,7 +13,7 @@
 //! `font-size: 0; line-height: 0` and hold only boxes, so no number depends
 //! on a font, but for the one line with text, set in the bundled Inter.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

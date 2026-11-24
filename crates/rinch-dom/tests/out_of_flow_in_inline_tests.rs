@@ -61,7 +61,7 @@
 //! `inline-block` is a block container inside, so that inner span is its IFC
 //! content; the shape is pinned in `inline_block_block_container_tests`.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

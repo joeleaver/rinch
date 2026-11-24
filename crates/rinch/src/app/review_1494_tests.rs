@@ -128,7 +128,7 @@ fn longer_text(app: &mut RinchApp) {
     let t = node(app, "[data-t]");
     let doc = app.doc().unwrap().clone();
     let mut d = doc.borrow_mut();
-    use rinch_core::dom::{DomDocument, NodeId};
+    use rinch_core::dom::NodeId;
     let text = d.get_children(NodeId(t))[0];
     d.set_text_content(
         text,
@@ -140,7 +140,7 @@ fn align_right(app: &mut RinchApp) {
     let c = node(app, "[data-c]");
     let doc = app.doc().unwrap().clone();
     let mut d = doc.borrow_mut();
-    use rinch_core::dom::{DomDocument, NodeId};
+    use rinch_core::dom::NodeId;
     d.set_style(NodeId(c), "text-align", "right");
 }
 

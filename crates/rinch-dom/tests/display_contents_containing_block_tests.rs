@@ -37,7 +37,7 @@
 //! same markup does resolve against the wrapper when it has a box.
 
 use peniko::Brush;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::node::RawNodeId;
 use rinch_dom::stacking::{PaintOrder, stacking_paint_order};

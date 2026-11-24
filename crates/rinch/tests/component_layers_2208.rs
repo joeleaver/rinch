@@ -193,7 +193,7 @@ fn a_components_colour_carries_its_contrast() {
 /// button takes keyboard focus.
 #[test]
 fn the_layered_theme_still_draws_the_focus_ring() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
     for mode in [ComponentStyles::Unlayered, ComponentStyles::Layered] {
         let mut doc = rinch_dom::RinchDocument::new();
         doc.load_css(&sheet(false, ColorName::Blue, mode));

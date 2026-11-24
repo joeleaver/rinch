@@ -13,7 +13,7 @@
 //! chip's top in it. The text's baseline is 16px down its 20px line, so a
 //! chip whose baseline is `b` px down stands `16 - b` px from the line top
 //! when that is below it, and grows the line otherwise.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

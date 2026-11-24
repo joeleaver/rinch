@@ -6,7 +6,7 @@
 //! right-to-left run (the walk `bidi_line_pieces` takes) with the bundled face
 //! only, as in `selection_rects_bidi_1114_tests.rs`.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 
 const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

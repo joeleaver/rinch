@@ -3,7 +3,7 @@
 //! author `min-height` dropped, the label clip ignoring the arrow box, the
 //! label centred in the border box rather than the content box, and an arrow
 //! box that is not scaled with the device scale.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

@@ -639,7 +639,7 @@ ends:
 - **A subtree that leaves the document loses the flag**, and any transition or
   animation running on it is cancelled (#699).
   `RinchDocument::detach_subtree_styles` does all three, for the whole removed
-  subtree. Five places in `dom_impl/dom_document_impl.rs` write `parent = None`
+  subtree. Five places in `dom_impl/` (`tree.rs`, `content.rs`) write `parent = None`
   and four call it: `remove_node`, `remove_child`, `replace_node`'s displaced
   `old`, and `set_text_content` on an element with children, which orphans every
   one of them without freeing the slab. The fifth, `set_inner_html`, is safe by
@@ -783,7 +783,7 @@ never animate again (issue #704). It also hid the detach reset: through one of
 those helpers, deleting `detach_subtree_styles` changed nothing observable. The
 method and all five call sites are gone. Every one of them was
 `clear_animations(); remove();` and `NodeHandle::remove` is
-`DomDocument::remove_node`, the first of the five routes listed above; on
+`DomTree::remove_node`, the first of the five routes listed above; on
 `rinch-web` the browser already cancels a removed element's transitions and
 treats re-insertion as a first style. **A removal path must not write styles**:
 the node outlives the removal, so anything stamped there is permanent.

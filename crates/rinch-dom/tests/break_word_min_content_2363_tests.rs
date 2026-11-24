@@ -16,7 +16,7 @@
 //! Each number is Chrome 157's for the same markup (bundled Inter, 16px/20px,
 //! in a 560px column). `Supercalifragilistic` is 139.70 wide; the rooms are
 //! 100 and 83.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

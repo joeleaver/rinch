@@ -47,7 +47,7 @@
 //! viewport range. With the body made `overflow: visible`, the `<html>` box —
 //! the initial containing block — measures it instead.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::{content_extents, scrollbars};
 

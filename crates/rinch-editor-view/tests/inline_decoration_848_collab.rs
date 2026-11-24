@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId, RenderScope};
 use rinch_editor_core::decoration::{Decoration, DecorationSet};
 use rinch_editor_core::{Attrs, EditorState, Plugin, PluginKey, Pos, Selection};
 use rinch_editor_view::{EditorHandle, NodeViewCtx, NodeViewSpec, create_editor};

@@ -12,7 +12,7 @@
 //! when it does not. Chrome's answers, OS reduced motion off: `no-preference`
 //! and `not (… reduce)` match, `reduce` and the boolean form do not.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 fn doc_with(css: &str) -> (RinchDocument, NodeId) {

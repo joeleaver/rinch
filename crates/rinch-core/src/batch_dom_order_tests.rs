@@ -10,7 +10,7 @@
 //! `NodeHandle::accessed_doc` reverted to a plain `Weak::upgrade`.
 
 use crate::dom::mock::MockDomDocument;
-use crate::dom::{DomDocument, NodeHandle, RenderScope};
+use crate::dom::{DomDocument, DomScroll, DomTree, NodeHandle, RenderScope};
 use crate::events::{dispatch_event, register_handler};
 use crate::reactive::{Effect, Signal, flush_pending_effects, reactive_counters};
 use crate::show_dom;

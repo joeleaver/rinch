@@ -18,7 +18,7 @@
 //! containers are 400, 350, 380, 300 and 60 wide, so "max-content", "the
 //! container" and "min-content" are three different answers in every row.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

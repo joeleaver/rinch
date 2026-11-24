@@ -23,7 +23,7 @@
 //! `cargo test -p rinch-dom --test svg_stroke_properties_tests -- --ignored`.
 
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
 

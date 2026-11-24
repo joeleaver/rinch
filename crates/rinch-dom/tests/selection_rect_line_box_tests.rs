@@ -27,7 +27,7 @@
 //! The second line is asserted as well as the first, so a fix that zeroes the
 //! top (`0.0`) instead of reading the line's own top is caught.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 
 const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

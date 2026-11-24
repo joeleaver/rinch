@@ -12,7 +12,7 @@
 //! container (the pictures are flat PNGs of the same sizes). Postrinch's
 //! mail 033 had the first shape on every picture of a `max-width: 640px`
 //! card and was 1,120px taller than in Chrome; mail 030 the second.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// An 800x400 PNG.

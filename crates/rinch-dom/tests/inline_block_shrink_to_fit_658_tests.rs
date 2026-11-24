@@ -13,7 +13,7 @@
 //! "max-content" and "shrink-to-fit" give three different answers — no row
 //! sits on a value two of them share.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

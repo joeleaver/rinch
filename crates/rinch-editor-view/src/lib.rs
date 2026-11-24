@@ -163,7 +163,7 @@ pub struct CaretBlink {
 /// rather than calling this.
 ///
 /// `doc_key` is the calling runtime's document (see
-/// [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) — `focused`
+/// [`DomTree::doc_key`](rinch_core::dom::DomTree::doc_key)) — `focused`
 /// is a container id from that document's focus arbiter, and container ids
 /// collide across documents on one thread (issue #134).
 pub fn caret_blink_tick(doc_key: u64, focused: Option<u64>) -> Option<CaretBlink> {

@@ -464,7 +464,7 @@ mod dedupe_tests_1781 {
 /// watch, or the web never refreshes that signal.
 #[cfg(test)]
 mod watch_retry_tests_1781 {
-    use crate::dom::traits::DomDocument;
+    use crate::dom::traits::DomTree;
     use crate::dom::{RenderScope, mock::MockDomDocument};
     use std::cell::RefCell;
     use std::rc::Rc;

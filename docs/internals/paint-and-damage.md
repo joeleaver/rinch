@@ -602,7 +602,7 @@ it as of any child, walking its DOM ancestors up to the host: under a
 content, so the box counts when the scroller **is** the block holding the
 span's line (#1049), at the span's fragment (#631); with another block between
 the scroller and the line it is measured through `overflow_absolutes` (#770, below).
-`DomDocument::scroll_height` /
+`DomScroll::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
 `content_extents` for a scroll container (`scrollbar::scroll_extents`; a box
 that does not scroll joins its descendants' overflow to it, below), and so is layout's own clamp of a scrolled container
@@ -794,7 +794,7 @@ and scrollers come and go, `testing::deep_overflow_held`; a move pinned by
 its walk and measure counts; one child resized among 51).
 
 **A box that does not scroll (#2223).** It has no range for a bar or the
-wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it
+wheel to agree with, so `DomScroll::scroll_width` / `scroll_height` on it
 answer `scrollbar::scroll_extents`: `content_extents` joined with every
 descendant that overflows its own parent, as Chrome 158 counts them — each
 box's border box (no margins), at its offsets down the chain, transformed
@@ -846,7 +846,7 @@ which is why it was rarely seen — not because components avoided it: the
 `Drawer` body, `FloatingPanel` body, `Select` dropdown, the menu-bar dropdowns
 and `Code` are all padded or bordered scroll regions, and had the bug.
 `paint::scrollbar::visible_extents` is now the one content-box computation:
-`scrollbars`, `DomDocument::client_height`/`client_width`, layout's
+`scrollbars`, `DomScroll::client_height`/`client_width`, layout's
 `clamp_scroll_offsets` and the four wheel-routing walks all call it, the walks
 through `paint::scrollbar::overflows` — the same move #400 made for
 `content_extents`. `overflows` is the scrollable-and-overflowing half of
@@ -918,7 +918,7 @@ An rtl `nowrap` line is aligned within its box whatever its `text-align`
 (`aligned_away`): a short one lands where its alignment puts it, and one
 wider than the box is start-aligned at the right edge and overflows to the
 left, where the scroller reaches it (CSS Text 3; Chrome 157). `onscroll`'s `scroll_left` and
-`DomDocument::scroll_left` report the negative value, which is what the
+`DomScroll::scroll_left` report the negative value, which is what the
 browser reports on rinch-web. Before #2546 an rtl scroller's content was laid
 out left to right instead (#2543's stopgap, `lays_out_rtl`), and an rtl page's
 own left overflow could not be scrolled to. The viewport's direction is the

@@ -18,7 +18,7 @@
 //! Each percentage term is non-zero and differs from the px term, so the
 //! broken reading (px only) and a content-box or border-box basis all miss.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const EPS: f32 = 0.51;

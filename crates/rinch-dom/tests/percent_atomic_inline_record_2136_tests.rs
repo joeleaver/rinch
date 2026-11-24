@@ -24,7 +24,7 @@
 //! No number here is a glyph measurement: each assertion compares two layouts
 //! of the same document on the same host, or a box against a declared length.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VP: (f32, f32) = (800.0, 600.0);

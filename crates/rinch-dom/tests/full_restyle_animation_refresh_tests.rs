@@ -60,7 +60,7 @@
 //! scoped the refresh to this pass. #766 removed it: the refresh runs on every
 //! cascade (MR7 is now the code), so a mutant of the flag has nothing to mutate.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::animation::{AnimationPlayState, AnimationResult};
 use rinch_dom::transition::{AnimatableValue, TransitionProperty};

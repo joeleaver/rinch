@@ -1291,7 +1291,7 @@ mod tests {
         let doc = std::rc::Rc::new(std::cell::RefCell::new(
             rinch_core::dom::mock::MockDomDocument::new(),
         ));
-        let body = rinch_core::dom::DomDocument::body(&*doc.borrow());
+        let body = rinch_core::dom::DomTree::body(&*doc.borrow());
         let mut scope = rinch_core::dom::RenderScope::new(doc.clone(), body);
         let wrap = scope.create_element("div");
         wrap.set_attribute("spellcheck", "false");
@@ -1384,7 +1384,7 @@ mod tests {
         let doc = std::rc::Rc::new(std::cell::RefCell::new(
             rinch_core::dom::mock::MockDomDocument::new(),
         ));
-        let body = rinch_core::dom::DomDocument::body(&*doc.borrow());
+        let body = rinch_core::dom::DomTree::body(&*doc.borrow());
         let mut scope = rinch_core::dom::RenderScope::new(doc.clone(), body);
         let h = crate::create_editor();
         h.load_html("<p>helo</p><p>wrld</p>");

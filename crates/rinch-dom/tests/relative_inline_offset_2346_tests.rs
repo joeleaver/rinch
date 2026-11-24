@@ -23,7 +23,7 @@
 //! a twin without the offset, so the move is exactly the offset whatever the
 //! line is.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

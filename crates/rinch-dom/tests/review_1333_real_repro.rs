@@ -24,7 +24,7 @@
 //! reachable in the first place — there is no stale value for any later
 //! pass to pick up.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::{LayoutResult, RinchDocument};
 
 #[test]

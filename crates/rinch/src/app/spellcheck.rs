@@ -470,7 +470,7 @@ impl RinchApp {
         for id in ids {
             let gone = {
                 let d = doc.borrow();
-                !rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(id))
+                !rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(id))
             };
             if gone {
                 self.spelling.fields.remove(&id);
@@ -514,7 +514,7 @@ impl RinchApp {
                     .filter(|(id, n)| {
                         matches!(n.tag(), Some("input" | "textarea"))
                             && !self.spelling.fields.contains_key(id)
-                            && rinch_core::dom::DomDocument::is_connected(
+                            && rinch_core::dom::DomTree::is_connected(
                                 &*d,
                                 rinch_core::dom::NodeId(*id),
                             )

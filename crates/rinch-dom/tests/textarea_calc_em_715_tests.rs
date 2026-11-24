@@ -3,7 +3,7 @@
 //! container's, not the root's), matching rinch's `LineHeightValue::Normal`
 //! resolution (`font_size * 1.2`) exactly?
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 fn el(doc: &mut RinchDocument, parent: NodeId, tag: &str, style: &str) -> NodeId {

@@ -27,7 +27,7 @@
 //! pin *whether* the box is counted — the bar and a range reaching past 300 —
 //! not that offset; `abs_inline_containing_block_tests` pins the placement.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::{content_extents, scrollbars};
 

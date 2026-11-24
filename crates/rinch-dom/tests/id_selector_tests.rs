@@ -17,7 +17,7 @@
 //! failure that is really "the stylesheet did not parse" or "the cascade did
 //! not run" is distinguishable from "the id rule did not match".
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;
@@ -365,7 +365,7 @@ fn two_elements_sharing_an_id_both_match() {
 }
 
 /// The id comes out of `Element::Html` parsing too. That path funnels through
-/// `DomDocument::set_attribute` like the `rsx!` `id:` attribute does, and this
+/// `DomContent::set_attribute` like the `rsx!` `id:` attribute does, and this
 /// fixture is what says so — if HTML parsing ever grew a direct write into
 /// `Node::attributes`, the stored atom would miss it and this would go red.
 #[test]

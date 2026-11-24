@@ -71,7 +71,7 @@
 //! asserted the opposite ("`new` has not [left the document] — it was spliced
 //! in, which is a move, and a move resets nothing"), which is true of every
 //! destination but a detached one. `grep -n '\.parent = Some('` over
-//! `dom_impl/dom_document_impl.rs` is the count to re-check; the other matches
+//! `dom_impl/tree.rs` and `dom_impl/content.rs` is the count to re-check; the other matches
 //! there and in `pseudo.rs` / `ifc.rs` are nodes created moments earlier, which
 //! cannot be moves.
 //!
@@ -96,7 +96,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// `font-size` and `line-height` are declared so that no box below is derived

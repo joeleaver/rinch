@@ -3489,7 +3489,7 @@ impl RinchDocument {
     ///
     /// # Where this is called from
     ///
-    /// **Five places in `dom_impl/dom_document_impl.rs` write `parent = None`.**
+    /// **Five places in `dom_impl/` (`tree.rs`, `content.rs`) write `parent = None`.**
     /// Four of them call this; the fifth does not need to. That count is the
     /// claim to check against `grep -n '\.parent = None'` if this file ever
     /// grows a sixth — an unhooked one is silent, which is how the fourth row
@@ -3620,7 +3620,7 @@ impl RinchDocument {
     ///
     /// # Where this is called from
     ///
-    /// **Four places in `dom_impl/dom_document_impl.rs` write
+    /// **Four places in `dom_impl/tree.rs` write
     /// `nodes[..].parent = Some(..)` for a node that may already be mounted**,
     /// and all four call this: `append_child`, `insert_before`, `insert_child`,
     /// and `replace_node` for its incoming `new`. `grep -n '\.parent = Some('`

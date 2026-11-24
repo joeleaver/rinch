@@ -8,7 +8,7 @@
 
 use super::input_region::{self, InputRegionState, contains, to_pixels};
 use peniko::kurbo::Rect;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_core::element::InputRegion;
 use rinch_dom::RinchDocument;
 

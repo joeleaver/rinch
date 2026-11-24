@@ -10,7 +10,7 @@
 // One mark is a list of one.
 #![allow(clippy::single_range_in_vec_init)]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::{RinchDocument, SpellingMarks};
 

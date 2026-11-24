@@ -11,7 +11,7 @@
 //! Every size is declared and no item holds text, so nothing here pins the
 //! local font set. Chrome 156 is the oracle for each number.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

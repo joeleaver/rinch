@@ -422,7 +422,7 @@ desktop, the CPU callback's rAF loop unchanged (D6).
   `run_web_frame` on `DeviceFor::Unavailable`): a canvas keeps the first kind of context made
   on it, so one that drew GPU frames (`web_gpu_canvas` is `Ready`) would refuse the fallback's
   2D context and every `submit_frame` would be dropped. The surface's node gets a fresh
-  backing element through `DomDocument::renew_element` (`WebDocument`: a shallow
+  backing element through `DomTree::renew_element` (`WebDocument`: a shallow
   `cloneNode`, same id and attributes, put in its place, the node id moved to it in both
   node maps); then `teardown_web_surface` and `schedule_canvas_init` set it up as on a
   mount, and the render callback draws on it from the next frame. CI's
@@ -621,7 +621,7 @@ build with `"gpu"` or `"gpu-renderer"`.
 
 | Type | Purpose |
 |------|---------|
-| `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
+| `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomTree::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
 | `RinchContextConfig` | Width, height, scale factor, optional theme, and `fonts: Vec<FontData>` registered before the mount (owned or `'static`, #2101; font data, so it fills only empty generic slots, #2102). After the mount: `register_font(impl Into<FontData>)`, and `register_app_font(AppFont)` for a face that claims a generic |
 | `RinchOverlayRenderer` | Renders a context's UI to a texture: `render(device, queue, &mut ctx)` (since #1866; it took `ctx.scene()` before). Its `GameViewport`s are cut out by the split compositor, exactly; a host rendering `ctx.scene()` with its own Vello gets an in-scene erase, approximate inside clips. A renderer that does not hold the context's last sliced frame (new after a device loss, or another renderer or context took a turn) has the frame painted again: the stamp check below (#1976) |
 | `OverlayCheck` | From `RinchOverlayRenderer::check_frames(device)`, never waiting (#2071). `render` calls it, so a host rendering every frame can ignore it; an event-driven host must call it, because a lost frame is the renderer's and `needs_update` belongs to the context, of which several renderers may take turns. `needs_render` stays true until a `render`; `check_again_at` until Vello's counters are in. On a lost frame `fed` goes to 0, which repaints the slices. Pin: `gpu_an_event_driven_host_gets_a_lost_overlay_frame_back_2071` |

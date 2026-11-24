@@ -2,7 +2,7 @@
 //! border box whatever its CSS said. The initial value is `content-box`:
 //! `width` and `height` size the content, padding and border go outside.
 //! Numbers are Chrome 156's for the same markup (body margin 0, 800x600).
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 fn doc(html: &str) -> RinchDocument {
