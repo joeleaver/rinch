@@ -246,12 +246,12 @@ functions `show_dom()` / `for_each_dom_typed()` / `match_dom()`).
 `reactive/scope.rs` (ownership, disposal, the dispose fixpoint) and `reactive/mod.rs`
 (the runtime, subscriber sets, flush) are the most dangerous files in the workspace: a
 bug there breaks every app. `reactive/signal.rs`, `effect.rs`, `memo.rs` sit on top.
-`dom/traits.rs` (`DomDocument`), `dom/mod.rs` (`NodeHandle`) and `dom/render_scope.rs`
+`dom/traits/` (`DomDocument` and its supertraits), `dom/mod.rs` (`NodeHandle`) and `dom/render_scope.rs`
 (`RenderScope`) are the contract between the reactive layer and every renderer, so a
 signature change there ripples into `rinch-dom`, `rinch-web`, `rinch-editor-view` and
 `rinch` at once.
 
-`dom/mock.rs` (`MockDomDocument`, behind the `test-util` feature) is how downstream
+`dom/mock/` (`MockDomDocument`, behind the `test-util` feature) is how downstream
 crates test against the seam without a renderer. Prefer it over reaching for
 `rinch-dom` in a test.
 

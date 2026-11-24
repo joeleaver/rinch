@@ -423,7 +423,7 @@ with the board green.
 This divergence is what #719 was. `rinch-web`'s `remove_node` used to prune both
 maps, so on that backend alone the first hide retired the id and every later show
 inserted nothing — reproduced in Chrome 150, silent, no error anywhere.
-`crates/rinch-core/src/dom/mock.rs` is the host-runnable oracle for both verbs
+`crates/rinch-core/src/dom/mock/` is the host-runnable oracle for both verbs
 (it retires a discard and keeps a remove), which is why a `remove`/`discard`
 mistake now fails `cargo test` rather than only a browser.
 
