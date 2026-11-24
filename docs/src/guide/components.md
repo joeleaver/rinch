@@ -187,8 +187,19 @@ PasswordInput {
 // ColorInput all take it; ColorInput defaults to "off", since its picker
 // opens where the browser's list would.
 TextInput { label: "Username", autocomplete: "username" }
-PasswordInput { label: "Password", autocomplete: "current-password" }
-TextInput { label: "Code", autocomplete: "one-time-code" }
+PasswordInput {
+    label: "Password",
+    autocomplete: "current-password",
+    // Enter submits, as in a TextInput (#3048).
+    onsubmit: move || sign_in(),
+}
+
+// `inputmode` picks the on-screen keyboard on a phone (#3048): "numeric"
+// brings up a digit pad. Empty (the default) writes no attribute, the
+// browser's default; the same five components take it. On desktop it is
+// kept on the element and changes nothing.
+TextInput { label: "Code", autocomplete: "one-time-code", inputmode: "numeric" }
+TextInput { label: "Phone", inputmode: "tel" }
 
 // NumberInput — uncontrolled: the component owns the number, so the
 // +/- steppers step, clamp to [min, max] and format it themselves,

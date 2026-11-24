@@ -123,6 +123,10 @@ pub struct PasswordInput {
     /// modification, or Enter) — HTML `change` semantics, receives the final
     /// value. Fires only if the value changed since focus (issue #226).
     pub onchange: Option<InputCallback>,
+    /// Callback when Enter is pressed in the field (form submission, #3048),
+    /// as `TextInput`'s `onsubmit`: the `onchange` commit runs first, then
+    /// this. `None` (the default) leaves Enter alone.
+    pub onsubmit: Option<Callback>,
     /// The field's HTML `autocomplete` attribute (#3028): a token list such as
     /// `"username"`, `"current-password"`, `"new-password"`, `"email"` or
     /// `"one-time-code"`, which password managers and the browser's autofill
@@ -132,6 +136,13 @@ pub struct PasswordInput {
     /// On desktop the attribute is kept on the element for the DOM; there is
     /// no autofill there.
     pub autocomplete: String,
+    /// The field's HTML `inputmode` attribute (#3048): which on-screen
+    /// keyboard a touch device shows, one of `"none"`, `"text"`, `"decimal"`,
+    /// `"numeric"`, `"tel"`, `"search"`, `"email"` or `"url"` (`"numeric"`
+    /// brings up a digit pad for a one-time code). Empty (the default) writes
+    /// no attribute, the browser's default. On desktop the attribute is kept
+    /// on the element for the DOM; it changes nothing there.
+    pub inputmode: String,
 }
 
 impl std::fmt::Debug for PasswordInput {
@@ -165,7 +176,9 @@ impl std::fmt::Debug for PasswordInput {
             .field("ontoggle", &self.ontoggle.as_ref().map(|_| "<callback>"))
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
+            .field("onsubmit", &self.onsubmit.as_ref().map(|_| "<callback>"))
             .field("autocomplete", &self.autocomplete)
+            .field("inputmode", &self.inputmode)
             .finish()
     }
 }
@@ -191,7 +204,9 @@ impl Default for PasswordInput {
             ontoggle: None,
             oninput: None,
             onchange: None,
+            onsubmit: None,
             autocomplete: String::new(),
+            inputmode: String::new(),
         }
     }
 }
@@ -281,9 +296,7 @@ impl Component for PasswordInput {
         // Set initial type based on visibility
         let input_type = if initial_visible { "text" } else { "password" };
         input.set_attribute("type", input_type);
-        if !self.autocomplete.is_empty() {
-            input.set_attribute("autocomplete", &self.autocomplete);
-        }
+        crate::entry_attrs::write_entry_hints(&input, &self.autocomplete, &self.inputmode);
 
         // Reactive value binding (matching the TextInput pattern). The value is
         // written raw, never HTML-escaped: `set_attribute` goes through the DOM
@@ -339,6 +352,9 @@ impl Component for PasswordInput {
             });
             input.set_attribute("data-onchange", &handler_id.to_string());
         }
+
+        // Submit handler (Enter key), the same wiring as TextInput's (#3048).
+        crate::entry_attrs::bind_submit(__scope, &input, &self.onsubmit);
 
         wrapper.append_child(&input);
 

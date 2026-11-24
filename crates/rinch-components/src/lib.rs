@@ -143,6 +143,7 @@ pub mod divider;
 pub mod drawer;
 pub mod dropdown_menu;
 pub mod dropdown_menu_sub;
+pub(crate) mod entry_attrs;
 pub(crate) mod field_ids;
 pub mod fieldset;
 pub(crate) mod floating;
