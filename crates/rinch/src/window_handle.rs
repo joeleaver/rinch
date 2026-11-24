@@ -234,6 +234,15 @@ pub fn windows() -> Vec<WindowHandle> {
 
 /// End the event loop after this turn, whatever [`ExitWhen`] says. Every
 /// window closes with it.
+///
+/// Callable from any thread. Asked for before the app runs (from a thread
+/// that watches for `SIGTERM`, started before [`App::run`](crate::App::run)),
+/// it is kept, and the run that comes returns at once, `Ok(())` from
+/// [`App::try_run`](crate::App::try_run), without opening a window (#3015).
+///
+/// It takes a lock, so it is not async-signal-safe: never call it from inside
+/// a signal handler itself. Have the handler wake a thread that calls it
+/// (signal-hook's `iterator::Signals`, or its `flag` checked by a thread).
 pub fn exit() {
     send_native_event_for(EventFor::Sender(None), RinchNativeEvent::Exit);
 }

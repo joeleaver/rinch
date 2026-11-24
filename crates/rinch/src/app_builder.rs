@@ -1074,6 +1074,11 @@ where
     /// `# Panics`).
     #[cfg(feature = "windowing")]
     pub fn try_run(self) -> Result<(), crate::RunError> {
+        // `rinch::exit` before the run (a signal-watching thread's, #3015):
+        // the app ends before it connects to the display or opens a window.
+        if crate::shell::rinch_runtime::take_exit_before_run() {
+            return Ok(());
+        }
         let Startup {
             component,
             props,
