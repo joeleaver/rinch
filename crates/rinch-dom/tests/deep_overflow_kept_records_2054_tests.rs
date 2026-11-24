@@ -1,0 +1,389 @@
+//! #2054: what a scroll container's kept descendant walk holds, and what it
+//! costs, as boxes come and go: a record goes with its box (taken out,
+//! moved or freed), a walk goes with its container, and a box resized among
+//! many siblings is brought up to date without visiting them, and a removal
+//! costs its own subtree, not the number of walks kept.
+//! (`testing::deep_overflow_held`, `deep_overflow_walks`,
+//! `deep_overflow_measured`, `deep_overflow_forget_steps`.)
+
+use rinch_core::dom::{DomDocument, NodeId};
+use rinch_dom::RinchDocument;
+use rinch_dom::testing::{
+    deep_overflow_forget_steps, deep_overflow_held, deep_overflow_measured, deep_overflow_walks,
+};
+
+fn kept_doc(html: &str) -> RinchDocument {
+    let mut d = RinchDocument::new();
+    d.load_css("body { margin: 0 } div { margin: 0; padding: 0 }");
+    let body = d.body();
+    d.set_inner_html(body, html);
+    d.resolve_layout(800.0, 600.0);
+    d
+}
+
+fn by_id(d: &RinchDocument, id: &str) -> NodeId {
+    d.query_selector(&format!("#{id}")).expect(id)
+}
+
+fn range_of(d: &RinchDocument, id: &str) -> (f64, f64) {
+    let s = by_id(d, id);
+    (d.scroll_width(s), d.scroll_height(s))
+}
+
+/// A layout, a read of `#s`'s range and a paint consuming the tree: one
+/// frame.
+fn frame(d: &mut RinchDocument) -> (f64, f64) {
+    d.resolve_layout(800.0, 600.0);
+    let range = range_of(d, "s");
+    d.tree.consume_paint_dirty();
+    range
+}
+
+/// How the tests take a box out.
+#[derive(Debug, Clone, Copy)]
+enum Out {
+    /// `remove_child`: detached, alive, may be put back.
+    Remove,
+    /// `discard_node`: detached and freed.
+    Discard,
+}
+
+fn take_out(d: &mut RinchDocument, parent: NodeId, child: NodeId, how: Out) {
+    match how {
+        Out::Remove => d.remove_child(parent, child),
+        Out::Discard => d.discard_node(child),
+    }
+}
+
+/// A row of two boxes, the inner one past the row's width.
+fn row(d: &mut RinchDocument, width: &str) -> NodeId {
+    let row = d.create_element("div");
+    d.set_attribute(row, "style", "height:20px");
+    let inner = d.create_element("div");
+    d.set_attribute(inner, "style", &format!("width:{width};height:10px"));
+    d.append_child(row, inner);
+    row
+}
+
+const LIST: &str = r#"<div id="s" style="width:200px;height:100px;overflow:auto"><div id="l" style="width:150px"><div style="height:20px"><div style="width:300px;height:10px"></div></div></div></div>"#;
+
+/// A row appended, read and taken out, over and over: the memo holds what
+/// it held before, not a record of every row it ever met (each stayed
+/// until a whole-document restyle).
+#[test]
+fn rows_taken_out_leave_no_records() {
+    for how in [Out::Remove, Out::Discard] {
+        let mut d = kept_doc(LIST);
+        assert_eq!(frame(&mut d), (300.0, 20.0), "control: the inner box");
+        let held = deep_overflow_held(&d.tree);
+        assert_eq!(
+            held,
+            (2, 4),
+            "control: the root scroller's walk (#s's record) and #s's (#l, its row and the row's box)"
+        );
+        let l = by_id(&d, "l");
+        for _ in 0..200 {
+            let r = row(&mut d, "420px");
+            d.append_child(l, r);
+            assert_eq!(frame(&mut d), (420.0, 40.0), "{how:?}: the row read");
+            take_out(&mut d, l, r, how);
+            assert_eq!(frame(&mut d), (300.0, 20.0), "{how:?}: the row gone");
+        }
+        assert_eq!(deep_overflow_held(&d.tree), held, "{how:?}");
+    }
+}
+
+/// A scroll container added beside `#s`, read, and taken out, over and
+/// over: its walk and its records go with it.
+#[test]
+fn a_scroller_taken_out_leaves_no_walk() {
+    for how in [Out::Remove, Out::Discard] {
+        let mut d = kept_doc(&format!(r#"{LIST}<div id="b"></div>"#));
+        frame(&mut d);
+        let held = deep_overflow_held(&d.tree);
+        let b = by_id(&d, "b");
+        for _ in 0..50 {
+            let x = d.create_element("div");
+            d.set_attribute(x, "style", "width:100px;height:50px;overflow:auto");
+            for _ in 0..10 {
+                let r = row(&mut d, "230px");
+                d.append_child(x, r);
+            }
+            d.append_child(b, x);
+            frame(&mut d);
+            assert_eq!(d.scroll_width(x), 230.0, "{how:?}: control, its range");
+            assert!(
+                deep_overflow_held(&d.tree).0 > held.0,
+                "{how:?}: its walk kept"
+            );
+            take_out(&mut d, b, x, how);
+            frame(&mut d);
+        }
+        assert_eq!(deep_overflow_held(&d.tree), held, "{how:?}");
+    }
+}
+
+/// A row taken out and put back where it was is recorded again, and the
+/// range follows each step.
+#[test]
+fn a_row_put_back_is_recorded_again() {
+    let mut d = kept_doc(LIST);
+    frame(&mut d);
+    let held = deep_overflow_held(&d.tree);
+    let l = by_id(&d, "l");
+    let r = row(&mut d, "420px");
+    d.append_child(l, r);
+    assert_eq!(frame(&mut d), (420.0, 40.0));
+    d.remove_child(l, r);
+    assert_eq!(frame(&mut d), (300.0, 20.0));
+    assert_eq!(deep_overflow_held(&d.tree), held, "the row's records went");
+    d.append_child(l, r);
+    assert_eq!(frame(&mut d), (420.0, 40.0), "put back, it counts again");
+    assert_eq!(deep_overflow_held(&d.tree), (held.0, held.1 + 2));
+}
+
+const MOVE: &str = r#"<div id="s" style="width:200px;height:100px;overflow:auto"><div id="p" style="width:150px;height:40px"></div><div id="q" style="width:150px;height:40px"></div></div>"#;
+
+/// A box moved to another parent under the scroller is brought up to date
+/// where it is, not walked again: its records are dropped (it was met under
+/// its old parent) and it is recorded under the new one. Measured: the two
+/// parents and the moved box with its child. (Its records kept, it would be
+/// met under another parent than recorded, and the whole scroller walked
+/// again.)
+///
+/// The box is moved before any paint consumed it: a painted box's move
+/// drops its records when it is made (`record_pixels_left_by_move`, through
+/// `forget_detached`), so only an unpainted one reaches the check's own
+/// "under another parent" branch (`Marker::note`), which this pins.
+#[test]
+fn a_box_moved_to_another_parent_is_recorded_where_it_is() {
+    let mut d = kept_doc(MOVE);
+    assert_eq!(frame(&mut d), (150.0, 80.0), "control: p and q");
+    let (p, q) = (by_id(&d, "p"), by_id(&d, "q"));
+    let x = row(&mut d, "330px");
+    d.set_attribute(x, "style", "width:20px;height:10px");
+    d.append_child(p, x);
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(range_of(&d, "s"), (330.0, 80.0), "control: x's child read");
+    let held = deep_overflow_held(&d.tree);
+    d.append_child(q, x);
+    d.resolve_layout(800.0, 600.0);
+    let (walks, measured) = (
+        deep_overflow_walks(&d.tree),
+        deep_overflow_measured(&d.tree),
+    );
+    assert_eq!(range_of(&d, "s"), (330.0, 80.0));
+    assert_eq!(deep_overflow_walks(&d.tree), walks, "not walked again");
+    assert_eq!(
+        deep_overflow_measured(&d.tree) - measured,
+        4,
+        "p, q, and x with its child recorded under q"
+    );
+    assert_eq!(deep_overflow_held(&d.tree), held);
+}
+
+const NESTED: &str = r#"<div id="s" style="width:200px;height:100px;overflow:auto"><div id="p" style="width:150px;height:40px"></div><div id="q" style="width:150px;height:40px"></div></div>"#;
+
+/// A box holding a scroll container, moved to another parent under the
+/// outer scroller before any paint consumed it: the moved box's records go,
+/// and with them those of the inner container's walk, which is kept — so the
+/// inner container sums its children again, and a transformed box in it,
+/// measured where it is drawn on each read, still counts. Each read against
+/// a fresh document.
+#[test]
+fn a_scroller_moved_inside_a_box_keeps_its_transformed_boxes() {
+    let fresh = |under: &str| {
+        let mut d = kept_doc(NESTED);
+        let parent = by_id(&d, under);
+        let (x, i) = nested(&mut d);
+        d.append_child(parent, x);
+        d.resolve_layout(800.0, 600.0);
+        (range_of(&d, "s"), (d.scroll_width(i), d.scroll_height(i)))
+    };
+    let mut d = kept_doc(NESTED);
+    frame(&mut d);
+    let (p, q) = (by_id(&d, "p"), by_id(&d, "q"));
+    let (x, i) = nested(&mut d);
+    d.append_child(p, x);
+    d.resolve_layout(800.0, 600.0);
+    let read = |d: &RinchDocument| (range_of(d, "s"), (d.scroll_width(i), d.scroll_height(i)));
+    assert_eq!(read(&d), fresh("p"), "control: under p");
+    assert_eq!(read(&d).1, (260.0, 30.0), "control: the transformed box");
+    d.append_child(q, x);
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(read(&d), fresh("q"), "moved under q");
+}
+
+/// A box holding a 100x40 scroll container (its id, `#i`, the second
+/// answer) with a row and a box translated past its right edge.
+fn nested(d: &mut RinchDocument) -> (NodeId, NodeId) {
+    let x = d.create_element("div");
+    d.set_attribute(x, "style", "width:120px;height:40px");
+    let i = d.create_element("div");
+    d.set_attribute(i, "id", "i");
+    d.set_attribute(i, "style", "width:100px;height:40px;overflow:auto");
+    let r = row(d, "50px");
+    d.append_child(i, r);
+    let t = d.create_element("div");
+    d.set_attribute(
+        t,
+        "style",
+        "width:60px;height:10px;transform:translateX(200px)",
+    );
+    d.append_child(i, t);
+    d.append_child(x, i);
+    (x, i)
+}
+
+/// Of a box's many children, one resized: the box's span is brought up to
+/// date from that child alone — joined where it grows or shrinks inside the
+/// span, summed from all of them where it held the span's edge and no
+/// longer reaches it. Each step against a fresh document; measured: the
+/// child and its parent.
+#[test]
+fn one_child_resized_among_many_is_brought_up_to_date_alone() {
+    let rows: String = (0..50)
+        .map(|i| {
+            let w = if i == 7 { 400 } else { 100 + i };
+            format!(r#"<div style="width:{w}px;height:10px"></div>"#)
+        })
+        .collect();
+    let html = format!(
+        r#"<div id="s" style="width:200px;height:100px;overflow:auto"><div id="l" style="position:relative;width:150px;height:60px">{rows}<div id="g" style="position:absolute;left:0;top:0;width:300px;height:10px"></div></div></div>"#
+    );
+    let fresh = |width: &str| {
+        let mut d = kept_doc(&html);
+        let g = by_id(&d, "g");
+        d.set_style(g, "width", width);
+        d.resolve_layout(800.0, 600.0);
+        range_of(&d, "s")
+    };
+    let mut d = kept_doc(&html);
+    assert_eq!(frame(&mut d), (400.0, 500.0), "control: the widest row");
+    let g = by_id(&d, "g");
+    // Inside the span, past it, and back from its edge.
+    for width in ["280px", "450px", "120px"] {
+        d.set_style(g, "width", width);
+        d.resolve_layout(800.0, 600.0);
+        let (walks, measured) = (
+            deep_overflow_walks(&d.tree),
+            deep_overflow_measured(&d.tree),
+        );
+        assert_eq!(range_of(&d, "s"), fresh(width), "the gauge at {width}");
+        assert_eq!(deep_overflow_walks(&d.tree), walks, "{width}: not walked");
+        assert_eq!(
+            deep_overflow_measured(&d.tree) - measured,
+            2,
+            "{width}: the gauge and its parent"
+        );
+        d.tree.consume_paint_dirty();
+    }
+    assert_eq!(
+        range_of(&d, "s"),
+        (400.0, 500.0),
+        "control: back to the row"
+    );
+}
+
+/// A row that is itself a scroll container, holding two boxes past its
+/// width.
+fn scroller_row(d: &mut RinchDocument) -> NodeId {
+    let row = d.create_element("div");
+    d.set_attribute(row, "style", "width:100px;height:20px;overflow:auto");
+    for _ in 0..2 {
+        let inner = d.create_element("div");
+        d.set_attribute(inner, "style", "width:230px;height:10px");
+        d.append_child(row, inner);
+    }
+    row
+}
+
+/// `n` scroller rows in `#l`, each one's range read so its walk is kept,
+/// then taken out one by one: what each removal looked at to drop walks and
+/// records (`deep_overflow_forget_steps`).
+fn forget_steps_per_removal(n: usize) -> Vec<u64> {
+    let mut d = kept_doc(LIST);
+    frame(&mut d);
+    let base = deep_overflow_held(&d.tree);
+    let l = by_id(&d, "l");
+    let rows: Vec<NodeId> = (0..n)
+        .map(|_| {
+            let r = scroller_row(&mut d);
+            d.append_child(l, r);
+            r
+        })
+        .collect();
+    frame(&mut d);
+    for &r in &rows {
+        assert_eq!(d.scroll_width(r), 230.0, "control: each row's range");
+    }
+    assert_eq!(
+        deep_overflow_held(&d.tree).0,
+        base.0 + n,
+        "control: every row's walk is kept"
+    );
+    let mut steps = Vec::with_capacity(n);
+    for &r in &rows {
+        let before = deep_overflow_forget_steps(&d.tree);
+        d.remove_child(l, r);
+        steps.push(deep_overflow_forget_steps(&d.tree) - before);
+    }
+    assert_eq!(
+        deep_overflow_held(&d.tree).0,
+        base.0,
+        "control: every row's walk went with it"
+    );
+    steps
+}
+
+/// Taking out N rows that each hold a kept walk costs each removal its own
+/// subtree, whatever N is and however many walks are still kept. It used to
+/// ask every kept walk whether its container was in the removed subtree,
+/// climbing from each, so N removals cost O(N² · depth): 329 ms for 2000
+/// rows, against 7.7 ms with no walks kept.
+///
+/// Each removal looks at 7: the walk visits the row and its two boxes (3);
+/// the row's walk drops its two records (2); the row's own record goes, and
+/// the purge looks at its two boxes, whose records are already gone (2).
+#[test]
+fn removing_rows_that_hold_walks_costs_each_its_own_subtree() {
+    for n in [40, 80] {
+        let steps = forget_steps_per_removal(n);
+        assert_eq!(steps, vec![7; n], "n = {n}");
+    }
+}
+
+/// An out-of-flow scroll container inside an inline is hoisted to the block
+/// above the inline (`Node::hoisted_out_of_flow_to`), so its box-tree
+/// parent is outside the inline taken out: its walk and its record go with
+/// the inline all the same. The search climbed the box tree from each kept
+/// container and missed it, and its walk stayed while the inline was out.
+#[test]
+fn a_hoisted_scroller_taken_out_with_its_inline_leaves_no_walk() {
+    let mut d = kept_doc(&format!(r#"{LIST}<div id="b"></div>"#));
+    frame(&mut d);
+    let held = deep_overflow_held(&d.tree);
+    let b = by_id(&d, "b");
+    for _ in 0..20 {
+        let span = d.create_element("span");
+        let text = d.create_text("text");
+        d.append_child(span, text);
+        let x = scroller_row(&mut d);
+        d.set_attribute(
+            x,
+            "style",
+            "position:absolute;width:100px;height:20px;overflow:auto",
+        );
+        d.append_child(span, x);
+        d.append_child(b, span);
+        frame(&mut d);
+        assert_eq!(d.scroll_width(x), 230.0, "control: its range");
+        assert!(
+            deep_overflow_held(&d.tree).0 > held.0,
+            "control: its walk kept"
+        );
+        d.remove_child(b, span);
+        frame(&mut d);
+    }
+    assert_eq!(deep_overflow_held(&d.tree), held);
+}

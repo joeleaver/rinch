@@ -862,7 +862,7 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
 /// a scroller's range is measured unrounded (#2116), so 100.4px of content
 /// growing to 100.55px gives it a pixel's range with no rounded rect moving.
 /// The unrounded rect is read only when everything else held.
-fn geometry_may_have_moved(tree: &NodeTree, node: &Node) -> bool {
+pub(crate) fn geometry_may_have_moved(tree: &NodeTree, node: &Node) -> bool {
     let Some(painted) = node.painted.as_ref() else {
         return true;
     };

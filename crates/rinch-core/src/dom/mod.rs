@@ -1363,9 +1363,8 @@ impl NodeHandle {
     /// client_width()` is the scroll range on both: its answer is the
     /// browser's less the box's padding, and a box holding less than its
     /// size answers what it holds where the browser answers at least
-    /// `clientWidth`. A box that does not scroll counts every descendant that
-    /// overflows it (#2223); a scroll container's range does not yet count an
-    /// in-flow box overflowing its own parent below the first box (#2054).
+    /// `clientWidth`. Every descendant that overflows the box counts, as in
+    /// the browser (#2223; in a scroll container's range since #2054).
     pub fn scroll_width(&self) -> f64 {
         self.accessed_doc()
             .map(|doc| doc.borrow().scroll_width(self.node_id))
