@@ -73,9 +73,11 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `<wbr>` that starts a line, where what follows does not fit, gives an empty line, as in
     Chrome 158: `<wbr>aaaa` in a 1px box is an empty line, then `aaaa`, under every
     `white-space`; two `<wbr>`s in a row give one between `aaaa` and `bbbb` under `nowrap` and
-    `pre`, not under `normal` (#2944: Parley Fork item 19, and `ifc::chrome_break` has an
-    opportunity between two ZWSPs, where UAX #14's LB7 has none;
-    `tests/wbr_empty_line_2944_tests.rs`). The builders that set the override are the IFC, a flex or grid item's text leaf,
+    `pre`, not under `normal`. Where `aaaa` alone does not wrap, the `<wbr>`s' own
+    `white-space` decides: a `<wbr>` that does not wrap starts the line after `aaaa` (#2944:
+    Parley Fork item 19, each `<wbr>` pushed with its own mode as `StyleProperty::Wbr`, and
+    `ifc::chrome_break` has an opportunity between two ZWSPs, where UAX #14's LB7 has none;
+    `tests/wbr_empty_line_2944_tests.rs`, `tests/wbr_white_space_2944_differential.rs`). The builders that set the override are the IFC, a flex or grid item's text leaf,
     the paint fallback and `ComputedStyle::build_parley_layout`, so a `<textarea>`'s and an
     `<input>`'s text (`form_control::field_text_layout`, through it since #320) breaks as
     ordinary text does (#2387: a URL in a textarea broke after every `/`;
@@ -1018,7 +1020,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`c109b113815addcb9f06e5ed7c80bba5a0de776e`, branch `rinch-2944` on `a95d7806` of branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
+(`13ed23fde60cd8e97eff08f3a5e24904fabf4d3f`, branch `rinch-2944` on `a95d7806` of branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
 (items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17) and #15 (item 18); item 19 is on `rinch-2944`, fork PR #18): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
@@ -1365,24 +1367,50 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `no_system_render_properties_without_system_fonts`, `tests/system_render_properties.rs` (a
     private `FONTCONFIG_FILE` whose `target="font"` rule tests the matched family) and
     `the_config_default_substitution_is_found_where_fontconfig_has_it`.
-19. **A line holding only zero-advance atoms ends at a soft wrap opportunity, and after a soft
-    wrap only before text that does not wrap** (`27603cfd` and `c109b113`,
-    `parley/src/layout/line_break.rs`; #2944). The breaker took no opportunity while the line's
+19. **A line holding only zero-advance atoms ends at a soft wrap opportunity, and a `<wbr>`
+    after an overflow stays on the line or starts the next by its own `white-space`**
+    (`27603cfd`, `c109b113` and `13ed23fd`, `parley/src/layout/line_break.rs`,
+    `parley/src/tests/test_wbr.rs`; #2944). The breaker took no opportunity while the line's
     advance was 0 (the guard against an overflowing atom making consecutive empty lines), so a
     line holding only a ZERO WIDTH SPACE (a `<wbr>`, `ifc::WBR_TEXT`) never ended at its
     opportunity: `<wbr>aaaa` in 1px was one line, where Chrome 158 gives an empty line, then
     `aaaa`. `LineState::holds_atoms` (any atom appended, of any advance) now allows it; such a
-    line holds an atom, so it is never empty and lays out no atom twice. And
-    `aaaa<wbr><wbr>bbbb` in 1px is `aaaa` / `bbbb` under `normal` but `aaaa` / an empty line /
-    `bbbb` under `nowrap` and `pre` in Chrome 158: a line that starts after a soft wrap (a
-    `Regular` or `Emergency` break, `LineState::after_soft_break`) and holds only zero-advance
-    atoms ends at an opportunity only before text whose `text-wrap-mode` is not `wrap` (the
-    empty line needs an opportunity between the two ZWSPs, which rinch's `ifc::chrome_break`
-    adds). `27603cfd` first did the second half by letting a zero-advance atom past an overflow
-    hang in wrapping text; that kept a typed ZWSP after a space on the overflowing line, where
-    the Chrome 153 pin breaks before it (`aaaa~bbbbbb` / ZWSP `cc`), and `c109b113` replaced
-    it. Pinned by rinch's `tests/wbr_empty_line_2944_tests.rs` (17 boxes, Chrome 158's
-    heights).
+    line holds an atom, so it is never empty and lays out no atom twice.
+
+    Where a line that overflows ends among `<wbr>`s, Chrome 158 decides by the `<wbr>`'s own
+    `white-space` and by whether Blink has *noticed* the overflow. rinch pushes each `<wbr>`'s
+    ZWSP in a span that wraps (#2261) carrying the element's own mode,
+    `StyleProperty::Wbr(Some(mode))` (`TextStyle::wbr`, `ifc::IfcText::push_wbr`). The line's
+    `Overflow` is `None`, `Unnoticed` (text that does not wrap, or an inline box, overflowed) or
+    `Noticed` (text that wraps overflowed, or text that wraps came after the overflow; spaces
+    that hang do not count). If the overflow is unnoticed, a `<wbr>` that wraps stays on the
+    line that ends at the opportunity before it. One that does not starts the next line, which
+    then ends after it (Blink's `RewindOverflow`). If the overflow is noticed, every `<wbr>`
+    stays (the `kTrailing` state). In 1px:
+    - `aaaa<wbr><wbr>bbbb` is `aaaa` / an empty line / `bbbb` under `nowrap`, and two lines
+      under `normal`.
+    - With `aaaa` alone `nowrap`, it is two lines when the second `<wbr>` is `normal`.
+    - Under `overflow-wrap: anywhere | break-word`, Blink's retry that breaks anywhere gives an
+      opportunity before a `<wbr>` that does not wrap.
+    - An inline box that overflows at a line's start no longer ends the line at once, so the
+      `<wbr>`s that stay go on its line.
+
+    The empty line needs an opportunity between two ZWSPs, which rinch's `ifc::chrome_break`
+    adds. `27603cfd` first let a zero-advance atom past an overflow hang in wrapping text. That
+    kept a typed ZWSP after a space on the overflowing line, where the Chrome 153 pin breaks
+    before it (`aaaa~bbbbbb` / ZWSP `cc`). `c109b113` replaced it with a rule keyed on the next
+    text's wrap mode, which a 970-box Chrome grid showed wrong in 323 boxes. `13ed23fd`
+    replaced that rule.
+
+    Pinned by:
+    - rinch's `tests/wbr_empty_line_2944_tests.rs` (17 boxes).
+    - `tests/wbr_white_space_2944_differential.rs` (the 970 boxes of `wbr_2944/chrome158.tsv`,
+      Chrome 158's heights).
+
+    Not done: parley cannot see DOM text nodes, and Blink notices an overflow at the text node
+    after the one that overflowed. So text that does not wrap, split over two elements, still
+    differs. These rows, and the other base-level differences, are pinned in that test's
+    `KNOWN` (#2996).
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has

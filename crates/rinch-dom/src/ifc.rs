@@ -2365,12 +2365,27 @@ impl<'a> IfcText<'a> {
     /// Chrome 156 breaks there: `aaaa<wbr>bbbb cc` in a `nowrap` or `pre`
     /// box 1px wide is `aaaa` / `bbbb cc`, and its `min-content` is `bbbb
     /// cc`'s width.
-    pub(crate) fn push_wbr(&mut self) {
+    ///
+    /// The `<wbr>`'s own wrap mode, `own_wraps` by its `white-space`, goes
+    /// to parley beside it (`StyleProperty::Wbr`, #2944): where a line that
+    /// already overflows ends at the opportunity before a `<wbr>`, Chrome 158
+    /// keeps one that wraps on that line and starts the next with one that
+    /// does not, so `aaaa<wbr><wbr>bbbb` in a 1px `nowrap` box is `aaaa` /
+    /// an empty line / `bbbb`, and two lines when the second `<wbr>` alone
+    /// is `normal`.
+    pub(crate) fn push_wbr(&mut self, own_wraps: bool) {
+        use parley::style::TextWrapMode;
         self.last_wraps = Some(true);
         self.wbr = true;
         self.any_wbr = true;
+        let own = if own_wraps {
+            TextWrapMode::Wrap
+        } else {
+            TextWrapMode::NoWrap
+        };
         self.ops.push(IfcOp::Span(vec![
-            parley::style::StyleProperty::TextWrapMode(parley::style::TextWrapMode::Wrap),
+            parley::style::StyleProperty::TextWrapMode(TextWrapMode::Wrap),
+            parley::style::StyleProperty::Wbr(Some(own)),
         ]));
         self.ops.push(IfcOp::Text(WBR_TEXT.into()));
         self.ops.push(IfcOp::Pop);
@@ -13873,7 +13888,7 @@ impl RinchDocument {
                     };
                     let wbr = child.tag() == Some("wbr");
                     if wbr {
-                        builder.push_wbr();
+                        builder.push_wbr(wraps(child_computed));
                         *flat_pos += WBR_TEXT.len();
                     } else {
                         builder.open_element(wraps(child_computed));
