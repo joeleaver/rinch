@@ -2,6 +2,9 @@
 //! `AudioContext` fed by a `MediaStream` (from `getUserMedia`, or one the app
 //! gives), and the status that says whether samples arrive.
 
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
+
 use super::{AudioInputConfig, AudioInputStatus, AudioInputStream};
 use crate::device::{DeviceId, DeviceInfo};
 use crate::error::AvError;
@@ -19,6 +22,117 @@ pub(super) struct WasmAudioInputState {
     /// While the context waits for a gesture: the window listener that
     /// resumes it on the next click, tap or key press.
     gesture: Option<JsHandler>,
+}
+
+/// Keeps an input's status true to what it delivers, and its gesture
+/// listener armed exactly while the browser holds the context.
+///
+/// Two sources feed the status: the context's `state` (read at setup and
+/// on each `statechange`) and the delivery itself, and delivery wins: a
+/// buffer in hand means `Running`, whatever `state` says. Firefox delivers a
+/// context's first buffers (rendered on its fallback clock while the audio
+/// output opens) before `state` reads `running` and before `statechange`
+/// fires (#3007), so a status read from `state` alone said
+/// `WaitingForGesture` with samples already delivered.
+///
+/// A `statechange` to `suspended` is different: the context really stopped
+/// (it was running, or the event would not fire). The status says held and
+/// the gesture listener is armed again, and a buffer the context queued
+/// before it stopped does not say `Running` again; only a `statechange`
+/// back to `running` does.
+#[derive(Clone)]
+struct Reporter {
+    ctx: web_sys::AudioContext,
+    status: Weak<RefCell<AudioInputStatus>>,
+    state: Weak<RefCell<Option<WasmAudioInputState>>>,
+    /// The last `statechange` said `suspended`.
+    stopped: Rc<Cell<bool>>,
+}
+
+impl Reporter {
+    /// A buffer arrived: the context is running, unless a `statechange`
+    /// since said it stopped (this buffer was queued before that).
+    fn delivered(&self) {
+        if self.stopped.get() {
+            return;
+        }
+        let stale = self
+            .status
+            .upgrade()
+            .is_some_and(|s| *s.borrow() != AudioInputStatus::Running);
+        if stale {
+            self.running();
+        }
+    }
+
+    /// The context's `state` changed. `closed` and `interrupted` leave the
+    /// status as it is.
+    fn state_changed(&self) {
+        match self.ctx.state() {
+            web_sys::AudioContextState::Running => {
+                self.stopped.set(false);
+                self.running();
+            }
+            web_sys::AudioContextState::Suspended => {
+                self.stopped.set(true);
+                self.held();
+            }
+            _ => {}
+        }
+    }
+
+    fn set(&self, s: AudioInputStatus) {
+        if let Some(st) = self.status.upgrade() {
+            *st.borrow_mut() = s;
+        }
+    }
+
+    /// `Running`, and the gesture listener has done its job.
+    fn running(&self) {
+        self.set(AudioInputStatus::Running);
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let g = state.borrow_mut().as_mut().and_then(|s| s.gesture.take());
+        if let Some(g) = g {
+            remove_gesture_listener(&g);
+            // Dropped after this call: it may be on the stack.
+            wasm_bindgen_futures::spawn_local(async move { drop(g) });
+        }
+    }
+
+    /// The browser holds the context: say so, and resume it on the page's
+    /// next click, tap or key press.
+    fn held(&self) {
+        use wasm_bindgen::JsCast;
+        self.set(AudioInputStatus::WaitingForGesture);
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let mut state = state.borrow_mut();
+        let Some(state) = state.as_mut() else { return };
+        if state.gesture.is_some() {
+            return;
+        }
+        tracing::warn!(
+            "rinch-av: the browser holds audio capture until the page gets a click or key \
+             press (autoplay policy); no samples until then"
+        );
+        let ctx = self.ctx.clone();
+        let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(
+            move |_e: web_sys::Event| quiet(ctx.resume()),
+        );
+        if let Some(w) = web_sys::window() {
+            for ev in GESTURES {
+                let _ = w.add_event_listener_with_callback_and_bool(
+                    ev,
+                    cb.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
+        state.gesture = Some(cb);
+    }
 }
 
 const GESTURES: [&str; 3] = ["pointerdown", "keydown", "touchend"];
@@ -156,8 +270,6 @@ fn start_audio_input_wasm(
     config: AudioInputConfig,
     on_data: impl FnMut(&[f32]) + Send + 'static,
 ) -> AudioInputStream {
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::JsFuture;
 
@@ -241,9 +353,17 @@ fn start_audio_input_wasm(
             Err(e) => return fail("ScriptProcessorNode", e, Some(&audio_ctx)),
         };
 
+        let reporter = Reporter {
+            ctx: audio_ctx.clone(),
+            status: weak_status.clone(),
+            state: Rc::downgrade(&state),
+            stopped: Rc::new(Cell::new(false)),
+        };
+
         // Interleave every channel, as on desktop (it used to deliver
         // channel 0 only, whatever `channels` said).
         let on_data = Rc::new(RefCell::new(on_data));
+        let on_buffer = reporter.clone();
         let mut interleaved: Vec<f32> = Vec::new();
         let closure = Closure::<dyn FnMut(web_sys::AudioProcessingEvent)>::new(
             move |event: web_sys::AudioProcessingEvent| {
@@ -264,6 +384,8 @@ fn start_audio_input_wasm(
                     let planes = &planes;
                     (0..channels as usize).map(move |c| planes[c.min(last)][i])
                 }));
+                // Before the app's callback, so it reads `Running` too.
+                on_buffer.delivered();
                 (on_data.borrow_mut())(&interleaved);
             },
         );
@@ -277,60 +399,12 @@ fn start_audio_input_wasm(
             return fail("connecting the processor", e, Some(&audio_ctx));
         }
 
-        // A context made outside a user gesture starts `suspended` and
-        // delivers nothing, with no error. Ask it to run; if the browser
-        // holds it, say so, and resume on the page's next gesture.
-        let running = |c: &web_sys::AudioContext| c.state() == web_sys::AudioContextState::Running;
-        let ctx2 = audio_ctx.clone();
-        let ws = weak_status.clone();
-        let weak_state = Rc::downgrade(&state);
+        let on_change = reporter.clone();
         let on_state = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
-            let Some(st) = ws.upgrade() else { return };
-            let now = match ctx2.state() {
-                web_sys::AudioContextState::Running => AudioInputStatus::Running,
-                web_sys::AudioContextState::Suspended => AudioInputStatus::WaitingForGesture,
-                _ => return,
-            };
-            let run = now == AudioInputStatus::Running;
-            *st.borrow_mut() = now;
-            if run {
-                // Running: the gesture listener has done its job. Dropped
-                // after this call (it may be on the stack).
-                if let Some(s) = weak_state.upgrade() {
-                    let g = s.borrow_mut().as_mut().and_then(|s| s.gesture.take());
-                    if let Some(g) = g {
-                        remove_gesture_listener(&g);
-                        wasm_bindgen_futures::spawn_local(async move { drop(g) });
-                    }
-                }
-            }
+            on_change.state_changed();
         });
         audio_ctx.set_onstatechange(Some(on_state.as_ref().unchecked_ref()));
-        quiet(audio_ctx.resume());
-        let gesture = if running(&audio_ctx) {
-            set_status(AudioInputStatus::Running);
-            None
-        } else {
-            set_status(AudioInputStatus::WaitingForGesture);
-            tracing::warn!(
-                "rinch-av: the browser holds audio capture until the page gets a click or key \
-                 press (autoplay policy); no samples until then"
-            );
-            let ctx3 = audio_ctx.clone();
-            let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
-                quiet(ctx3.resume());
-            });
-            if let Some(w) = web_sys::window() {
-                for ev in GESTURES {
-                    let _ = w.add_event_listener_with_callback_and_bool(
-                        ev,
-                        cb.as_ref().unchecked_ref(),
-                        true,
-                    );
-                }
-            }
-            Some(cb)
-        };
+        let state_ctx = audio_ctx.clone();
 
         *state.borrow_mut() = Some(WasmAudioInputState {
             audio_ctx,
@@ -339,8 +413,19 @@ fn start_audio_input_wasm(
             _closure: closure,
             tracks,
             _on_state: on_state,
-            gesture,
+            gesture: None,
         });
+
+        // A context made outside a user gesture starts `suspended` and
+        // delivers nothing, with no error. Ask it to run; if the browser
+        // holds it, say so, and resume on the page's next gesture. (The
+        // state is stored first: holding it arms the listener there.)
+        quiet(state_ctx.resume());
+        if state_ctx.state() == web_sys::AudioContextState::Running {
+            reporter.running();
+        } else {
+            reporter.held();
+        }
     });
 
     AudioInputStream {

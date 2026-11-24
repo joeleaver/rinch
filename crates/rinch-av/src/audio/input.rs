@@ -81,12 +81,15 @@ pub struct AudioInputStream {
 pub enum AudioInputStatus {
     /// Web: setup has not finished yet.
     Starting,
-    /// Samples are being delivered.
+    /// Samples are being delivered. On the web a delivered buffer makes it
+    /// `Running` whatever the context's `state` says: Firefox delivers a
+    /// context's first buffers before `state` reads `running` (#3007).
     Running,
     /// Web: the browser's autoplay policy holds the capture `AudioContext`
-    /// suspended, so no samples arrive (the track itself is live). Capture
-    /// resumes by itself on the page's next click, tap or key press. The
-    /// usual way to never see this is to open capture from a click handler.
+    /// suspended, so no samples arrive (the track itself is live), or a
+    /// context that ran has stopped. Capture resumes by itself on the
+    /// page's next click, tap or key press. The usual way to never see this
+    /// is to open capture from a click handler.
     WaitingForGesture,
     /// Setup failed. On the web the stream's tracks have been stopped and
     /// nothing is delivered.
