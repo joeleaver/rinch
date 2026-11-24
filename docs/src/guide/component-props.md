@@ -724,9 +724,20 @@ Without an image (or once it failed, unless `keep_failed_image`), the avatar sho
 |------|------|---------|-------------|
 | `variant` | `String` | `""` | "filled", "light", "outline", "dot", "transparent", "white", "default", "gradient" |
 | `size` | `String` | `""` | |
-| `color` | `String` | `""` | |
+| `color` | `String` | `""` | A palette name, `primary`, or a raw CSS colour (`#…`, `rgb(…)`, `hsl(…)`). Empty is the primary colour |
 | `radius` | `String` | `""` | One of `xs sm md lg xl`. A badge is a pill by default, so this squares it off |
 | `full_width` | `bool` | `false` | |
+| `left_section` | `Option<SectionRenderer>` | `None` | Content before the label (a status dot, an icon), in `span.rinch-badge__section[data-position="left"]` |
+| `right_section` | `Option<SectionRenderer>` | `None` | Content after the label (a remove "x"), in `span.rinch-badge__section[data-position="right"]` |
+
+A badge with a section wraps its children in `span.rinch-badge__label`; one
+without keeps them directly in the badge. Every variant reads
+`--rinch-badge-color` (the solid colour), `--rinch-badge-light`,
+`--rinch-badge-light-color` and `--rinch-badge-text` (the filled variant's
+text: the colour's contrast token `--rinch-color-{name}-contrast`, or white or
+black computed from a raw colour, #2208). Every badge sets all four itself,
+so an app rule that changes one targets the badge (`.my-badge.rinch-badge`),
+not an ancestor (#2201).
 
 ### Card
 
@@ -890,14 +901,24 @@ this stepper wrote its `data-step` rather than the caller.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `color` | `String` | `""` | |
+| `color` | `String` | `""` | A palette name, `primary`, `info`/`success`/`warning`/`error`, or a raw CSS colour. Empty is blue |
 | `variant` | `String` | `""` | "filled", "light", "outline", "transparent", "white", "default" |
 | `title` | `String` | `""` | |
+| `title_section` | `Option<SectionRenderer>` | `None` | The title as nodes, inside `.rinch-alert__title`; wins over `title` |
+| `role` | `String` | `""` | The root's ARIA role. Empty is `"alert"` (as Mantine's Alert); `"status"` is a polite live region |
 | `radius` | `String` | `""` | |
 | `with_close_button` | `bool` | `false` | |
 | `close_button_label` | `String` | `""` | The close button's `aria-label`. Empty is `"Close"` |
 | `icon` | `Option<TablerIcon>` | `None` | |
 | `onclose` | `Option<Callback>` | `None` | |
+
+Every variant reads `--rinch-alert-color` (filled background, outline),
+`--rinch-alert-light`, `--rinch-alert-light-text`, `--rinch-alert-light-strong`
+(the light title), `--rinch-alert-filled-text` (the colour's contrast token,
+`--rinch-color-{name}-contrast`; yellow-9 on `yellow`; #2208) and
+`--rinch-alert-outline-text`; a built-in colour's class sets all of them, any
+other colour sets all of them inline (#2200), so a nested Alert inherits none. `--rinch-alert-close-hover` is the close
+button's hover background.
 
 ### Loader
 
@@ -926,13 +947,23 @@ wins over the context.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `value` | `Option<f32>` | `None` | Percentage 0-100 |
-| `value_fn` | `Option<ReactiveF32>` | `None` | Reactive value binding (auto-wrapped) |
+| `value` | `Option<f32>` | `None` | `0..=max`. `None` with no `value_fn` is an indeterminate bar, as a `<progress>` without a value |
+| `value_fn` | `Option<ReactiveF32>` | `None` | Reactive value binding (auto-wrapped); moves the bar and `aria-valuenow` |
+| `max` | `Option<f32>` | `None` | A full bar's value. `None`, or a value that is not a positive number, is 100 (Chrome's `<progress>` defaults to 1.0; 100 keeps a `value` a percentage) |
+| `indeterminate` | `bool` | `false` | An indeterminate bar (a sweeping segment, no `aria-valuenow`) whatever the value |
+| `indeterminate_fn` | `Option<ReactiveBool>` | `None` | Reactive `indeterminate` (auto-wrapped); wins over `indeterminate` |
+| `aria_label` | `String` | `""` | The bar's `aria-label`. Empty writes none |
 | `color` | `String` | `""` | |
 | `size` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `striped` | `bool` | `false` | |
 | `animated` | `bool` | `false` | |
+
+A value change animates the width (`width 200ms ease`, as Mantine's Progress
+animates it). `--rinch-progress-transition` changes it; `none` makes a change
+jump, as Chrome's `<progress>` does. `--rinch-progress-indeterminate-duration` (1.5s) times
+the indeterminate sweep, and `--rinch-progress-stripe-color` colours the
+stripes.
 
 ### Skeleton
 
@@ -1587,6 +1618,7 @@ skips them. Open and close are instant.
 | `on_step_click` | `Option<ValueCallback<u32>>` | `None` | Fired with a step's 0-based position when it is clicked or activated (Enter/Space) on a step the stepper considers reachable (#737). Mantine's default: a strictly **completed** step (`position < active`) is clickable without `allow_next_steps_select`; the active step itself and every step past it need that flag or its own `allow_step_click`/`allow_step_select` (Mantine's active state is `'stepProgress'`, not `'stepCompleted'`, so it is not reachable by default either). `Stepper` does not move `active` itself — the caller does, from this callback, as `Tabs` moves its own selection. The index is read from the step's current position **at click time**, not baked in when the handler was wired (#714's pattern), since a later insertion or removal can renumber a step (#716, #745) — and the clickable class is removed the moment a shift makes a step unreachable, unless the step's own ask keeps it. A step moved into another `Stepper` calls **that** stepper's callback, with its position there (#1428); moved into one with no `on_step_click` it is no longer wired (no `data-rid`, `tabindex` or `role`), and keeps the clickable class only if it asked for it itself or that stepper's `allow_next_steps_select` grants it. A wired step moved out of every stepper keeps its wiring (#1453) |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Default completed icon for the steps that set none (#707); the step's own wins, and a step that arrives later takes this one as it lands (#716) |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Default in-progress icon for the steps that set none (#707). It stands in for the *`progress_icon`* the step did not set, so it outranks that step's plain `icon`. A step that arrives later takes it as it lands (#716) |
+| `content_for_active_only` | `bool` | `true` | Shows only the active step's content, in the `.rinch-stepper__content` region below the steps (#2195, Mantine's layout). `false` moves no step's content: every step shows its own content inside the step, under its label (a vertical stepper reads as a timeline; a horizontal step is at least as wide as its content), and the stepper carries `rinch-stepper--content-in-steps` (hide some steps' content with your own rule, e.g. `.rinch-stepper__step--inactive .rinch-stepper__step-content { display: none }`). The completed block shows below the steps past the last one either way |
 
 **StepperStep:**
 
@@ -1594,7 +1626,10 @@ skips them. Open and close are instant.
 |------|------|---------|-------------|
 | `label` | `String` | `""` | |
 | `description` | `String` | `""` | |
+| `label_section` | `Option<SectionRenderer>` | `None` | Renders the label as nodes, in place of `label`, inside `.rinch-stepper__step-label` (#2195) |
+| `description_section` | `Option<SectionRenderer>` | `None` | Renders the description as nodes, in place of `description`, inside `.rinch-stepper__step-description` (#2195) |
 | `icon` | `Option<TablerIcon>` | `None` | Default icon |
+| `icon_section` | `Option<SectionRenderer>` | `None` | Renders the icon as nodes (an avatar, a styled number), in place of `icon` or the step number (#2195). Same slot as `icon`: drawn while inactive, and in progress unless a progress icon applies; a completed step draws its completed icon |
 | `completed_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `progress_icon` | `Option<TablerIcon>` | `None` | Per-step override |
 | `allow_step_click` | `bool` | `false` | Grants this step the clickable class regardless of its position against `active`. With `Stepper::on_step_click` set, also grants the wiring (handler, `tabindex="0"`, `data-rid`) unless `disabled` is set (#737) |
@@ -1605,10 +1640,36 @@ skips them. Open and close are instant.
 | `state` | `String` | `""` | `"completed"` or `"progress"`; anything else is inactive. Leave it unset and the parent `Stepper` derives it from this step's position against `active` (#709). Set it to override that for this one step: what a step names, it keeps |
 | `step` | `Option<u32>` | `None` | Step index, 0-based. Set by the parent `Stepper` from this step's position unless named here, in which case that is the index shown — and the number in the icon box, one higher. An index named here changes the label, **not** the position the state derives from |
 
+**Step content (#2195).** A `StepperStep`'s children are its content. The
+stepper shows the content of the step at `active` in a `.rinch-stepper__content`
+region **below** the row of steps, as Mantine does; the other steps' content
+stays inside their steps, hidden. The content is moved, not copied (its effects
+and handlers are the ones it rendered with), and goes back into its step when
+another step becomes the active one or the step leaves the stepper; a step that
+is discarded (a `for` row going) takes its shown content with it. To keep every
+step's content inside its step instead, set `content_for_active_only: false`
+(above). Restyle the
+region with `.rinch-stepper__content` and the shown content with
+`.rinch-stepper__content > .rinch-stepper__step-content` (padded
+`--rinch-spacing-md` on top; a step with no children shows nothing).
+
+The filled icons' glyph colour is `--rinch-stepper-icon-text` (default: the
+`color` prop's contrast, `--rinch-stepper-contrast`, else the theme's
+`--rinch-primary-color-contrast`; #2208)
+and the progress step's ring is `--rinch-stepper-ring` (a `box-shadow` value;
+`none` drops it).
+
 **StepperCompleted:** No props.
 
+`StepperCompleted` is shown only once `active` is past the last step (`active
+>=` the number of steps), in the content region in place of a step's content
+(Mantine's `Stepper.Completed`, #2195); before that it is hidden, so it needs no
+`if` around it. The stepper keeps it in the region either way (the region
+carries `rinch-stepper__content--completed` while it shows). Outside a
+`Stepper` it renders as is.
+
 `StepperCompleted` is **not a position** (issue #741): it is what the stepper
-shows *instead of* its steps once they are all done. The parent's step walk skips
+shows *instead of* a step's content once they are all done. The parent's step walk skips
 it, so a `StepperStep` placed **inside** it keeps the index and state it rendered
 itself with, and a whole `Stepper` nested inside it keeps its own.
 
@@ -1752,11 +1813,14 @@ see [Sortable Lists](sortable.md#styling)): `--rinch-sortable-gap`,
 
 ### BorderlessWindow
 
-Custom Default: `show_minimize`, `show_maximize`, `show_close` all default to `true`.
+Custom Default: `show_minimize`, `show_maximize`, `show_close` all default to `true`; `titlebar_height` to `36`.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `title` | `String` | `""` | Window title in titlebar |
+| `title` | `String` | `""` | Window title in titlebar, plain text in `--rinch-titlebar-text` (in the inline menu row too, `.rinch-borderlesswindow__brand`; it was a fixed rainbow there before #2196) |
+| `title_section` | `Option<SectionRenderer>` | `None` | Renders the title as nodes (a logo, coloured text) in place of `title`, in the same element (#2196) |
+| `controls_layout` | `Option<WindowControlsLayout>` | `None` | Which controls go at which end, in order (#2196). `None` follows the platform (`WindowControlsLayout::platform()`): macOS close/minimize/zoom on the left; Linux the desktop's own layout (GNOME `button-layout` via `gsettings` on a GNOME-family desktop, else `gtk-decoration-layout` in `~/.config/gtk-3.0/settings.ini`, which KDE writes; GNOME's stock `appmenu:close` is a close button alone), falling back to Windows' order; minimize/maximize/close on the right elsewhere. Build one with `WindowControlsLayout::windows()` / `macos()`, by fields, or from GTK syntax: `"close,minimize,maximize:".parse().unwrap()`. `show_*` still hides a control |
+| `titlebar_height` | `u32` | **`36`** | Titlebar height in px (#2196): written as `--rinch-titlebar-height`, which sizes the titlebar, the control buttons and the inline menu row, and counted into `--rinch-window-top-inset`; a below-titlebar menu bar is placed under it. Change it here, not in CSS, or the inset does not follow |
 | `radius` | `String` | `""` | Corner radius (none, xs, sm, md, lg, xl) |
 | `show_minimize` | `bool` | **`true`** | |
 | `show_maximize` | `bool` | **`true`** | |
@@ -1818,6 +1882,6 @@ rsx! {
 | `ReactiveBool` | `Rc<dyn Fn() -> bool>` | checked_fn, active_fn, opened_fn, visible_fn |
 | `ReactiveString` | `Rc<dyn Fn() -> String>` | value_fn |
 | `ReactiveF32` | `Rc<dyn Fn() -> f32>` | Progress value_fn |
-| `SectionRenderer` | `Rc<dyn Fn(&mut RenderScope) -> NodeHandle>` | BorderlessWindow sections |
+| `SectionRenderer` | `Rc<dyn Fn(&mut RenderScope) -> NodeHandle>` | BorderlessWindow sections and `title_section`, StepperStep `*_section`, Modal `footer`, custom loaders |
 
 All callback/reactive props are auto-wrapped by the `rsx!` macro — just pass closures directly, do not wrap in `Some(...)` or `Rc::new(...)`.

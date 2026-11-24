@@ -2037,21 +2037,21 @@ impl RinchApp {
                                 });
                             if offered.is_some_and(|k| handle.offer_key(&k)) {
                                 // The app's `on_key` took it.
-                            } else if key == KeyCode::Tab
-                                && !ctrl
-                                && !alt
-                                && !modifiers.meta
-                                && handle.refuses_edits()
-                            {
-                                // #833: a read-only editor is a `readonly` field
-                                // to Tab. Its keymap's `Tab` / `Shift-Tab`
-                                // (sink / lift a list item) are refused, and a
-                                // matched binding is consumed even so, which
-                                // left a keyboard user who came in with no way
-                                // out. Tab and Shift+Tab go to the next and the
-                                // previous Tab stop instead, from the editor's
-                                // place in the document (`handle_tab`).
-                                self.handle_tab(shift);
+                            } else if key == KeyCode::Tab && !ctrl && !alt && !modifiers.meta {
+                                // Tab and Shift+Tab are offered to the editor
+                                // (`tab_key`: a table cell, a list binding that
+                                // applies, per its `TabBehavior`), and when it
+                                // has no use for them they go to the next and
+                                // the previous Tab stop, from the editor's place
+                                // in the document (`handle_tab`). A read-only
+                                // editor never uses them (#833), nor one set to
+                                // `MoveFocus`. Before #2210 a Tab in a plain
+                                // paragraph ran the keymap's `sinkListItem`,
+                                // which did nothing, and the matched binding was
+                                // consumed anyway: a keyboard trap.
+                                if !handle.tab_key(shift) {
+                                    self.handle_tab(shift);
+                                }
                             } else {
                                 self.dispatch_new_editor_key(
                                     &handle,
@@ -4785,10 +4785,10 @@ impl RinchApp {
             };
             return self.move_editor(handle, motion, extend);
         }
-        // 2. Tab: navigate table cells when in a table (shared handle method); otherwise
-        //    fall through to the keymap, which binds `Tab`→sinkListItem /
-        //    `Shift-Tab`→liftListItem. Consumed either way — no editor focus traversal
-        //    (a read-only editor's Tab never gets here: its caller moves the focus, #833).
+        // 2. A modified Tab (Ctrl/Alt/Meta held): navigate table cells when in a
+        //    table; otherwise on to the keymap. A plain Tab or Shift+Tab never gets
+        //    here: its caller offers it to `EditorHandle::tab_key` and moves the
+        //    focus when the editor has no use for it (#833, #2210).
         if matches!(key, KeyCode::Tab) && handle.tab_cell(shift) {
             return true;
         }

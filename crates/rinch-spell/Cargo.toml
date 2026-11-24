@@ -18,8 +18,34 @@ icu_properties = { version = "2.1", default-features = false, features = ["compi
 # NFC before checking: "cafe\u{301}" is "café". Already in the graph (idna).
 icu_normalizer = { version = "2.1", default-features = false, features = ["compiled_data"] }
 
+# The platform spellcheckers (#2862, stage 4), each only on its own target.
+# macOS: NSSpellChecker through objc2 (versions as winit-appkit and muda pull
+# them in, so nothing new is built), main-queue hops through dispatch2.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = [
+    "std", "NSString", "NSArray", "NSEnumerator", "NSRange",
+] }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = [
+    "std", "NSSpellChecker",
+] }
+dispatch2 = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+
+# Windows: the Spell Checking API (ISpellCheckerFactory / ISpellChecker), COM,
+# on the `windows` version already in Cargo.lock (rinch's notifications).
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation", "Win32_Globalization", "Win32_System_Com", "Win32_System_Registry",
+] }
+
 [features]
-default = ["system-dictionaries"]
+default = ["system-dictionaries", "platform"]
+# The operating system's spellchecker (`PlatformChecker`): NSSpellChecker on
+# macOS, ISpellChecker on Windows, the default backend there. Pulls in the
+# bindings only on those targets; does nothing elsewhere.
+platform = [
+    "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:dispatch2", "dep:windows",
+]
 # Find Hunspell dictionaries installed on the system by locale
 # (`$DICPATH`, `/usr/share/hunspell`, …). Reads the filesystem, so it is
 # compiled out on wasm32 whatever the feature says.

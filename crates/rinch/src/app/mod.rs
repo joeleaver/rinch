@@ -214,9 +214,13 @@ mod editor_shared_mark_wrappers_1833_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_spellcheck_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_tab_2210_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_table_keys_1847_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod editor_th_align_2210_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_word_delete_tests;
 #[cfg(all(test, feature = "windowing"))]
@@ -311,6 +315,8 @@ mod inline_ink_damage_1815_tests;
 #[cfg(all(test, software_shell, feature = "windowing", target_os = "linux"))]
 mod inline_menu_spacer_529_tests;
 #[cfg(test)]
+mod inline_tab_stops_2963_tests;
+#[cfg(test)]
 mod input_commit_tests;
 #[cfg(all(test, software_shell))]
 mod input_direction_2939_tests;
@@ -388,6 +394,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
+#[cfg(test)]
+mod stepper_window_2195_tests;
 // Uses `perf_expect` (software shell) and names the pointer (desktop).
 #[cfg(all(test, software_shell, feature = "windowing"))]
 mod rehover_2766_tests;
@@ -488,6 +496,9 @@ mod text_selection_copy_gesture_tests;
 mod text_selection_copy_tests;
 #[cfg(test)]
 mod text_selection_gestures_tests;
+mod text_selection_keys;
+#[cfg(test)]
+mod text_selection_keys_tests;
 #[cfg(test)]
 mod text_selection_leaf_tests;
 #[cfg(test)]
@@ -1028,6 +1039,9 @@ pub(crate) struct TextSelection {
     /// Shift+click after it extends by that unit (#2256). `None` for a
     /// selection made by a single press.
     pub(crate) unit: Option<SelectionUnit>,
+    /// The window x a Shift+Up / Shift+Down aims at, kept across a run of
+    /// them (`text_selection_keys`); any other change drops it.
+    pub(crate) goal_x: Option<f32>,
 }
 
 /// One end of a read-only selection: a root, a byte offset in its text,
@@ -4728,6 +4742,20 @@ impl RinchApp {
         let Some(action) = text_key_action(self.text_keymap, key, modifiers) else {
             return;
         };
+        // With no field holding the keyboard, a Shift chord extends the
+        // read-only selection (#2953).
+        // Alt is no text chord on Windows and Linux (Alt+Arrow is a
+        // browser's history keys): Chrome 158 extends nothing with it.
+        if let TextKeyAction::Move {
+            motion,
+            extend: true,
+        } = action
+            && !(self.text_keymap == TextKeymap::Standard && modifiers.alt)
+            && self.live_focused_input_handler().is_none()
+            && self.extend_text_selection_by_key(motion)
+        {
+            return;
+        }
         let password = self.focused_input_is_password();
         match action {
             TextKeyAction::Move { motion, extend } => {
@@ -5997,22 +6025,33 @@ impl RinchApp {
             .is_some_and(|v| rinch_core::dom::data_attr_is_on(v))
     }
 
-    /// Whether a node has a box the user could reach — a non-zero layout, and
-    /// not `visibility: hidden`/`collapse`.
+    /// Whether a node has a box the user could reach — a non-zero layout (or,
+    /// for a flowed inline element, a place in an inline formatting context),
+    /// and not `visibility: hidden`/`collapse`.
     ///
     /// Shared by the focusable collector and the trap-root search so the two
     /// cannot drift: a closed `Modal`'s root is `display: none`, which is a zero
     /// box, and a trap the collector would find nothing inside must not be
     /// chosen as the root in the first place — that would leave Tab dead for
     /// the rest of the session.
+    ///
+    /// **A flowed inline element** (`<a href>` in a paragraph, a
+    /// `<span tabindex="0">`) owns no Taffy box: its `layout` is a `0x0` ghost
+    /// while its text is painted (issue #2963). It is rendered when it is
+    /// content of an inline formatting context —
+    /// [`rinch_dom::Node::is_flowed_inline_element`], whose `ifc_root` every
+    /// IFC pass recomputes, and which an element under a `display: none`
+    /// ancestor (inline or block) does not keep. Its width does not matter:
+    /// Chrome 158 stops Tab on an empty `<a href></a>`, whose rect is `0x17`.
     fn node_is_visible(node: &rinch_dom::Node) -> bool {
-        node.layout.width > 0.0
-            && node.layout.height > 0.0
-            && !matches!(
-                node.computed_style.visibility,
-                rinch_dom::computed_style::VisibilityValue::Hidden
-                    | rinch_dom::computed_style::VisibilityValue::Collapse
-            )
+        if matches!(
+            node.computed_style.visibility,
+            rinch_dom::computed_style::VisibilityValue::Hidden
+                | rinch_dom::computed_style::VisibilityValue::Collapse
+        ) {
+            return false;
+        }
+        node.is_flowed_inline_element() || (node.layout.width > 0.0 && node.layout.height > 0.0)
     }
 
     /// The live focus trap Tab is confined to, if any (issue #474).

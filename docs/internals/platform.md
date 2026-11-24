@@ -1994,7 +1994,7 @@ get the fallbacks. rinch-web is unaffected: the browser resolves the units.
 is published at runtime by whatever chrome rinch draws above your content — the
 DOM menu bar (28px, on Linux and in the browser alike: `render_with_menu_bar`
 publishes it on its own wrapper *and* on `scope.body_handle()`) and the
-`BorderlessWindow` titlebar (36px, +28 when
+`BorderlessWindow` titlebar (its `titlebar_height`, 36px by default, +28 when
 the menu bar sits below it). That chrome reserves space with in-document padding,
 so normal flow content clears it automatically; a `position: fixed` element does
 **not**, because fixed resolves against the real viewport (matching browsers and

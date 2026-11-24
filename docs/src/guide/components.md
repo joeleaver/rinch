@@ -331,9 +331,11 @@ Loader {}
 Loader { size: "lg", color: "cyan" }
 
 // Progress
-Progress { color: "blue" }
-Progress { color: "green", striped: true }
-Progress { striped: true, animated: true }
+Progress { value: 40.0, color: "blue" }
+Progress { value: 60.0, color: "green", striped: true }
+Progress { value: 80.0, striped: true, animated: true }
+Progress {}                        // no value: indeterminate, as <progress>
+Progress { value: 0.3, max: 1.0 }
 
 // Skeleton (loading placeholders)
 Skeleton { height: "12px", width: "80%" }
@@ -734,7 +736,9 @@ NavLink { label: "Projects", default_opened: true,
 }
 
 // Stepper. Each step's state follows its position against `active`, and
-// `{|| …}` makes the whole stepper follow the signal.
+// `{|| …}` makes the whole stepper follow the signal. A step's children are its
+// content, shown below the steps while it is active (`content_for_active_only:
+// false` keeps every step's content inside its step instead).
 let step = Signal::new(1u32);
 Stepper { active: {|| step.get()},
     StepperStep { label: "Account", description: "Create account" }
@@ -1027,7 +1031,10 @@ The component provides:
 - Window control buttons with hover effects
 - Left/right custom sections for menu buttons or additional controls
 - Proper theming via CSS variables
-- `--rinch-window-top-inset` published for overlays (36px for the titlebar, plus
+- Window controls placed by the platform's convention (macOS on the left, the
+  desktop's own layout on Linux, the right elsewhere), or by `controls_layout`
+- A titlebar height you set with `titlebar_height` (default 36px)
+- `--rinch-window-top-inset` published for overlays (the titlebar height, plus
   the menu bar height when one sits below it)
 
 The titlebar is an in-flow element, so your content sits below it automatically.

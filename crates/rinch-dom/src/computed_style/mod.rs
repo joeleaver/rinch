@@ -169,6 +169,11 @@ pub struct ComputedStyle {
     pub vertical_align: VerticalAlignValue,
     pub overflow_x: OverflowValue,
     pub overflow_y: OverflowValue,
+    /// `scroll-behavior: smooth` (#2291): a programmatic scroll of this box
+    /// (a `scroll_top` write, a scroll-into-view) animates. Not inherited.
+    /// The page scroller takes the root element's, as Chrome's viewport does
+    /// ([`crate::NodeTree::scroll_behavior_smooth`]).
+    pub scroll_behavior_smooth: bool,
     /// How the overlay scrollbar of a scroll container is drawn. Both come
     /// from `--rinch-*` custom properties rather than the real CSS
     /// `scrollbar-color` / `scrollbar-width`, which the servo build of Stylo
@@ -548,6 +553,7 @@ impl Default for ComputedStyle {
             vertical_align: VerticalAlignValue::default(),
             overflow_x: OverflowValue::default(),
             overflow_y: OverflowValue::default(),
+            scroll_behavior_smooth: false,
             scrollbar_color: ScrollbarColorValue::default(),
             scrollbar_width: ScrollbarWidthValue::default(),
 

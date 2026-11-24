@@ -28,8 +28,8 @@ use rinch_editor_core::serialize::{
 };
 use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{
-    CursorMotion, EditorState, EditorView, KeyBinding, Mark, Node, PasteContent, Plugin, Pos,
-    Schema, Selection, Transaction, ViewRequest, apply_input_rules,
+    CursorMotion, EditorState, EditorView, KeyBinding, Mark, Node, PasteContent, PlaceholderPlugin,
+    Plugin, PluginKey, Pos, Schema, Selection, Transaction, ViewRequest, apply_input_rules,
 };
 
 #[cfg(feature = "collaboration")]
@@ -41,7 +41,7 @@ use rinch_editor_collab::{
 use super::collab::CollabBridge;
 use super::images::ImageHover;
 use super::images::{ImageInput, ImageInputSource};
-use super::keys::EditorKey;
+use super::keys::{EditorKey, TabBehavior};
 use super::links::{LinkClick, LinkHover, LinkSpan};
 use super::margins::{self, MarginAnchor, MarginLine, Margins};
 use super::node_views::{self, CaretFrom, Kept, NodeViewRegistration, NodeViewSpec};
@@ -147,6 +147,12 @@ struct EditorCore {
     /// asks before it stores anything. Every local change lands in `commit`, so
     /// an input path added later is read-only without knowing this flag exists.
     read_only: bool,
+    /// The placeholder this handle installed — see
+    /// [`EditorHandle::set_placeholder`]. A clone of the installed plugin,
+    /// sharing its text.
+    placeholder: Option<PlaceholderPlugin>,
+    /// What Tab does — see [`EditorHandle::set_tab_behavior`].
+    tab_behavior: TabBehavior,
     /// Whether the caret owes a scroll into view — see [`ScrollGate`]. Armed by
     /// a local edit or selection move ([`Self::commit`] with
     /// [`Scroll::IfChanged`]); fulfilled and cleared by
@@ -1235,6 +1241,8 @@ impl EditorHandle {
                 caret_moved_owed: false,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
+                placeholder: None,
+                tab_behavior: TabBehavior::default(),
                 scroll: ScrollGate::default(),
                 reveal: None,
                 reveal_misses: 0,
@@ -1300,6 +1308,8 @@ impl EditorHandle {
                 caret_moved_owed: false,
                 anchors: Rc::new(RefCell::new(AnchorMap::default())),
                 read_only: false,
+                placeholder: None,
+                tab_behavior: TabBehavior::default(),
                 scroll: ScrollGate::default(),
                 reveal: None,
                 reveal_misses: 0,
@@ -1538,19 +1548,29 @@ impl EditorHandle {
     /// Returns whether the plugin was added. It is all-or-nothing: `false` leaves
     /// the plugin list untouched, so a later call can still add it.
     pub fn add_plugin(&self, plugin: Rc<dyn Plugin>) -> bool {
-        self.install_plugin(plugin, false)
+        self.install_plugin(plugin, false, |plugins| plugins.len())
     }
 
     /// [`add_plugin`](Self::add_plugin), keeping every installed plugin's
     /// folded state (undo history included) when `keep` (the spellchecker
-    /// added once the app's dictionaries arrive, #2862).
-    pub(crate) fn install_plugin(&self, plugin: Rc<dyn Plugin>, keep: bool) -> bool {
+    /// added once the app's dictionaries arrive, #2862), at the index `at`
+    /// picks from the installed list (clamped to its length): the end for
+    /// `add_plugin`, the [`default_plugins`](rinch_editor_core::default_plugins)
+    /// place for [`set_markdown_shortcuts`](Self::set_markdown_shortcuts)
+    /// (#2210).
+    pub(crate) fn install_plugin(
+        &self,
+        plugin: Rc<dyn Plugin>,
+        keep: bool,
+        at: impl FnOnce(&[Rc<dyn Plugin>]) -> usize,
+    ) -> bool {
         let mut core = self.core_mut();
         if core.plugins.iter().any(|p| p.key() == plugin.key()) {
             return false;
         }
         let mut plugins = core.plugins.clone();
-        plugins.push(plugin);
+        let index = at(&plugins).min(plugins.len());
+        plugins.insert(index, plugin);
         let prev = core.state.clone();
         let next = if keep {
             prev.reconfigure(plugins.clone())
@@ -1576,6 +1596,93 @@ impl EditorHandle {
         }
         core.plugins = plugins;
         true
+    }
+
+    /// Take the plugin installed under `key` out of this editor (#2210) — the
+    /// counterpart of [`add_plugin`](Self::add_plugin), and how an app drops one
+    /// of the [`default_plugins`](rinch_editor_core::default_plugins): the
+    /// markdown input rules ([`set_markdown_shortcuts`](Self::set_markdown_shortcuts)
+    /// is the shorthand for those), or the history, to put a
+    /// `HistoryPlugin::with(delay, depth)` of its own in its place, or none at
+    /// all when an outer undo stack owns it.
+    ///
+    /// The same construction-time call as `add_plugin`, with the same terms:
+    /// the state is rebuilt, which discards every plugin's folded state (undo
+    /// history included); it is not an edit (a read-only editor accepts it,
+    /// [`on_change`](Self::on_change) does not fire); the selection and stored
+    /// marks are carried over. Returns whether a plugin was removed: `false`
+    /// when none is installed under `key`.
+    pub fn remove_plugin(&self, key: PluginKey) -> bool {
+        let mut core = self.core_mut();
+        if !core.plugins.iter().any(|p| p.key() == key) {
+            return false;
+        }
+        let plugins: Vec<Rc<dyn Plugin>> = core
+            .plugins
+            .iter()
+            .filter(|p| p.key() != key)
+            .cloned()
+            .collect();
+        let prev = core.state.clone();
+        let mut next = EditorState::create(core.schema.clone(), prev.doc.clone(), plugins.clone());
+        next.selection = prev.selection.clone();
+        next.stored_marks = prev.stored_marks.clone();
+        // An identity step, as in `add_plugin`: not a load, never a scroll.
+        if core
+            .commit(prev, next, Some(&Mapping::new()), Scroll::No, Vec::new())
+            .is_none()
+        {
+            return false;
+        }
+        core.plugins = plugins;
+        // The placeholder slot names the plugin `set_placeholder` installed;
+        // once it is gone, a later `set_placeholder` installs a new one rather
+        // than changing the text of a plugin no state holds (#2210).
+        if core.placeholder.as_ref().is_some_and(|p| p.key() == key) {
+            core.placeholder = None;
+        }
+        true
+    }
+
+    /// Turn the markdown shortcuts on or off (#2210): the input rules that
+    /// rewrite `- `, `1. `, `# `, `> `, `*x*`, `` `x` ``, `==x==` and `---` as
+    /// they are typed ([`MarkdownInputRulesPlugin`](rinch_editor_core::MarkdownInputRulesPlugin)).
+    /// Off in an editor from [`create_editor`](crate::create_editor), as in a
+    /// Chrome `contenteditable`, which inserts what is typed literally; `true`
+    /// turns them on. (A handle built by [`EditorHandle::new`] with
+    /// [`default_plugins`](rinch_editor_core::default_plugins) has them on.)
+    /// The `Editor { markdown_shortcuts: … }` prop calls this at mount.
+    ///
+    /// Installs or removes the plugin, so it is construction-time as
+    /// [`add_plugin`](Self::add_plugin) is (the undo history restarts). It goes
+    /// where `default_plugins` has it, right after the `BaseCommandsPlugin`
+    /// (first when that is not installed), so its input rules run before those
+    /// of plugins the app added. A call that changes nothing changes nothing.
+    /// Returns whether they are on afterwards.
+    pub fn set_markdown_shortcuts(&self, on: bool) -> bool {
+        use rinch_editor_core::{BaseCommandsPlugin, MarkdownInputRulesPlugin};
+        let key = MarkdownInputRulesPlugin.key();
+        let installed = self.core().plugins.iter().any(|p| p.key() == key);
+        match (on, installed) {
+            (true, false) => {
+                self.install_plugin(Rc::new(MarkdownInputRulesPlugin), false, |plugins| {
+                    let base = BaseCommandsPlugin.key();
+                    plugins
+                        .iter()
+                        .position(|p| p.key() == base)
+                        .map_or(0, |i| i + 1)
+                })
+            }
+            (false, true) => !self.remove_plugin(key),
+            _ => installed,
+        }
+    }
+
+    /// Whether the markdown shortcuts are on — see
+    /// [`set_markdown_shortcuts`](Self::set_markdown_shortcuts).
+    pub fn markdown_shortcuts(&self) -> bool {
+        let key = rinch_editor_core::MarkdownInputRulesPlugin.key();
+        self.core().plugins.iter().any(|p| p.key() == key)
     }
 
     /// Run the named command (applying + re-projecting if it applies). Returns
@@ -2780,6 +2887,86 @@ impl EditorHandle {
             return true;
         }
         false
+    }
+
+    /// Choose what Tab and Shift+Tab do in this editor (#2210) — see
+    /// [`TabBehavior`]. Takes effect at once and lives on the handle, so it
+    /// survives a re-mount. The `Editor { tab_behavior: … }` prop calls this
+    /// at mount.
+    pub fn set_tab_behavior(&self, behavior: TabBehavior) {
+        self.core_mut().tab_behavior = behavior;
+    }
+
+    /// What Tab does in this editor — see [`Self::set_tab_behavior`].
+    pub fn tab_behavior(&self) -> TabBehavior {
+        self.core().tab_behavior
+    }
+
+    /// Offer a plain Tab (`shift = false`) or Shift+Tab to the editor (#2210):
+    /// `true` when the editor used it — it moved to another table cell, or ran
+    /// a list binding that applied — and `false` when it did not, in which case
+    /// the caller moves the focus to the next (previous) Tab stop. Always
+    /// `false` under [`TabBehavior::MoveFocus`] and in a
+    /// [read-only](Self::set_read_only) editor. Shared by every platform's
+    /// keyboard glue, which offers Tab here instead of to the keymap.
+    pub fn tab_key(&self, shift: bool) -> bool {
+        if self.refuses_edits() || self.tab_behavior() == TabBehavior::MoveFocus {
+            return false;
+        }
+        if self.tab_cell(shift) {
+            return true;
+        }
+        let binding = KeyBinding::parse(if shift { "Shift-Tab" } else { "Tab" });
+        binding.is_some_and(|b| self.dispatch_key(b) == Some(true))
+    }
+
+    /// Show `text` while the editor is empty (#2210) — the analogue of a
+    /// `<textarea placeholder>`, and as live: a later call changes the shown
+    /// text at once, with the document and its undo history untouched. Empty
+    /// text shows none. Styled by the `.rinch-editor-placeholder` rule
+    /// (`--rinch-editor-placeholder-color`), and hidden while read-only. The
+    /// `Editor { placeholder: … }` prop calls this at mount.
+    ///
+    /// The first non-empty call installs a
+    /// [`PlaceholderPlugin`] through [`add_plugin`](Self::add_plugin), which
+    /// restarts the undo history, so make it before content is typed (the
+    /// prop does); every later call only changes the text. Returns `false`,
+    /// changing nothing, when a placeholder plugin the app added itself holds
+    /// the slot.
+    pub fn set_placeholder(&self, text: &str) -> bool {
+        let installed = self.core().placeholder.clone();
+        match installed {
+            Some(plugin) => {
+                if *plugin.text() == *text {
+                    return true;
+                }
+                plugin.set_text(text);
+                let mut core = self.core_mut();
+                let core = &mut *core;
+                if let Some(view) = core.view.as_mut() {
+                    view.refresh_decorations(&core.state);
+                }
+                true
+            }
+            None if text.is_empty() => true,
+            None => {
+                let plugin = PlaceholderPlugin::new(text);
+                if !self.add_plugin(Rc::new(plugin.clone())) {
+                    return false;
+                }
+                self.core_mut().placeholder = Some(plugin);
+                true
+            }
+        }
+    }
+
+    /// The text [`set_placeholder`](Self::set_placeholder) gave, or `""`.
+    pub fn placeholder(&self) -> String {
+        self.core()
+            .placeholder
+            .as_ref()
+            .map(|p| p.text().to_string())
+            .unwrap_or_default()
     }
 
     /// Make the editor **read-only** (`true`) or editable again (`false`, the
@@ -6998,6 +7185,7 @@ mod tests {
             content: "<p>shown</p>".into(),
             read_only: true,
             spellcheck: None,
+            ..Default::default()
         });
         assert!(prop.is_read_only());
         assert_eq!(
@@ -7420,6 +7608,7 @@ mod tests {
                 content: "<p>mine</p>".into(),
                 read_only: true,
                 spellcheck: None,
+                ..Default::default()
             }
             .render(&mut scope, &[]);
 

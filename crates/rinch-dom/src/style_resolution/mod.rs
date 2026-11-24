@@ -1585,6 +1585,16 @@ impl RinchDocument {
             if !self.tree.inline_text_shadows {
                 self.note_inline_text_shadow(node_id);
             }
+            // An inline element with an outline turns on paint's walk for
+            // the outlines round inline fragments (#2973).
+            if !self.tree.inline_outlines {
+                let cs = &self.tree.nodes[node_id].computed_style;
+                if cs.display == crate::computed_style::DisplayValue::Inline
+                    && crate::ifc::has_outline(cs)
+                {
+                    self.tree.inline_outlines = true;
+                }
+            }
             // A filter that moves pixels anywhere turns on damage's walk for
             // the blur reach of a dirty node's ancestors (#2719).
             if self.tree.nodes[node_id].computed_style.has_raster_filter() {

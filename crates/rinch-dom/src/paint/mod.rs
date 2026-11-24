@@ -19,6 +19,8 @@ pub mod image;
 mod img_placeholder;
 mod layer_bounds;
 pub mod painter;
+mod phases;
+use phases::Phase;
 pub mod radii;
 pub(crate) mod raster_cache;
 pub use raster_cache::BUDGET_BYTES as RASTER_CACHE_BUDGET_BYTES;
@@ -303,7 +305,7 @@ fn compute_damage_impl(
         let h = node.layout.height as f64 * scale;
 
         let mut ink = Outsets::from_css(
-            ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
+            ink_outsets_in(node, tree.walks_inline_members(), |id| tree.get_live(id)),
             scale,
         );
         // A box that moved carries its whole painted subtree with it, static
@@ -509,7 +511,7 @@ fn compute_damage_impl(
             // among them (#1048): where they are now, and — from the ink the
             // root was last painted with — where they were.
             let root_ink = Outsets::from_css(
-                ink_outsets_in(root, tree.inline_text_shadows, |id| tree.get_live(id)),
+                ink_outsets_in(root, tree.walks_inline_members(), |id| tree.get_live(id)),
                 scale,
             );
             // A span's own `filter` (#2869, drawn in its own entry through
@@ -611,7 +613,9 @@ fn compute_damage_impl(
                 let ow = owner_node.layout.width as f64 * scale;
                 let oh = owner_node.layout.height as f64 * scale;
                 let ink = Outsets::from_css(
-                    ink_outsets_in(owner_node, tree.inline_text_shadows, |id| tree.get_live(id)),
+                    ink_outsets_in(owner_node, tree.walks_inline_members(), |id| {
+                        tree.get_live(id)
+                    }),
                     scale,
                 );
                 if add(
@@ -1298,7 +1302,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
         && cs.filter.is_empty()
         && !cs.text_paint.strokes()
         && node.text_layout.as_ref().is_none_or(|l| {
-            !tree.inline_text_shadows
+            !tree.walks_inline_members()
                 && !l.shifts_glyphs()
                 && l.background_spans.is_empty()
                 && l.decoration_spans.is_empty()
@@ -1309,7 +1313,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
         return r;
     }
     Outsets::from_css(
-        ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
+        ink_outsets_in(node, tree.walks_inline_members(), |id| tree.get_live(id)),
         scale,
     )
     .grow(r)
@@ -1351,7 +1355,7 @@ pub(crate) fn ink_outsets_in<'a>(
     let mut o = own_ink_outsets(&node.computed_style);
     // What the root's inline content draws past its border box: shifted
     // text, inline backgrounds and borders, wavy underlines (#1815, #1817).
-    let past = inline_ink_outsets(node, &get);
+    let past = inline_ink_outsets(node, enabled, &get);
     let mut shadow = text_shadow_outsets(&node.computed_style.text_shadow);
     // Its own `-webkit-text-stroke`, and that of the inline elements whose
     // text it draws (#2719), as for their shadows.
@@ -1405,13 +1409,14 @@ pub(crate) fn ink_outsets_in<'a>(
 /// only when nothing reaches past it).
 fn inline_ink_outsets<'a>(
     node: &Node,
-    get: impl Fn(RawNodeId) -> Option<&'a Node>,
+    outlines: bool,
+    get: impl Fn(RawNodeId) -> Option<&'a Node> + Copy,
 ) -> Option<[f32; 4]> {
     let inline = node.text_layout.as_ref()?;
     if node.clips_overflow() {
         return None;
     }
-    let past = text::inline_ink_past_lines(get, inline, 1.0)?;
+    let past = text::inline_ink_past_lines(get, inline, 1.0, outlines)?;
     let (ox, oy) = ifc_root_content_origin(node);
     let (w, h) = (node.layout.width as f64, node.layout.height as f64);
     let (ox, oy) = (ox as f64, oy as f64);
@@ -3370,6 +3375,22 @@ pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
     )
 }
 
+/// Whether `id`'s in-flow run is painted in CSS 2.1 Appendix E phases —
+/// every block background, then the floats, then every line's content —
+/// because one of its children reaches into what an earlier one paints
+/// (#2276). Hit testing asks it to probe such a run in the reverse order.
+#[inline]
+pub fn run_paints_in_phases(tree: &NodeTree, node: &Node) -> bool {
+    phases::splits(tree, node)
+}
+
+/// Whether `node` is a float that floats (a flex or grid item's `float` is
+/// ignored): painted whole, after the block backgrounds of its run and
+/// before its lines (#2276).
+pub fn is_float_box(node: &Node) -> bool {
+    phases::is_float(node)
+}
+
 /// A box whose IFC has a live inline layout is drawn **by that IFC and by
 /// nothing else** — not by a tree-order walk, not by a stacking sequence
 /// (#365).
@@ -3446,7 +3467,7 @@ pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// to hide it from — `layer_bounds` all see it directly, and the inline is never
 /// descended through to find it. If such a box vanishes now, look at the unit
 /// collection and the Taffy edge it produces, not here.
-pub(crate) fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
+pub fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
     child
         .ifc_root
         .and_then(|r| tree.get(r))
@@ -4764,21 +4785,61 @@ fn paint_children_with_stacking(
         } else {
             order.grouped_by_clip(node_transform)
         };
+        // The in-flow entries (step 2 of the sequence) are the root's
+        // in-flow run: painted in Appendix E phases, all of them in each
+        // pass, where a child reaches into an earlier one (#2276).
+        let split = phases::current() == Phase::All && phases::splits(tree, node);
+        let mut run_painted = false;
         for position in 0..order.len() {
             let index = grouped.as_ref().map_or(position, |g| g[position] as usize);
             let entry = &order[index];
-            paint_sequence_entry(
-                tree,
-                node_id,
-                &order,
-                entry,
-                &mut open,
-                painter,
-                scale,
-                font_cx,
-                layout_cx,
-                node_transform,
-            );
+            if split && entry.kind == crate::stacking::PaintKind::InFlow {
+                if !run_painted {
+                    run_painted = true;
+                    for pass in Phase::SPLIT {
+                        for position in 0..order.len() {
+                            let index = grouped.as_ref().map_or(position, |g| g[position] as usize);
+                            let entry = &order[index];
+                            if entry.kind != crate::stacking::PaintKind::InFlow {
+                                continue;
+                            }
+                            let Some(phase) = tree
+                                .get(entry.node_id)
+                                .and_then(|c| phases::child_phase(pass, c))
+                            else {
+                                continue;
+                            };
+                            paint_sequence_entry(
+                                tree,
+                                node_id,
+                                &order,
+                                entry,
+                                &mut open,
+                                painter,
+                                scale,
+                                font_cx,
+                                layout_cx,
+                                node_transform,
+                                phase,
+                            );
+                        }
+                    }
+                }
+            } else {
+                paint_sequence_entry(
+                    tree,
+                    node_id,
+                    &order,
+                    entry,
+                    &mut open,
+                    painter,
+                    scale,
+                    font_cx,
+                    layout_cx,
+                    node_transform,
+                    Phase::All,
+                );
+            }
             // The bars of the scrollers whose last contained entry this was,
             // under the clips the scroller itself is drawn under (#1717).
             // Grouping keeps every entry up to `after` ahead of it, so this is
@@ -4827,6 +4888,16 @@ fn paint_children_with_stacking(
         // by the anonymous block box that lays it out, and that box is not in
         // `children`. Walking `children` here paints nothing for the run at all
         // — the line is drawn from `text_layout` on the box itself.
+        //
+        // A run painted whole walks once, in this box's own phase; one whose
+        // children reach into each other walks three times, one per
+        // Appendix E phase (#2276, [`phases`]). Whether they do is asked of
+        // the members this frame draws — the ones the cull keeps — and is
+        // the layout's memoised answer when one was worked out: two members
+        // outside the damage cannot change a pixel inside it.
+        let phase = phases::current();
+        let members = phases::Members::begin();
+        let mut in_run = 0usize;
         for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
             let Some(child) = tree.get_live(child_id) else {
                 continue;
@@ -4834,27 +4905,64 @@ fn paint_children_with_stacking(
             if paints_at_stacking_root(child) || already_drawn_inline(child, PaintKind::InFlow) {
                 continue;
             }
-            if paints_nothing_without_visit(
-                tree,
-                child_id,
-                scale,
-                offset_x,
-                offset_y,
-                node_transform,
-            ) {
+            in_run += 1;
+            if phases::child_phase(phase, child).is_none()
+                || paints_nothing_without_visit(
+                    tree,
+                    child_id,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    node_transform,
+                )
+            {
                 continue;
             }
-            paint_node(
-                tree,
-                child_id,
-                painter,
-                scale,
-                offset_x,
-                offset_y,
-                font_cx,
-                layout_cx,
-                node_transform,
-            );
+            members.push(child_id);
+        }
+        let drawn = members.len();
+        let split = phase == Phase::All
+            && drawn > 1
+            && match phases::memoised(tree, node) {
+                Some(split) => split,
+                None => {
+                    let split = phases::overlap(
+                        tree,
+                        (0..drawn).filter_map(|i| tree.get_live(members.get(i))),
+                    );
+                    if drawn == in_run {
+                        phases::memoise(tree, node, split);
+                    }
+                    split
+                }
+            };
+        let passes: &[Phase] = if split {
+            &Phase::SPLIT
+        } else {
+            std::slice::from_ref(&phase)
+        };
+        for &pass in passes {
+            for i in 0..drawn {
+                let child_id = members.get(i);
+                let Some(child) = tree.get_live(child_id) else {
+                    continue;
+                };
+                let Some(child_phase) = phases::child_phase(pass, child) else {
+                    continue;
+                };
+                phases::request(child_phase);
+                paint_node(
+                    tree,
+                    child_id,
+                    painter,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    font_cx,
+                    layout_cx,
+                    node_transform,
+                );
+            }
         }
     }
 }
@@ -4874,6 +4982,7 @@ fn paint_sequence_entry(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     node_transform: Affine,
+    phase: Phase,
 ) {
     let child = tree.get(entry.node_id);
     if let Some(child) = child
@@ -5008,6 +5117,7 @@ fn paint_sequence_entry(
         return;
     }
 
+    phases::request(phase);
     paint_node(
         tree,
         entry.node_id,
@@ -5076,6 +5186,7 @@ fn paint_layered_span(
             span_id,
             span.computed_style.font_size as f64,
             scale,
+            tree.inline_outlines,
         )
     {
         filter::paint_filtered_span(
@@ -5707,6 +5818,10 @@ fn paint_node(
     layout_cx: &mut parley::LayoutContext<Brush>,
     parent_transform: Affine,
 ) {
+    // The Appendix E phase this box is drawn in: the one its run asked for,
+    // or the whole box (#2276, [`phases`]). Taken before any return, so a
+    // request never outlives the call it was made for.
+    let _phase = phases::enter();
     let Some(node) = tree.get(node_id) else {
         return;
     };
@@ -5915,6 +6030,8 @@ fn paint_node_unmasked(
     let Some(node) = tree.get(node_id) else {
         return;
     };
+    // Which of the box's own visuals this visit draws (#2276).
+    let phase = phases::current();
     if node.paint_watch.get() {
         painter.note_node_start(node_id);
     }
@@ -6141,7 +6258,8 @@ fn paint_node_unmasked(
             // degenerate box too, as in Chrome 155. `paint_children_with_stacking`
             // skips every child its IFC draws, so it is drawn here, as the
             // generic arm draws it.
-            if let Some(inline_layout) = &node.text_layout {
+            if let Some(inline_layout) = node.text_layout.as_ref().filter(|_| phase.draws_content())
+            {
                 let (off_x, off_y) = ifc_root_content_origin(node);
                 let visible = !matches!(
                     node.computed_style.visibility,
@@ -6357,6 +6475,9 @@ fn paint_node_unmasked(
     }
 
     match &node.kind {
+        // Replaced content is line content (Appendix E step 7).
+        NodeKind::Element(el) if el.tag == "svg" && !phase.draws_content() => {}
+        NodeKind::Element(el) if el.tag == "img" && !phase.draws_content() => {}
         NodeKind::Element(el) if el.tag == "svg" => {
             paint_svg(tree, node, painter, scale, x, y, w, h, node_transform);
         }
@@ -6402,6 +6523,11 @@ fn paint_node_unmasked(
                     has_viewport_pixels(name) && !viewport_punches(node, name)
                 }) =>
         {
+            // A frame is replaced content: drawn whole in the content pass
+            // of a split run (#2276).
+            if !phase.draws_content() {
+                return;
+            }
             let rect = Rect::new(x, y, x + w, y + h);
             let opacity = node.computed_style.opacity;
             if opacity < 1.0 {
@@ -6712,7 +6838,11 @@ fn paint_node_unmasked(
 
             // Only paint this element's own visuals if visible
             // (children may override with visibility: visible)
-            if visible {
+            //
+            // The background, border and shadows are Appendix E step 4, drawn
+            // in a split run's backgrounds pass; the outline and the replaced
+            // or form content after them belong to its content pass (#2276).
+            if visible && phase.draws_box() {
                 // Render box-shadow from computed style
                 if !node.computed_style.box_shadow.is_empty() {
                     paint_box_shadow(
@@ -6846,7 +6976,8 @@ fn paint_node_unmasked(
 
                 // Render borders per-side with style support
                 paint_borders(painter, node, scale, x, by, w, bh, radii, node_transform);
-
+            }
+            if visible && phase.draws_content() {
                 // Render outline (drawn outside the box model). A table's
                 // goes round its captions too, as in Chrome.
                 paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
@@ -6965,24 +7096,29 @@ fn paint_node_unmasked(
                 let content_x = x + off_x as f64 * scale - scroll_x;
                 let content_y = y + off_y as f64 * scale - scroll_y;
                 let ifc_text_shadows = node.computed_style.text_shadow.as_slice();
-                paint_inline_layout(
-                    tree,
-                    painter,
-                    scale,
-                    content_x,
-                    content_y,
-                    inline_layout,
-                    font_cx,
-                    layout_cx,
-                    ifc_text_shadows,
-                    node_transform,
-                    node,
-                    // The root's own visibility answers only for text no range
-                    // maps to; each text run follows its own element (#829).
-                    !visible,
-                    Some(&mut under_text),
-                    None,
-                );
+                // The lines are Appendix E step 7: a split run's content pass
+                // (#2276).
+                if phase.draws_content() {
+                    paint_inline_layout(
+                        tree,
+                        painter,
+                        scale,
+                        content_x,
+                        content_y,
+                        inline_layout,
+                        font_cx,
+                        layout_cx,
+                        ifc_text_shadows,
+                        node_transform,
+                        node,
+                        // The root's own visibility answers only for text no
+                        // range maps to; each text run follows its own element
+                        // (#829).
+                        !visible,
+                        Some(&mut under_text),
+                        None,
+                    );
+                }
 
                 // Still paint non-inline (block) children normally
                 paint_children_with_stacking(
@@ -6997,7 +7133,9 @@ fn paint_node_unmasked(
                     node_transform,
                 );
             } else {
-                under_text(painter, font_cx, layout_cx);
+                if phase.draws_content() {
+                    under_text(painter, font_cx, layout_cx);
+                }
                 // Normal paint path: recurse into all children
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
@@ -7035,6 +7173,7 @@ fn paint_node_unmasked(
             // (#2719).
             let past_backdrop = tree.backdrop_filters && backdrop::stopped();
             if visible
+                && phase.draws_content()
                 && !past_backdrop
                 && (node.scrolls_y() || node.scrolls_x())
                 && !bars_deferred(node_id)
@@ -7105,6 +7244,7 @@ fn paint_node_unmasked(
             }
         }
 
+        NodeKind::Text(_) if !phase.draws_content() => {}
         NodeKind::Text(text_data) => paint_text_leaf(
             tree,
             node,

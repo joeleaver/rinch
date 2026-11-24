@@ -214,6 +214,19 @@ pub fn has_render_scope() -> bool {
 // NodeId and NodeHandle
 // ============================================================================
 
+/// How a scroll write moves: CSSOM View's `ScrollBehavior` (#2291).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollBehavior {
+    /// As the element's computed `scroll-behavior` says (`auto` jumps,
+    /// `smooth` animates).
+    #[default]
+    Auto,
+    /// Animate, whatever the stylesheet says.
+    Smooth,
+    /// Jump, whatever the stylesheet says.
+    Instant,
+}
+
 /// Unique identifier for a DOM node: a slot **index** and a **generation**,
 /// packed into one `u64` on every target (issue #723).
 ///
@@ -481,6 +494,21 @@ impl NodeHandle {
         self.doc
             .upgrade()
             .is_some_and(|doc| doc.borrow().is_connected(self.node_id))
+    }
+
+    /// Whether the document has let go of this node: it was
+    /// [`discard`](Self::discard)ed, alone or under an ancestor
+    /// ([`DomDocument::is_retired`]). `false` once the document is gone, and on
+    /// a backend whose discard reclaims nothing, where a discarded node is
+    /// only detached.
+    ///
+    /// For a component that moved a node out of a subtree it does not own and
+    /// must not outlive (the `Stepper`'s shown step content, issue #2195): when
+    /// the subtree it came from is retired, the moved node goes with it.
+    pub fn is_retired(&self) -> bool {
+        self.doc
+            .upgrade()
+            .is_some_and(|doc| doc.borrow().is_retired(self.node_id))
     }
 
     /// This node's document identity (see [`DomDocument::doc_key`]), or `0` if
@@ -1122,6 +1150,33 @@ impl NodeHandle {
         }
     }
 
+    /// Take the inline declaration of `property` off this element, as CSSOM's
+    /// `removeProperty` does: afterwards its inline style does not name it, so
+    /// a stylesheet rule decides it (#2210). Only that exact (normalised) name
+    /// goes: removing `margin-left` leaves a `margin` shorthand standing. A
+    /// no-op, writing nothing, when the inline style does not declare it.
+    ///
+    /// Unlike `set_style(property, "")`, which leaves a literal empty
+    /// declaration for the parser to throw away, the attribute is rewritten
+    /// without it.
+    pub fn remove_style(&self, property: &str) {
+        let Some(style) = self.get_attribute("style") else {
+            return;
+        };
+        let property = normalize_property_name(property);
+        let mut decls = inline_style::split_declarations_keeping_duplicates(&style);
+        let before = decls.len();
+        decls.retain(|(k, _)| normalize_property_name(k) != property);
+        if decls.len() == before {
+            return;
+        }
+        if decls.is_empty() {
+            self.remove_attribute("style");
+        } else {
+            self.set_attribute("style", &serialize_declarations(&decls));
+        }
+    }
+
     /// Paint this positioned box as a highlight of `owner`'s content: over its
     /// backgrounds, under its text ([`DomDocument::set_highlight_owner`],
     /// #2666). `None` returns it to its own place in the stacking order.
@@ -1275,6 +1330,19 @@ impl NodeHandle {
     pub fn set_scroll_left(&self, scroll_left: f64) {
         if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_scroll_left(self.node_id, scroll_left);
+        }
+    }
+
+    /// Scroll this element to `left` / `top` (an axis given `None` stays
+    /// where it is), as `element.scrollTo({left, top, behavior})` does
+    /// (#2291). [`ScrollBehavior::Auto`] follows the element's computed
+    /// `scroll-behavior` (what [`Self::set_scroll_top`] does);
+    /// [`ScrollBehavior::Smooth`] animates and [`ScrollBehavior::Instant`]
+    /// jumps whatever the stylesheet says.
+    pub fn scroll_to(&self, left: Option<f64>, top: Option<f64>, behavior: ScrollBehavior) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut()
+                .scroll_to_with(self.node_id, left, top, behavior);
         }
     }
 

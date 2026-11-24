@@ -864,9 +864,12 @@ impl Walk<'_> {
         // Before #1762 and #1817 a clip was elided whenever the unshifted
         // lines fitted, and the pill, the raised text or the wave painted
         // outside the box.
-        if let Some(past) =
-            super::text::inline_ink_past_lines(|id| self.tree.get(id), inline, self.scale)
-        {
+        if let Some(past) = super::text::inline_ink_past_lines(
+            |id| self.tree.get(id),
+            inline,
+            self.scale,
+            self.tree.inline_outlines,
+        ) {
             text = text.union(past + Vec2::new(content_x, content_y));
         }
         // The shadows its inline elements declare are drawn with it (#1048).
