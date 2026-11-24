@@ -896,3 +896,31 @@ fn a_filter_taken_off_an_absolute_boxs_containing_block_drops_the_kept_walk() {
         }],
     );
 }
+
+/// A frame that takes a box out from under the scroller walks it once: the
+/// read before the paint walks again (a subtree left a box the walk entered),
+/// and the paint's consume, which records the bars it drew, reads the walk
+/// that read kept. It used to walk a second time: the consume checked the
+/// parents the subtree left as new, after it had already checked them, and
+/// dropped the new walk (`row_shift_damage` in `rinch-bench` walked its
+/// 4,000 boxes twice a frame).
+#[test]
+fn a_removal_walks_once_per_frame() {
+    let mut d = kept_doc(ROWS);
+    let walks = |d: &RinchDocument| rinch_dom::testing::deep_overflow_walks(&d.tree);
+    assert_eq!(range_of(&d), (600.0, 400.0), "control: the wide row");
+    d.tree.consume_paint_dirty();
+    let (t, b) = (by_id(&d, "t"), by_id(&d, "b"));
+    d.remove_child(t, b);
+    d.resolve_layout(800.0, 600.0);
+    let before = walks(&d);
+    assert_eq!(range_of(&d), (600.0, 400.0));
+    assert_eq!(walks(&d), before + 1, "control: the removal walks again");
+    d.tree.consume_paint_dirty();
+    assert_eq!(range_of(&d), (600.0, 400.0));
+    assert_eq!(
+        walks(&d),
+        before + 1,
+        "the consume and the next read walk nothing"
+    );
+}

@@ -5215,6 +5215,7 @@ impl NodeTree {
         }
         self.bar_check_parents.clear();
         self.whole_document_damaged = false;
+        self.deep_overflow.after_paint_consumed();
     }
 
     /// Drop the sizes the measure function cached for IFC root `root`, so the

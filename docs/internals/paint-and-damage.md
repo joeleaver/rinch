@@ -692,7 +692,12 @@ taken off a box puts an inset-less absolute box below it out of the
 scroller's overflow with nothing else of either changed. Every read first
 checks the boxes pushed paint-dirty, and the parents a subtree left
 (`bar_check_parents`), since the last check, and `consume_paint_dirty` runs
-the same check before it drains those lists. For each such box the entry of
+the same check before it drains those lists, and starts the next check from
+the empty lists only once it has drained both (`after_paint_consumed`): the
+bars it records in between read the walk, and a check there that started
+from 0 took the parents already checked as new and walked a second time on
+every frame a subtree left (`dom::row_shift_damage`, 2000 rows with one
+removed: +93% on the batch, perf review of #2961). For each such box the entry of
 each container above it is dropped unless the walk recorded that box with
 the same snapshot, or recorded a box between them as a stop (not entered)
 that is itself unchanged: a hover colour keeps the entry; a box toggled to
@@ -718,7 +723,15 @@ new box. A paragraph resized in a page, or an absolute gauge moved inside it,
 walks nothing (`shell::relayout_beside_text` walked the page on each layout,
 +9% on the batch: perf review of #2961); a counted box that moves, or a box
 that moves something past its top box, drops the entry. A whole-document
-restyle drops every entry; a removed container's entry is freed. A read in between is a lookup,
+restyle drops every entry; a removed container's entry is freed. A walk
+records one `Rec` per box in an FxHash map (`Snaps`; with SipHash the
+inserts were half the walk), and fills the map of the biggest entry dropped
+since the last walk, so a walk of the same subtree grows no table. **What it
+still costs:** a frame that drops the entry walks the subtree once — about
+750 instructions per box. A row removed from a long list does (the list is a
+parent a subtree left, and the top box shrank under what its record holds),
+so `row_shift_damage`'s frame is +25% on `main` (12.04M → 15.10M Ir) where it
+walks 4,000 boxes. A read in between is a lookup,
 the check of what was pushed since the last one, and a measure of the listed
 transformed boxes. Layout's clamp asks the in-flow range first
 (`content_extents_in_flow` leaves this out, as it leaves out the listed

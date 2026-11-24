@@ -2,7 +2,7 @@
 //! kept until something the walk read changes where it could move the reach.
 
 use super::deep_walk::{
-    Rec, Span, WalkSnap, box_origin, containing_rect, lines_span, walk_deep_overflow, walk_out,
+    Snaps, Span, WalkSnap, box_origin, containing_rect, lines_span, walk_deep_overflow, walk_out,
 };
 use super::extents::Reach;
 use super::measure::border_box_in;
@@ -18,7 +18,7 @@ pub(super) struct DeepEntry {
     pub(super) live: Vec<RawNodeId>,
     /// What the walk read of every box it met ([`WalkSnap`]), and found
     /// below it.
-    pub(super) snaps: std::collections::HashMap<RawNodeId, Rec>,
+    pub(super) snaps: Snaps,
 }
 
 /// [`deep_overflow`](super::deep_walk::deep_overflow)'s memo: each scroll container's walk, kept until
@@ -56,6 +56,22 @@ pub(super) struct DeepOverflowState {
     whole_dropped: bool,
     /// Walks made, for the tests that pin the memo.
     walks: u64,
+    /// The record map of the biggest entry dropped since the last walk,
+    /// emptied: the next walk fills it ([`walk_deep_overflow`]). A walk
+    /// after a drop is most often of the same subtree, and growing its map
+    /// from nothing rehashed every record several times over.
+    spare: Snaps,
+}
+
+impl DeepOverflowState {
+    /// Keep a dropped entry's record map for the next walk, if it is the
+    /// biggest dropped since the last one.
+    fn recycle(&mut self, mut snaps: Snaps) {
+        if snaps.capacity() > self.spare.capacity() {
+            snaps.clear();
+            self.spare = snaps;
+        }
+    }
 }
 
 impl DeepOverflow {
@@ -63,7 +79,8 @@ impl DeepOverflow {
         let mut state = self.state.borrow_mut();
         Self::check(tree, &mut state);
         if !state.entries.contains_key(&container_id) {
-            let entry = walk_deep_overflow(tree, container_id);
+            let snaps = std::mem::take(&mut state.spare);
+            let entry = walk_deep_overflow(tree, container_id, snaps);
             state.walks += 1;
             state.entries.insert(container_id, entry);
         }
@@ -81,10 +98,21 @@ impl DeepOverflow {
 
     /// Called by `NodeTree::consume_paint_dirty` before it drains the lists
     /// [`Self::check`] reads: what changed since the last check is checked
-    /// here, and the next check starts from the empty lists.
+    /// here, while they still name it.
     pub(crate) fn before_paint_consumed(&self, tree: &NodeTree) {
+        Self::check(tree, &mut self.state.borrow_mut());
+    }
+
+    /// Called by `NodeTree::consume_paint_dirty` once it has drained both
+    /// lists and cleared `whole_document_damaged`: the next check starts from
+    /// the empty lists. Not in [`Self::before_paint_consumed`]: the consume
+    /// reads the bars it records ([`scrollbars`](super::scrollbars)) before
+    /// it clears `bar_check_parents`, and a check there that started again
+    /// from 0 took the parents it had already checked as new, and dropped —
+    /// and walked again — every entry above them, on every frame a subtree
+    /// left (as a whole-document frame's would drop every entry twice).
+    pub(crate) fn after_paint_consumed(&self) {
         let mut state = self.state.borrow_mut();
-        Self::check(tree, &mut state);
         state.checked = (0, 0);
         state.whole_dropped = false;
     }
@@ -108,7 +136,10 @@ impl DeepOverflow {
         }
         if tree.whole_document_damaged {
             if !state.whole_dropped {
-                state.entries.clear();
+                let dropped = std::mem::take(&mut state.entries);
+                for (_, entry) in dropped {
+                    state.recycle(entry.snaps);
+                }
                 state.whole_dropped = true;
             }
             return;
@@ -170,8 +201,8 @@ impl DeepOverflow {
                                 .is_some_and(|n| same_snap(&snap, &WalkSnap::of(tree, n, snap.out)))
                     }
                 });
-                if !keep {
-                    state.entries.remove(&chain[j]);
+                if !keep && let Some(dropped) = state.entries.remove(&chain[j]) {
+                    state.recycle(dropped.snaps);
                 }
             }
         }

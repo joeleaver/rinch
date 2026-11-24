@@ -269,7 +269,7 @@ pub(super) struct Keep {
     /// The transformed boxes met, not entered.
     live: Vec<RawNodeId>,
     /// Every box met, with what the walk read of it.
-    snaps: std::collections::HashMap<RawNodeId, Rec>,
+    snaps: Snaps,
     /// The border box of the first box below the container the walk is in
     /// (through `display: contents` wrappers), when it holds what is inside
     /// it ([`containing_rect`]); `None` above it. A contribution inside it is
@@ -292,6 +292,14 @@ impl Keep {
         }
     }
 }
+
+/// What a kept walk read of every box it met, by id. A walk inserts one
+/// record per box of the container's subtree, so the map is keyed with
+/// FxHash: with the std `SipHash` the inserts were most of a walk's cost
+/// (a walk of 4,000 boxes, `row_shift_damage` in `rinch-bench`). Node ids
+/// come from the tree's slab, not from outside, so there is nothing to
+/// guard against collisions for.
+pub(super) type Snaps = rustc_hash::FxHashMap<RawNodeId, Rec>;
 
 /// One box a kept walk met ([`DeepEntry::snaps`]): what it read of it, and
 /// what it found below it.
@@ -442,10 +450,21 @@ pub(super) fn deep_overflow(tree: &NodeTree, container_id: RawNodeId) -> Reach {
 }
 
 /// The walk [`deep_overflow`] keeps: the static part, the transformed boxes
-/// found (measured on each read), and what it read of every box it met.
-pub(super) fn walk_deep_overflow(tree: &NodeTree, container_id: RawNodeId) -> DeepEntry {
+/// found (measured on each read), and what it read of every box it met,
+/// recorded into `snaps` (empty: the map of an entry dropped before, kept
+/// for its capacity, so a walk of a subtree as big as last time's grows no
+/// table).
+pub(super) fn walk_deep_overflow(
+    tree: &NodeTree,
+    container_id: RawNodeId,
+    snaps: Snaps,
+) -> DeepEntry {
+    debug_assert!(snaps.is_empty());
     let mut reach = Reach::NONE;
-    let mut keep = Some(Keep::default());
+    let mut keep = Some(Keep {
+        snaps,
+        ..Keep::default()
+    });
     for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, container_id).iter() {
         let Some(child) = tree.get_live(child_id) else {
             continue;
