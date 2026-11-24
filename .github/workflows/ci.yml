@@ -935,12 +935,16 @@ jobs:
           # rather than skip if it is missing: a skip must not read as a pass.
           # The URL is fixed (port 47811), so the Firefox step below builds
           # the same test binaries and rebuilds nothing.
+          # The runner's timeout is set here, not only inherited from the job:
+          # web_live_lite's whole run is held to 12 s, and a timed-out wait
+          # then spends at most 4 s reading lite_echo's /stats, so its report
+          # prints well inside 180 s (and inside the runner's default 20 s).
           cargo build -p rinch-rtc --example lite_echo
           target/debug/examples/lite_echo --port 47811 --url-file lite_echo.url &
           for i in $(seq 1 50); do [ -s lite_echo.url ] && break; sleep 0.2; done
           test "$(cat lite_echo.url)" = http://127.0.0.1:47811
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
-            cargo test -p rinch-rtc --target wasm32-unknown-unknown
+            WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown
           # rinch-rtc's audio and video (#1916), behind its `media` feature:
           # two peers in the page, synthetic sources only (no getUserMedia).
           # The crate's webdriver.json lets audio play without a gesture.
@@ -1125,7 +1129,7 @@ jobs:
             test "$(cat lite_echo_ff.url)" = http://127.0.0.1:47811
           fi
           RINCH_RTC_TEST_URL=http://127.0.0.1:47811 RINCH_RTC_REQUIRE_LIVE=1 \
-            cargo test -p rinch-rtc --target wasm32-unknown-unknown
+            WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown
           WASM_BINDGEN_TEST_TIMEOUT=180 cargo test -p rinch-rtc --target wasm32-unknown-unknown \
             --features media --test web_media
           # Browser <-> native media in Firefox. The runner's Firefox has no
