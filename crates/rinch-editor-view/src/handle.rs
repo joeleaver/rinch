@@ -2252,21 +2252,28 @@ impl EditorHandle {
     }
 
     /// Look up `binding` in the editor's aggregated keymap and run the bound command.
-    /// Returns `Some(applied)` when a binding matched (the key is **consumed** either
-    /// way — the caller must key "consumed" on `is_some()`, not on the bool, so a no-op
-    /// binding like `Tab` at top level never falls through to text insertion), or `None`
-    /// when nothing is bound. This is the single keymap entry point: both the desktop
-    /// and web key dispatchers translate their native event into a platform-agnostic
-    /// [`KeyBinding`] and route through here, so a binding added in editor-core works on
-    /// every platform (design §5).
+    /// Returns `Some(applied)` when the key is **consumed**, `None` when it is not:
+    /// the caller keys "consumed" on `is_some()` and lets a `None` key go on as if
+    /// the editor had no binding for it (on the web: not `preventDefault`ed, so it
+    /// reaches the page's `keydown` listeners and the browser's default).
+    ///
+    /// ProseMirror's keymap semantics: a binding whose command does not apply is
+    /// not consumed — Mod-Enter (`exitCode`) in a paragraph answers `None` — unless
+    /// the binding is declared consuming ([`Plugin::consumed_keys`]), which
+    /// answers `Some(false)`: Tab at the top level sinks nothing and is still the
+    /// editor's. Unbound keys answer `None`. This is the single keymap entry
+    /// point: both the desktop and web key dispatchers translate their native
+    /// event into a platform-agnostic [`KeyBinding`] and route through here, so a
+    /// binding added in editor-core works on every platform (design §5).
     pub fn dispatch_key(&self, binding: KeyBinding) -> Option<bool> {
-        let name = self
-            .core()
-            .state
-            .keymap()
-            .command_for(&binding)
-            .map(str::to_string);
-        name.map(|n| self.command(&n))
+        let (name, consuming) = {
+            let core = self.core();
+            let keymap = core.state.keymap();
+            let name = keymap.command_for(&binding)?.to_string();
+            (name, keymap.consumes_when_inapplicable(&binding))
+        };
+        let applied = self.command(&name);
+        (applied || consuming).then_some(applied)
     }
 
     /// Whether the mark named `mark` is active for the current selection (toolbar
@@ -5805,6 +5812,78 @@ mod tests {
         assert_eq!(
             h.handle.dispatch_key(KeyBinding::parse("Mod-a").unwrap()),
             Some(true)
+        );
+    }
+
+    /// #2993's review: a binding whose command does not apply leaves its key
+    /// alone (ProseMirror's keymap), so Ctrl/Cmd+Enter in a paragraph, where
+    /// `exitCode` has no code block to leave, goes on to the page. At
+    /// 5f10b1475 it answered `Some(false)` — consumed.
+    #[test]
+    fn an_inapplicable_binding_is_not_consumed() {
+        let s = schema();
+        let h = mount(doc_node(&s, vec![para(&s, "abcd")]));
+        h.handle.set_selection(Selection::cursor(Pos(3)));
+        let before = h.handle.doc();
+        assert_eq!(
+            h.handle
+                .dispatch_key(KeyBinding::parse("Mod-Enter").unwrap()),
+            None,
+            "Mod-Enter outside a code block falls through"
+        );
+        assert!(h.handle.doc().same_ref(&before), "and changes nothing");
+        // In a code block the same binding applies and is consumed.
+        let code = s
+            .branch("code_block", Fragment::from_node(s.text("x").unwrap()))
+            .unwrap();
+        let h = mount(doc_node(&s, vec![code]));
+        h.handle.set_selection(Selection::cursor(Pos(2)));
+        assert_eq!(
+            h.handle
+                .dispatch_key(KeyBinding::parse("Mod-Enter").unwrap()),
+            Some(true)
+        );
+    }
+
+    /// The bindings the keymaps declare consuming keep their key where the
+    /// command does nothing (`Plugin::consumed_keys`): the editing keys a
+    /// browser's editing host handles itself, and Tab / Shift-Tab.
+    #[test]
+    fn consuming_bindings_keep_their_key_where_the_command_does_not_apply() {
+        let s = schema();
+        let code = s
+            .branch("code_block", Fragment::from_node(s.text("ab").unwrap()))
+            .unwrap();
+        let h = mount(doc_node(&s, vec![para(&s, "x"), code]));
+        let key = |k: &str| h.handle.dispatch_key(KeyBinding::parse(k).unwrap());
+        // A top-level paragraph: no list item to sink or lift, nothing to undo,
+        // and Backspace at the document's start deletes nothing.
+        h.handle.set_selection(Selection::cursor(Pos(1)));
+        for k in [
+            "Tab",
+            "Shift-Tab",
+            "Backspace",
+            "Mod-z",
+            "Mod-y",
+            "Mod-Shift-z",
+        ] {
+            assert_eq!(key(k), Some(false), "{k} is consumed although it no-ops");
+        }
+        // The code block's end is the document's: Delete deletes nothing.
+        let end = h.handle.doc().content_size();
+        h.handle.set_selection(Selection::cursor(Pos(end - 1)));
+        assert_eq!(key("Delete"), Some(false), "Delete at the end");
+        // A read-only editor refuses the mark toggles: still consumed, where a
+        // refused block chord (a non-consuming binding) is not.
+        h.handle.set_read_only(true);
+        h.handle.set_selection(Selection::text(Pos(1), Pos(2)));
+        for k in ["Mod-b", "Mod-i", "Mod-u"] {
+            assert_eq!(key(k), Some(false), "{k} is consumed although refused");
+        }
+        assert_eq!(
+            key("Mod-Shift-8"),
+            None,
+            "a refused list toggle falls through"
         );
     }
 

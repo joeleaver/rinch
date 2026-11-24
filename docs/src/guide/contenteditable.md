@@ -1545,9 +1545,19 @@ break), as in ProseMirror: Enter and Shift+Enter type one over the selection,
 and Mod+Enter leaves the block for an empty paragraph after it, the caret in
 it. Each is a command of its own — `newlineInCode`, `insertLineBreak` (a new
 line in a code block, else a hard break) and `exitCode` — for a toolbar or
-your own binding. Mod+Enter is the editor's even outside a code block, where
-it does nothing; an app that uses Ctrl/Cmd+Enter (to send, say) claims it in
-`on_key`, which sees the key first.
+your own binding. Outside a code block Mod+Enter does nothing and is not the
+editor's: the key goes on to your app (the keyboard interceptor, an
+`onkeydown`, a page `keydown` listener), so Ctrl/Cmd+Enter can still mean
+"send".
+
+**A binding whose command does not apply leaves its key alone**, as in
+ProseMirror: the key goes on as if the editor had no binding for it (on the
+web it is not `preventDefault`ed, so the page's listeners and the browser's
+default see it). The exceptions are the keys the editor owns wherever the caret
+is: Enter, Shift+Enter, Backspace, Delete, the word deletes, Mod+A / B / I / U
+and undo / redo (the keys a browser's own editing host handles in a
+`contenteditable`), and Tab / Shift+Tab. A plugin declares its own such keys
+with `Plugin::consumed_keys`.
 
 The four alignment chords are the Google Docs ones, and some of them are also
 chords of the browser or the platform, which may take the key before the editor

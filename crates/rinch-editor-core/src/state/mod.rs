@@ -74,8 +74,13 @@ impl EditorState {
                 }
                 commands.insert(name.to_string(), cmd);
             }
+            let consuming = p.consumed_keys();
             for (binding, command) in p.keymap() {
-                keymap.add(binding, command);
+                if consuming.contains(&binding) {
+                    keymap.add_consuming(binding, command);
+                } else {
+                    keymap.add(binding, command);
+                }
             }
             input_rules.extend(p.input_rules());
         }

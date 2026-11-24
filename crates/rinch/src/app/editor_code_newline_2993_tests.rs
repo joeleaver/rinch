@@ -136,3 +136,45 @@ fn mod_enter_in_a_code_block_leaves_it_for_a_paragraph() {
     assert_eq!(p.html(), "<pre>abcd</pre><p></p><p>x</p>");
     assert_eq!(p.handle.selection(), Selection::cursor(Pos(7)));
 }
+
+/// #2993's review, desktop: Ctrl/Cmd+Enter in a paragraph, where `exitCode`
+/// does not apply, is the app's to use — the editor's `on_key` and the
+/// keyboard interceptor hear it and the document does not change. Desktop
+/// offers both before the keymap (the browser's order for the capture
+/// listener), and `dispatch_key` now answers `None` for the inapplicable
+/// binding, so the editor does not claim it either.
+#[test]
+fn mod_enter_outside_a_code_block_is_left_to_the_app() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let mut p = page("<p>ab</p><pre>cd</pre>");
+    let on_key = Rc::new(RefCell::new(Vec::<(String, bool)>::new()));
+    let k1 = on_key.clone();
+    p.handle.on_key(move |k| {
+        k1.borrow_mut().push((k.key.to_string(), k.primary));
+        false
+    });
+    let intercepted = Rc::new(RefCell::new(Vec::<(String, bool)>::new()));
+    let i1 = intercepted.clone();
+    rinch_core::set_keyboard_interceptor(move |k| {
+        // The release reaches the interceptor too; the press is the one the
+        // keymap could have taken.
+        if k.kind == rinch_core::KeyEventKind::Down {
+            i1.borrow_mut().push((k.key.clone(), k.ctrl || k.meta));
+        }
+        false
+    });
+    p.handle.set_selection(Selection::cursor(Pos(2)));
+    p.enter(false, true);
+    rinch_core::clear_keyboard_interceptor();
+    assert_eq!(p.html(), "<p>ab</p><pre>cd</pre>", "nothing changed");
+    assert_eq!(p.handle.selection(), Selection::cursor(Pos(2)));
+    assert_eq!(*on_key.borrow(), [("Enter".to_string(), true)]);
+    assert_eq!(*intercepted.borrow(), [("Enter".to_string(), true)]);
+    assert_eq!(
+        p.handle
+            .dispatch_key(rinch_editor_core::KeyBinding::parse("Mod-Enter").unwrap()),
+        None,
+        "the binding is not the editor's here"
+    );
+}

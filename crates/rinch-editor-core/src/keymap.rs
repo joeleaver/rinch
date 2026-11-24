@@ -6,6 +6,18 @@
 //! runs the bound command (design §5; salvages the `normalize_key` *logic* from the
 //! old `shortcuts.rs` but consumes events at the platform edge, not here).
 //!
+//! ## Which keys a binding consumes
+//!
+//! As in ProseMirror's keymap, a binding whose command does **not** apply leaves
+//! its key alone: the platform does not consume it, so it goes on to the page
+//! (the web's `keydown` listeners, the browser's default) as an unbound key does.
+//! A binding can instead be declared **consuming** ([`Keymap::add_consuming`],
+//! [`Plugin::consumed_keys`](crate::Plugin::consumed_keys)): its key is consumed
+//! whether or not the command applied. The base keymap declares the keys a
+//! browser's own editing host handles in a `contenteditable` (Enter, Backspace,
+//! Delete, the word deletes, Mod-a/b/i/u, undo / redo), and Tab / Shift-Tab,
+//! which never leave an editable editor.
+//!
 //! ## "Mod" / the primary accelerator
 //!
 //! Bindings are written with `Mod` (e.g. `"Mod-b"`) meaning *the platform's primary
@@ -14,7 +26,7 @@
 //! decides which physical modifier maps to `primary` for the host OS. This keeps
 //! one binding table correct on every platform.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// An abstract key — a named editing key or a printable character (lower-cased;
 /// case is carried by [`Modifiers::shift`]).
@@ -149,24 +161,42 @@ impl KeyBinding {
     }
 }
 
-/// A binding → command-name lookup table, aggregated from all plugins.
+/// A binding → command-name lookup table, aggregated from all plugins, with the
+/// set of bindings that consume their key even when the command does not apply
+/// (the module docs, "Which keys a binding consumes").
 #[derive(Debug, Default, Clone)]
 pub struct Keymap {
     map: HashMap<KeyBinding, String>,
+    consuming: HashSet<KeyBinding>,
 }
 
 impl Keymap {
     /// An empty keymap.
     pub fn new() -> Keymap {
-        Keymap {
-            map: HashMap::new(),
-        }
+        Keymap::default()
     }
 
-    /// Bind `binding` to the command named `command`. Later bindings override
-    /// earlier ones for the same key.
+    /// Bind `binding` to the command named `command`, a binding that consumes
+    /// its key only when the command applies. Later bindings override earlier
+    /// ones for the same key, consumption included.
     pub fn add(&mut self, binding: KeyBinding, command: impl Into<String>) {
         self.map.insert(binding, command.into());
+        self.consuming.remove(&binding);
+    }
+
+    /// Bind `binding` to the command named `command`, a binding that consumes
+    /// its key whether or not the command applies (Tab at the top level, which
+    /// sinks no list item, still never moves the focus). Overrides an earlier
+    /// binding of the same key.
+    pub fn add_consuming(&mut self, binding: KeyBinding, command: impl Into<String>) {
+        self.map.insert(binding, command.into());
+        self.consuming.insert(binding);
+    }
+
+    /// Whether `binding` consumes its key even when its command does not apply
+    /// ([`add_consuming`](Self::add_consuming)). `false` for an unbound key.
+    pub fn consumes_when_inapplicable(&self, binding: &KeyBinding) -> bool {
+        self.consuming.contains(binding)
     }
 
     /// Bind a parsed string (`"Mod-b"`) to a command; ignored if the string does
@@ -238,5 +268,22 @@ mod tests {
         assert_eq!(km.command_for(&b), Some("toggleBold"));
         let other = KeyBinding::parse("Mod-i").unwrap();
         assert_eq!(km.command_for(&other), None);
+    }
+
+    #[test]
+    fn a_later_binding_replaces_the_consumption_too() {
+        let tab = KeyBinding::parse("Tab").unwrap();
+        let mut km = Keymap::new();
+        km.add(tab, "a");
+        assert!(!km.consumes_when_inapplicable(&tab), "add: not consuming");
+        km.add_consuming(tab, "b");
+        assert!(km.consumes_when_inapplicable(&tab));
+        assert_eq!(km.command_for(&tab), Some("b"));
+        km.add(tab, "c");
+        assert!(
+            !km.consumes_when_inapplicable(&tab),
+            "a plain rebinding drops the earlier binding's consumption"
+        );
+        assert!(!km.consumes_when_inapplicable(&KeyBinding::parse("q").unwrap()));
     }
 }

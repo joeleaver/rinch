@@ -254,3 +254,100 @@ fn enter_in_a_paragraph_still_splits_it() {
     );
     f.teardown();
 }
+
+/// #2993's review: Ctrl/Cmd+Enter in a paragraph, where `exitCode` does not
+/// apply, is not the editor's — as in ProseMirror, an inapplicable binding
+/// leaves its key alone. It is not `preventDefault`ed, it changes nothing, and
+/// it reaches the app's keyboard interceptor and a page `keydown` listener
+/// (an app's "send" chord). At 5f10b1475 the matched binding was consumed: the
+/// capture listener stopped it before either heard it.
+#[wasm_bindgen_test]
+fn mod_enter_outside_a_code_block_reaches_the_page() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use wasm_bindgen::closure::Closure;
+
+    let f = Fixture::focused(DOC);
+    let page_heard = Rc::new(RefCell::new(Vec::<(bool, bool)>::new()));
+    let ph = page_heard.clone();
+    let listener =
+        Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
+            if ev.key() == "Enter" {
+                ph.borrow_mut()
+                    .push((ev.ctrl_key() || ev.meta_key(), ev.default_prevented()));
+            }
+        });
+    document()
+        .add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref())
+        .unwrap();
+    let intercepted = Rc::new(RefCell::new(Vec::<String>::new()));
+    let seen = intercepted.clone();
+    rinch_core::set_keyboard_interceptor(move |k| {
+        seen.borrow_mut().push(k.key.clone());
+        false
+    });
+
+    // In the paragraph: falls through.
+    f.handle.set_selection(Selection::cursor(Pos(2)));
+    let consumed = f.enter(false, true);
+    let blocks = f.blocks();
+    let heard = page_heard.borrow().clone();
+    let interceptor_heard = intercepted.borrow().clone();
+
+    // The control: in the code block the binding applies and is consumed, so
+    // neither hears it (and a positive control that the listener is live).
+    page_heard.borrow_mut().clear();
+    intercepted.borrow_mut().clear();
+    f.handle.set_selection(Selection::cursor(Pos(6)));
+    let consumed_in_code = f.enter(false, true);
+    let heard_in_code = page_heard.borrow().clone();
+    let interceptor_heard_in_code = intercepted.borrow().clone();
+
+    rinch_core::clear_keyboard_interceptor();
+    document()
+        .remove_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref())
+        .unwrap();
+    f.teardown();
+
+    assert!(
+        !consumed,
+        "Mod+Enter in a paragraph is not preventDefaulted"
+    );
+    assert_eq!(
+        blocks,
+        [b("p", "x"), b("pre", "abcd"), b("p", "y")],
+        "and changes nothing"
+    );
+    assert_eq!(heard, [(true, false)], "a page keydown listener hears it");
+    assert_eq!(
+        interceptor_heard,
+        ["Enter"],
+        "the app's interceptor hears it"
+    );
+    assert!(consumed_in_code, "control: consumed in the code block");
+    assert!(heard_in_code.is_empty(), "{heard_in_code:?}");
+    assert!(
+        interceptor_heard_in_code.is_empty(),
+        "{interceptor_heard_in_code:?}"
+    );
+}
+
+/// Tab is consumed where it sinks no list item (a consuming binding): a top
+/// level paragraph keeps the key, so it never moves the focus off an editable
+/// editor, and the page does not hear it.
+#[wasm_bindgen_test]
+fn tab_at_the_top_level_is_still_consumed() {
+    let f = Fixture::focused(DOC);
+    f.handle.set_selection(Selection::cursor(Pos(2)));
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_key("Tab");
+    init.set_code("Tab");
+    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    f.capture().dispatch_event(&ev).unwrap();
+    let blocks = f.blocks();
+    f.teardown();
+    assert!(ev.default_prevented(), "Tab is the editor's");
+    assert_eq!(blocks, [b("p", "x"), b("pre", "abcd"), b("p", "y")]);
+}

@@ -2715,7 +2715,8 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         //    keymap's sink / lift are refused, so Tab and Shift+Tab move the focus
         //    on from the editor's place in the page instead of being swallowed.
         //    Otherwise table cell-nav (shared) first; else the keymap resolves
-        //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below. Consumed either way.
+        //    `Tab`→sinkListItem / `Shift-Tab`→liftListItem below, both consuming
+        //    bindings, so Tab is consumed either way.
         //    Shift+Tab with no Tab stop before the editor (and no trap) leaves the
         //    page backward, as from a native `<textarea readonly>` that is the first
         //    stop: the focus goes to the document, so the capture textarea is
@@ -2742,8 +2743,10 @@ fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Document) -> bo
         _ => {
             // 3. THE KEYMAP — the single source of truth for every command key. Letters
             //    resolve logically (`key`, layout-correct), digits/symbols physically
-            //    (`code`). A matched binding is always consumed (never falls through),
-            //    even if the command no-op'd here.
+            //    (`code`). A binding is consumed when its command applies, or when it
+            //    is declared consuming (Tab, Enter, Backspace…: `Plugin::consumed_keys`);
+            //    any other inapplicable binding (Mod+Enter in a paragraph) is left
+            //    unconsumed, so the page's `keydown` listeners hear it (#2993).
             if let Some(binding) = editor_key_binding(&key, &code, ctrl, shift, alt)
                 && handle.dispatch_key(binding).is_some()
             {

@@ -1734,6 +1734,38 @@ impl Plugin for BaseCommandsPlugin {
         .filter_map(|(b, cmd)| KeyBinding::parse(b).map(|kb| (kb, cmd)))
         .collect()
     }
+
+    /// The keys this keymap consumes even where their command does not apply.
+    /// Every other binding (Mod-Enter, Mod-e, the Mod-Shift and Mod-Alt block
+    /// chords) leaves an inapplicable key to the page, as ProseMirror does.
+    ///
+    /// - **The keys a browser's editing host handles itself** in a
+    ///   `contenteditable` (Blink's editing key bindings): Enter, Shift-Enter,
+    ///   Backspace, Delete, the word deletes and Mod-a/b/i/u. A native editable
+    ///   consumes them wherever the caret is, and on the web, left unconsumed,
+    ///   their default would edit the editor's hidden capture textarea instead
+    ///   (and Ctrl+U would open the page source).
+    /// - **Tab and Shift-Tab**: Tab never leaves an editable editor, whether or
+    ///   not a list item sinks (a read-only editor's Tab is the platform's, which
+    ///   moves the focus before the keymap is asked).
+    fn consumed_keys(&self) -> Vec<KeyBinding> {
+        [
+            "Mod-a",
+            "Mod-b",
+            "Mod-i",
+            "Mod-u",
+            "Enter",
+            "Shift-Enter",
+            "Backspace",
+            "Delete",
+            "Tab",
+            "Shift-Tab",
+        ]
+        .into_iter()
+        .chain(word_delete_bindings().into_iter().map(|(b, _)| b))
+        .filter_map(KeyBinding::parse)
+        .collect()
+    }
 }
 
 /// The word-delete chords: Ctrl+Backspace / Ctrl+Delete on Windows and Linux,

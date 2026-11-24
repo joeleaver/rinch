@@ -2045,8 +2045,8 @@ impl RinchApp {
                             {
                                 // #833: a read-only editor is a `readonly` field
                                 // to Tab. Its keymap's `Tab` / `Shift-Tab`
-                                // (sink / lift a list item) are refused, and a
-                                // matched binding is consumed even so, which
+                                // (sink / lift a list item) are refused, and
+                                // those bindings consume their key even so, which
                                 // left a keyboard user who came in with no way
                                 // out. Tab and Shift+Tab go to the next and the
                                 // previous Tab stop instead, from the editor's
@@ -4787,7 +4787,8 @@ impl RinchApp {
         }
         // 2. Tab: navigate table cells when in a table (shared handle method); otherwise
         //    fall through to the keymap, which binds `Tab`→sinkListItem /
-        //    `Shift-Tab`→liftListItem. Consumed either way — no editor focus traversal
+        //    `Shift-Tab`→liftListItem, consuming bindings, so Tab is consumed either
+        //    way — no editor focus traversal
         //    (a read-only editor's Tab never gets here: its caller moves the focus, #833).
         if matches!(key, KeyCode::Tab) && handle.tab_cell(shift) {
             return true;
@@ -4823,9 +4824,11 @@ impl RinchApp {
         }
         // 4. THE KEYMAP — the single source of truth for every command key (marks, block
         //    types, lists, blockquote, headings, hr / hard break, enter, backspace /
-        //    delete, undo / redo, select-all). A matched binding is always consumed, even
-        //    if the command no-op'd at this position (so e.g. Tab at top level never
-        //    falls through to text insertion / focus traversal).
+        //    delete, undo / redo, select-all). A binding is consumed when its command
+        //    applies, or when it is declared consuming (`Plugin::consumed_keys`: Tab
+        //    at top level never falls through to text insertion); an inapplicable
+        //    one (Mod+Enter in a paragraph) goes on, as an unbound key (#2993). The
+        //    app's `on_key` and the interceptor heard every key before this.
         if let Some(binding) = editor_key_binding(key, logical_key, ctrl, shift, alt)
             && handle.dispatch_key(binding).is_some()
         {

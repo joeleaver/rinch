@@ -105,7 +105,24 @@ pub trait Plugin {
     }
 
     /// Key bindings this plugin contributes, as `(binding, command name)` pairs.
+    ///
+    /// A binding consumes its key only when its command applies, as in
+    /// ProseMirror: where the command answers `false` (Mod-Enter's `exitCode` in a
+    /// paragraph) the key goes on as if unbound — on the web to the page's
+    /// `keydown` listeners and the browser's default. Name a binding in
+    /// [`consumed_keys`](Self::consumed_keys) to consume its key regardless.
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
+        Vec::new()
+    }
+
+    /// The bindings of this plugin's [`keymap`](Self::keymap) that consume their
+    /// key even when the command does not apply ([`Keymap::add_consuming`](
+    /// crate::keymap::Keymap::add_consuming)): a key the editor must own wherever
+    /// the caret is, such as Tab, or a key a browser's editing host would handle
+    /// itself (Enter, Backspace). A binding listed here that this plugin's keymap
+    /// does not contain is ignored; a later plugin that binds the same key
+    /// replaces it, consumption included, with its own declaration.
+    fn consumed_keys(&self) -> Vec<KeyBinding> {
         Vec::new()
     }
 
