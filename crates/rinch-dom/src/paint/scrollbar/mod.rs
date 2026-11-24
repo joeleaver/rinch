@@ -57,6 +57,7 @@ use crate::computed_style::ScrollbarWidthValue;
 use crate::node::RawNodeId;
 use peniko::color::{AlphaColor, Srgb};
 
+mod deep_mark;
 mod deep_memo;
 mod deep_record;
 mod deep_walk;

@@ -2,13 +2,14 @@
 //! place, against a fresh document — over random sequences of edits.
 //!
 //! Each sequence starts from one document, makes random edits under the
-//! scroller (rows inserted, removed, resized, restyled and moved; padding,
-//! border, margin, filter, position, insets, overflow, display, transform),
-//! with a layout after each, and reads the ranges between them in a random
-//! order (a read, a paint consuming the tree, both, or neither). At every
-//! read, each element's range under the scroller (and the scroller's own)
-//! must equal what a fresh document given the same edits, never read before,
-//! answers. The hand-written cases in `deep_overflow_kept_2054_tests.rs` pin
+//! scroller and a second scroller beside it (rows inserted, removed,
+//! resized, restyled, moved, within one scroller and between the two, and
+//! given text in place of their content; padding, border, margin, filter,
+//! position, insets, overflow, display, transform), with a layout after
+//! each, and reads the ranges between them in a random order (a read, a
+//! paint consuming the tree, both, or neither). At every read, each
+//! element's range (both scrollers' and every box's below them) must equal
+//! what a fresh document given the same edits, never read before, answers. The hand-written cases in `deep_overflow_kept_2054_tests.rs` pin
 //! the rules one at a time; this finds the combinations they miss.
 //!
 //! The sequence is reproducible from its seed: a failure prints it and the
@@ -27,6 +28,11 @@ const START: &str = concat!(
     r#"<div style="display:contents"><div style="width:90px;height:20px"></div></div>"#,
     r#"<div style="width:120px;height:30px;overflow:auto"><div style="width:300px;height:80px"></div></div>"#,
     r#"<div style="height:20px">ab cd <span>ef<div style="width:230px;height:5px"></div>gh</span></div>"#,
+    r#"</div>"#,
+    // A second scroller, kept beside the first: boxes move between them.
+    r#"<div style="width:150px;height:60px;overflow:auto">"#,
+    r#"<div style="width:100px;height:25px"><div style="width:210px;height:10px"></div></div>"#,
+    r#"<p style="margin:0;width:90px">uv wx <span style="white-space:nowrap">yz yz yz yz yz yz</span></p>"#,
     r#"</div>"#,
 );
 
@@ -78,7 +84,19 @@ enum Edit {
         property: &'static str,
         value: &'static str,
     },
+    /// Element `node`'s content replaced by text (`set_text_content`).
+    Text {
+        node: usize,
+        text: &'static str,
+    },
 }
+
+const TEXTS: &[&str] = &[
+    "",
+    "ab",
+    "cd ef gh ij kl mn op qr st uv wx yz",
+    "abcdefghijklmnopqrstuvwxyzabcdefghijklmnop",
+];
 
 const PROPERTIES: &[(&str, &[&str])] = &[
     ("width", &["0px", "20px", "80px", "150px", "260px", "420px"]),
@@ -123,18 +141,21 @@ fn scroller(d: &RinchDocument) -> NodeId {
     d.query_selector("#s").expect("#s")
 }
 
-/// The scroller's descendant elements, in document order.
+/// The elements under `<body>` but the first scroller: the boxes below it,
+/// the second scroller and the boxes below that, in document order.
 fn elements(d: &RinchDocument) -> Vec<NodeId> {
-    fn walk(d: &RinchDocument, id: NodeId, out: &mut Vec<NodeId>) {
+    fn walk(d: &RinchDocument, id: NodeId, s: NodeId, out: &mut Vec<NodeId>) {
         for child in d.get_children(id) {
             if !d.is_text_node(child) {
-                out.push(child);
-                walk(d, child, out);
+                if child != s {
+                    out.push(child);
+                }
+                walk(d, child, s, out);
             }
         }
     }
     let mut out = Vec::new();
-    walk(d, scroller(d), &mut out);
+    walk(d, d.body(), scroller(d), &mut out);
     out
 }
 
@@ -178,6 +199,10 @@ fn draw(rng: &mut Rng, d: &RinchDocument) -> Option<Edit> {
             block: rng.below(2) == 0,
         },
         3 if !els.is_empty() => Edit::Remove(rng.below(els.len())),
+        5 if !els.is_empty() => Edit::Text {
+            node: rng.below(els.len()),
+            text: rng.pick(TEXTS),
+        },
         4 if !els.is_empty() => {
             let node = rng.below(els.len());
             let target = if parent == els.len() {
@@ -261,6 +286,9 @@ fn apply(d: &mut RinchDocument, edit: &Edit) {
         } => {
             let node = el(*node);
             d.set_style(node, property, value);
+        }
+        Edit::Text { node, text } => {
+            d.set_text_content(els[*node], text);
         }
     }
 }

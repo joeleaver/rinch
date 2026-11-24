@@ -22,6 +22,13 @@ pub(super) const BELOW: u8 = 2;
 /// Something the records cannot follow (an element outside the box tree
 /// changed): walk the container again.
 pub(super) const AGAIN: u8 = 4;
+/// Its children changed as a list: one was added, taken out or moved away.
+/// Its children's contributions are summed again from all of them, not
+/// brought up to date from the ones marked ([`Rec::first`]).
+pub(super) const STRUCT: u8 = 8;
+
+/// No box: the end of a list of marked children ([`Rec::first`]).
+pub(super) const NO_ID: RawNodeId = RawNodeId::MAX;
 
 /// One box a kept walk met: what it read of it ([`WalkSnap`]), the walk it
 /// belongs to and where in it, and what it found below it.
@@ -39,20 +46,76 @@ pub(super) struct Rec {
     /// Its own contribution, kept with the rest ([`Rec::contribution`]): a
     /// box nothing was pushed of answers it as it is.
     pub(super) contrib: Span,
-    /// What was pushed of it or below it since its last measure
-    /// ([`SELF`], [`BELOW`]).
+    /// What was pushed of it or below it in check [`Rec::epoch`]
+    /// ([`SELF`], [`BELOW`], [`STRUCT`]); nothing in any other check.
     pub(super) touch: u8,
+    /// The check (`DeepOverflowState::epoch`) that last marked it: its
+    /// `touch`, `first` and `next` are that check's, and stale in any other.
+    /// Every mark a check makes is brought up to date within it, so a mark
+    /// left on a box nothing visited (below a box the walk does not go
+    /// into) never reaches a later check.
+    pub(super) epoch: u64,
+    /// The first of its children marked in this check, each listing the
+    /// next (`next`), or [`NO_ID`]: what brings its children's span up to
+    /// date without visiting the children nothing was pushed of.
+    pub(super) first: RawNodeId,
+    /// The next child of its parent marked in this check, or [`NO_ID`].
+    pub(super) next: RawNodeId,
 }
 
 /// The records of every kept walk, by box. A walk inserts one per box of
 /// its container's subtree, so the map is keyed with FxHash: with the std
 /// `SipHash` the inserts were most of a walk's cost (`row_shift_damage` in
 /// `rinch-bench`). Node ids come from the tree's slab, not from outside, so
-/// there is nothing to guard against collisions for; they carry a
-/// generation, so a freed slot's new node never matches an old record.
+/// there is nothing to guard against collisions for.
+///
+/// A record lives as long as its box is where the walk met it: a box taken
+/// out of the tree (`DeepOverflow::forget_detached`) or freed
+/// (`DeepOverflow::forget_freed`) has its records dropped then, and a walk
+/// dropped to be taken again drops the records it made. So the map holds at
+/// most one record per box in the kept walks, and a freed slot's new node
+/// (whose id differs only in its generation, which wraps) finds none.
 pub(super) type Records = rustc_hash::FxHashMap<RawNodeId, Rec>;
 
 impl Rec {
+    /// A record of a box met by `owner`'s walk under `parent`, nothing
+    /// marked.
+    pub(super) fn new(snap: WalkSnap, owner: RawNodeId, parent: RawNodeId, kids: Span) -> Rec {
+        let mut rec = Rec {
+            snap,
+            owner,
+            parent,
+            kids,
+            contrib: Span::EMPTY,
+            touch: 0,
+            epoch: 0,
+            first: NO_ID,
+            next: NO_ID,
+        };
+        rec.contrib = rec.contribution();
+        rec
+    }
+
+    /// What check `epoch` marked of it.
+    pub(super) fn marks(&self, epoch: u64) -> u8 {
+        if self.epoch == epoch { self.touch } else { 0 }
+    }
+
+    /// Mark it with `flag` in check `epoch`; whether nothing was marked of
+    /// it in that check before (it is then in no list of marked children).
+    pub(super) fn mark(&mut self, epoch: u64, flag: u8) -> bool {
+        if self.epoch != epoch {
+            self.epoch = epoch;
+            self.touch = flag;
+            self.first = NO_ID;
+            self.next = NO_ID;
+            return true;
+        }
+        let was = self.touch;
+        self.touch |= flag;
+        was == 0
+    }
+
     /// What the box adds to its parent's scrollable overflow, in its
     /// parent's children frame: its border box (no margins) and, unless the
     /// walk stops at it, its lines and what is below it; a `display:
@@ -108,6 +171,8 @@ pub(super) struct Walker<'a> {
     /// The records cannot follow what changed (a box's kind, a box met
     /// under another parent or in another walk): walk the container again.
     pub(super) again: bool,
+    /// The check whose marks it brings up to date ([`Rec::marks`]).
+    pub(super) epoch: u64,
 }
 
 /// Whether `node`, at `level` below scroll container `owner`, is not its
@@ -167,15 +232,7 @@ impl Walker<'_> {
         } else {
             Span::EMPTY
         };
-        let mut rec = Rec {
-            snap,
-            owner: self.owner,
-            parent,
-            kids,
-            contrib: Span::EMPTY,
-            touch: 0,
-        };
-        rec.contrib = rec.contribution();
+        let rec = Rec::new(snap, self.owner, parent, kids);
         self.recs.insert(id, rec);
         rec.contrib
     }
@@ -201,7 +258,7 @@ impl Walker<'_> {
             self.again = true;
             return Span::EMPTY;
         }
-        let touch = rec.touch;
+        let touch = rec.marks(self.epoch);
         if touch == 0 {
             return rec.contrib;
         }
@@ -223,7 +280,12 @@ impl Walker<'_> {
             rec.contrib = rec.contribution();
             return rec.contrib;
         }
-        let kids = self.children(id, Level::Below, false);
+        let (kids, first) = (rec.kids, rec.first);
+        let kids = if touch & STRUCT != 0 {
+            self.children(id, Level::Below, false)
+        } else {
+            self.marked_children(id, kids, first)
+        };
         if self.again {
             return Span::EMPTY;
         }
@@ -233,6 +295,46 @@ impl Walker<'_> {
         rec.kids = kids;
         rec.contrib = rec.contribution();
         rec.contrib
+    }
+
+    /// Box `id`'s children's contributions, from `kids` (their span before)
+    /// and its children marked in this check, from `first` on: each is
+    /// visited, and its new contribution joined to the span — unless its old
+    /// one held an edge of it that the new one does not reach, which only
+    /// the sum over all the children can say. So a change below one child of
+    /// a box with many visits that child alone.
+    ///
+    /// The list names only children recorded under `id` (a box moved away
+    /// or taken out marks its parent [`STRUCT`], which sums them all); a
+    /// name that is not one sums them all too.
+    fn marked_children(&mut self, id: RawNodeId, mut kids: Span, first: RawNodeId) -> Span {
+        let mut whole = false;
+        let mut child = first;
+        while child != NO_ID {
+            let Some(rec) = self.recs.get(&child).filter(|r| r.parent == id) else {
+                whole = true;
+                break;
+            };
+            let (old, next) = (rec.contrib, rec.next);
+            let new = self.visit(child, id, Level::Below);
+            if self.again {
+                return Span::EMPTY;
+            }
+            if !whole && new != old {
+                if old.holds_an_edge_of(&kids, &new) {
+                    whole = true;
+                } else {
+                    kids.join(new);
+                }
+            }
+            child = next;
+        }
+        if whole {
+            // Every marked child visited (a visit clears its mark): the rest
+            // answer their kept contributions.
+            return self.children(id, Level::Below, false);
+        }
+        kids
     }
 
     /// The container's reach from the records of its children, which are up

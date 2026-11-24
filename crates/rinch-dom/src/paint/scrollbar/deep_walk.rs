@@ -168,6 +168,16 @@ impl Span {
         }
     }
 
+    /// Whether `sum`, a join of spans with `self` among them, may lose an
+    /// edge when `self` is replaced by `new`: `self` reaches one of its
+    /// edges, and `new` does not reach as far there. Where it does not, the
+    /// new sum is `sum` joined with `new`.
+    pub(super) fn holds_an_edge_of(&self, sum: &Span, new: &Span) -> bool {
+        (self.left <= sum.left && new.left > self.left)
+            || (self.right >= sum.right && new.right < self.right)
+            || (self.bottom >= sum.bottom && new.bottom < self.bottom)
+    }
+
     /// Whether a [`Reach`] grown by it is grown by nothing past `rect`'s:
     /// its left, right and bottom edges are inside them.
     pub(super) fn inside(&self, rect: &kurbo::Rect) -> bool {

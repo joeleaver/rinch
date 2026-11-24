@@ -1086,6 +1086,10 @@ impl RinchDocument {
         if let Some(parent) = self.tree.get(node_id).and_then(|n| n.parent) {
             self.tree.bar_check_parents.push(parent);
         }
+        // The scroll ranges' kept walks drop what they recorded of it, and
+        // the walks of the scroll containers in it (#2054): put back, it is
+        // recorded again where it is.
+        self.tree.deep_overflow.forget_detached(&self.tree, node_id);
         self.mark_subtree_paint_dirty_below(node_id);
     }
 

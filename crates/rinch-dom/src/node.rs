@@ -5573,6 +5573,9 @@ impl NodeTree {
         // Collect all descendant IDs first
         let mut to_remove = Vec::new();
         self.collect_descendants(id, &mut to_remove);
+        // The scroll ranges' kept walks forget the freed boxes, and the
+        // walks of the freed scroll containers (#2054).
+        self.deep_overflow.forget_freed(&to_remove);
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
             self.active_animations.remove(node_id);

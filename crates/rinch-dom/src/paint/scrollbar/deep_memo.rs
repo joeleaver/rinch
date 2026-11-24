@@ -1,6 +1,7 @@
 //! The memo of each scroll container's descendant walk ([`DeepOverflow`]):
 //! kept, and brought up to date in place, as what the walk read changes.
 
+use super::deep_mark::Marker;
 use super::deep_record::{AGAIN, BELOW, Level, Records, SELF, Walker};
 use super::deep_walk::WalkSnap;
 use super::extents::Reach;
@@ -37,18 +38,21 @@ pub(super) struct DeepEntry {
 /// whether or not it moved since the last paint.
 ///
 /// The check marks each recorded box pushed, and each recorded box above
-/// it up to its container; a parent a subtree left is marked as having
-/// something below it changed, and a box met under another parent than the
-/// one it is under now has its records dropped (it is recorded again where
-/// it is). Then each container marked is brought up to date
-/// (`deep_record::Walker::visit`): from the container down, only the marked
-/// boxes are visited; each is measured where it is now, and what is below it
-/// is taken from its record unless something below it was marked. Records
-/// are kept in each box's own frame, so a box that moved carries what is
-/// below it. A box with no record (one added) is walked and recorded; a
-/// freed box's record is dropped. So a row removed from a long list
-/// measures the list and each row after it, where it is now, and nothing
-/// below them; a row resized measures it and the boxes above it.
+/// it up to its container, listing each marked box in its parent's list of
+/// marked children (`deep_mark::Marker`); a parent a subtree left, or one
+/// that gained a box with no record, is marked to sum all its children
+/// again; a box met under another parent than the one it is under now has
+/// its records dropped (it is recorded again where it is). Then each
+/// container marked is brought up to date (`deep_record::Walker::visit`):
+/// from the container down, only the marked boxes are visited; each is
+/// measured where it is now, and what is below it is taken from its record
+/// and brought up to date from its marked children alone, unless its
+/// children are to be summed again. Records are kept in each box's own
+/// frame, so a box that moved carries what is below it. A box with no
+/// record (one added) is walked and recorded. So a row removed from a long
+/// list measures the list and each row after it, where it is now, and
+/// nothing below them; a box resized measures it and the boxes above it,
+/// and visits none of their other children.
 ///
 /// A change the records cannot follow walks the container again: a box
 /// whose kind changed (it clips, or stops; is transformed, positioned,
@@ -56,20 +60,34 @@ pub(super) struct DeepEntry {
 /// moved its content), an element outside the box tree changed (a split
 /// inline, which may be an absolute box's containing block), or the
 /// container's own containing-block bits. A whole-document restyle drops
-/// every entry; a removed container's entry is freed.
+/// every entry.
+///
+/// **Records live as long as their boxes are where the walks met them.** A
+/// subtree taken out of the tree (`forget_detached`, from every removal's
+/// `mark_subtree_paint_dirty`) or freed (`forget_freed`) drops its records,
+/// and the walks of the scroll containers in it; an entry dropped to be
+/// walked again drops the records its walk made. The parent a dropped
+/// record was under is marked at the next check to sum its children again.
 #[derive(Debug, Default)]
 pub(crate) struct DeepOverflow {
-    state: std::cell::RefCell<DeepOverflowState>,
+    pub(super) state: std::cell::RefCell<DeepOverflowState>,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct DeepOverflowState {
-    entries: rustc_hash::FxHashMap<RawNodeId, DeepEntry>,
+    pub(super) entries: rustc_hash::FxHashMap<RawNodeId, DeepEntry>,
     /// Every entry's records, by box ([`Records`]).
-    recs: Records,
+    pub(super) recs: Records,
     /// How much of `paint_dirty_nodes` and `bar_check_parents` has been
     /// checked since the last paint consumed them.
     checked: (usize, usize),
+    /// The parents of records dropped since the last check
+    /// ([`Self::forget`]): each lost a child the next check sums them
+    /// without.
+    lost: Vec<RawNodeId>,
+    /// The current check, counted from 1: what a record's marks belong to
+    /// (`deep_record::Rec::epoch`).
+    pub(super) epoch: u64,
     /// Whether this paint's whole-document restyle has dropped the entries.
     whole_dropped: bool,
     /// Walks of a container's whole subtree, for the tests that pin the memo.
@@ -97,11 +115,10 @@ impl DeepOverflow {
         reach
     }
 
-    /// Walk `container_id`'s subtree and record it (overwriting any record
-    /// left from an entry dropped before).
+    /// Walk `container_id`'s subtree and record it.
     fn walk(tree: &NodeTree, state: &mut DeepOverflowState, container_id: RawNodeId) {
         let mut live = Vec::new();
-        let DeepOverflowState { recs, .. } = state;
+        let DeepOverflowState { recs, epoch, .. } = state;
         let mut walker = Walker {
             tree,
             owner: container_id,
@@ -109,6 +126,7 @@ impl DeepOverflow {
             live: &mut live,
             measured: 0,
             again: false,
+            epoch: *epoch,
         };
         walker.children(container_id, Level::Top, true);
         let reach = walker.top_reach(container_id);
@@ -151,6 +169,47 @@ impl DeepOverflow {
         state.whole_dropped = false;
     }
 
+    /// Called by `NodeTree::remove_subtree` (and wherever else a node is
+    /// freed) with the ids it frees: their records and walks go now, so
+    /// nothing keeps a freed box's record, and a later node given its slot
+    /// finds none.
+    pub(crate) fn forget_freed(&self, ids: &[RawNodeId]) {
+        let mut state = self.state.borrow_mut();
+        let state = &mut *state;
+        if state.entries.is_empty() && state.recs.is_empty() {
+            return;
+        }
+        for id in ids {
+            if !state.entries.is_empty() {
+                state.entries.remove(id);
+            }
+            state.forget(*id);
+        }
+    }
+
+    /// Called before box `root`'s subtree is taken out of the tree (every
+    /// removal and move records its pixels first, `mark_subtree_paint_dirty`):
+    /// the walks of the scroll containers in it, and the records of the
+    /// boxes in it, go. Put back, it is walked again where it is.
+    pub(crate) fn forget_detached(&self, tree: &NodeTree, root: RawNodeId) {
+        let mut state = self.state.borrow_mut();
+        let state = &mut *state;
+        if state.entries.is_empty() {
+            // Nothing is kept: the next check drops any records left.
+            return;
+        }
+        let inside: Vec<RawNodeId> = state
+            .entries
+            .keys()
+            .copied()
+            .filter(|&e| within(tree, e, root))
+            .collect();
+        for container in inside {
+            state.drop_entry(tree, container);
+        }
+        state.purge(tree, root);
+    }
+
     /// Check what was pushed since the last check, and bring each entry it
     /// reached up to date (see [`DeepOverflow`]).
     fn check(tree: &NodeTree, state: &mut DeepOverflowState) {
@@ -170,35 +229,45 @@ impl DeepOverflow {
             if !state.recs.is_empty() {
                 state.recs = Records::default();
             }
+            state.lost.clear();
             return;
         }
         if tree.whole_document_damaged {
             if !state.whole_dropped {
                 state.entries.clear();
                 state.recs = Records::default();
+                state.lost.clear();
                 state.whole_dropped = true;
             }
             return;
         }
-        if from == state.checked {
+        if from == state.checked && state.lost.is_empty() {
             return;
         }
-        // The memo's keys and the two lists can outlive their nodes (the
-        // lists are not pruned when a node is freed, `NodeTree::remove_subtree`),
-        // and a freed slot may hold a new node: checked lookups.
-        state.entries.retain(|&id, _| tree.get(id).is_some());
-        let mut marker = Marker {
-            tree,
-            state,
-            last: None,
-        };
-        for (&id, lost_child) in dirty[from.0..]
-            .iter()
-            .map(|id| (id, false))
-            .chain(parents[from.1..].iter().map(|id| (id, true)))
-        {
-            marker.note(id, lost_child);
+        state.epoch += 1;
+        let mut lost = std::mem::take(&mut state.lost);
+        let mut marker = Marker::new(tree, state);
+        // The parents that lost a child first: each sums all its children
+        // again, so the boxes marked below it need not be listed in it.
+        for &id in parents[from.1..].iter().chain(lost.iter()) {
+            marker.note(id, true);
         }
+        for &id in &dirty[from.0..] {
+            marker.note(id, false);
+        }
+        // The parents of records the marking dropped (a box moved), in this
+        // same check.
+        loop {
+            lost.clear();
+            std::mem::swap(&mut lost, &mut marker.state.lost);
+            if lost.is_empty() {
+                break;
+            }
+            for &id in &lost {
+                marker.note(id, true);
+            }
+        }
+        state.lost = lost;
         Self::bring_up_to_date(tree, state);
     }
 
@@ -212,16 +281,18 @@ impl DeepOverflow {
             .map(|(&id, _)| id)
             .collect();
         for container in marked {
+            let Some(node) = tree.get(container) else {
+                // Freed: `forget_freed` dropped its records.
+                state.entries.remove(&container);
+                continue;
+            };
             let DeepOverflowState {
                 entries,
                 recs,
                 measured,
+                epoch,
                 ..
-            } = state;
-            let Some(node) = tree.get(container) else {
-                entries.remove(&container);
-                continue;
-            };
+            } = &mut *state;
             let Some(entry) = entries.get_mut(&container) else {
                 continue;
             };
@@ -238,6 +309,7 @@ impl DeepOverflow {
                     live: &mut entry.live,
                     measured: 0,
                     again: false,
+                    epoch: *epoch,
                 };
                 walker.children(container, Level::Top, false);
                 *measured += walker.measured;
@@ -248,7 +320,7 @@ impl DeepOverflow {
                 }
             }
             if again {
-                entries.remove(&container);
+                state.drop_entry(tree, container);
             } else {
                 entry.own = own;
             }
@@ -267,124 +339,68 @@ impl DeepOverflow {
     pub(crate) fn measured(&self) -> u64 {
         self.state.borrow().measured
     }
+
+    /// How many walks and records the memo holds
+    /// (`testing::deep_overflow_held`).
+    pub(crate) fn held(&self) -> (usize, usize) {
+        let state = self.state.borrow();
+        (state.entries.len(), state.recs.len())
+    }
 }
 
-/// The check's marking of what was pushed ([`DeepOverflow`]).
-struct Marker<'a> {
-    tree: &'a NodeTree,
-    state: &'a mut DeepOverflowState,
-    /// The box the last upward marking started from: the rows of a list
-    /// share their parent, and the second marks nothing the first did not.
-    last: Option<RawNodeId>,
-}
-
-impl Marker<'_> {
-    /// Note box `id`, pushed paint-dirty or (`lost_child`) a parent a subtree
-    /// left.
-    fn note(&mut self, id: RawNodeId, lost_child: bool) {
-        let flag = if lost_child { BELOW } else { SELF };
-        if let Some(entry) = self.state.entries.get_mut(&id) {
-            entry.touch |= flag;
-        }
-        let tree = self.tree;
-        let Some(node) = tree.get(id) else {
-            // Freed: its record goes, and its parent was pushed as one a
-            // subtree left.
-            self.forget(id);
+impl DeepOverflowState {
+    /// Drop box `id`'s record, if it has one, and note its parent as one
+    /// that lost a child.
+    pub(super) fn forget(&mut self, id: RawNodeId) {
+        let Some(rec) = self.recs.remove(&id) else {
             return;
         };
-        if node.is_text() {
-            // Its lines are its IFC root's, which is pushed when they move.
-            return;
-        }
-        let parent = node.box_tree_parent();
-        let Some(rec) = self.state.recs.get_mut(&id) else {
-            if node.is_split_inline() {
-                // Not a box, so not recorded, but its style may decide an
-                // absolute box's containing block below it.
-                if let Some(owner) = self.mark_from(parent) {
-                    if let Some(entry) = self.state.entries.get_mut(&owner) {
-                        entry.touch |= AGAIN;
-                    }
-                }
-            } else {
-                // A box added (or one below a box the walk did not enter,
-                // which the marking stops at).
-                self.mark_from(parent);
-            }
-            return;
-        };
-        rec.touch |= flag;
-        let recorded = rec.parent;
-        if parent != Some(recorded) {
-            // Moved, or taken out, since it was met: its records go, its old
-            // parent lost it, and where it is now records it again.
-            self.purge(id);
-            self.last = None;
-            self.mark_from(Some(recorded));
-            self.last = None;
-            self.mark_from(parent);
-            return;
-        }
-        self.mark_from(parent);
-    }
-
-    /// Mark the recorded boxes from `start` up to the container whose walk
-    /// met them as having something below them changed; the container's
-    /// entry, if the marking reaches one. Stops at a box the walk did not go
-    /// into (nothing below it is read), and where an earlier marking passed.
-    fn mark_from(&mut self, start: Option<RawNodeId>) -> Option<RawNodeId> {
-        if start.is_some() && start == self.last {
-            return None;
-        }
-        self.last = start;
-        let mut current = start;
-        while let Some(a) = current {
-            if let Some(entry) = self.state.entries.get_mut(&a) {
-                entry.touch |= BELOW;
-                return Some(a);
-            }
-            match self.state.recs.get_mut(&a) {
-                Some(rec) => {
-                    if !rec.snap.entered() {
-                        return None;
-                    }
-                    if rec.touch & BELOW != 0
-                        && self
-                            .state
-                            .entries
-                            .get(&rec.owner)
-                            .is_some_and(|e| e.touch & BELOW != 0)
-                    {
-                        return Some(rec.owner);
-                    }
-                    rec.touch |= BELOW;
-                    current = Some(rec.parent);
-                }
-                None => current = self.tree.get(a).and_then(|n| n.box_tree_parent()),
-            }
-        }
-        None
-    }
-
-    /// Drop freed box `id`'s record.
-    fn forget(&mut self, id: RawNodeId) {
-        if let Some(rec) = self.state.recs.remove(&id)
-            && rec.snap.transformed
-            && let Some(entry) = self.state.entries.get_mut(&rec.owner)
+        if rec.snap.transformed
+            && let Some(entry) = self.entries.get_mut(&rec.owner)
         {
             entry.live.retain(|&l| l != id);
+        }
+        if self.recs.contains_key(&rec.parent) || self.entries.contains_key(&rec.parent) {
+            self.lost.push(rec.parent);
         }
     }
 
     /// Drop the records of box `id` and of every recorded box below it.
-    fn purge(&mut self, id: RawNodeId) {
+    pub(super) fn purge(&mut self, tree: &NodeTree, id: RawNodeId) {
+        if !self.recs.contains_key(&id) {
+            return;
+        }
         self.forget(id);
-        let tree = self.tree;
         for &child in crate::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
-            if self.state.recs.contains_key(&child) {
-                self.purge(child);
+            self.purge(tree, child);
+        }
+    }
+
+    /// Drop `container`'s walk and the records it made.
+    fn drop_entry(&mut self, tree: &NodeTree, container: RawNodeId) {
+        self.entries.remove(&container);
+        self.purge_owned(tree, container, container);
+    }
+
+    /// Drop the records `owner`'s walk made below box `id`.
+    fn purge_owned(&mut self, tree: &NodeTree, owner: RawNodeId, id: RawNodeId) {
+        for &child in crate::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
+            if self.recs.get(&child).is_some_and(|r| r.owner == owner) {
+                self.recs.remove(&child);
+                self.purge_owned(tree, owner, child);
             }
         }
     }
+}
+
+/// Whether box `id` is `root` or below it in the box tree.
+fn within(tree: &NodeTree, id: RawNodeId, root: RawNodeId) -> bool {
+    let mut at = Some(id);
+    while let Some(a) = at {
+        if a == root {
+            return true;
+        }
+        at = tree.get(a).and_then(|n| n.box_tree_parent());
+    }
+    false
 }

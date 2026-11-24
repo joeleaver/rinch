@@ -350,6 +350,12 @@ pub fn deep_overflow_measured(tree: &NodeTree) -> u64 {
     tree.deep_overflow.measured()
 }
 
+/// How many walks, and records of the boxes they met, the scroll ranges'
+/// kept walks hold (#2054): a test reads it to see a record go with its box.
+pub fn deep_overflow_held(tree: &NodeTree) -> (usize, usize) {
+    tree.deep_overflow.held()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::RinchDocument;
