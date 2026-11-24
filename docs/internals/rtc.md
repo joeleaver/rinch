@@ -176,17 +176,37 @@ There are no cargo features for the backends: the target picks one.
       overflows lite_echo's UDP receive buffer (a debug str0m reads one
       datagram per loop): the kernel's per-socket drop count was 2 to 6 per
       run locally, and the three ticks sent beside the burst failed to come
-      back in 2 runs of 10 (CI: batches #2971 and #3004). The test now sends
-      each tick after the burst and resends it every 250 ms until its echo
-      arrives, as a game would.
+      back in 2 runs of 10 (CI: batches #2971 and #3004). The test still
+      sends its ticks beside the burst, so unordered, unreliable traffic
+      shares the association with a reliable burst in flight, and resends
+      every tick not yet echoed each 250 ms until its echo arrives, as a game
+      would. A passing run logs how many sends each tick took and how much of
+      the control echo had come back by then (in practice none: the ticks are
+      echoed while the burst is still in flight).
     - **A channel can be open while the peer still says `Connecting`**: the
       browser fires the channel's `open` and `connectionstatechange` as
       separate tasks in either order. The test waits for both.
-    - Every wait is wall-clock (`performance.now()`), 10 s each, and a timeout
-      reports the elapsed time, the peer and channel states, and lite_echo's
-      `GET /stats`: what the newest peer received per channel, its datagram
-      counts, str0m's errors and the kernel's drop count for its socket. A
-      passing run logs each wait's time (`--nocapture` shows them).
+    - **Its time is budgeted to fit the runner's timeout.**
+      `wasm-bindgen-test-runner` kills a test binary that runs past
+      `WASM_BINDGEN_TEST_TIMEOUT` (20 s by default) without printing the
+      test's panic, so a report that arrives late is lost. Every wait is
+      wall-clock (`performance.now()`) and ends at one budget for the whole
+      test, 12 s from its first line (a passing run takes under a second;
+      the slowest single wait measured was 487 ms), and each fetch to
+      lite_echo (the offer, `/stats`, each response body) gives up after
+      2 s. The worst case, a wait that times out and then a `/stats` whose
+      response and body each take the full 2 s, reports at 16 s plus the
+      page load, inside even the default 20 s; measured: 14.0 s with
+      lite_echo stopped (`SIGSTOP`) mid-test, where the response never came.
+      CI's steps set 180 s explicitly on this run as well as through the
+      job's environment. Raising the budget past ~15 s needs
+      `WASM_BINDGEN_TEST_TIMEOUT` set wherever the test runs locally.
+    - A timeout reports how long that wait took and how far into the
+      budget the test was, the peer and channel states as they were at the
+      timeout, and lite_echo's `GET /stats`: what the newest peer received
+      per channel, its datagram counts, str0m's errors and the kernel's drop
+      count for its socket. A passing run logs each wait's time
+      (`--nocapture` shows them).
   - Locally, run Firefox through Playwright's bundled build against
     `wasm-bindgen-test-runner`'s interactive page (`NO_HEADLESS=1`).
 

@@ -23,16 +23,20 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 const URL: Option<&str> = option_env!("RINCH_RTC_TEST_URL");
 const REQUIRE: Option<&str> = option_env!("RINCH_RTC_REQUIRE_LIVE");
-/// Each wait's wall-clock deadline. The slowest wait measured (#3014, 152
-/// runs in Chrome and Firefox, some with the browser and lite_echo sharing
-/// one or two CPUs with busy loops) was 487 ms, and CI's passing runs finish
-/// the whole test in about a second: 10 s is some twenty times that, and was
-/// the old loop's nominal budget (2000 timers of 5 ms, which counted ticks,
-/// not time).
-const DEADLINE_MS: f64 = 10_000.0;
-/// How long a tick waits for its echo before it is sent again: about ten
-/// times the measured round trip (26-27 ms; lite_echo's 20 ms read timeout
-/// is most of it).
+/// The whole test's wall-clock budget, from its first line: every wait ends
+/// at it. It stays under wasm-bindgen-test-runner's per-binary timeout so
+/// that a failure's report always prints before the runner kills the page:
+/// the runner's default is 20 s (CI sets 180 s on these steps), and after
+/// the budget a timed-out wait still spends up to `2 * FETCH_MS` reading
+/// lite_echo's `/stats`, so the worst case is 16 s plus the page's load.
+/// The slowest wait measured (#3014, 152 runs in Chrome and Firefox, some
+/// with the browser and lite_echo sharing one or two CPUs with busy loops)
+/// was 487 ms, and CI's passing runs finish the whole test in about a
+/// second: 12 s is more than ten times that.
+const BUDGET_MS: f64 = 12_000.0;
+/// The bound on each step of a fetch to lite_echo (the response, then its
+/// body), so a stuck server cannot hold the test past the runner's timeout.
+const FETCH_MS: i32 = 2_000;
 const RESEND_MS: f64 = 250.0;
 
 async fn tick() {
@@ -49,9 +53,25 @@ fn now_ms() -> f64 {
     web_sys::window().unwrap().performance().unwrap().now()
 }
 
+/// `p`'s outcome, or an error saying it took longer than `FETCH_MS`.
+async fn bounded(p: js_sys::Promise) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    let timer = js_sys::Promise::new(&mut |_, reject| {
+        let _ = web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_1(
+                &reject,
+                FETCH_MS,
+                &format!("no answer within {FETCH_MS} ms").into(),
+            );
+    });
+    JsFuture::from(js_sys::Promise::race(&js_sys::Array::of2(&p, &timer))).await
+}
+
 /// What the test can see of the connection, for a timeout's message.
 struct Probe {
     url: &'static str,
+    /// When the test started (`now_ms`); every wait ends at `start + BUDGET_MS`.
+    start: f64,
     peer: Peer,
     channels: RefCell<Vec<Channel>>,
     got: Got,
@@ -75,28 +95,37 @@ impl Probe {
             })
             .collect();
         format!(
-            "peer {:?}; {}; errors {:?}",
+            "{:.0} ms into the test (budget {BUDGET_MS} ms); peer {:?}; {}; errors {:?}",
+            now_ms() - self.start,
             self.peer.state(),
             channels.join("; "),
             self.errors.borrow()
         )
     }
+
+    /// Whether the test's budget is spent.
+    fn expired(&self) -> bool {
+        now_ms() - self.start > BUDGET_MS
+    }
+
+    /// Panic for a wait on `what` that began at `since`: how long it waited,
+    /// what the browser side looks like, and what lite_echo saw (`/stats`).
+    async fn fail(&self, what: &str, since: f64) -> ! {
+        let waited = now_ms() - since;
+        // The browser side as it was at the timeout, before the fetch.
+        let browser = self.describe();
+        let server = server_stats(self.url).await;
+        panic!("timed out waiting for {what} after {waited:.0} ms: {browser}; lite_echo: {server}");
+    }
 }
 
-/// Wait for `cond`, for at most `deadline_ms` of wall-clock time. On a
-/// timeout the panic says how long it waited, what the browser side looks
-/// like, and what lite_echo saw (its `/stats`).
-async fn until(probe: &Probe, what: &str, deadline_ms: f64, mut cond: impl FnMut() -> bool) {
+/// Wait for `cond` until the test's budget runs out; on a timeout,
+/// `Probe::fail` reports.
+async fn until(probe: &Probe, what: &str, mut cond: impl FnMut() -> bool) {
     let start = now_ms();
     while !cond() {
-        if now_ms() - start > deadline_ms {
-            let server = server_stats(probe.url).await;
-            panic!(
-                "timed out waiting for {what} after {:.0} ms (deadline {deadline_ms} ms): {}; \
-                 lite_echo: {server}",
-                now_ms() - start,
-                probe.describe()
-            );
+        if probe.expired() {
+            probe.fail(what, start).await;
         }
         tick().await;
     }
@@ -108,16 +137,15 @@ async fn until(probe: &Probe, what: &str, deadline_ms: f64, mut cond: impl FnMut
 /// lite_echo's `GET /stats`, or why it could not be read.
 async fn server_stats(url: &str) -> String {
     let window = web_sys::window().unwrap();
-    let resp = match JsFuture::from(window.fetch_with_str(&format!("{url}/stats"))).await {
+    let resp = match bounded(window.fetch_with_str(&format!("{url}/stats"))).await {
         Ok(r) => r.dyn_into::<web_sys::Response>().unwrap(),
         Err(e) => return format!("GET /stats failed: {e:?}"),
     };
     match resp.text() {
-        Ok(p) => JsFuture::from(p)
-            .await
-            .ok()
-            .and_then(|t| t.as_string())
-            .unwrap_or_else(|| "unreadable body".into()),
+        Ok(p) => match bounded(p).await {
+            Ok(t) => t.as_string().unwrap_or_else(|| "unreadable body".into()),
+            Err(e) => format!("body failed: {e:?}"),
+        },
         Err(e) => format!("no body: {e:?}"),
     }
 }
@@ -130,15 +158,15 @@ async fn signal(url: &str, offer: &str) -> String {
     init.set_body(&offer.into());
     let req = web_sys::Request::new_with_str_and_init(&format!("{url}/offer"), &init).unwrap();
     let window = web_sys::window().unwrap();
-    let resp: web_sys::Response = JsFuture::from(window.fetch_with_request(&req))
+    let resp: web_sys::Response = bounded(window.fetch_with_request(&req))
         .await
         .expect("lite_echo answers the POST")
         .dyn_into()
         .unwrap();
     assert!(resp.ok(), "lite_echo status {}", resp.status());
-    JsFuture::from(resp.text().unwrap())
+    bounded(resp.text().unwrap())
         .await
-        .unwrap()
+        .expect("lite_echo's answer has a body")
         .as_string()
         .unwrap()
 }
@@ -175,6 +203,7 @@ async fn the_browser_reaches_a_str0m_ice_lite_peer() {
         );
         return;
     };
+    let start = now_ms();
     let errors: Rc<RefCell<Vec<String>>> = Rc::default();
     let peer = Peer::new(RtcConfig::default()).unwrap();
     let e = errors.clone();
@@ -194,6 +223,7 @@ async fn the_browser_reaches_a_str0m_ice_lite_peer() {
     let got: Got = Rc::default();
     let probe = Probe {
         url,
+        start,
         peer: peer.clone(),
         channels: RefCell::new(Vec::new()),
         got: got.clone(),
@@ -216,16 +246,11 @@ async fn the_browser_reaches_a_str0m_ice_lite_peer() {
     // `connectionstatechange` as separate tasks, in either order: a channel
     // can be open while `state()` still says `Connecting` (seen under load,
     // #3014). So the wait is for both, not an assertion after the first.
-    until(
-        &probe,
-        "both channels open and the peer connected",
-        DEADLINE_MS,
-        || {
-            control.state() == ChannelState::Open
-                && tick_ch.state() == ChannelState::Open
-                && peer.state() == PeerState::Connected
-        },
-    )
+    until(&probe, "both channels open and the peer connected", || {
+        control.state() == ChannelState::Open
+            && tick_ch.state() == ChannelState::Open
+            && peer.state() == PeerState::Connected
+    })
     .await;
     // str0m's answer advertises a=max-message-size:262144.
     assert_eq!(control.max_message_size(), 262_144);
@@ -234,65 +259,64 @@ async fn the_browser_reaches_a_str0m_ice_lite_peer() {
         Err(SendError::TooLarge { .. })
     ));
 
-    // Bytes that come back crossed the server: the positive control.
+    // Bytes that come back crossed the server: the positive control. The
+    // ticks go out beside the 200 kB burst, so unordered, unreliable traffic
+    // shares the association with a reliable burst in flight.
     control.send(b"hello".to_vec()).unwrap();
     control.send(vec![7u8; 200_000]).unwrap();
-    until(&probe, "control echoed", DEADLINE_MS, || {
-        echoed(&got, "control") == 200_005
-    })
-    .await;
 
     // `tick` is unordered with no retransmits, so a datagram lost on the way
     // takes its message with it: nothing resends it. That is not a fault to
-    // test for: the 200 kB burst above overflows lite_echo's UDP receive
-    // buffer often enough (the kernel counts the drops) that three ticks
-    // sent beside it all came back only most of the time (#3014). So, as a
-    // game resends its state, each tick is resent until its echo arrives;
-    // what is tested is that the channel carries messages both ways.
-    for i in 0..3u8 {
-        let msg = vec![b't', i, 0, 0, 0, 0, 0, 0, 0, 0];
-        let back = || got.borrow().iter().any(|(l, m)| l == "tick" && *m == msg);
-        let start = now_ms();
-        let mut sends = 0;
-        while !back() {
-            if now_ms() - start > DEADLINE_MS {
-                panic!(
-                    "tick {i} never echoed: sent {sends} times over {:.0} ms: {}; lite_echo: {}",
-                    now_ms() - start,
-                    probe.describe(),
-                    server_stats(url).await
-                );
-            }
-            tick_ch.send(msg.clone()).unwrap();
-            sends += 1;
-            let sent = now_ms();
-            while !back() && now_ms() - sent < RESEND_MS {
-                tick().await;
+    // test for: the burst overflows lite_echo's UDP receive buffer often
+    // enough (the kernel counts the drops) that three ticks sent once beside
+    // it all came back only most of the time (#3014). So, as a game resends
+    // its state, every tick not yet echoed is resent each `RESEND_MS`; what
+    // is tested is that the channel carries messages both ways while the
+    // burst is in flight.
+    let ticks: Vec<Vec<u8>> = (0..3u8)
+        .map(|i| vec![b't', i, 0, 0, 0, 0, 0, 0, 0, 0])
+        .collect();
+    let back = |msg: &Vec<u8>| got.borrow().iter().any(|(l, m)| l == "tick" && m == msg);
+    let mut sends = [0u32; 3];
+    let ticks_start = now_ms();
+    while !ticks.iter().all(back) {
+        if probe.expired() {
+            let what = format!("every tick echoed (sends per tick {sends:?})");
+            probe.fail(&what, ticks_start).await;
+        }
+        for (msg, n) in ticks.iter().zip(sends.iter_mut()) {
+            if !back(msg) {
+                tick_ch.send(msg.clone()).unwrap();
+                *n += 1;
             }
         }
-        web_sys::console::log_1(
-            &format!(
-                "web_live_lite: tick {i} echoed after {:.0} ms, {sends} send(s)",
-                now_ms() - start
-            )
-            .into(),
-        );
+        let sent = now_ms();
+        while !ticks.iter().all(back) && now_ms() - sent < RESEND_MS && !probe.expired() {
+            tick().await;
+        }
     }
+    web_sys::console::log_1(
+        &format!(
+            "web_live_lite: every tick echoed after {:.0} ms, sends per tick {sends:?}, \
+             control echoed {} B of 200005 by then",
+            now_ms() - ticks_start,
+            echoed(&got, "control")
+        )
+        .into(),
+    );
+    until(&probe, "control echoed", || {
+        echoed(&got, "control") == 200_005
+    })
+    .await;
 
     // An in-band channel opened by the browser: the server hears and echoes it.
     let chat = peer
         .create_data_channel("chat", ChannelOptions::new(Reliability::Reliable))
         .unwrap();
     watch(&chat, &probe);
-    until(&probe, "chat open", DEADLINE_MS, || {
-        chat.state() == ChannelState::Open
-    })
-    .await;
+    until(&probe, "chat open", || chat.state() == ChannelState::Open).await;
     chat.send(b"hi".to_vec()).unwrap();
-    until(&probe, "chat echoed", DEADLINE_MS, || {
-        echoed(&got, "chat") == 2
-    })
-    .await;
+    until(&probe, "chat echoed", || echoed(&got, "chat") == 2).await;
 
     let closed = Rc::new(Cell::new(0));
     let k = closed.clone();
@@ -302,7 +326,7 @@ async fn the_browser_reaches_a_str0m_ice_lite_peer() {
         }
     });
     peer.close();
-    until(&probe, "closed", DEADLINE_MS, || closed.get() == 1).await;
+    until(&probe, "closed", || closed.get() == 1).await;
     assert!(
         !trickled.borrow().is_empty(),
         "the browser trickled candidates"
