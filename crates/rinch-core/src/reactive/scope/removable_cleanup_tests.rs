@@ -1,7 +1,9 @@
 //! [`on_cleanup_removable`] and [`CleanupHandle::remove`].
 
+use super::dispose::DISPOSE_CTX;
 use super::*;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A log the cleanups write their names to, in the order they run.
 fn log() -> Rc<RefCell<Vec<&'static str>>> {
