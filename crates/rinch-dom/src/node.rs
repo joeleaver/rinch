@@ -292,6 +292,9 @@ pub struct TextMeasure {
     pub line_break: crate::computed_style::LineBreakValue,
     /// The parent's `hyphens: none` (#2621).
     pub hyphens_none: bool,
+    /// The base direction the leaf is laid out in: the parent's
+    /// ([`crate::computed_style::ComputedStyle::base_direction`], #2940).
+    pub base_direction: parley::BaseDirection,
     /// The parent's `text-indent` (#2628): the text is a flex or grid
     /// container's own, an anonymous item whose first line it indents.
     pub text_indent: crate::computed_style::TextIndentValue,

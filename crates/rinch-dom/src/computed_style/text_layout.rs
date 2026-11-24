@@ -53,8 +53,9 @@ impl ComputedStyle {
     }
 
     /// [`Self::build_parley_layout_with_brush`] in paragraph direction
-    /// `base_direction` — `None` is parley's default, `Auto`, which takes it
-    /// from the first strong character. A text control passes its own
+    /// `base_direction` — `None` is the element's own,
+    /// [`Self::base_direction`] (its `direction`, or each paragraph's first
+    /// strong character under `unicode-bidi: plaintext`, #2940). A text control passes its own
     /// `direction` (`form_control::field_text_layout`, #2939): its value
     /// runs in the field's direction whatever its text, as in Chrome.
     #[allow(clippy::too_many_arguments)]
@@ -74,9 +75,10 @@ impl ComputedStyle {
 
         let font_family = crate::fonts::parley_text_family(font_cx, &self.font_family, text);
         let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
-        if let Some(base) = base_direction {
-            builder.set_base_direction(base);
-        }
+        // An explicit direction wins (a text control passes its own, #2939);
+        // otherwise the element's own, every paragraph, or each paragraph's
+        // own under `plaintext` (#2940; parley's default is the latter).
+        builder.set_base_direction(base_direction.unwrap_or_else(|| self.base_direction()));
 
         // Set font size (scaled for DPI)
         builder.push_default(StyleProperty::FontSize(scaled_font_size));
@@ -199,6 +201,21 @@ impl ComputedStyle {
         self.word_break.hash(h);
         self.line_break.hash(h);
         self.hyphens_none.hash(h);
+        (self.base_direction() as u8).hash(h);
+    }
+
+    /// The base direction a builder lays this element's text out in (#2940):
+    /// its `direction` for every paragraph, or under `unicode-bidi: plaintext`
+    /// parley's `Auto`, each paragraph its own from its first strong character.
+    /// Every builder outside the IFC sets it: parley's default is `Auto`, so an
+    /// ltr `<textarea>` whose second line starts with Hebrew would lay that
+    /// line out right to left.
+    pub fn base_direction(&self) -> parley::BaseDirection {
+        match (self.unicode_bidi_plaintext, self.direction_rtl) {
+            (true, _) => parley::BaseDirection::Auto,
+            (false, false) => parley::BaseDirection::Ltr,
+            (false, true) => parley::BaseDirection::Rtl,
+        }
     }
 
     /// Whether `self` and `other` would shape the same text into the same
@@ -224,11 +241,11 @@ impl ComputedStyle {
     ///
     /// | producer | what it reads |
     /// |---|---|
-    /// | [`Self::build_parley_layout`] | `font_size`, `font_family`, `font_weight`, `font_style`, `line_height`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `word_break`, `line_break` |
+    /// | [`Self::build_parley_layout`] | `font_size`, `font_family`, `font_weight`, `font_style`, `line_height`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `word_break`, `line_break`, `direction` and `unicode-bidi: plaintext` ([`Self::base_direction`], #2940) |
     /// | `RinchDocument::build_inline_layout`'s `root_text_style` | the above plus `color`, `text_decoration`, `text_underline_offset`, `white_space` (both the collapse mode and whether `max_width` applies at all), `text_align` and `text_indent` (#2628) |
     /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_family` (#677), `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height`, `letter_spacing`, `word_spacing`, `word_break`, `line_break` (#2388) |
     /// | `RinchDocument::push_inline_spans`, which builds `InlineLayout::background_spans` and `::decoration_spans`, and the edge boxes `walk_inline_children` pushes (#1426) | `background_color()`, the four paddings, the border widths and styles, the horizontal margins, `border_radius_top_left`, `text_decoration` |
-    /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `word_break`, `line_break`, `text_indent`, `text_overflow`, `overflow_x` |
+    /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `word_break`, `line_break`, `text_indent`, `text_overflow`, `overflow_x`, the base direction (#2940) |
     ///
     /// `letter_spacing` and `word_spacing` reached only the first of those rows
     /// until #698, whose one caller pair is the MCP debug tools — so both
@@ -327,6 +344,7 @@ impl ComputedStyle {
             && self.word_break == other.word_break
             && self.line_break == other.line_break
             && self.hyphens_none == other.hyphens_none
+            && self.base_direction() == other.base_direction()
             && self.text_indent == other.text_indent
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x

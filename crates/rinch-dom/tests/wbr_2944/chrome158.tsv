@@ -1,0 +1,1007 @@
+g2_normal_normal_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_normal_normal_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_normal_normal_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_normal_nowrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_normal_nowrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_normal_pre_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_normal_pre_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_normal_pre_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_normal_pre_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_normal_pre-wrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_normal_pre-wrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_normal_pre-wrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_normal_pre-wrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_nowrap_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_nowrap_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_nowrap_normal_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_nowrap_normal_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_nowrap_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_nowrap_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_nowrap_nowrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_nowrap_nowrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_nowrap_pre_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_nowrap_pre_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_nowrap_pre_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_nowrap_pre_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_nowrap_pre-wrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_nowrap_pre-wrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_nowrap_pre-wrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_nowrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_pre_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_pre_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_pre_normal_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_pre_normal_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_pre_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_pre_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_pre_nowrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_pre_nowrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_pre_pre_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_pre_pre_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_pre_pre_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_pre_pre_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_pre_pre-wrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_pre_pre-wrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_pre_pre-wrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_pre_pre-wrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_pre-wrap_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_pre-wrap_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_pre-wrap_normal_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_pre-wrap_normal_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_pre-wrap_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_pre-wrap_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_pre-wrap_nowrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_pre-wrap_nowrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_pre-wrap_pre_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_pre-wrap_pre_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_pre-wrap_pre_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_pre-wrap_pre_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_normal_pre-wrap_pre-wrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_normal_pre-wrap_pre-wrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_normal_pre-wrap_pre-wrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_normal_pre-wrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_normal_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_normal_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_normal_normal_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_normal_normal_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_normal_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_normal_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_normal_nowrap_pre	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_normal_nowrap_pre-wrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_normal_pre_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_normal_pre_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_normal_pre_pre	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_normal_pre_pre-wrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_normal_pre-wrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_normal_pre-wrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_normal_pre-wrap_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_normal_pre-wrap_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_nowrap_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_nowrap_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_nowrap_normal_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_nowrap_normal_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_nowrap_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_nowrap_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_nowrap_nowrap_pre	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_nowrap_nowrap_pre-wrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_nowrap_pre_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_nowrap_pre_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_nowrap_pre_pre	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_nowrap_pre_pre-wrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_nowrap_pre-wrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_nowrap_pre-wrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_nowrap_pre-wrap_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_nowrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_pre_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_pre_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_pre_normal_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_pre_normal_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_pre_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_pre_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_pre_nowrap_pre	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_pre_nowrap_pre-wrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_pre_pre_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_pre_pre_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_pre_pre_pre	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_pre_pre_pre-wrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_pre_pre-wrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_pre_pre-wrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_pre_pre-wrap_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_pre_pre-wrap_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_pre-wrap_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_pre-wrap_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_pre-wrap_normal_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_pre-wrap_normal_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_pre-wrap_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_pre-wrap_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_pre-wrap_nowrap_pre	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_pre-wrap_nowrap_pre-wrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_pre-wrap_pre_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_pre-wrap_pre_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_pre-wrap_pre_pre	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_pre-wrap_pre_pre-wrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_nowrap_pre-wrap_pre-wrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_nowrap_pre-wrap_pre-wrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_nowrap_pre-wrap_pre-wrap_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_nowrap_pre-wrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_normal_normal_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_normal_normal_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_normal_normal_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_normal_normal_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_normal_nowrap_normal	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_normal_nowrap_nowrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_normal_nowrap_pre	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_normal_nowrap_pre-wrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_normal_pre_normal	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_normal_pre_nowrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_normal_pre_pre	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_normal_pre_pre-wrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_normal_pre-wrap_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_normal_pre-wrap_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_normal_pre-wrap_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_normal_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_nowrap_normal_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_nowrap_normal_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_nowrap_normal_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_nowrap_normal_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_nowrap_nowrap_normal	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_nowrap_nowrap_nowrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_nowrap_nowrap_pre	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_nowrap_nowrap_pre-wrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_nowrap_pre_normal	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_nowrap_pre_nowrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_nowrap_pre_pre	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_nowrap_pre_pre-wrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_nowrap_pre-wrap_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_nowrap_pre-wrap_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_nowrap_pre-wrap_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_nowrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_pre_normal_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_pre_normal_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_pre_normal_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_pre_normal_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_pre_nowrap_normal	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_pre_nowrap_nowrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_pre_nowrap_pre	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_pre_nowrap_pre-wrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_pre_pre_normal	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_pre_pre_nowrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_pre_pre_pre	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_pre_pre_pre-wrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_pre_pre-wrap_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_pre_pre-wrap_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_pre_pre-wrap_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_pre_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_pre-wrap_normal_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_pre-wrap_normal_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_pre-wrap_normal_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_pre-wrap_normal_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_pre-wrap_nowrap_normal	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_pre-wrap_nowrap_nowrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_pre-wrap_nowrap_pre	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_pre-wrap_nowrap_pre-wrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_pre-wrap_pre_normal	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_pre-wrap_pre_nowrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_pre-wrap_pre_pre	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_pre-wrap_pre_pre-wrap	normal	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre_pre-wrap_pre-wrap_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre_pre-wrap_pre-wrap_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre_pre-wrap_pre-wrap_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre_pre-wrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_normal_normal_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_normal_normal_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_normal_normal_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_normal_normal_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_normal_nowrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_normal_nowrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_normal_nowrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_normal_nowrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_normal_pre_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_normal_pre_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_normal_pre_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_normal_pre_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_normal_pre-wrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_normal_pre-wrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_normal_pre-wrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_normal_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_nowrap_normal_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_nowrap_normal_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_nowrap_normal_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_nowrap_normal_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_nowrap_nowrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_nowrap_nowrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_nowrap_nowrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_nowrap_nowrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_nowrap_pre_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_nowrap_pre_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_nowrap_pre_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_nowrap_pre_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_nowrap_pre-wrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_nowrap_pre-wrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_nowrap_pre-wrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_nowrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_pre_normal_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_pre_normal_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_pre_normal_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_pre_normal_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_pre_nowrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_pre_nowrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_pre_nowrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_pre_nowrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_pre_pre_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_pre_pre_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_pre_pre_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_pre_pre_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_pre_pre-wrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_pre_pre-wrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_pre_pre-wrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_pre_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_normal_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_normal_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_normal_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_normal_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_nowrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_nowrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_nowrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_nowrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_pre_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_pre_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_pre_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_pre_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_pre-wrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_pre-wrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_pre-wrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_normal_pre-wrap_pre-wrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g1_normal_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_normal_normal_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g1_normal_normal_normal_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g1_normal_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_normal_nowrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g1_normal_normal_nowrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_normal_pre_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g1_normal_normal_pre_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_normal_pre_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g1_normal_normal_pre_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_normal_pre-wrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g1_normal_normal_pre-wrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_normal_pre-wrap_pre	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g1_normal_normal_pre-wrap_pre-wrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_nowrap_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g1_normal_nowrap_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_nowrap_normal_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g1_normal_nowrap_normal_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_nowrap_nowrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g1_normal_nowrap_nowrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_nowrap_nowrap_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g1_normal_nowrap_nowrap_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_nowrap_pre_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g1_normal_nowrap_pre_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_nowrap_pre_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g1_normal_nowrap_pre_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_nowrap_pre-wrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g1_normal_nowrap_pre-wrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_nowrap_pre-wrap_pre	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g1_normal_nowrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_pre_normal_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g1_normal_pre_normal_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_pre_normal_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g1_normal_pre_normal_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_pre_nowrap_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g1_normal_pre_nowrap_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_pre_nowrap_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g1_normal_pre_nowrap_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_pre_pre_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g1_normal_pre_pre_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_pre_pre_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g1_normal_pre_pre_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_pre_pre-wrap_normal	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g1_normal_pre_pre-wrap_nowrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_pre_pre-wrap_pre	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g1_normal_pre_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_pre-wrap_normal_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g1_normal_pre-wrap_normal_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_pre-wrap_normal_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g1_normal_pre-wrap_normal_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_pre-wrap_nowrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g1_normal_pre-wrap_nowrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_pre-wrap_nowrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g1_normal_pre-wrap_nowrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_pre-wrap_pre_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g1_normal_pre-wrap_pre_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_pre-wrap_pre_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g1_normal_pre-wrap_pre_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g1_normal_pre-wrap_pre-wrap_normal	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g1_normal_pre-wrap_pre-wrap_nowrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g1_normal_pre-wrap_pre-wrap_pre	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g1_normal_pre-wrap_pre-wrap_pre-wrap	normal	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_normal_normal_normal	normal	40	<wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l2_normal_normal_normal_nowrap	normal	40	<wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_normal_normal_pre	normal	40	<wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l2_normal_normal_normal_pre-wrap	normal	40	<wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_normal_nowrap_normal	normal	40	<wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l2_normal_normal_nowrap_nowrap	normal	40	<wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_normal_nowrap_pre	normal	40	<wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l2_normal_normal_nowrap_pre-wrap	normal	40	<wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_normal_pre_normal	normal	40	<wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l2_normal_normal_pre_nowrap	normal	40	<wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_normal_pre_pre	normal	40	<wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l2_normal_normal_pre_pre-wrap	normal	40	<wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_normal_pre-wrap_normal	normal	40	<wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l2_normal_normal_pre-wrap_nowrap	normal	40	<wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_normal_pre-wrap_pre	normal	40	<wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l2_normal_normal_pre-wrap_pre-wrap	normal	40	<wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_nowrap_normal_normal	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l2_normal_nowrap_normal_nowrap	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_nowrap_normal_pre	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l2_normal_nowrap_normal_pre-wrap	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_nowrap_nowrap_normal	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l2_normal_nowrap_nowrap_nowrap	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_nowrap_nowrap_pre	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l2_normal_nowrap_nowrap_pre-wrap	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_nowrap_pre_normal	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l2_normal_nowrap_pre_nowrap	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_nowrap_pre_pre	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l2_normal_nowrap_pre_pre-wrap	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_nowrap_pre-wrap_normal	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l2_normal_nowrap_pre-wrap_nowrap	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_nowrap_pre-wrap_pre	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l2_normal_nowrap_pre-wrap_pre-wrap	normal	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_pre_normal_normal	normal	40	<wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l2_normal_pre_normal_nowrap	normal	40	<wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_pre_normal_pre	normal	40	<wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l2_normal_pre_normal_pre-wrap	normal	40	<wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_pre_nowrap_normal	normal	40	<wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l2_normal_pre_nowrap_nowrap	normal	40	<wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_pre_nowrap_pre	normal	40	<wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l2_normal_pre_nowrap_pre-wrap	normal	40	<wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_pre_pre_normal	normal	40	<wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l2_normal_pre_pre_nowrap	normal	40	<wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_pre_pre_pre	normal	40	<wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l2_normal_pre_pre_pre-wrap	normal	40	<wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_pre_pre-wrap_normal	normal	40	<wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l2_normal_pre_pre-wrap_nowrap	normal	40	<wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_pre_pre-wrap_pre	normal	40	<wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l2_normal_pre_pre-wrap_pre-wrap	normal	40	<wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_pre-wrap_normal_normal	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l2_normal_pre-wrap_normal_nowrap	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_pre-wrap_normal_pre	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l2_normal_pre-wrap_normal_pre-wrap	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_pre-wrap_nowrap_normal	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l2_normal_pre-wrap_nowrap_nowrap	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_pre-wrap_nowrap_pre	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l2_normal_pre-wrap_nowrap_pre-wrap	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_pre-wrap_pre_normal	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l2_normal_pre-wrap_pre_nowrap	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_pre-wrap_pre_pre	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l2_normal_pre-wrap_pre_pre-wrap	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l2_normal_pre-wrap_pre-wrap_normal	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l2_normal_pre-wrap_pre-wrap_nowrap	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l2_normal_pre-wrap_pre-wrap_pre	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l2_normal_pre-wrap_pre-wrap_pre-wrap	normal	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l1_normal_normal_normal	normal	40	<wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l1_normal_normal_nowrap	normal	40	<wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l1_normal_normal_pre	normal	40	<wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l1_normal_normal_pre-wrap	normal	40	<wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l1_normal_nowrap_normal	normal	40	<wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l1_normal_nowrap_nowrap	normal	40	<wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l1_normal_nowrap_pre	normal	40	<wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l1_normal_nowrap_pre-wrap	normal	40	<wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l1_normal_pre_normal	normal	40	<wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l1_normal_pre_nowrap	normal	40	<wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l1_normal_pre_pre	normal	40	<wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l1_normal_pre_pre-wrap	normal	40	<wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l1_normal_pre-wrap_normal	normal	40	<wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l1_normal_pre-wrap_nowrap	normal	40	<wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l1_normal_pre-wrap_pre	normal	40	<wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l1_normal_pre-wrap_pre-wrap	normal	40	<wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_normal_normal_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_normal_normal_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_normal_normal_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_normal_normal_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_normal_nowrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_normal_nowrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_normal_nowrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_normal_nowrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_normal_pre_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_normal_pre_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_normal_pre_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_normal_pre_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_normal_pre-wrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_normal_pre-wrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_normal_pre-wrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_normal_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_nowrap_normal_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_nowrap_normal_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_nowrap_normal_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_nowrap_normal_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_nowrap_nowrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_nowrap_nowrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_nowrap_nowrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_nowrap_nowrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_nowrap_pre_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_nowrap_pre_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_nowrap_pre_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_nowrap_pre_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_nowrap_pre-wrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_nowrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_nowrap_pre-wrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_nowrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_pre_normal_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_pre_normal_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_pre_normal_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_pre_normal_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_pre_nowrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_pre_nowrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_pre_nowrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_pre_nowrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_pre_pre_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_pre_pre_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_pre_pre_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_pre_pre_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_pre_pre-wrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_pre_pre-wrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_pre_pre-wrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_pre_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_pre-wrap_normal_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_pre-wrap_normal_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_pre-wrap_normal_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_pre-wrap_normal_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_pre-wrap_nowrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_pre-wrap_nowrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_pre-wrap_nowrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_pre-wrap_nowrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_pre-wrap_pre_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_pre-wrap_pre_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_pre-wrap_pre_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_pre-wrap_pre_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_normal_pre-wrap_pre-wrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_normal_pre-wrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_normal_pre-wrap_pre-wrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_normal_pre-wrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_normal_normal_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_normal_normal_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_normal_normal_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_normal_normal_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_normal_nowrap_normal	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_normal_nowrap_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_normal_nowrap_pre	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_normal_nowrap_pre-wrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_normal_pre_normal	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_normal_pre_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_normal_pre_pre	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_normal_pre_pre-wrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_normal_pre-wrap_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_normal_pre-wrap_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_normal_pre-wrap_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_normal_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_nowrap_normal_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_nowrap_normal_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_nowrap_normal_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_nowrap_normal_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_nowrap_nowrap_normal	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_nowrap_nowrap_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_nowrap_nowrap_pre	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_nowrap_nowrap_pre-wrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_nowrap_pre_normal	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_nowrap_pre_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_nowrap_pre_pre	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_nowrap_pre_pre-wrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_nowrap_pre-wrap_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_nowrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_nowrap_pre-wrap_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_nowrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_pre_normal_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_pre_normal_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_pre_normal_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_pre_normal_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_pre_nowrap_normal	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_pre_nowrap_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_pre_nowrap_pre	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_pre_nowrap_pre-wrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_pre_pre_normal	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_pre_pre_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_pre_pre_pre	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_pre_pre_pre-wrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_pre_pre-wrap_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_pre_pre-wrap_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_pre_pre-wrap_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_pre_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_normal_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_normal_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_normal_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_normal_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_nowrap_normal	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_nowrap_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_nowrap_pre	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_nowrap_pre-wrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_pre_normal	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_pre_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_pre_pre	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_pre_pre-wrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_pre-wrap_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_pre-wrap_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_nowrap_pre-wrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_normal_normal_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_normal_normal_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_normal_normal_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_normal_normal_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_normal_nowrap_normal	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_normal_nowrap_nowrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_normal_nowrap_pre	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_normal_nowrap_pre-wrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_normal_pre_normal	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_normal_pre_nowrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_normal_pre_pre	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_normal_pre_pre-wrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_normal_pre-wrap_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_normal_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_normal_pre-wrap_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_normal_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_nowrap_normal_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_nowrap_normal_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_nowrap_normal_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_nowrap_normal_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_nowrap_nowrap_normal	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_nowrap_nowrap_nowrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_nowrap_nowrap_pre	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_nowrap_nowrap_pre-wrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_nowrap_pre_normal	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_nowrap_pre_nowrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_nowrap_pre_pre	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_nowrap_pre_pre-wrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_nowrap_pre-wrap_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_nowrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_nowrap_pre-wrap_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_nowrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_pre_normal_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_pre_normal_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_pre_normal_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_pre_normal_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_pre_nowrap_normal	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_pre_nowrap_nowrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_pre_nowrap_pre	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_pre_nowrap_pre-wrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_pre_pre_normal	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_pre_pre_nowrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_pre_pre_pre	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_pre_pre_pre-wrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_pre_pre-wrap_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_pre_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_pre_pre-wrap_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_pre_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_pre-wrap_normal_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_pre-wrap_normal_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_pre-wrap_normal_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_pre-wrap_normal_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_pre-wrap_nowrap_normal	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_pre-wrap_nowrap_nowrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_pre-wrap_nowrap_pre	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_pre-wrap_nowrap_pre-wrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_pre-wrap_pre_normal	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_pre-wrap_pre_nowrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_pre-wrap_pre_pre	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_pre-wrap_pre_pre-wrap	nowrap	60	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre_pre-wrap_pre-wrap_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre_pre-wrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre_pre-wrap_pre-wrap_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre_pre-wrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_normal_normal_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_normal_normal_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_normal_normal_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_normal_normal_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_normal_nowrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_normal_nowrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_normal_nowrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_normal_nowrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_normal_pre_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_normal_pre_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_normal_pre_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_normal_pre_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_normal_pre-wrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_normal_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_normal_pre-wrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_normal_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_normal_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_normal_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_normal_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_normal_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_nowrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_nowrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_nowrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_nowrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_pre_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_pre_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_pre_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_pre_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_pre-wrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_pre-wrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_nowrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre_normal_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_pre_normal_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre_normal_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_pre_normal_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre_nowrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_pre_nowrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre_nowrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_pre_nowrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre_pre_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_pre_pre_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre_pre_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_pre_pre_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre_pre-wrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_pre_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre_pre-wrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_pre_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_normal_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_normal_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_normal_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_normal_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_nowrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_nowrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_nowrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_nowrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_pre_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_pre_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_pre_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_pre_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_pre-wrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_pre-wrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g2_nowrap_pre-wrap_pre-wrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_normal_normal_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_normal_normal_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_normal_normal_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_normal_normal_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_normal_nowrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_normal_nowrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_normal_nowrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_normal_nowrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_normal_pre_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_normal_pre_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_normal_pre_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_normal_pre_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_normal_pre-wrap_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_normal_pre-wrap_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_normal_pre-wrap_pre	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_normal_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_nowrap_normal_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_nowrap_normal_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_nowrap_normal_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_nowrap_normal_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_nowrap_nowrap_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_nowrap_nowrap_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_nowrap_nowrap_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_nowrap_nowrap_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_nowrap_pre_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_nowrap_pre_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_nowrap_pre_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_nowrap_pre_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_nowrap_pre-wrap_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_nowrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_nowrap_pre-wrap_pre	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_nowrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_pre_normal_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_pre_normal_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_pre_normal_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_pre_normal_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_pre_nowrap_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_pre_nowrap_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_pre_nowrap_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_pre_nowrap_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_pre_pre_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_pre_pre_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_pre_pre_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_pre_pre_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_pre_pre-wrap_normal	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_pre_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_pre_pre-wrap_pre	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_pre_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_pre-wrap_normal_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_pre-wrap_normal_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_pre-wrap_normal_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_pre-wrap_normal_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_pre-wrap_nowrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_pre-wrap_nowrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_pre-wrap_nowrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_pre-wrap_nowrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_pre-wrap_pre_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_pre-wrap_pre_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_pre-wrap_pre_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_pre-wrap_pre_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+g1_nowrap_pre-wrap_pre-wrap_normal	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+g1_nowrap_pre-wrap_pre-wrap_nowrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+g1_nowrap_pre-wrap_pre-wrap_pre	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+g1_nowrap_pre-wrap_pre-wrap_pre-wrap	nowrap	40	<span style='white-space:pre-wrap'>aaaa</span><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_normal_normal_normal	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_normal_normal_nowrap	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_normal_normal_pre	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_normal_normal_pre-wrap	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_normal_nowrap_normal	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_normal_nowrap_nowrap	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_normal_nowrap_pre	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_normal_nowrap_pre-wrap	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_normal_pre_normal	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_normal_pre_nowrap	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_normal_pre_pre	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_normal_pre_pre-wrap	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_normal_pre-wrap_normal	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_normal_pre-wrap_nowrap	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_normal_pre-wrap_pre	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_normal_pre-wrap_pre-wrap	nowrap	40	<wbr style='white-space:normal'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_nowrap_normal_normal	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_nowrap_normal_nowrap	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_nowrap_normal_pre	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_nowrap_normal_pre-wrap	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_nowrap_nowrap_normal	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_nowrap_nowrap_nowrap	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_nowrap_nowrap_pre	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_nowrap_nowrap_pre-wrap	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_nowrap_pre_normal	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_nowrap_pre_nowrap	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_nowrap_pre_pre	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_nowrap_pre_pre-wrap	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_nowrap_pre-wrap_normal	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_nowrap_pre-wrap_nowrap	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_nowrap_pre-wrap_pre	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_nowrap_pre-wrap_pre-wrap	nowrap	40	<wbr style='white-space:nowrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_pre_normal_normal	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_pre_normal_nowrap	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_pre_normal_pre	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_pre_normal_pre-wrap	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_pre_nowrap_normal	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_pre_nowrap_nowrap	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_pre_nowrap_pre	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_pre_nowrap_pre-wrap	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_pre_pre_normal	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_pre_pre_nowrap	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_pre_pre_pre	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_pre_pre_pre-wrap	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_pre_pre-wrap_normal	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_pre_pre-wrap_nowrap	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_pre_pre-wrap_pre	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_pre_pre-wrap_pre-wrap	nowrap	40	<wbr style='white-space:pre'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_pre-wrap_normal_normal	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_pre-wrap_normal_nowrap	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_pre-wrap_normal_pre	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_pre-wrap_normal_pre-wrap	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_pre-wrap_nowrap_normal	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_pre-wrap_nowrap_nowrap	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_pre-wrap_nowrap_pre	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_pre-wrap_nowrap_pre-wrap	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_pre-wrap_pre_normal	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_pre-wrap_pre_nowrap	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_pre-wrap_pre_pre	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_pre-wrap_pre_pre-wrap	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l2_nowrap_pre-wrap_pre-wrap_normal	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l2_nowrap_pre-wrap_pre-wrap_nowrap	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l2_nowrap_pre-wrap_pre-wrap_pre	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l2_nowrap_pre-wrap_pre-wrap_pre-wrap	nowrap	40	<wbr style='white-space:pre-wrap'><wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+l1_nowrap_normal_normal	nowrap	40	<wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+l1_nowrap_normal_nowrap	nowrap	40	<wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+l1_nowrap_normal_pre	nowrap	40	<wbr style='white-space:normal'><span style='white-space:pre'>bbbb</span>
+l1_nowrap_normal_pre-wrap	nowrap	40	<wbr style='white-space:normal'><span style='white-space:pre-wrap'>bbbb</span>
+l1_nowrap_nowrap_normal	nowrap	40	<wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+l1_nowrap_nowrap_nowrap	nowrap	40	<wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+l1_nowrap_nowrap_pre	nowrap	40	<wbr style='white-space:nowrap'><span style='white-space:pre'>bbbb</span>
+l1_nowrap_nowrap_pre-wrap	nowrap	40	<wbr style='white-space:nowrap'><span style='white-space:pre-wrap'>bbbb</span>
+l1_nowrap_pre_normal	nowrap	40	<wbr style='white-space:pre'><span style='white-space:normal'>bbbb</span>
+l1_nowrap_pre_nowrap	nowrap	40	<wbr style='white-space:pre'><span style='white-space:nowrap'>bbbb</span>
+l1_nowrap_pre_pre	nowrap	40	<wbr style='white-space:pre'><span style='white-space:pre'>bbbb</span>
+l1_nowrap_pre_pre-wrap	nowrap	40	<wbr style='white-space:pre'><span style='white-space:pre-wrap'>bbbb</span>
+l1_nowrap_pre-wrap_normal	nowrap	40	<wbr style='white-space:pre-wrap'><span style='white-space:normal'>bbbb</span>
+l1_nowrap_pre-wrap_nowrap	nowrap	40	<wbr style='white-space:pre-wrap'><span style='white-space:nowrap'>bbbb</span>
+l1_nowrap_pre-wrap_pre	nowrap	40	<wbr style='white-space:pre-wrap'><span style='white-space:pre'>bbbb</span>
+l1_nowrap_pre-wrap_pre-wrap	nowrap	40	<wbr style='white-space:pre-wrap'><span style='white-space:pre-wrap'>bbbb</span>
+t3_normal_normal_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+t3_normal_normal_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+t3_normal_normal_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+t3_normal_normal_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+t3_normal_normal_nowrap_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+t3_normal_normal_nowrap_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+t3_normal_normal_nowrap_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+t3_normal_normal_nowrap_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+t3_normal_nowrap_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+t3_normal_nowrap_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+t3_normal_nowrap_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+t3_normal_nowrap_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+t3_normal_nowrap_nowrap_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+t3_normal_nowrap_nowrap_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+t3_normal_nowrap_nowrap_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+t3_normal_nowrap_nowrap_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+t3_nowrap_normal_normal_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+t3_nowrap_normal_normal_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+t3_nowrap_normal_normal_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+t3_nowrap_normal_normal_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+t3_nowrap_normal_nowrap_normal_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+t3_nowrap_normal_nowrap_normal_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+t3_nowrap_normal_nowrap_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+t3_nowrap_normal_nowrap_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+t3_nowrap_nowrap_normal_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+t3_nowrap_nowrap_normal_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+t3_nowrap_nowrap_normal_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+t3_nowrap_nowrap_normal_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+t3_nowrap_nowrap_nowrap_normal_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+t3_nowrap_nowrap_nowrap_normal_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+t3_nowrap_nowrap_nowrap_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+t3_nowrap_nowrap_nowrap_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s2_normal_normal_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s2_normal_normal_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s2_normal_normal_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s2_normal_normal_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s2_normal_normal_nowrap_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s2_normal_normal_nowrap_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s2_normal_normal_nowrap_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s2_normal_normal_nowrap_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s2_normal_nowrap_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s2_normal_nowrap_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s2_normal_nowrap_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s2_normal_nowrap_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s2_normal_nowrap_nowrap_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s2_normal_nowrap_nowrap_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s2_normal_nowrap_nowrap_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s2_normal_nowrap_nowrap_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s2_nowrap_normal_normal_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s2_nowrap_normal_normal_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s2_nowrap_normal_normal_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s2_nowrap_normal_normal_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s2_nowrap_normal_nowrap_normal_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s2_nowrap_normal_nowrap_normal_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s2_nowrap_normal_nowrap_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s2_nowrap_normal_nowrap_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s2_nowrap_nowrap_normal_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s2_nowrap_nowrap_normal_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s2_nowrap_nowrap_normal_nowrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s2_nowrap_nowrap_normal_nowrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s2_nowrap_nowrap_nowrap_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s2_nowrap_nowrap_nowrap_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s2_nowrap_nowrap_nowrap_nowrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s2_nowrap_nowrap_nowrap_nowrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s1_normal_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s1_normal_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s1_normal_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s1_normal_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s1_normal_nowrap_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s1_normal_nowrap_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s1_normal_nowrap_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s1_normal_nowrap_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s1_nowrap_normal_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s1_nowrap_normal_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s1_nowrap_normal_nowrap_normal	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s1_nowrap_normal_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'> </span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+s1_nowrap_nowrap_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+s1_nowrap_nowrap_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:normal'><span style='white-space:nowrap'>bbbb</span>
+s1_nowrap_nowrap_nowrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+s1_nowrap_nowrap_nowrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'> </span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+sa_normal_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'> </span><span style='white-space:normal'>bbbb</span>
+sa_normal_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'> </span><span style='white-space:nowrap'>bbbb</span>
+sa_normal_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'> </span><span style='white-space:normal'>bbbb</span>
+sa_normal_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'> </span><span style='white-space:nowrap'>bbbb</span>
+sa_normal_nowrap_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'> </span><span style='white-space:normal'>bbbb</span>
+sa_normal_nowrap_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'> </span><span style='white-space:nowrap'>bbbb</span>
+sa_normal_nowrap_nowrap_normal	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'> </span><span style='white-space:normal'>bbbb</span>
+sa_normal_nowrap_nowrap_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'> </span><span style='white-space:nowrap'>bbbb</span>
+sa_nowrap_normal_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'> </span><span style='white-space:normal'>bbbb</span>
+sa_nowrap_normal_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:normal'> </span><span style='white-space:nowrap'>bbbb</span>
+sa_nowrap_normal_nowrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'> </span><span style='white-space:normal'>bbbb</span>
+sa_nowrap_normal_nowrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><span style='white-space:nowrap'> </span><span style='white-space:nowrap'>bbbb</span>
+sa_nowrap_nowrap_normal_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'> </span><span style='white-space:normal'>bbbb</span>
+sa_nowrap_nowrap_normal_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'> </span><span style='white-space:nowrap'>bbbb</span>
+sa_nowrap_nowrap_nowrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'> </span><span style='white-space:normal'>bbbb</span>
+sa_nowrap_nowrap_nowrap_nowrap	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'> </span><span style='white-space:nowrap'>bbbb</span>
+mx_normal_normal_normal	normal	40	<span style='white-space:normal'>aa</span><span style='white-space:normal'>aa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+mx_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aa</span><span style='white-space:normal'>aa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+mx_normal_nowrap_normal	normal	40	<span style='white-space:normal'>aa</span><span style='white-space:nowrap'>aa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+mx_normal_nowrap_nowrap	normal	40	<span style='white-space:normal'>aa</span><span style='white-space:nowrap'>aa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+mx_nowrap_normal_normal	normal	40	<span style='white-space:nowrap'>aa</span><span style='white-space:normal'>aa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+mx_nowrap_normal_nowrap	normal	40	<span style='white-space:nowrap'>aa</span><span style='white-space:normal'>aa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+mx_nowrap_nowrap_normal	normal	40	<span style='white-space:nowrap'>aa</span><span style='white-space:nowrap'>aa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+mx_nowrap_nowrap_nowrap	normal	40	<span style='white-space:nowrap'>aa</span><span style='white-space:nowrap'>aa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ib_normal_normal_normal	normal	40	<span style='white-space:normal'><span style='display:inline-block;width:20px;height:10px'></span></span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ib_normal_normal_nowrap	normal	60	<span style='white-space:normal'><span style='display:inline-block;width:20px;height:10px'></span></span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ib_normal_nowrap_normal	normal	60	<span style='white-space:normal'><span style='display:inline-block;width:20px;height:10px'></span></span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ib_normal_nowrap_nowrap	normal	60	<span style='white-space:normal'><span style='display:inline-block;width:20px;height:10px'></span></span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ib_nowrap_normal_normal	normal	40	<span style='white-space:nowrap'><span style='display:inline-block;width:20px;height:10px'></span></span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ib_nowrap_normal_nowrap	normal	60	<span style='white-space:nowrap'><span style='display:inline-block;width:20px;height:10px'></span></span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ib_nowrap_nowrap_normal	normal	40	<span style='white-space:nowrap'><span style='display:inline-block;width:20px;height:10px'></span></span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ib_nowrap_nowrap_nowrap	normal	60	<span style='white-space:nowrap'><span style='display:inline-block;width:20px;height:10px'></span></span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+in_normal_normal_normal	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'><wbr></span><span style='white-space:normal'><wbr></span>bbbb
+in_normal_normal_nowrap	normal	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'><wbr></span><span style='white-space:nowrap'><wbr></span>bbbb
+in_normal_nowrap_normal	normal	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'><wbr></span><span style='white-space:normal'><wbr></span>bbbb
+in_normal_nowrap_nowrap	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'><wbr></span><span style='white-space:nowrap'><wbr></span>bbbb
+in_nowrap_normal_normal	nowrap	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'><wbr></span><span style='white-space:normal'><wbr></span>bbbb
+in_nowrap_normal_nowrap	nowrap	40	<span style='white-space:normal'>aaaa</span><span style='white-space:normal'><wbr></span><span style='white-space:nowrap'><wbr></span>bbbb
+in_nowrap_nowrap_normal	nowrap	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'><wbr></span><span style='white-space:normal'><wbr></span>bbbb
+in_nowrap_nowrap_nowrap	nowrap	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:normal'><wbr></span><span style='white-space:nowrap'><wbr></span>bbbb
+ow1_normal_normal_normal	normal;overflow-wrap:anywhere;width:1px	160	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ow1_normal_normal_nowrap	normal;overflow-wrap:anywhere;width:1px	160	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ow1_normal_nowrap_normal	normal;overflow-wrap:anywhere;width:1px	160	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ow1_normal_nowrap_nowrap	normal;overflow-wrap:anywhere;width:1px	160	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ow1_nowrap_normal_normal	normal;overflow-wrap:anywhere;width:1px	100	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ow1_nowrap_normal_nowrap	normal;overflow-wrap:anywhere;width:1px	120	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ow1_nowrap_nowrap_normal	normal;overflow-wrap:anywhere;width:1px	120	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ow1_nowrap_nowrap_nowrap	normal;overflow-wrap:anywhere;width:1px	120	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ow20_normal_normal_normal	normal;overflow-wrap:anywhere;width:20px	80	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ow20_normal_normal_nowrap	normal;overflow-wrap:anywhere;width:20px	80	<span style='white-space:normal'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ow20_normal_nowrap_normal	normal;overflow-wrap:anywhere;width:20px	80	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ow20_normal_nowrap_nowrap	normal;overflow-wrap:anywhere;width:20px	80	<span style='white-space:normal'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ow20_nowrap_normal_normal	normal;overflow-wrap:anywhere;width:20px	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ow20_nowrap_normal_nowrap	normal;overflow-wrap:anywhere;width:20px	80	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+ow20_nowrap_nowrap_normal	normal;overflow-wrap:anywhere;width:20px	80	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:normal'><span style='white-space:normal'>bbbb</span>
+ow20_nowrap_nowrap_nowrap	normal;overflow-wrap:anywhere;width:20px	80	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+fs0_normal	normal	46	<span style='font-size:0'>aaaa bbbb</span>cccc
+fs0b_normal	normal	26	aaaa<span style='font-size:0'>x y</span>bbbb
+fs0_nowrap	nowrap	26	<span style='font-size:0'>aaaa bbbb</span>cccc
+fs0b_nowrap	nowrap	26	aaaa<span style='font-size:0'>x y</span>bbbb
+a1	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+a2	normal	40	<span style='white-space:nowrap'>aa</span><span style='white-space:nowrap'>aa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+a3	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+a4	normal	40	<span style='white-space:nowrap'>aa</span><span style='white-space:nowrap'>aa</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+a5	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:normal'><wbr style='white-space:nowrap'>bbbb
+a6	normal	60	<span style='white-space:nowrap'>aaaa</span><wbr><wbr style='white-space:nowrap'>bbbb
+a7	nowrap	60	aaaa<wbr><wbr>bbbb
+a8	nowrap	40	aa<span>aa</span><wbr><wbr>bbbb
+a9	nowrap	40	<span>aa</span>aa<wbr><wbr>bbbb
+b1	nowrap	60	aaaa<wbr style='white-space:normal'><wbr>bbbb
+b2	nowrap	40	aaaa<wbr><wbr style='white-space:normal'>bbbb
+b3	nowrap	60	aaaa<wbr><wbr><span style='white-space:normal'>bbbb</span>
+b4	normal	60	<span style='white-space:nowrap'>aaaa<wbr><wbr></span>bbbb
+b5	normal	60	<span style='white-space:nowrap'>aaaa<wbr></span><wbr style='white-space:nowrap'>bbbb
+b6	normal	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'><wbr><wbr></span>bbbb
+q1	nowrap	60	aaaa <wbr><wbr>bbbb
+q2	normal	60	<span style='white-space:nowrap'>aaaa </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'>bbbb
+q3	normal	40	<span style='white-space:nowrap'>aaaa</span>bb<wbr style='white-space:nowrap'><wbr style='white-space:nowrap'>cccc
+q4	normal	60	<span style='white-space:nowrap'>aaaa bb</span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'>cccc
+q5	nowrap	60	aaaa bb<wbr><wbr>cccc
+q6	nowrap	60	aaaa<wbr><wbr><wbr>bbbb
+q7	nowrap	80	aaaa<wbr>bb<wbr><wbr>cccc
+q8	normal	60	<span style='white-space:nowrap'>aaaa</span><span> </span><wbr style='white-space:nowrap'><wbr style='white-space:nowrap'>bbbb
+q9	normal	60	<span style='white-space:nowrap'>aaaa</span> <wbr style='white-space:nowrap'><wbr style='white-space:nowrap'>bbbb
+r1	nowrap	60	aaaa<wbr><span style='white-space:normal'><wbr></span><wbr>bbbb
+r2	nowrap	60	<b>aaaa</b><wbr><wbr>bbbb
+r3	nowrap	60	aaaa<b><wbr><wbr></b>bbbb
+k1	nowrap	60	aaaa<wbr><span style='display:inline-block'></span><wbr>bbbb
+k2	pre-wrap	40	aaaa <wbr> bbbb
+k3	break-spaces	60	<wbr> aaaa
+on1	nowrap;overflow-wrap:anywhere	40	aaaa<wbr>bbbb
+on2	nowrap;overflow-wrap:break-word	40	aaaa<wbr>bbbb
+on3	nowrap;overflow-wrap:anywhere	60	aaaa<wbr><wbr>bbbb
+on4	normal;overflow-wrap:anywhere	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+on5	normal;overflow-wrap:anywhere	120	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:normal'>bbbb</span>
+on6	nowrap;overflow-wrap:anywhere	40	aaaa<wbr>bbbb cc
+on7	nowrap	40	aaaa<wbr>bbbb
+on8	nowrap;overflow-wrap:anywhere	40	aaaa<wbr style='white-space:normal'>bbbb
+on9	nowrap;word-break:break-all	40	aaaa<wbr>bbbb
+on10	normal;overflow-wrap:anywhere	40	<span style='white-space:nowrap'>aaaa<wbr>bbbb</span>
+on11	nowrap;overflow-wrap:anywhere	100	aaaa<wbr><span style='white-space:normal'>bbbb</span>
+on12	pre;overflow-wrap:anywhere	40	aaaa<wbr>bbbb
+ob1	nowrap	60	aaaa<wbr><wbr>bbbb
+ob3	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>bbbb</span>
+ob5	normal	40	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'>bbbb
+ob7	nowrap;overflow-wrap:anywhere	40	aaaa<span></span><wbr>bbbb
+ob8	nowrap;overflow-wrap:anywhere	40	aaaa<wbr><span></span>bbbb
+ob9	nowrap;overflow-wrap:anywhere	40	<span>aaaa</span><wbr>bbbb
+ob10	nowrap;overflow-wrap:anywhere	40	aaaa<wbr><span>bbbb</span>
+ob11	nowrap;overflow-wrap:anywhere	40	aaaa<wbr>b
+ob12	nowrap;overflow-wrap:anywhere	40	<span>aaaa</span><wbr><span>bbbb</span>
+ob13	normal;overflow-wrap:anywhere	120	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'>bbbb
+ob14	normal;overflow-wrap:anywhere	40	<span style='white-space:nowrap'>aaaa<wbr></span><span style='white-space:nowrap'>bbbb</span>
+ob15	normal;overflow-wrap:anywhere	60	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'><wbr>bbbb</span>
+ob16	nowrap;overflow-wrap:anywhere	60	aaaa<wbr><wbr><wbr>bbbb
+ob17	nowrap;overflow-wrap:anywhere	40	aaaa<wbr> bbbb
+ob18	nowrap;overflow-wrap:anywhere	40	<span style='display:inline-block;width:20px'></span><wbr>bbbb
+ob19	normal;overflow-wrap:anywhere	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap'>b</span>
+eb1	normal;overflow-wrap:anywhere	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'>bbbb</span>
+eb2	normal;overflow-wrap:anywhere	100	<span style='white-space:nowrap'>aaaa</span>bbbb
+eb3	normal	20	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'>bbbb</span>
+eb4	normal;overflow-wrap:break-word	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap'>bbbb</span>
+eb5	normal;overflow-wrap:anywhere	40	<span style='white-space:nowrap'>aaaa</span><span style='white-space:nowrap;color:red'>bbbb</span>
+eb6	normal;overflow-wrap:anywhere	60	<span style='white-space:nowrap'>aaaa</span><wbr style='white-space:nowrap'><span style='white-space:nowrap;color:red'>bbbb</span>
+ibv1	nowrap	40	<span style='display:inline-block;width:20px'></span><wbr>bbbb
+ibv2	nowrap;overflow-wrap:anywhere	20	<span style='display:inline-block;width:20px'></span>bbbb
+ibv3	nowrap	20	<span style='display:inline-block;width:20px'></span>bbbb

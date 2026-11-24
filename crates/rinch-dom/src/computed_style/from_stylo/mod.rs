@@ -458,6 +458,8 @@ impl ComputedStyle {
             justify_items: justify_items_from_stylo(&position_style.justify_items),
             justify_self: justify_self_from_stylo(&position_style.justify_self),
             direction_rtl: !cv.writing_mode.is_bidi_ltr(),
+            unicode_bidi_plaintext: cv.get_text().unicode_bidi
+                == style::computed_values::unicode_bidi::T::Plaintext,
 
             // Padding
             padding_top: length_percentage_from_stylo(&padding.padding_top),

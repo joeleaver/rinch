@@ -210,6 +210,10 @@ pub struct ComputedStyle {
     /// it (columns, a flex row and block-level boxes start at the right),
     /// and it decides which of `start` / `end` `left` / `right` are.
     pub direction_rtl: bool,
+    /// `unicode-bidi: plaintext` (#2940): the text a builder lays out for
+    /// this element takes each paragraph's direction from its own first strong
+    /// character, not `direction` ([`Self::base_direction`]). Not inherited.
+    pub unicode_bidi_plaintext: bool,
 
     // Spacing - padding
     pub padding_top: LengthPercentageValue,
@@ -576,6 +580,7 @@ impl Default for ComputedStyle {
             justify_items: None,
             justify_self: None,
             direction_rtl: false,
+            unicode_bidi_plaintext: false,
 
             padding_top: LengthPercentageValue::Zero,
             padding_right: LengthPercentageValue::Zero,
