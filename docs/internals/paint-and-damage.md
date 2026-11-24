@@ -531,7 +531,7 @@ bookkeeping, against a stand-in for softbuffer's two-buffer surface).
 
 **Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb (but never longer than its track: a track shorter than 20px is filled by a thumb that cannot travel, #1141), fully rounded, and a neutral 40% that follows the container's palette (see **Styling the bar** below). Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). A press on the **thumb** grabs it where it is and only the motion after it scrolls; a press on the empty **track** jumps, mapping its position along the track linearly onto the scroll range (#443 — it used to jump on the thumb too, so grabbing a thumb moved it before the drag began). `ScrollbarTrack::thumb_contains` is the one "is this on the thumb" question, asked by the press and by the resize-zone rule below. Where both are present the bottom-right **corner belongs to neither**: a 16px square (`scrollbar::HIT_THICKNESS`, the hit strip's width) that each painted track gives up at its far end and each hit strip stops at (`Scrollbars::hit_strip`), so nothing paints there, clicking it falls through to the container, and every thumb pixel is grabbable, a short track's included (#1141: the minimum thumb used to be drawn past a track shorter than 20px — into the corner on a box under about 38px with both bars up). Paint used to give up only the other bar's 8px drawn footprint, which left the last ~6px of a thumb at full scroll painted in the square no strip claims (#444). A press that computes no new offset — a grab, or a track press whose jump clamps to where it already is — writes, dirties and fires nothing. **The bars are drawn above the scroller's own positioned descendants** (#1717): a scroller that is no stacking context has its `relative`/`z-index`/contained-absolute rows hoisted to the enclosing stacking context's sequence, so `stacking_paint_order` records it in `PaintOrder::bars` (`DeferredBars`: after the last entry at `z >= 0` whose clip chain runs through the scroller) and `paint_children_with_stacking` draws its bars there, under the scroller's own clip chain, while its `paint_node` skips them (`bars_deferred`). Chrome 155's order, measured with overlay scrollbars: a later positioned sibling, a box above every row's `z-index`, and an absolute that escapes the scroller still cover the bar. **A press takes the bar only where the bar is the topmost thing painted** (#1727), as in Chrome. `find_scrollbar_hit`, asked before any click, is the hit test's own walk (`hit_test_node` under a `Probe`, here `BarSearch`) that also tries each scroller's bars where paint draws them: a scroller's own bars before its children (paint draws them after everything the scroller draws itself, a stacking context's whole sequence included), and a deferred scroller's bars in the enclosing sequence right after its `DeferredBars::after` entry, under its clip chain and the root's clip. That walk reads the sequence with `PaintOrder::bars` (`stacking_paint_order`), cached in the hit cache apart from the plain hit test's copy (`HitCache::order`'s `bars` flag). So a modal backdrop, a popover, a fixed header or a later positioned sibling over a bar takes the press, while a positioned or `z-index` child under it (an `Editor`, whose sheet makes it `relative; z-index: 0`) does not, nor does a positioned box earlier in the sequence than the scroller's last contained entry, which the deferred bar is drawn over. Being the hit test's walk, the search agrees with `hit_test` on what reaches the point (#2684): a scroller past an ancestor's box that does not clip, such as one wider than its parent or under a `display: contents` wrapper (a 0x0 box), is grabbed (#2678, #1441); a clip applies only on the containing-block chain, so an absolute scroller escaping a static `overflow: hidden` box, or a fixed one inside an `overflow: hidden; z-index` panel, is grabbed too; a masked ancestor's box, `visibility: hidden` and `pointer-events: none` (on the scroller; a `pointer-events: none` overlay lets the press through) offer no bar. It costs what a hit test at the point costs, and counts its nodes in `scroll_probe_nodes_visited`. The wheel's geometric fallback (`find_scroll_container_at_point` and its horizontal twin) is the same walk with `ScrollerSearch`: the topmost scroller painted under the point that overflows on the axis, passing over boxes painted above it. Desktop only — on the web the browser draws its own.
 
-That geometry lives in **one place**, `crates/rinch-dom/src/paint/scrollbar.rs`
+That geometry lives in **one place**, `crates/rinch-dom/src/paint/scrollbar/mod.rs`
 (`scrollbars(tree, node_id, scale)` → a `Scrollbars` holding an `Option<ScrollbarTrack>` per axis — `None` where that axis has no bar): paint draws
 the thumb from it, and `find_scrollbar_hit` plus the `MouseDown`/`MouseMove`
 arms in `crates/rinch/src/app/` press and drag it by it. They used to derive it
@@ -664,10 +664,134 @@ the listed boxes, which only add to it — and measures them only for an offset
 past that, so a relayout of a long list scrolled anywhere but its end measures
 none of them (`abs_badge_relayout`). An absolute box with no area counts nothing, here and as a child (Chrome
 156: `0x500`, `10x0`, `0x0` boxes scroll nothing). Rows:
-`tests/abs_scroll_range_770_tests.rs`. Still not counted in a scroll
-container's range: an **in-flow** descendant's overflow below the first box
-(#2054), so a box that overflows its `height: 50px` parent scrolls nothing
-where its absolute twin now does.
+`tests/abs_scroll_range_770_tests.rs`.
+
+**In-flow boxes below the first box (#2054).** A box that overflows its own
+parent inside a scroller — a 300px box in a `height: 50px` child — is in the
+range, as in Chrome 158 (it scrolled 0; its absolute twin did since #770):
+`content_extents` joins `scrollbar::deep_overflow` to what the walk over the
+children measured, where it is drawn (no end padding, no margins). The walk
+(`descendant_reach`, shared with `scroll_extents` for a box that does not
+scroll) goes down through every box that neither clips nor is transformed nor
+is collapsed by block virtualization (`estimated_height`: its estimate stands
+for its content); a fixed box, and an absolute one contained above the
+scroller, count nothing; a transformed box is listed and measured where it is
+drawn on each read. **Cost:** the walk is the subtree, so it is kept per
+container (`NodeTree::deep_overflow`, `scrollbar::DeepOverflow` in
+`paint/scrollbar/deep_memo.rs`; the walk is `deep_walk.rs`) with a
+`WalkSnap` of every box it met: everything the walk reads of it — its box,
+the offset `box_origin` adds to it for an atomic inline, its own **content
+origin** (padding+border, `ifc_root_content_origin`), its lines' extent, its
+`DisplayMode`, whether it clips, is transformed, positioned, displayed or
+collapsed, and whether it is the containing block of an absolute or a fixed
+box below it. The content origin is there because a box's lines, and the
+atomic inlines its inline formatting context places (whose `layout` is
+relative to its content box), move with its padding or border while its box
+and their `layout` stay put: without it a `padding-left: 150px` on a 280px
+border-box box kept an inline-block inside it out of the range (review of
+#2961, round 3). The containing-block bits are there because a `filter`
+taken off a box puts an inset-less absolute box below it out of the
+scroller's overflow with nothing else of either changed. Every read first
+checks the boxes pushed paint-dirty, and the parents a subtree left
+(`bar_check_parents`), since the last check, and `consume_paint_dirty` runs
+the same check before it drains those lists, and starts the next check from
+the empty lists only once it has drained both (`after_paint_consumed`): the
+bars it records in between read the walk, and a check there that started
+from 0 took the parents already checked as new and walked a second time on
+every frame a subtree left (`dom::row_shift_damage`, 2000 rows with one
+removed: +93% on the batch, perf review of #2961). The walk is not dropped
+for what it can follow: it is **brought up to date in place**
+(`deep_record.rs`, #2054 perf rework). Every box it met has a record
+(`Rec`), kept by box across containers: its `WalkSnap`, the container whose
+walk met it, its box-tree parent then, what its children contribute in its
+own children frame (`kids`, from where the box places its children, so a box
+that moves carries what is below it unchanged) and its own contribution.
+The records and the entries are stored by the node's slab slot
+(`deep_slots.rs`: a dense list and a slot-to-index table, the whole id
+compared on lookup), not hashed, since a check looks up a few per box
+pushed. **A record lives as long as its box is where the walk met it**
+(review of ec70c112c, where 200 rows appended, read and removed left 400
+records, and 50 scrollers left their walks): a subtree taken out of the
+tree drops the records of its boxes, and the walks of the scroll containers
+in it, when it is taken out (`DeepOverflow::forget_detached`, from
+`mark_subtree_paint_dirty`, which every removal and every move of a painted
+box calls). Those walks are found by walking the subtree's element tree, so
+a removal costs its own nodes plus the records it drops
+(`testing::deep_overflow_forget_steps`); it used to ask every kept walk
+whether its container was in the subtree, climbing from each, and taking
+out N rows that each held a scroller cost O(N² · depth) (329 ms for 2000
+rows). The element walk also reaches an out-of-flow box hoisted past the
+subtree's root to a host above it, which the box tree under the root does
+not hold: its walk and records go too. A freed node drops its own (`forget_freed`, from
+`NodeTree::remove_subtree` and the anonymous-box frees in `ifc.rs`); and a
+walk dropped to be taken again drops the records it made. The parent of
+the subtree's top box is noted, at the next check, as one that lost a child,
+and so is a scroll container in the subtree whose walk is kept — only a box
+found moved by the check, since a removal drops those walks first (its
+children are recorded again); the other parents in the subtree go with it, unnoted
+(noting each row of a hidden 1000-row branch made the next check climb from
+each, `branch_hide` in `rinch-bench`). So
+the memo holds at most one record per box of the kept walks, and a freed
+slot's new node (another generation) finds none. The check
+(`deep_mark.rs`, `Marker`) marks, scoped to the check by an epoch on each
+record: a recorded box pushed paint-dirty is `SELF`, and each record above
+it up to the container is `BELOW` (the climb stops at a record already
+marked; a climb from the box the last one started from is folded into it,
+and still answers the container that one reached); a box with no record
+marks from its parent; a freed box is forgotten; a recorded box now under
+another box-tree parent is forgotten with its subtree and marks both
+parents; a split inline marks its container to be walked again. Each marked
+box also **lists the children the marking came up from** (`Rec::first` /
+`Rec::next`), unless a child was added or lost under it, which marks it
+`STRUCT` (sum all its children again; the parents that lost a child are
+noted first, so the rows of a list one was taken from are not listed).
+Then each marked container goes once through its children: a child nothing
+was marked of answers its kept contribution, a child with no record is
+recorded fresh, and a marked one is measured where it is now — its
+`WalkSnap` taken again (an absolute box's out-of-overflow rule asked again,
+since its size decides it) and only its listed children visited, each one's
+new contribution joined to the kept `kids`, unless its old one held an edge
+of that span which the new one no longer reaches (`Span::holds_an_edge_of`),
+which only the sum over all the children can say. So a box resized among
+many siblings visits that box and its parent, not the siblings. The
+container is walked again only where the records cannot follow: a box whose
+kind changed (`WalkSnap::same_kind`: whether it clips, is transformed,
+positioned, displayed, `contents`, collapsed or a containing block, its
+`DisplayMode` or its content origin; its box, inline offset and lines may
+change), a box met under another parent or by another walk, a box that
+entered or left the container's overflow, a split inline, or a change to the
+container's own kind. The reach is then taken from the children's records as
+a fresh walk takes it: what is below each top box (the first box below the
+scroller, through `display: contents` wrappers), unless all of it is inside
+that box's border box (`containing_rect`), which the scroller's own measure
+counts at least as far. A hover colour measures the one box; a row removed
+from a long list measures each row that moved (one box each: nothing below a
+row moved with it) and nothing else. **What it still costs:**
+`row_shift_damage` (2000 rows, one removed) is +9.3% on `main` (12.44M →
+13.60M Ir in one local run; the dropped-walk version was 15.10M), because main counts
+none of this: main's range is the scroller's children alone, which is wrong
+for #2054 (a box overflowing its own parent is in Chrome's range) and only
+happens to equal the right answer when, as there, nothing below a row
+overflows it. Measuring a moved row exactly is about 600 instructions
+(`WalkSnap::of`, its contribution, the climb that marks it and the visit;
+the check was about 1.17M Ir for the 1986 rows that moved), so
+the cost is the price of the right range on such a frame, not a walk. A
+whole-document restyle drops every entry and record; a removed container's
+entry is freed. A read in between is a lookup,
+the check of what was pushed since the last one, and a measure of the listed
+transformed boxes. Layout's clamp asks the in-flow range first
+(`content_extents_in_flow` leaves this out, as it leaves out the listed
+absolutes), so a relayout scrolled within it walks nothing. Pins: `tests/geometry_queries_2257_tests.rs`
+(`SCROLLERS`), `tests/scroll_range_descendants_2054_tests.rs`,
+`tests/deep_overflow_kept_2054_tests.rs` (the walk and measure counts
+`testing::deep_overflow_walks` / `deep_overflow_measured`, and the
+`kept_matches_fresh` scenarios, each against a fresh document) and
+`tests/deep_overflow_kept_fuzz_2054_tests.rs` (random edit sequences against
+a fresh document at every read, in two sibling scrollers, with text replaced
+and boxes moved between them; `RINCH_KEPT_FUZZ_SEEDS=<n>` runs more), and
+`tests/deep_overflow_kept_records_2054_tests.rs` (what the memo holds as rows
+and scrollers come and go, `testing::deep_overflow_held`; a move pinned by
+its walk and measure counts; one child resized among 51).
 
 **A box that does not scroll (#2223).** It has no range for a bar or the
 wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it

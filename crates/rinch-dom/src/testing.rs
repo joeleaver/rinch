@@ -336,6 +336,34 @@ fn geometry_json(tree: &NodeTree, node: &crate::node::Node, id: RawNodeId) -> (V
     )
 }
 
+/// How many times the scroll ranges have walked a scroll container's
+/// descendants (#2054): a test reads it to see a range answered from the
+/// memo rather than walked again.
+pub fn deep_overflow_walks(tree: &NodeTree) -> u64 {
+    tree.deep_overflow.walks()
+}
+
+/// How many boxes the scroll ranges' kept walks have measured (#2054), in
+/// walks and in bringing their records up to date: a test reads it to see a
+/// change re-measure only the boxes it reached and the boxes above them.
+pub fn deep_overflow_measured(tree: &NodeTree) -> u64 {
+    tree.deep_overflow.measured()
+}
+
+/// How many nodes the scroll ranges' kept walks have looked at to drop walks
+/// and records (#2054): a subtree taken out walks its own nodes, and each
+/// purge the records it drops, so a test reads it to see a removal cost its
+/// subtree, not the number of walks kept elsewhere.
+pub fn deep_overflow_forget_steps(tree: &NodeTree) -> u64 {
+    tree.deep_overflow.forget_steps()
+}
+
+/// How many walks, and records of the boxes they met, the scroll ranges'
+/// kept walks hold (#2054): a test reads it to see a record go with its box.
+pub fn deep_overflow_held(tree: &NodeTree) -> (usize, usize) {
+    tree.deep_overflow.held()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::RinchDocument;

@@ -6611,6 +6611,8 @@ impl RinchDocument {
 
             // Remove anonymous DOM node from slab
             self.tree.nodes.remove(anon_id);
+            // Nor may the scroll ranges' kept walks keep its record (#2054).
+            self.tree.deep_overflow.forget_freed(&[anon_id]);
             // And its measured sizes, for `remove_subtree`'s reason: the slab
             // recycles the id, and the box minted next — very often for the
             // same run, so with the same content signature — would otherwise
@@ -6648,6 +6650,7 @@ impl RinchDocument {
             // `remove_subtree`'s reason, as for a freed box above: the slab
             // recycles the id.
             self.tree.ifc_measure_cache.remove(&id);
+            self.tree.deep_overflow.forget_freed(&[id]);
         }
     }
 
