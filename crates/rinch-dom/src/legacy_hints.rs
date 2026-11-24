@@ -10,7 +10,7 @@
 //! attached to a table after its hints are built, so those two are not stored
 //! on the cell: [`cell_hints_css`] reads them as the cell is cascaded.
 
-use crate::node::Node;
+use crate::node::{Node, RawNodeId};
 use rinch_core::dom::{HtmlDimension, parse_html_dimension};
 use std::fmt::Write;
 
@@ -365,4 +365,109 @@ pub(crate) fn cell_hints_css(table: &Node) -> Option<String> {
         write!(css, "border:1px inset {c};").unwrap();
     }
     (!css.is_empty()).then_some(css)
+}
+
+/// Whether an element is in the `dir` attribute's **auto** state (#2272): a
+/// `dir` of `auto`, ASCII case-insensitively, or a `<bdi>` with no `dir`.
+pub(crate) fn is_dir_auto(node: &Node) -> bool {
+    match node.attributes.get("dir") {
+        Some(v) => v.eq_ignore_ascii_case("auto"),
+        None => node.tag() == Some("bdi"),
+    }
+}
+
+/// Whether an element's text is left out of an ancestor's `dir=auto`
+/// resolution: HTML's "contained text auto directionality" skips a `<bdi>`,
+/// `<script>`, `<style>` and `<textarea>`, and an element whose `dir` is in
+/// a state (`ltr`, `rtl`, `auto`). A `dir` of anything else is no state, and
+/// its element's text counts (Chrome 158: `<div dir=auto><span
+/// dir=foo>א</span>a</div>` is `rtl`).
+pub(crate) fn hides_text_from_dir_auto(node: &Node) -> bool {
+    matches!(node.tag(), Some("bdi" | "script" | "style" | "textarea"))
+        || node.attributes.get("dir").is_some_and(|v| {
+            ["ltr", "rtl", "auto"]
+                .iter()
+                .any(|s| v.eq_ignore_ascii_case(s))
+        })
+}
+
+/// The direction of the first strong character of `text` — `Some(true)` for
+/// right-to-left (bidi class `R` or `AL`), `Some(false)` for `L` — or `None`
+/// when it has none.
+fn first_strong_is_rtl(text: &str) -> Option<bool> {
+    use icu_properties::CodePointMapData;
+    use icu_properties::props::BidiClass;
+    let classes = CodePointMapData::<BidiClass>::new();
+    text.chars().find_map(|c| match classes.get(c) {
+        BidiClass::LeftToRight => Some(false),
+        BidiClass::RightToLeft | BidiClass::ArabicLetter => Some(true),
+        _ => None,
+    })
+}
+
+/// The direction an element in the `dir=auto` state ([`is_dir_auto`]) takes,
+/// `Some(true)` for `rtl` and `Some(false)` for `ltr`; `None` for any other
+/// element (#2272). HTML's "auto directionality": a text field's value, and
+/// for any other element the first strong character of its descendant text
+/// in tree order, skipping what [`hides_text_from_dir_auto`] names; with no
+/// strong character, `ltr`, even under an `rtl` parent (Chrome 158).
+/// Generated content is not text of the element and does not count; text
+/// that is `display: none` does (it is in the tree).
+pub(crate) fn auto_direction(nodes: &crate::node_slab::NodeSlab, id: RawNodeId) -> Option<bool> {
+    let node = nodes.get(id)?;
+    if !node.is_element() || node.is_pseudo_element || !is_dir_auto(node) {
+        return None;
+    }
+    // HTML's "auto-directionality form-associated elements": a textarea,
+    // and an input in the Hidden, Text, Search, Telephone, URL, Email,
+    // Password or button states (an unknown `type` is the Text state).
+    let field = match node.tag() {
+        Some("textarea") => true,
+        Some("input") => !node.attributes.get("type").is_some_and(|t| {
+            [
+                "checkbox",
+                "radio",
+                "file",
+                "image",
+                "number",
+                "range",
+                "color",
+                "date",
+                "month",
+                "week",
+                "time",
+                "datetime-local",
+            ]
+            .iter()
+            .any(|s| t.eq_ignore_ascii_case(s))
+        }),
+        _ => false,
+    };
+    if field {
+        let value = crate::form_control::control_value(nodes, id).unwrap_or_default();
+        return Some(first_strong_is_rtl(&value).unwrap_or(false));
+    }
+    // Tree order, by an explicit stack: a document may nest deeper than the
+    // call stack goes.
+    let mut stack = vec![node.children.iter()];
+    while let Some(children) = stack.last_mut() {
+        let Some(&c) = children.next() else {
+            stack.pop();
+            continue;
+        };
+        let Some(child) = nodes.get(c) else {
+            continue;
+        };
+        if child.is_pseudo_element {
+            continue;
+        }
+        if let Some(text) = child.text_content() {
+            if let Some(rtl) = first_strong_is_rtl(text) {
+                return Some(rtl);
+            }
+        } else if child.is_element() && !hides_text_from_dir_auto(child) {
+            stack.push(child.children.iter());
+        }
+    }
+    Some(false)
 }

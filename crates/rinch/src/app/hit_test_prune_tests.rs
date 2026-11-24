@@ -892,7 +892,7 @@ fn reference_hit_test_node(
                 stacking_paint_order(tree, node_id, 1.0, (nx - sx) as f64, (ny - sy) as f64);
             let mut run_probed = !(check_children
                 && clipped.is_none()
-                && rinch_dom::paint::run_paints_in_phases(tree, node_id));
+                && rinch_dom::paint::run_paints_in_phases(tree, node));
             for entry in order.iter().rev() {
                 let Some(child) = tree.get(entry.node_id) else {
                     continue;
@@ -1040,7 +1040,7 @@ fn reference_hit_test_node(
             // A run painted in Appendix E phases (#2276) answers from its lines
             // and floats first, by the same passes, entered through this walk.
             let kids = rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id);
-            if rinch_dom::paint::run_paints_in_phases(tree, node_id)
+            if rinch_dom::paint::run_paints_in_phases(tree, node)
                 && let Some(hit) = super::phased_run_hit_with(
                     tree,
                     kids.iter().map(|&id| (id, nx - sx, ny - sy)),

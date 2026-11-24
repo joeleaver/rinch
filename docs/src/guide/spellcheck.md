@@ -107,7 +107,9 @@ App::new(app)
   (`HunspellChecker::from_bytes("en_US", AFF, DIC)`).
 - **The personal dictionary** is the app's to load and save:
   `PersonalDictionary::with_words` fills it, `add_listener` reports each
-  change so the app can persist it.
+  change (the context menu's "Add to dictionary" included) so the app can
+  persist it. A word the app adds or removes itself clears or brings back
+  its marks too.
 
 Change the settings while the app runs with `rinch::spellcheck::configure(..)`
 or `rinch::spellcheck::set_enabled(..)`: every mark is dropped and the fields
@@ -117,7 +119,47 @@ settings.
 The dictionaries are loaded, and words checked, on a background thread
 (`rinch-spellcheck`), started the first time a field is checked. An app that
 turns spellcheck off, or whose user never touches a text field, starts
-nothing and loads nothing.
+nothing and loads nothing. (On the web there is no such thread: see below.)
+
+## Suggestions and "Add to dictionary"
+
+A right press on a marked word, in a text field or the `Editor`, selects the
+word and opens the text context menu with its suggestions on top, as Chrome
+does: up to three corrections, then "Add to dictionary", then Cut, Copy,
+Paste and Select all. A word with no suggestion shows only "Add to
+dictionary". A right press anywhere else (or inside a wider selection) opens
+the plain menu.
+
+- **Choosing a suggestion** replaces the word as if it had been typed: one
+  edit that one undo (Ctrl+Z) takes back, `oninput` fires (and `onchange` on
+  blur, as after typing), the editor's `on_change` fires, and the caret ends
+  up after the new word.
+- **Add to dictionary** adds the word to the personal dictionary: its
+  `add_listener` callback fires (save the list there), and the word's marks
+  go at once in every field and editor. `rinch::spellcheck::add_to_dictionary(word)`
+  does the same from app code.
+
+All of it is the app's to change:
+
+```rust
+SpellcheckConfig::new()
+    .menu_suggestions(5)            // default 3 (Chrome's); 0 for none
+    .menu_add_to_dictionary(false)  // default true
+    .menu_no_suggestions_row(true)  // a greyed "No spelling suggestions" row; default false (Chrome shows none)
+    .menu_suggest_wait_ms(50)       // how long the menu waits for suggestions; default 100
+```
+
+The rows use the menu's own classes (`rinch-tcm-item`, `rinch-tcm-sep`), and
+each spelling row also carries `rinch-tcm-suggestion`,
+`rinch-tcm-add-to-dictionary` or `rinch-tcm-no-suggestions` for a rule of its
+own. Suggestions are computed on a background thread when the menu opens; if
+they take longer than `menu_suggest_wait_ms` (a tenth of a second by
+default), the menu opens without them and fills them in when they arrive.
+
+A shell with its own text toolbar (`TextContextMenuPresentation::Shell`) finds
+the word and its suggestions in `RinchApp::text_edit_state().spelling` and
+runs `perform_text_edit(TextEditAction::Suggestion(i))` or
+`TextEditAction::AddToDictionary`.
 
 ## Styling the squiggle
 
@@ -140,15 +182,96 @@ for `[data-pm-editor] .pm-spell-error` replaces it entirely.
 
 ## On the web
 
-In the browser, rinch leaves spellchecking to the browser: its own checker
-never runs there. The rich-text editor on the web is not
-`contenteditable` (it takes input through a hidden field), so the browser does
-not check it, and it is not marked there. The `spellcheck` attributes and props are passed through to
-the real DOM, and `App::spellcheck(false)` puts `spellcheck="false"` on
-`<body>`, which the page's fields inherit. The browser's own dictionaries,
-rules and squiggle apply; `SpellcheckConfig`'s other settings have no effect
-on the web. `rinch::spellcheck::configure` and `set_enabled` while the app
-runs keep `<body>`'s attribute in step.
+**Text fields** (`<input>`, `<textarea>`) are the browser's: it checks them
+with its own dictionaries, rules and squiggle, and rinch's checker never runs
+on them. The `spellcheck` attributes and props are passed through to the real
+DOM, and `App::spellcheck(false)` puts `spellcheck="false"` on `<body>`, which
+the page's fields inherit; `rinch::spellcheck::configure` and `set_enabled`
+while the app runs keep it in step.
+
+**The rich-text `Editor`** is not `contenteditable` on the web (it takes
+input through a hidden field), so the browser does not check it. rinch checks
+it, with the same rules as on the desktop (the first press or edit checks the
+whole document, an edit re-checks its words after the pause, `spellcheck` is
+inherited, a read-only editor is not marked), **when the app supplies
+dictionaries**. A browser lends a page none of its own, and rinch never
+bundles any (a dictionary is about a megabyte of `.dic`), so with none
+supplied the web editor is simply not checked, and no checking code runs.
+
+Supply them as `.aff`/`.dic` bytes through `SpellcheckConfig::checker`, either
+built into the binary:
+
+```rust
+use rinch::spellcheck::{HunspellChecker, SpellcheckConfig};
+
+const AFF: &[u8] = include_bytes!("../dictionaries/en_US.aff");
+const DIC: &[u8] = include_bytes!("../dictionaries/en_US.dic");
+
+App::new(app)
+    .spellcheck(
+        SpellcheckConfig::new()
+            .checker(HunspellChecker::from_bytes("en_US", AFF, DIC).unwrap()),
+    )
+    .run();
+```
+
+or fetched once the app is running, which keeps them out of the `.wasm` (an
+editor already on the page is checked as soon as they arrive, its undo
+history kept; one the user already pressed in is marked then):
+
+```rust
+use rinch::spellcheck::{HunspellChecker, SpellcheckConfig, configure};
+
+async fn fetch_bytes(url: &str) -> Option<Vec<u8>> {
+    let window = web_sys::window()?;
+    let resp: web_sys::Response =
+        wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
+            .await.ok()?.dyn_into().ok()?;
+    let buf = wasm_bindgen_futures::JsFuture::from(resp.array_buffer().ok()?).await.ok()?;
+    Some(js_sys::Uint8Array::new(&buf).to_vec())
+}
+
+wasm_bindgen_futures::spawn_local(async {
+    if let (Some(aff), Some(dic)) = (
+        fetch_bytes("/dictionaries/en_US.aff").await,
+        fetch_bytes("/dictionaries/en_US.dic").await,
+    ) && let Ok(checker) = HunspellChecker::from_bytes("en_US", &aff, &dic)
+    {
+        configure(SpellcheckConfig::new().checker(checker));
+    }
+});
+```
+
+Parsing a dictionary happens on the page's thread when you call
+`from_bytes`: en_US took 33 ms in a release build (350 ms in a debug one),
+so do it once, at startup. Hunspell dictionaries for most languages are in
+LibreOffice's `dictionaries` repository and in every Linux distribution's
+`hunspell-*` packages; mind each one's licence.
+
+A browser page has no second thread, so the checking is cut into slices of
+about 3 ms each, marking included, one browser task apiece, so typing and
+scrolling are never held up: a whole long document is marked over a few
+frames (a 650,000-character document took 55 slices, 3 ms on average, in
+Chrome 157). Each slice's marks appear as it finishes. The slicing is the
+app's to tune: `SpellcheckConfig::slice_budget_ms` (default 3),
+`slice_max_found` (the most marks one slice adds, default 100) and
+`slice_chunk_bytes` (the piece checked between looks at the clock, default
+512); the desktop, which checks on a thread, ignores them.
+
+The checking code is behind `rinch-web`'s `spellcheck` feature, on by
+default. An app that never supplies dictionaries can drop it (about 108 KB
+of wasm) with `rinch-web = { version = "...", default-features = false }`;
+the editor is then never checked on the web, and fields are the browser's as
+always.
+
+The squiggle is the browser's own `text-decoration: underline wavy`, on the
+same `<span class="pm-spell-error">` and with the same
+`--rinch-spellcheck-color` / `--rinch-spellcheck-style` properties as on the
+desktop.
+
+**Not yet on the web:** spelling suggestions and "Add to dictionary" in the
+editor's context menu. rinch-web leaves the browser's own menu on editable
+targets, and the browser's menu knows nothing of rinch's marks.
 
 ## Testing
 

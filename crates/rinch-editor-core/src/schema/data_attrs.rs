@@ -125,6 +125,8 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-onblur",
     "data-onfocusin",
     "data-onfocusout",
+    // A picture's load failure (#2202/#2203).
+    "data-onerror",
     "data-nofocus",
     "data-disabled",
     "data-trap-focus",

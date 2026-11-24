@@ -6,6 +6,8 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::{Callback, Component};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon_with_options};
 
+use crate::borderless_window::SectionRenderer;
+
 /// ActionIcon variant styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActionIconVariant {
@@ -116,7 +118,7 @@ impl std::str::FromStr for ActionIconSize {
 ///     ActionIcon { icon: TablerIcon::X, size: "lg", variant: "outline", title: "Close" }
 /// }
 /// ```
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ActionIcon {
     /// Icon to display.
     pub icon: Option<TablerIcon>,
@@ -130,8 +132,27 @@ pub struct ActionIcon {
     pub radius: String,
     /// Whether the button is disabled.
     pub disabled: bool,
-    /// Whether to show loading state.
+    /// Whether to show loading state: a [`Loader`](crate::Loader) in place of
+    /// the icon, and the button stops taking clicks.
     pub loading: bool,
+    /// The loader type drawn while `loading` (`oval`, `bars`, `dots`). Empty
+    /// uses the app's [`LoaderDefaults`](crate::LoaderDefaults), then oval.
+    pub loader_type: String,
+    /// A custom loader drawn while `loading`, in place of the built-in kinds.
+    pub loader: Option<SectionRenderer>,
+    /// The icon's edge length in px. `None` (the default) takes the size
+    /// step's own: 12, 14, 18, 22, 28 for xs–xl.
+    pub icon_size: Option<u32>,
+    /// The icon's style: outline (the default) or filled.
+    pub icon_style: TablerIconStyle,
+    /// The button's accessible name (`aria-label`), without the tooltip
+    /// `title` shows. Empty (the default) writes none.
+    pub aria_label: String,
+    /// The HTML `type` attribute. Empty (the default) is `"button"`: an icon
+    /// button inside a form is almost never its submit button, so this is the
+    /// one place rinch does not take HTML's `submit` default. Say `"submit"`
+    /// or `"reset"` to make it one.
+    pub r#type: String,
     /// The button's `title` attribute — its tooltip, and the accessible name
     /// an icon-only button otherwise lacks. Empty (the default) writes none
     /// (issue #1653). A reactive value re-renders the button; for a surgical
@@ -139,6 +160,28 @@ pub struct ActionIcon {
     pub title: String,
     /// Click handler.
     pub onclick: Option<Callback>,
+}
+
+impl std::fmt::Debug for ActionIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActionIcon")
+            .field("icon", &self.icon)
+            .field("variant", &self.variant)
+            .field("size", &self.size)
+            .field("color", &self.color)
+            .field("radius", &self.radius)
+            .field("disabled", &self.disabled)
+            .field("loading", &self.loading)
+            .field("loader_type", &self.loader_type)
+            .field("loader", &self.loader.as_ref().map(|_| "<renderer>"))
+            .field("icon_size", &self.icon_size)
+            .field("icon_style", &self.icon_style)
+            .field("aria_label", &self.aria_label)
+            .field("type", &self.r#type)
+            .field("title", &self.title)
+            .field("onclick", &self.onclick)
+            .finish()
+    }
 }
 
 impl ActionIcon {
@@ -183,11 +226,17 @@ impl Component for ActionIcon {
         let container =
             rinch_macros::rsx! { button { class: "rinch-action-icon", r#type: "button" } };
         container.set_attribute("class", &self.class_string());
+        if !self.r#type.is_empty() {
+            container.set_attribute("type", &self.r#type);
+        }
+        if !self.aria_label.is_empty() {
+            container.set_attribute("aria-label", &self.aria_label);
+        }
 
         // Color style
         if !self.color.is_empty() {
             let c = &self.color;
-            let style = if c.starts_with('#') || c.starts_with("rgb") || c.starts_with("hsl") {
+            let style = if crate::color_utils::is_raw_css_color(c) {
                 format!("--rinch-action-icon-color: {}", c)
             } else {
                 format!("--rinch-action-icon-color: var(--rinch-color-{}-6)", c)
@@ -213,20 +262,30 @@ impl Component for ActionIcon {
         }
 
         if self.loading {
-            let loader = rinch_macros::rsx! { span { class: "rinch-action-icon__loader" } };
-            container.append_child(&loader);
+            let slot = rinch_macros::rsx! { span { class: "rinch-action-icon__loader" } };
+            let loader = crate::loader::render_component_loader(
+                __scope,
+                &self.loader_type,
+                self.loader.as_ref(),
+                "",
+            );
+            slot.append_child(&loader);
+            container.append_child(&slot);
         } else if let Some(icon) = self.icon {
             let size: ActionIconSize = if self.size.is_empty() {
                 ActionIconSize::default()
             } else {
                 self.size.parse().unwrap_or_default()
             };
+            let px = self
+                .icon_size
+                .unwrap_or_else(|| size.icon_size().parse().unwrap_or(18));
             let icon_el = render_tabler_icon_with_options(
                 __scope,
                 icon,
                 rinch_tabler_icons::TablerIconOptions {
-                    style: TablerIconStyle::Outline,
-                    size: Some(size.icon_size().parse().unwrap_or(18)),
+                    style: self.icon_style,
+                    size: Some(px),
                     ..Default::default()
                 },
             );

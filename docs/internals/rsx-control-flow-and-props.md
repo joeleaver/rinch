@@ -280,15 +280,28 @@ else measured on demand and not cached; `SpanFragments::union_left/right` hold
 every fragment's extent less the white space that ends a line), grown by the
 element's padding and pushed through the host's painted transform less its own
 scroll. A split inline (#513) has no fragments and falls back to the ghost box
-(a line `text-overflow: ellipsis` cuts keeps them since #1100). Every other element: rinch-dom answers
-`paint::painted_border_box(tree, id, 1.0)` — the conversion
-`ClickContext` and the bounds signals use — from the last layout, a zero rect
+(a line `text-overflow: ellipsis` cuts keeps them since #1100).
+`paint::painted_border_box` — the conversion `ClickContext`, the desktop
+bounds signals, `scroll_into_view` and the rest of `rinch` read
+(`app::hit_testing::painted_element_box`) — answers the same union for a
+flowed inline element since #2257 (`out_of_flow::inline_element_painted_rect`;
+before, `(x, y, 0, 0)` from the ghost box, so desktop `element_*` and
+`bounds_signal()` were empty where the web's were the span's box). It has only
+`&NodeTree`, and each fragment's height is the element's **own** font's ascent
+and descent, which needs a shaped probe: so the font boxes are recorded per
+font (`NodeTree::inline_font_boxes`, per em, keyed by family, weight, style and
+the font generation) for every inline element an IFC flows when its lines are
+shaped (`RinchDocument::note_inline_font_boxes`, from
+`shape_ifc_root_paint_layout`): a lookup per element, a probe per new font.
+`inline_element_rect` reads and fills the same table. Every other element:
+rinch-dom answers `paint::painted_border_box(tree, id, 1.0)` from the last layout, a zero rect
 under `display: none` or for a `display: contents` element (Chrome's answer; the
 layout of such a box is zeroed, so a sum up the chain would give its parent's
 origin), and `None` for a text node or one not connected; rinch-web answers
 `getBoundingClientRect()` for a connected element. Pins:
 `rinch-dom/tests/bounding_rect_1779_tests.rs`,
-`rinch-web/tests/bounding_rect_and_ref_1779.rs` (Chrome 155, Firefox).
+`rinch-web/tests/bounding_rect_and_ref_1779.rs` (Chrome 155, Firefox),
+`rinch-dom/tests/geometry_queries_2257_tests.rs` (the painted box, Chrome 158).
 
 ### RSX Prop Transformation Rules (IMPORTANT - Read Before Using Components)
 
@@ -341,7 +354,7 @@ Button { variant: "filled" }
 - `Callback` and `InputCallback` have built-in defaults (no-op), so custom components can use `on_toggle: Callback` instead of `Option<Callback>`.
 - Component text props (e.g., `variant`, `color`, `size`) are now `String` (not `Option<String>`). Empty string means "not set". The macro auto-converts string literals to `String::from(...)`.
 - `_fn` suffix props (e.g., `checked_fn`, `value_fn`) are auto-wrapped — just pass the closure directly, don't wrap in `Some(Rc::new(...))`
-- **The table above is for components.** On an HTML element, `on*` names are a closed list (`crates/rinch-macros/src/events.rs`: `onclick` → `data-rid`, `oninput`, `onchange`, `onsubmit`, `onscroll`, `onkeydown`/`onkeyup` (#1678, below), the mouse, context-menu, drag and file-drop events, and `onfocus`/`onblur`/`onfocusin`/`onfocusout` (#2731: `Fn()` handlers written to `data-onfocus` &c., dispatched by `RinchApp::fire_focus_events` on desktop and a document capture listener on the web — `docs/internals/focus-and-keyboard.md`, "Element focus events")), and any other `on*` name — `ondblclick`, a typo — is a **compile error** listing them, with a "did you mean" (#1590; it used to fall through to `data-rid` and become a *click* handler, so `input { onsubmit }` ran on a click and never on Enter). An `onsubmit`-, `onkeydown`- or `onkeyup`-only `<input>`/`<textarea>` gets the same desktop-only no-op `data-oninput` shim an `onchange`-only element gets; a wrapper `div { onsubmit }` does not. Since #2585 a text `<input>`/`<textarea>` takes typed text on desktop with no handler at all (by its element, as in a browser), so the shim is no longer what makes such a field editable. A `*_fn` prop (`value_fn`, `checked_fn`, …) on an HTML element is a compile error saying to write `value: {|| …}` (#1591; it used to be a `value_fn` attribute nothing reads): every HTML attribute already takes a reactive closure and updates surgically, so the component's `_fn` convention has nothing to add there. A raw reactive `value:` writes on every fire, with no #238 echo guard — the components' `bind_value_fn` is the guarded binding.
+- **The table above is for components.** On an HTML element, `on*` names are a closed list (`crates/rinch-macros/src/events.rs`: `onclick` → `data-rid`, `oninput`, `onchange`, `onsubmit`, `onscroll`, `onkeydown`/`onkeyup` (#1678, below), the mouse, context-menu, drag and file-drop events, and `onfocus`/`onblur`/`onfocusin`/`onfocusout` (#2731: `Fn()` handlers written to `data-onfocus` &c., dispatched by `RinchApp::fire_focus_events` on desktop and a document capture listener on the web — `docs/internals/focus-and-keyboard.md`, "Element focus events"), and `onerror` (#2202/#2203: `data-onerror`, a picture's load failure — `docs/internals/platform.md`, "The `error` event of an `<img>`")), and any other `on*` name — `ondblclick`, a typo — is a **compile error** listing them, with a "did you mean" (#1590; it used to fall through to `data-rid` and become a *click* handler, so `input { onsubmit }` ran on a click and never on Enter). An `onsubmit`-, `onkeydown`- or `onkeyup`-only `<input>`/`<textarea>` gets the same desktop-only no-op `data-oninput` shim an `onchange`-only element gets; a wrapper `div { onsubmit }` does not. Since #2585 a text `<input>`/`<textarea>` takes typed text on desktop with no handler at all (by its element, as in a browser), so the shim is no longer what makes such a field editable. A `*_fn` prop (`value_fn`, `checked_fn`, …) on an HTML element is a compile error saying to write `value: {|| …}` (#1591; it used to be a `value_fn` attribute nothing reads): every HTML attribute already takes a reactive closure and updates surgically, so the component's `_fn` convention has nothing to add there. A raw reactive `value:` writes on every fire, with no #238 echo guard — the components' `bind_value_fn` is the guarded binding.
 - **Note:** ThemeProvider props (`primary_color_fn`, `dark_mode_fn`) use a different codegen path and still require manual `Rc::new()` wrapping
 
 **Component Props vs HTML Attributes:**

@@ -249,12 +249,12 @@ fn a_stacking_contexts_in_flow_entries_paint_in_phases_too() {
     check("position: relative; z-index: 0");
 }
 
-/// The split is memoised in the tree's hit cache, so a style write that
+/// The split is memoised per layout (`Node::phase_split`), so a style write that
 /// makes a later block overlap an earlier one must reach it: paint once with
 /// the blocks stacked (no split), pull the later one up, lay out and paint
 /// again. The earlier text shows, as in Chrome 158 (`neg_margin_text`).
 ///
-/// Mutant: keeping `paint_extents`/`paint_splits` across a generation change
+/// Mutant: keeping a node's split memo across a `layout_epoch` change
 /// — the second paint reuses "no split" and the text is hidden.
 #[test]
 fn a_style_write_that_makes_blocks_overlap_reaches_the_memoised_split() {

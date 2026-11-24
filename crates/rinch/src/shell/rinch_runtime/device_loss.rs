@@ -251,6 +251,8 @@ impl RinchRuntime {
                 lost_frames.push(role);
             }
         }
+        // The renderers closed popups left are on the old device too (#2552).
+        super::popups::drop_spare_renderers();
         GPU.retire();
         note_retired(Instant::now());
         crate::render_surface::forget_gpu_device();

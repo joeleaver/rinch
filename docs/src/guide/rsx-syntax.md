@@ -233,6 +233,7 @@ Supported HTML-element event attributes:
 | `onwheel` | A mouse wheel, trackpad scroll or trackpad pinch over the element or inside it — see [The wheel on an element](#the-wheel-on-an-element) | `Fn(&WheelEvent) -> bool` — `true` consumes the wheel, and nothing scrolls |
 | `onfocus` / `onblur` | The element gains / loses the focus — see [Focus on an element](#focus-on-an-element). They do not bubble: a `div` around a field hears neither | `Fn()` |
 | `onfocusin` / `onfocusout` | The element or one inside it gains / loses the focus: `onfocus` / `onblur` that bubble | `Fn()` |
+| `onerror` | An `<img>`'s picture failed to load (issues #2202, #2203): the browser's `error` event on the web; on the desktop, once per failure after the layout in which the load's failure arrived (a malformed `data:` URL fails as its `src` is written). `src=""` fails on both, as in Chrome; an `<img>` with no `src` fires nothing. It does not bubble. On the web a source only the app's image scheme understands, answered "not yet", fires it too, as the desktop's loader miss does. The desktop fires it only for `<img>`; on the web it is the browser's event, so a `<video>`, `<audio>` or `<source>` that fails to load runs an `onerror` on it too | `Fn()` |
 
 That list is closed. Any other `on*` name on an HTML element — `ondblclick`,
 `onkeypress`, a typo such as `onclik` — is a compile error that lists the
@@ -979,7 +980,8 @@ painted in: viewport-relative logical pixels, the frame of a click's
 element or an ancestor moves and scales it, and a scroll moves it. On the web it
 is `getBoundingClientRect()`. An inline element (`<span>`, `<a>`, `<strong>`)
 answers the box around its fragments on its lines — a wrapped one, the union of
-all of them, without the white space hung at a line's end. On desktop it is the box as of the **last layout**:
+all of them, without the white space hung at a line's end — and so do a click's
+`element_*` fields and its `bounds_signal()` on desktop, as in a browser. On desktop it is the box as of the **last layout**:
 a style the same handler just wrote shows from the next frame, where a browser
 lays out to answer. An element under `display: none` (or one that is
 `display: contents`) answers a zero rect; a text node, or an element not in the

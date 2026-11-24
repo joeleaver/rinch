@@ -245,3 +245,98 @@ fn a_blur_held_while_the_chain_is_open_is_told_when_it_closes() {
     );
     crate::popup::set_supported(false);
 }
+
+/// A renderer on the default adapter, standing in for a window's.
+#[cfg(feature = "gpu-renderer")]
+fn offscreen_renderer() -> WgpuRenderer {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .unwrap();
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    WgpuRenderer::offscreen(
+        std::sync::Arc::new(device),
+        std::sync::Arc::new(queue),
+        64,
+        64,
+        wgpu::TextureFormat::Rgba8Unorm,
+    )
+}
+
+/// #2552 stage 2: a closed popup's GPU renderer is a next popup's, which
+/// then builds none (Vello's renderer was most of a GPU popup's opening).
+/// Only a popup's is kept, and only one that holds nothing of its document
+/// beyond its next full frame.
+#[cfg(feature = "gpu-renderer")]
+#[test]
+#[ignore]
+fn gpu_a_closed_popups_renderer_is_kept_for_the_next_2552() {
+    use super::super::popups::{drop_spare_renderers, take_spare_renderer};
+    drop_spare_renderers();
+    let (mut runtime, bar, menu, sub, _log) = bar_menu_sub();
+    runtime.w(WindowRole::Other(sub)).renderer = Some(offscreen_renderer());
+    let mut layered = offscreen_renderer();
+    rinch_platform::PlatformRenderer::set_composite_layers(
+        &mut layered,
+        vec![rinch_platform::CompositeLayer {
+            pixels: vec![0; 4],
+            width: 1,
+            height: 1,
+            viewport: (0.0, 0.0, 1.0, 1.0),
+            border_radius: [0.0; 4],
+            clip_rect: None,
+        }],
+    );
+    runtime.w(WindowRole::Other(menu)).renderer = Some(layered);
+
+    runtime.close_other(sub);
+    let kept = take_spare_renderer().expect("the submenu's renderer");
+    assert!(kept.surface.is_none(), "kept with its surface gone");
+    // One still holding its document's layers is not kept.
+    runtime.close_other(menu);
+    assert!(take_spare_renderer().is_none());
+    // Nor a window's that is not a popup.
+    runtime.w(WindowRole::Other(bar)).renderer = Some(kept);
+    runtime.close_other(bar);
+    assert!(take_spare_renderer().is_none());
+    crate::popup::set_supported(false);
+}
+
+/// The kept renderers (#2552): the last `count` kept, the last given first,
+/// none with a count of 0, and all of them once the idle period of the last
+/// kept has passed.
+#[test]
+fn the_spare_pool_keeps_the_last_few_until_idle_2552() {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let idle = Some(Duration::from_secs(2));
+    let mut pool = super::super::popups::SparePool::new();
+    for i in 0..4 {
+        pool.keep(i, 3, t0, idle);
+    }
+    let given: Vec<i32> = std::iter::from_fn(|| pool.take()).collect();
+    assert_eq!(given, vec![3, 2, 1]);
+
+    pool.keep(7, 0, t0, idle);
+    assert_eq!(pool.take(), None, "a count of 0 keeps none");
+
+    pool.keep(1, 3, t0, idle);
+    pool.keep(2, 3, t0 + Duration::from_secs(1), idle);
+    assert_eq!(
+        pool.trim_if_idle(t0 + Duration::from_millis(2_500)),
+        0,
+        "kept 1.5 s ago"
+    );
+    assert_eq!(pool.trim_if_idle(t0 + Duration::from_secs(3)), 2);
+    assert_eq!(pool.take(), None);
+
+    pool.keep(1, 3, t0, None);
+    assert_eq!(
+        pool.trim_if_idle(t0 + Duration::from_secs(3600)),
+        0,
+        "no idle period"
+    );
+    assert_eq!(pool.take(), Some(1));
+}

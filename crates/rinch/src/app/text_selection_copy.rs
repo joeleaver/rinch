@@ -356,7 +356,10 @@ pub(crate) fn copy_text(
             open(tree, &parts, &mut roots, id);
         }
         if is_picture(n) {
-            if n.computed_style.visibility == VisibilityValue::Visible {
+            // A picture that cannot be selected is not written (#2256).
+            if n.computed_style.visibility == VisibilityValue::Visible
+                && super::text_selection::resolved_user_select(tree, id).is_selectable()
+            {
                 out.emitted = true;
                 out.after_picture = true;
             }
@@ -538,7 +541,13 @@ fn enter(tree: &rinch_dom::NodeTree, id: u64, out: &mut Out) {
         out.push("\t");
     } else if breaks_around(n) {
         out.line_break();
-    } else if is_inline_table(n) && out.emitted && !out.ends_in_newline() {
+    } else if is_inline_table(n)
+        && out.emitted
+        && !out.ends_in_newline()
+        && super::text_selection::resolved_user_select(tree, id).is_selectable()
+    {
+        // Only a table that can be selected has the space before it; the
+        // one after it is written either way (Chrome 158, #2256).
         out.push(" ");
     }
 }
@@ -697,7 +706,7 @@ fn leaf_span(tree: &rinch_dom::NodeTree, id: u64) -> Option<(usize, usize)> {
 
 /// The node root `id` stands at in the element tree: an anonymous box at
 /// its run's first member.
-fn root_node(tree: &rinch_dom::NodeTree, id: u64) -> u64 {
+pub(crate) fn root_node(tree: &rinch_dom::NodeTree, id: u64) -> u64 {
     tree.get(id)
         .filter(|n| n.is_anonymous_block_box)
         .and_then(|n| n.run_members.first().copied())
@@ -706,7 +715,7 @@ fn root_node(tree: &rinch_dom::NodeTree, id: u64) -> u64 {
 
 /// The elements (and anonymous boxes) that hold root `id`: its ancestors,
 /// and the box of each run one of them (or it) is in.
-fn holders(tree: &rinch_dom::NodeTree, id: u64) -> std::collections::HashSet<u64> {
+pub(crate) fn holders(tree: &rinch_dom::NodeTree, id: u64) -> std::collections::HashSet<u64> {
     let mut out = std::collections::HashSet::new();
     let node = root_node(tree, id);
     let mut at = Some(node);
@@ -743,8 +752,9 @@ fn path_to(tree: &rinch_dom::NodeTree, id: u64) -> Vec<u64> {
 
 /// Whether node `a` comes before node `b` in the document (an ancestor
 /// before what it holds).
-fn node_before(tree: &rinch_dom::NodeTree, a: u64, b: u64) -> bool {
+pub(crate) fn node_before(tree: &rinch_dom::NodeTree, a: u64, b: u64) -> bool {
     let (pa, pb) = (path_to(tree, a), path_to(tree, b));
+    work((pa.len() + pb.len()) as u64);
     let common = pa.iter().zip(&pb).take_while(|(x, y)| x == y).count();
     match (pa.get(common), pb.get(common)) {
         (None, Some(_)) => true,
@@ -754,7 +764,11 @@ fn node_before(tree: &rinch_dom::NodeTree, a: u64, b: u64) -> bool {
                 .checked_sub(1)
                 .and_then(|i| tree.get(pa[i]))
                 .map_or(&[][..], |p| &p.children[..]);
-            let at = |c: u64| siblings.iter().position(|&s| s == c);
+            let at = |c: u64| {
+                let i = siblings.iter().position(|&s| s == c);
+                work(i.map_or(siblings.len(), |i| i + 1) as u64);
+                i
+            };
             at(x) < at(y)
         }
     }
@@ -762,13 +776,13 @@ fn node_before(tree: &rinch_dom::NodeTree, a: u64, b: u64) -> bool {
 
 /// Whether root `inner` stands inside root `outer`'s lines (an
 /// `inline-block` in a paragraph, at any depth).
-fn holds(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> bool {
+pub(crate) fn holds(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> bool {
     outer != inner && holders(tree, inner).contains(&outer)
 }
 
 /// Where the box holding root `inner` stands in root `outer`'s text: after
 /// the last of `outer`'s text before it.
-fn box_offset(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> usize {
+pub(crate) fn box_offset(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> usize {
     let at = root_node(tree, inner);
     tree.get(outer)
         .and_then(|n| n.text_layout.as_ref())
@@ -785,7 +799,7 @@ fn box_offset(tree: &rinch_dom::NodeTree, outer: u64, inner: u64) -> usize {
 /// inside another stands where its box stands in that root's text, not
 /// where the root order puts it (after the root holding it); an offset where
 /// the box stands is before it.
-fn before(tree: &rinch_dom::NodeTree, a: (u64, usize), b: (u64, usize)) -> bool {
+pub(crate) fn before(tree: &rinch_dom::NodeTree, a: (u64, usize), b: (u64, usize)) -> bool {
     if a.0 == b.0 {
         a.1 < b.1
     } else if holds(tree, a.0, b.0) {
