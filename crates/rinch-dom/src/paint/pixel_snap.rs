@@ -42,10 +42,31 @@ use peniko::kurbo::{Affine, Rect};
 /// does (`-1.5` goes to `-1`, where `f64::round` would give `-2`). A
 /// millionth of a device pixel of slack keeps an edge that is a tie up to
 /// float error (a position summed from a parent's, `13 * 1.5 + 0.0`) on the
-/// same side as the exact tie.
+/// same side as the exact tie: the edge is `(v + 0.5 + 1e-6).floor()`,
+/// exactly, below 2^51 device px from the origin. Past that an `f64` cannot
+/// hold a half pixel, so there is no grid to snap to, and the edge comes back
+/// within two of the floor's units in the last place of it; an infinity or a
+/// NaN comes back as it is.
+///
+/// Not by `f64::floor` or `f64::round`: on the x86-64 baseline (no SSE4.1,
+/// so no `roundsd`) each is a call into libm, and paint, the culls and the
+/// damage snap every box edge they look at. That call was over half of what
+/// #2368 first added to a frame (`row_shift_damage` rose 9.5%; 0.67M of the
+/// 1.14M instructions were libm's `floor`). Adding and then subtracting
+/// `1.5 * 2^52` rounds a `z` below 2^51 in magnitude to the nearest whole
+/// number in IEEE arithmetic (the sum has no fractional bits left; the
+/// compiler may not fold the pair away without fast-math), and stepping that
+/// down by one where it came out above `z` is `z`'s floor. Branch-free, so
+/// [`snapped_rect`]'s four edges compile to vector arithmetic. (A select that
+/// returned a far `v` untouched cost `row_shift_damage` another 1%, for edges
+/// no layout produces: Taffy's boxes are `f32`, whose spacing is coarser than
+/// this error long before 2^51.)
 #[inline]
 pub fn snap_edge(v: f64) -> f64 {
-    (v + 0.5 + 1e-6).floor()
+    const ROUNDER: f64 = 6_755_399_441_055_744.0; // 1.5 * 2^52
+    let z = v + 0.5 + 1e-6;
+    let nearest = (z + ROUNDER) - ROUNDER;
+    if nearest > z { nearest - 1.0 } else { nearest }
 }
 
 /// The border box at `(x, y)`, `w` x `h` physical px, with each edge on the
@@ -53,23 +74,14 @@ pub fn snap_edge(v: f64) -> f64 {
 /// shadows and outline from, and replaced content into.
 #[inline]
 pub fn snapped_box(x: f64, y: f64, w: f64, h: f64) -> Rect {
-    Rect::new(
-        snap_edge(x),
-        snap_edge(y),
-        snap_edge(x + w),
-        snap_edge(y + h),
-    )
+    snapped_rect(Rect::new(x, y, x + w, y + h))
 }
 
 /// `r` with each edge on the device grid.
 #[inline]
 pub fn snapped_rect(r: Rect) -> Rect {
-    Rect::new(
-        snap_edge(r.x0),
-        snap_edge(r.y0),
-        snap_edge(r.x1),
-        snap_edge(r.y1),
-    )
+    let [x0, y0, x1, y1] = [r.x0, r.y0, r.x1, r.y1].map(snap_edge);
+    Rect::new(x0, y0, x1, y1)
 }
 
 /// The box at `(x, y)`, `w` x `h` and its snapped self together: what a box
@@ -86,9 +98,22 @@ pub fn box_reach(x: f64, y: f64, w: f64, h: f64) -> Rect {
 /// [`box_reach`] of a rect: `r` and its snapped self together. Rounding is
 /// monotonic, so for a rect that bounds several untransformed boxes this
 /// also bounds each of their snapped selves.
+///
+/// Each edge is compared with its snapped self directly rather than through
+/// [`Rect::union`], whose `f64::min`/`max` also order a NaN and so cost a few
+/// instructions more per edge on every box the culls and the damage look at;
+/// an edge and its snapped self are both numbers, or both NaN.
 #[inline]
 pub fn reach_of(r: Rect) -> Rect {
-    r.union(snapped_rect(r))
+    let s = snapped_rect(r);
+    let lesser = |a: f64, b: f64| if b < a { b } else { a };
+    let greater = |a: f64, b: f64| if b > a { b } else { a };
+    Rect::new(
+        lesser(r.x0, s.x0),
+        lesser(r.y0, s.y0),
+        greater(r.x1, s.x1),
+        greater(r.y1, s.y1),
+    )
 }
 
 /// How far a box edge can move when paint snaps it: half a device pixel, in
@@ -124,6 +149,58 @@ mod tests {
         assert_eq!(snap_edge(7.0), 7.0);
         // A tie a few ulps short of exact is still a tie.
         assert_eq!(snap_edge(19.5 - 1e-12), 20.0);
+    }
+
+    #[test]
+    fn the_snap_is_the_floor_of_the_edge_plus_a_half() {
+        // What `snap_edge` computes without libm: `(v + 0.5 + 1e-6).floor()`,
+        // on the ties (eighths of a pixel), off them, and out to 2^51, past
+        // where the slack is below an ulp (1e15 + 0.5 is still a tie up).
+        let reference = |v: f64| (v + 0.5 + 1e-6).floor();
+        let mut samples = vec![
+            0.0,
+            -0.0,
+            1e7,
+            -1e7 - 0.5,
+            -1e7 - 0.25,
+            1e15 + 0.5,
+            -1e15 - 0.5,
+            2_251_799_813_685_247.0,
+            -2_251_799_813_685_247.0,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+        ];
+        samples.extend((-4000..4000).map(|i| i as f64 * 0.125));
+        samples.extend((-4000..4000).map(|i| i as f64 * 0.137 + 0.01));
+        samples.extend((-400..400).map(|i| i as f64 * 1.25 * 13.0 / 7.0));
+        for v in samples {
+            assert_eq!(snap_edge(v), reference(v), "{v}");
+        }
+        // Past 2^51 (no half pixel left), within two ulps of the floor.
+        for v in [
+            2_251_799_813_685_248.5,
+            3_000_000_000_000_001.5,
+            -2_251_799_813_685_248.5,
+            -4_503_599_627_370_497.0,
+            4_503_599_627_370_497.0,
+            9_007_199_254_740_993.0,
+            -9.3e18,
+            1e300,
+            -1e300,
+            f64::MAX,
+            f64::MIN,
+        ] {
+            let (got, want) = (snap_edge(v), reference(v));
+            let ulp = f64::from_bits(want.abs().to_bits() + 1) - want.abs();
+            assert!((got - want).abs() <= 2.0 * ulp, "{v}: {got} against {want}");
+        }
+        assert_eq!(snap_edge(f64::INFINITY), f64::INFINITY);
+        assert_eq!(snap_edge(f64::NEG_INFINITY), f64::NEG_INFINITY);
+        assert!(snap_edge(f64::NAN).is_nan());
+        assert_eq!(
+            snapped_rect(Rect::new(16.25, -1.5, f64::INFINITY, 19.5)),
+            Rect::new(16.0, -1.0, f64::INFINITY, 20.0)
+        );
     }
 
     #[test]
