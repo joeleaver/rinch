@@ -15,10 +15,22 @@ use crate::node::RawNodeId;
 pub(super) struct Marker<'a> {
     tree: &'a NodeTree,
     pub(super) state: &'a mut DeepOverflowState,
-    /// The box the last plain marking ([`Self::climb`]) started from, and
-    /// the container it reached: the rows of a list share their parent, and
-    /// the second marks nothing the first did not.
-    last: Option<(RawNodeId, Option<RawNodeId>)>,
+    /// The box the last marking ([`Self::climb`]) started from, the
+    /// container it reached, and whether that box lists no marked children
+    /// (it is the container, or is marked [`STRUCT`] in this check). The
+    /// rows of a list share their parent, and the second marks nothing the
+    /// first did not — nor lists itself, where the parent sums all its
+    /// children (a row taken out shifts the rest).
+    last: Option<Last>,
+}
+
+/// What [`Marker::climb`] remembers of the last marking.
+#[derive(Clone, Copy)]
+struct Last {
+    start: RawNodeId,
+    owner: Option<RawNodeId>,
+    /// The start lists no marked children.
+    all: bool,
 }
 
 impl<'a> Marker<'a> {
@@ -42,6 +54,7 @@ impl<'a> Marker<'a> {
             // Freed (`DeepOverflow::forget_freed` dropped its record); its
             // parent was noted as one a subtree left.
             self.state.forget(id);
+            self.last = None;
             return;
         };
         if node.is_text() {
@@ -98,44 +111,52 @@ impl<'a> Marker<'a> {
         structural: bool,
     ) -> Option<RawNodeId> {
         let plain = link.is_none() && !structural;
-        if plain
-            && let (Some(s), Some((last, owner))) = (start, self.last)
-            && s == last
+        if let (Some(s), Some(last)) = (start, self.last)
+            && s == last.start
+            && (plain || last.all)
         {
-            return owner;
+            return last.owner;
         }
-        let owner = self.climb_from(start, link, structural);
-        self.last = start.map(|s| (s, owner));
+        let (owner, all) = self.climb_from(start, link, structural);
+        self.last = start.map(|start| Last { start, owner, all });
         owner
     }
 
+    /// [`Self::climb`]'s marking: the container, and whether `start` lists
+    /// no marked children (see [`Marker::last`]).
     fn climb_from(
         &mut self,
         start: Option<RawNodeId>,
         mut link: Option<RawNodeId>,
         mut structural: bool,
-    ) -> Option<RawNodeId> {
+    ) -> (Option<RawNodeId>, bool) {
         let epoch = self.state.epoch;
         let mut current = start;
+        // Whether the box at `start` lists no marked children; false where
+        // there is no record at `start`, whose climb is never folded.
+        let mut start_all = None;
+        let mut answer = |all: bool| *start_all.get_or_insert(all);
         while let Some(a) = current {
             if let Some(entry) = self.state.entries.get_mut(&a) {
                 // The container visits all its children.
                 entry.touch |= BELOW;
-                return Some(a);
+                return (Some(a), answer(true));
             }
             let Some(rec) = self.state.recs.get_mut(&a) else {
                 // A box the walk did not record (one added): the recorded
                 // box above it gained a child, which no list names.
+                answer(false);
                 structural = true;
                 link = None;
                 current = self.tree.get(a).and_then(|n| n.box_tree_parent());
                 continue;
             };
             if !rec.snap.entered() {
-                return None;
+                return (None, answer(false));
             }
             let newly = rec.mark(epoch, if structural { BELOW | STRUCT } else { BELOW });
             let (parent, owner, all) = (rec.parent, rec.owner, rec.touch & STRUCT != 0);
+            answer(all);
             if let Some(child) = link
                 && !all
             {
@@ -145,13 +166,13 @@ impl<'a> Marker<'a> {
                 }
             }
             if !newly {
-                return Some(owner);
+                return (Some(owner), answer(all));
             }
             structural = false;
             link = Some(a);
             current = Some(parent);
         }
-        None
+        (None, answer(false))
     }
 }
 

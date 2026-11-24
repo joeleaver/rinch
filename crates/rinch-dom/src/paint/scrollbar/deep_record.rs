@@ -63,19 +63,7 @@ pub(super) struct Rec {
     pub(super) next: RawNodeId,
 }
 
-/// The records of every kept walk, by box. A walk inserts one per box of
-/// its container's subtree, so the map is keyed with FxHash: with the std
-/// `SipHash` the inserts were most of a walk's cost (`row_shift_damage` in
-/// `rinch-bench`). Node ids come from the tree's slab, not from outside, so
-/// there is nothing to guard against collisions for.
-///
-/// A record lives as long as its box is where the walk met it: a box taken
-/// out of the tree (`DeepOverflow::forget_detached`) or freed
-/// (`DeepOverflow::forget_freed`) has its records dropped then, and a walk
-/// dropped to be taken again drops the records it made. So the map holds at
-/// most one record per box in the kept walks, and a freed slot's new node
-/// (whose id differs only in its generation, which wraps) finds none.
-pub(super) type Records = rustc_hash::FxHashMap<RawNodeId, Rec>;
+pub(super) use super::deep_slots::Records;
 
 impl Rec {
     /// A record of a box met by `owner`'s walk under `parent`, nothing

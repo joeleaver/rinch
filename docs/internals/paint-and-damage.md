@@ -705,17 +705,47 @@ for what it can follow: it is **brought up to date in place**
 (`Rec`), kept by box across containers: its `WalkSnap`, the container whose
 walk met it, its box-tree parent then, what its children contribute in its
 own children frame (`kids`, from where the box places its children, so a box
-that moves carries what is below it unchanged) and its own contribution. The
-check marks: a recorded box pushed paint-dirty is `SELF`, and each record
-above it up to the container is `BELOW` (the climb stops at a record already
-marked); a box with no record marks from its parent; a freed box is
-forgotten; a recorded box now under another box-tree parent is forgotten with
-its subtree and marks both parents; a split inline marks its container to be
-walked again. Then each marked container goes once through its children: a
-child nothing was marked of answers its kept contribution, a child with no
-record is recorded fresh, and a marked one is measured where it is now — its
+that moves carries what is below it unchanged) and its own contribution.
+The records and the entries are stored by the node's slab slot
+(`deep_slots.rs`: a dense list and a slot-to-index table, the whole id
+compared on lookup), not hashed, since a check looks up a few per box
+pushed. **A record lives as long as its box is where the walk met it**
+(review of ec70c112c, where 200 rows appended, read and removed left 400
+records, and 50 scrollers left their walks): a subtree taken out of the
+tree drops the records of its boxes, and the walks of the scroll containers
+in it, when it is taken out (`DeepOverflow::forget_detached`, from
+`mark_subtree_paint_dirty`, which every removal and every move of a painted
+box calls); a freed node drops its own (`forget_freed`, from
+`NodeTree::remove_subtree` and the anonymous-box frees in `ifc.rs`); and a
+walk dropped to be taken again drops the records it made. The parent of
+the subtree's top box is noted, at the next check, as one that lost a child,
+and so is a scroll container in the subtree whose walk is kept (its children
+are recorded again); the other parents in the subtree go with it, unnoted
+(noting each row of a hidden 1000-row branch made the next check climb from
+each, `branch_hide` in `rinch-bench`). So
+the memo holds at most one record per box of the kept walks, and a freed
+slot's new node (another generation) finds none. The check
+(`deep_mark.rs`, `Marker`) marks, scoped to the check by an epoch on each
+record: a recorded box pushed paint-dirty is `SELF`, and each record above
+it up to the container is `BELOW` (the climb stops at a record already
+marked; a climb from the box the last one started from is folded into it,
+and still answers the container that one reached); a box with no record
+marks from its parent; a freed box is forgotten; a recorded box now under
+another box-tree parent is forgotten with its subtree and marks both
+parents; a split inline marks its container to be walked again. Each marked
+box also **lists the children the marking came up from** (`Rec::first` /
+`Rec::next`), unless a child was added or lost under it, which marks it
+`STRUCT` (sum all its children again; the parents that lost a child are
+noted first, so the rows of a list one was taken from are not listed).
+Then each marked container goes once through its children: a child nothing
+was marked of answers its kept contribution, a child with no record is
+recorded fresh, and a marked one is measured where it is now — its
 `WalkSnap` taken again (an absolute box's out-of-overflow rule asked again,
-since its size decides it) and only its marked children visited. The
+since its size decides it) and only its listed children visited, each one's
+new contribution joined to the kept `kids`, unless its old one held an edge
+of that span which the new one no longer reaches (`Span::holds_an_edge_of`),
+which only the sum over all the children can say. So a box resized among
+many siblings visits that box and its parent, not the siblings. The
 container is walked again only where the records cannot follow: a box whose
 kind changed (`WalkSnap::same_kind`: whether it clips, is transformed,
 positioned, displayed, `contents`, collapsed or a containing block, its
@@ -729,13 +759,14 @@ that box's border box (`containing_rect`), which the scroller's own measure
 counts at least as far. A hover colour measures the one box; a row removed
 from a long list measures each row that moved (one box each: nothing below a
 row moved with it) and nothing else. **What it still costs:**
-`row_shift_damage` (2000 rows, one removed) is +10% on `main` (12.04M → 13.29M
-Ir; the dropped-walk version was 15.10M), because main counts
+`row_shift_damage` (2000 rows, one removed) is +9.3% on `main` (12.44M →
+13.60M Ir in one local run; the dropped-walk version was 15.10M), because main counts
 none of this: main's range is the scroller's children alone, which is wrong
 for #2054 (a box overflowing its own parent is in Chrome's range) and only
 happens to equal the right answer when, as there, nothing below a row
-overflows it. Measuring a moved row exactly is about 280 instructions
-(`WalkSnap::of`, its contribution, the climb that marks it and the visit), so
+overflows it. Measuring a moved row exactly is about 600 instructions
+(`WalkSnap::of`, its contribution, the climb that marks it and the visit;
+the check was about 1.17M Ir for the 1986 rows that moved), so
 the cost is the price of the right range on such a frame, not a walk. A
 whole-document restyle drops every entry and record; a removed container's
 entry is freed. A read in between is a lookup,
@@ -748,7 +779,11 @@ absolutes), so a relayout scrolled within it walks nothing. Pins: `tests/geometr
 `testing::deep_overflow_walks` / `deep_overflow_measured`, and the
 `kept_matches_fresh` scenarios, each against a fresh document) and
 `tests/deep_overflow_kept_fuzz_2054_tests.rs` (random edit sequences against
-a fresh document at every read; `RINCH_KEPT_FUZZ_SEEDS=<n>` runs more).
+a fresh document at every read, in two sibling scrollers, with text replaced
+and boxes moved between them; `RINCH_KEPT_FUZZ_SEEDS=<n>` runs more), and
+`tests/deep_overflow_kept_records_2054_tests.rs` (what the memo holds as rows
+and scrollers come and go, `testing::deep_overflow_held`; a move pinned by
+its walk and measure counts; one child resized among 51).
 
 **A box that does not scroll (#2223).** It has no range for a bar or the
 wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it

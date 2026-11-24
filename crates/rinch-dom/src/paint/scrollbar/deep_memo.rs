@@ -2,7 +2,7 @@
 //! kept, and brought up to date in place, as what the walk read changes.
 
 use super::deep_mark::Marker;
-use super::deep_record::{AGAIN, BELOW, Level, Records, SELF, Walker};
+use super::deep_record::{AGAIN, BELOW, Level, Rec, Records, SELF, Walker};
 use super::deep_walk::WalkSnap;
 use super::extents::Reach;
 use super::measure::border_box_in;
@@ -75,7 +75,7 @@ pub(crate) struct DeepOverflow {
 
 #[derive(Debug, Default)]
 pub(super) struct DeepOverflowState {
-    pub(super) entries: rustc_hash::FxHashMap<RawNodeId, DeepEntry>,
+    pub(super) entries: super::deep_slots::Slots<DeepEntry>,
     /// Every entry's records, by box ([`Records`]).
     pub(super) recs: Records,
     /// How much of `paint_dirty_nodes` and `bar_check_parents` has been
@@ -103,7 +103,10 @@ impl DeepOverflow {
         if !state.entries.contains_key(&container_id) {
             Self::walk(tree, &mut state, container_id);
         }
-        let entry = &state.entries[&container_id];
+        let entry = state
+            .entries
+            .get(&container_id)
+            .expect("walked when it had no entry");
         let mut reach = entry.reach;
         for &id in &entry.live {
             if let Some(drawn) = border_box_in(tree, id, container_id)
@@ -352,27 +355,54 @@ impl DeepOverflowState {
     /// Drop box `id`'s record, if it has one, and note its parent as one
     /// that lost a child.
     pub(super) fn forget(&mut self, id: RawNodeId) {
-        let Some(rec) = self.recs.remove(&id) else {
+        let Some(rec) = self.drop_rec(id) else {
             return;
         };
-        if rec.snap.transformed
-            && let Some(entry) = self.entries.get_mut(&rec.owner)
-        {
-            entry.live.retain(|&l| l != id);
-        }
         if self.recs.contains_key(&rec.parent) || self.entries.contains_key(&rec.parent) {
             self.lost.push(rec.parent);
         }
     }
 
+    /// Drop box `id`'s record, and its place in its walk's transformed
+    /// boxes; the record.
+    fn drop_rec(&mut self, id: RawNodeId) -> Option<Rec> {
+        let rec = self.recs.remove(&id)?;
+        if rec.snap.transformed
+            && let Some(entry) = self.entries.get_mut(&rec.owner)
+        {
+            entry.live.retain(|&l| l != id);
+        }
+        Some(rec)
+    }
+
     /// Drop the records of box `id` and of every recorded box below it.
+    /// `id`'s parent is noted as one that lost a child, and so is a scroll
+    /// container below it whose walk's records go (moved with it, its walk is
+    /// kept, and its children are recorded again); the other parents below
+    /// it go too, and are not noted (a hidden branch of 1000 rows noted each,
+    /// and the next check climbed from each, `branch_hide` in `rinch-bench`).
     pub(super) fn purge(&mut self, tree: &NodeTree, id: RawNodeId) {
         if !self.recs.contains_key(&id) {
             return;
         }
         self.forget(id);
+        self.drop_below(tree, id);
+    }
+
+    /// Drop the records of every recorded box below box `id`, noting a
+    /// scroll container whose walk's records they were ([`Self::purge`]).
+    fn drop_below(&mut self, tree: &NodeTree, id: RawNodeId) {
         for &child in crate::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
-            self.purge(tree, child);
+            let Some(rec) = self.drop_rec(child) else {
+                continue;
+            };
+            if rec.parent == rec.owner
+                && self.lost.last() != Some(&rec.owner)
+                && self.entries.contains_key(&rec.owner)
+            {
+                self.lost.push(rec.owner);
+            }
+            self.drop_below(tree, child);
         }
     }
 

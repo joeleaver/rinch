@@ -179,6 +179,59 @@ fn a_box_moved_to_another_parent_is_recorded_where_it_is() {
     assert_eq!(deep_overflow_held(&d.tree), held);
 }
 
+const NESTED: &str = r#"<div id="s" style="width:200px;height:100px;overflow:auto"><div id="p" style="width:150px;height:40px"></div><div id="q" style="width:150px;height:40px"></div></div>"#;
+
+/// A box holding a scroll container, moved to another parent under the
+/// outer scroller before any paint consumed it: the moved box's records go,
+/// and with them those of the inner container's walk, which is kept — so the
+/// inner container sums its children again, and a transformed box in it,
+/// measured where it is drawn on each read, still counts. Each read against
+/// a fresh document.
+#[test]
+fn a_scroller_moved_inside_a_box_keeps_its_transformed_boxes() {
+    let fresh = |under: &str| {
+        let mut d = kept_doc(NESTED);
+        let parent = by_id(&d, under);
+        let (x, i) = nested(&mut d);
+        d.append_child(parent, x);
+        d.resolve_layout(800.0, 600.0);
+        (range_of(&d, "s"), (d.scroll_width(i), d.scroll_height(i)))
+    };
+    let mut d = kept_doc(NESTED);
+    frame(&mut d);
+    let (p, q) = (by_id(&d, "p"), by_id(&d, "q"));
+    let (x, i) = nested(&mut d);
+    d.append_child(p, x);
+    d.resolve_layout(800.0, 600.0);
+    let read = |d: &RinchDocument| (range_of(d, "s"), (d.scroll_width(i), d.scroll_height(i)));
+    assert_eq!(read(&d), fresh("p"), "control: under p");
+    assert_eq!(read(&d).1, (260.0, 30.0), "control: the transformed box");
+    d.append_child(q, x);
+    d.resolve_layout(800.0, 600.0);
+    assert_eq!(read(&d), fresh("q"), "moved under q");
+}
+
+/// A box holding a 100x40 scroll container (its id, `#i`, the second
+/// answer) with a row and a box translated past its right edge.
+fn nested(d: &mut RinchDocument) -> (NodeId, NodeId) {
+    let x = d.create_element("div");
+    d.set_attribute(x, "style", "width:120px;height:40px");
+    let i = d.create_element("div");
+    d.set_attribute(i, "id", "i");
+    d.set_attribute(i, "style", "width:100px;height:40px;overflow:auto");
+    let r = row(d, "50px");
+    d.append_child(i, r);
+    let t = d.create_element("div");
+    d.set_attribute(
+        t,
+        "style",
+        "width:60px;height:10px;transform:translateX(200px)",
+    );
+    d.append_child(i, t);
+    d.append_child(x, i);
+    (x, i)
+}
+
 /// Of a box's many children, one resized: the box's span is brought up to
 /// date from that child alone — joined where it grows or shrinks inside the
 /// span, summed from all of them where it held the span's edge and no

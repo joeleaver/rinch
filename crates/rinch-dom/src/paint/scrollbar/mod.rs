@@ -60,6 +60,7 @@ use peniko::color::{AlphaColor, Srgb};
 mod deep_mark;
 mod deep_memo;
 mod deep_record;
+mod deep_slots;
 mod deep_walk;
 mod extents;
 mod measure;
