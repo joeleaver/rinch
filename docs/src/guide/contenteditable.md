@@ -129,7 +129,14 @@ Command names are case-sensitive. The full catalogue:
 below for `addRowBefore`, the row above for `addRowAfter`): under a cell two columns
 wide the new row has a cell two columns wide, and a cell that spans across the new
 row's line (a `rowspan` reaching past it) grows by one row and keeps those columns.
-The new cells are empty, plain `table_cell`s, even beside a header row. In a table
+The new cells are empty, plain `table_cell`s, even beside a header row, each aligned
+like the cell of the row beside it in its column. `addColumnBefore` and `addColumnAfter`
+model each new cell on the cell beside it in its row, in the column on its left (at the
+table's left edge, the column it pushes right; past a header column, the column on the
+other side): it takes that cell's type, so the header row gets a header cell, and its
+alignment. `splitCell` fills the slots it frees with cells of the merged cell's type and
+alignment, and clearing a cell selection keeps each cell's alignment. So a column keeps
+one alignment through these commands, and a Markdown pipe table stays a pipe table. In a table
 with no merged cells that is one cell per column, the row these commands have always
 added. Before #1244 a new row was always one cell per grid column, so a row added
 under a row of 2,100 cells each `colspan = 1000` wide built 2 million cells; it now
