@@ -368,8 +368,8 @@ impl<F: ?Sized> Hook<F> {
     /// **Untracked** (#931): an app effect that moves the selection, runs a
     /// command or offers a key calls these hooks synchronously, and what a hook
     /// reads (a popup's own `open` signal) must not become that effect's
-    /// dependency. The whole observer stack is suspended, not only its top —
-    /// see [`untracked_handler`].
+    /// dependency. No observer subscribes, neither the calling effect nor one
+    /// it runs nested inside — see [`untracked_handler`].
     fn invoke<R>(&self, call: impl FnOnce(&F) -> R) -> Option<R> {
         match &self.owner {
             Some(owner) if !owner.is_alive() => None,

@@ -1,7 +1,7 @@
 //! Disposal: [`ScopeInner::dispose`] collects a scope's subtree into the
 //! thread's in-flight [`DisposeCtx`], and [`run_dispose_fixpoint`] releases
-//! it in priority order, with the observer stack suspended
-//! ([`SuspendObservers`]) so teardown reads subscribe nobody.
+//! it in priority order, with the current observer suspended
+//! (`tracking::SuspendObservers`) so teardown reads subscribe nobody.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -151,62 +151,6 @@ pub(crate) fn disposal_available() -> bool {
         && crate::reactive::MEMO_STORE.try_with(|_| ()).is_ok()
 }
 
-/// Suspends the **entire** observer stack until dropped.
-///
-/// Teardown's counterpart to [`untracked`](crate::reactive::untracked), which pops
-/// exactly one observer and is the right depth for a *render* boundary: user
-/// render code always runs exactly one boundary deep, and every boundary wraps
-/// its render in one `untracked`, so a single pop leaves the stack balanced at
-/// any nesting depth (the #491 invariant). Disposal has no such structural
-/// position — the fixpoint can start from a reconcile effect (one observer
-/// live), from a bare `Effect::new` first run nested inside another effect
-/// (two live, with nothing having balanced the outer frame), or from
-/// `run_effect` dropping a retired closure after its own observer already
-/// popped (whatever the surrounding context holds). "A teardown read
-/// subscribes nobody" is depth-independent, so the guard is too: every frame
-/// is suspended, and restored on drop — including while unwinding, for the
-/// same reason `untracked`'s `RestoreObserver` restores (#232): a panic caught
-/// upstream must not leave the stack short.
-///
-/// Effects that *run* during the suspension track normally — a cleanup that
-/// writes a signal flushes effects synchronously, and a cleanup may even
-/// create one; each pushes its own observer onto the emptied stack. Only the
-/// observers that were mid-run when disposal began are hidden, and those are
-/// exactly the ones a teardown read must not subscribe (issue #494).
-pub(in crate::reactive) struct SuspendObservers {
-    saved: Vec<ObserverId>,
-}
-
-impl SuspendObservers {
-    pub(in crate::reactive) fn take() -> Self {
-        SuspendObservers {
-            saved: RUNTIME.with(|rt| std::mem::take(&mut rt.borrow_mut().observer_stack)),
-        }
-    }
-}
-
-impl Drop for SuspendObservers {
-    fn drop(&mut self) {
-        if self.saved.is_empty() {
-            return;
-        }
-        let saved = std::mem::take(&mut self.saved);
-        let _ = crate::reactive::restore::with_runtime_on_drop(
-            "the observer stack disposal suspended",
-            |rt| {
-                // The saved frames go back *under* anything still on the stack:
-                // an observer pushed during the suspension and not yet popped
-                // belongs to a frame above this guard, and its `ObserverGuard`
-                // pops blindly from the top. (In normal flow the stack is empty
-                // again here — every run that started during the suspension has
-                // finished — so this is belt and braces for unwinding.)
-                let since = std::mem::replace(&mut rt.observer_stack, saved);
-                rt.observer_stack.extend(since);
-            },
-        );
-    }
-}
-
 /// Clears the in-flight [`DisposeCtx`] on drop, including while unwinding.
 ///
 /// The fixpoint runs arbitrary user code — cleanups, closure drops, value drops
@@ -231,7 +175,7 @@ impl Drop for DisposeCtxGuard {
         // still teardown user code, so still untracked (issue #494), even on
         // this unwinding path.
         if leftover.is_some() {
-            let _untracked = SuspendObservers::take();
+            let _untracked = crate::reactive::tracking::SuspendObservers::take();
             drop(leftover);
         }
     }
@@ -320,7 +264,7 @@ fn run_dispose_fixpoint() {
     // cascades too: a cleanup that disposes a further scope only pushes work
     // onto the in-flight context, and that work drains in later iterations of
     // this same loop, still under this guard.
-    let _untracked = SuspendObservers::take();
+    let _untracked = crate::reactive::tracking::SuspendObservers::take();
     loop {
         // 1. Handlers.
         let handlers = take_batch(|ctx| &mut ctx.handlers);

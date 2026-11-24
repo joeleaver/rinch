@@ -125,12 +125,12 @@ fn scroll_callback_invoke_does_not_subscribe_the_calling_effect() {
 
 /// The guarantee holds at any nesting depth, not just one level down.
 ///
-/// `reactive::untracked` pops exactly **one** observer, so a read inside it
-/// subscribes the next observer down the stack. A component effect created
-/// inside another running effect (depth 2) whose invocation were only
-/// `untracked` would therefore subscribe the *outer* effect to the store — the
-/// same bug one frame further out. The outer effect here is the one that must
-/// stay quiet.
+/// While the observers were a stack, `reactive::untracked` popped exactly
+/// **one**, so a read inside it subscribed the next observer down. A component
+/// effect created inside another running effect (depth 2) whose invocation
+/// was only `untracked` then subscribed the *outer* effect to the store — the
+/// same bug one frame further out. Since #3047 no run below the current one is
+/// exposed; the outer effect here is still the one that must stay quiet.
 #[test]
 fn a_callback_invoked_two_effects_deep_subscribes_neither() {
     let outer_own = Signal::new(0);
@@ -302,10 +302,10 @@ fn an_on_cleanup_registered_by_a_handler_runs_at_scope_disposal() {
 }
 
 /// A handler that panics, caught inside the calling effect, leaves the
-/// observer stack as it found it: the effect's reads after the panic still
+/// current observer as it found it: the effect's reads after the panic still
 /// subscribe it. (Kills a suspension that forgets to restore on unwind.)
 #[test]
-fn a_caught_handler_panic_restores_the_observer_stack() {
+fn a_caught_handler_panic_restores_the_current_observer() {
     let own = Signal::new(0);
     let later = Signal::new(0);
     let runs = Rc::new(Cell::new(0));

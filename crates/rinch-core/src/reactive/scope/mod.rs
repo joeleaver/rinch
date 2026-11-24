@@ -16,11 +16,12 @@
 //! owned by nobody and live as long as the thread. That is what makes
 //! ownership non-breaking to add.
 //!
-//! Two independent stacks are in play, and they are easy to confuse:
+//! Two independent pieces of ambient state are in play, and they are easy to
+//! confuse:
 //!
-//! | stack | suspended by | answers |
+//! | state | suspended by | answers |
 //! |---|---|---|
-//! | observer stack | [`untracked`](super::untracked) | *who subscribes to this read* |
+//! | current observer | [`untracked`](super::untracked) | *who subscribes to this read* |
 //! | owner stack | [`unowned`] | *who owns this allocation* |
 //!
 //! [`Signal`]: super::Signal
@@ -38,7 +39,6 @@ pub(in crate::reactive) use ambient::{
 };
 pub use ambient::{on_cleanup, on_cleanup_removable};
 pub(crate) use ambient::{on_cleanup_for_ambient_owner, record_handler};
-pub(in crate::reactive) use dispose::SuspendObservers;
 pub(crate) use dispose::disposal_available;
 pub(in crate::reactive) use handle::ScopeInner;
 pub use handle::{CleanupHandle, Scope};

@@ -323,7 +323,7 @@ pub(super) fn unsubscribe_deps_of(inner: &EffectInner, observer: ObserverId) {
 /// The `Rc` is cloned out of the registry first: the removals borrow
 /// `SIGNAL_STORE`/`MEMO_STORE` mutably, and nothing should reach into another
 /// reactive store while `EFFECTS` is borrowed.
-fn unsubscribe_deps(id: ObserverId) {
+pub(super) fn unsubscribe_deps(id: ObserverId) {
     let Some(inner) = EFFECTS.with(|effects| effects.borrow().get(&id).cloned()) else {
         return;
     };
@@ -347,10 +347,10 @@ fn unsubscribe_deps(id: ObserverId) {
 pub(super) fn dispose_effect(id: ObserverId) {
     // Dropping the closure below runs user `Drop` code, and a read from it
     // must not subscribe whoever is mid-run (issue #494). The dispose fixpoint
-    // already suspends the stack for its own call here; this covers the direct
-    // `Effect::dispose` path, which runs outside any fixpoint. (Suspending an
-    // already-empty stack is a no-op, so the two compose.)
-    let _untracked = super::scope::SuspendObservers::take();
+    // already suspends tracking for its own call here; this covers the direct
+    // `Effect::dispose` path, which runs outside any fixpoint. (A second
+    // suspension only raises the run's suspension count, so the two compose.)
+    let _untracked = super::tracking::SuspendObservers::take();
     let inner = EFFECTS.with(|effects| effects.borrow_mut().remove(&id));
     if let Some(inner) = &inner {
         // Belt and braces. Removal alone already makes `run_effect` a no-op,
@@ -396,44 +396,6 @@ pub(crate) fn registry_ids_for_tests() -> Vec<usize> {
         ids.sort_unstable();
         ids
     })
-}
-
-/// RAII guard for the observer stack.
-///
-/// Pushes an [`ObserverId`] on construction and pops it on drop — including
-/// while unwinding. A bare push/pop pair leaks the id when user code panics
-/// between them, and a stale observer then subscribes itself to every signal
-/// read for the rest of the thread's life (issue #141).
-pub(super) struct ObserverGuard;
-
-impl ObserverGuard {
-    /// Push `id` as the current observer.
-    pub(super) fn push(id: ObserverId) -> Self {
-        RUNTIME.with(|rt| rt.borrow_mut().observer_stack.push(id));
-        ObserverGuard
-    }
-
-    /// Push `id` for a pass that re-reads its dependencies — an effect body, or
-    /// a memo's lazy recompute — which is definitely about to happen.
-    ///
-    /// Releases the subscriptions the previous such pass took out first, so the
-    /// observer ends up subscribed to exactly what it read this time (issue
-    /// #171): a dependency it stops reading stops both waking it and holding its
-    /// id. "Definitely about to happen" is load-bearing — [`run_effect`] takes
-    /// the body borrow before pushing, so the re-entrant run it skips cannot
-    /// strip the subscriptions of the run already in progress beneath it.
-    pub(super) fn push_retracking(id: ObserverId) -> Self {
-        unsubscribe_deps(id);
-        Self::push(id)
-    }
-}
-
-impl Drop for ObserverGuard {
-    fn drop(&mut self) {
-        let _ = super::restore::with_runtime_on_drop("the observer stack", |rt| {
-            rt.observer_stack.pop();
-        });
-    }
 }
 
 /// Run a specific effect by ID
@@ -497,14 +459,17 @@ pub(super) fn run_effect(id: ObserverId) {
             return;
         };
 
-        // Push this effect as the current observer. RAII so a panic in the
-        // effect body cannot strand it on the stack (issue #141). Retracking
+        // Make this effect the current observer, hiding whichever run this
+        // one is nested inside: its reads are this effect's alone, an
+        // `untracked` region in it hides it without exposing the run beneath
+        // (issue #3047). RAII so a panic in the effect body cannot strand it
+        // as current (issue #141). Retracking
         // only if the body is what reads this observer's dependencies — a memo's
         // marker keeps the subscriptions its recompute took out.
         let _observer_guard = if inner.body_tracks_deps {
-            ObserverGuard::push_retracking(id)
+            super::tracking::ObserverGuard::push_retracking(id)
         } else {
-            ObserverGuard::push(id)
+            super::tracking::ObserverGuard::push(id)
         };
 
         // A memo's marker is bookkeeping, not an effect body anyone wrote: it

@@ -85,6 +85,7 @@ mod scope;
 pub(crate) use scope::disposal_available;
 mod scoped;
 mod signal;
+mod tracking;
 
 /// Ambient-owner hooks for the rest of the crate: `crate::events` attributes
 /// handlers to the scope currently rendering, and `crate::context` ties a
@@ -108,6 +109,7 @@ pub use scoped::{
     install_scoped_slot, read_doc_scoped_slot, read_scoped_slot,
 };
 pub use signal::Signal;
+pub use tracking::{TrackingSuspended, suspend_tracking, untracked, untracked_handler};
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -126,7 +128,8 @@ use effect::flush_effects;
 // Global runtime state for tracking reactive subscriptions.
 //
 // The runtime maintains:
-// - A stack of observers (effects/memos currently being computed)
+// - The current observer (the effect/memo run in progress) and the
+//   suspensions in force (`tracking`)
 // - A queue of pending effects to run
 // - Batching state
 thread_local! {
@@ -134,8 +137,15 @@ thread_local! {
 }
 
 pub(crate) struct Runtime {
-    /// Stack of currently executing observers
-    pub(crate) observer_stack: Vec<ObserverId>,
+    /// The observer a signal read subscribes right now: the effect run or memo
+    /// recompute in progress, or none. One slot, not a stack: a run nested
+    /// inside another hides the outer one entirely (see [`tracking`], #3047).
+    pub(crate) observer: Option<ObserverId>,
+
+    /// The `untracked` / `suspend_tracking` suspensions in force, per run; a
+    /// read subscribes [`observer`](Self::observer) only while there are none
+    /// in the current run (see [`tracking::Suspensions`]).
+    pub(crate) suspensions: tracking::Suspensions,
 
     /// Effects that need to run, drained front-to-back.
     ///
@@ -167,7 +177,7 @@ pub(crate) struct Runtime {
 
     /// Stack of scopes that own newly created resources.
     ///
-    /// Deliberately separate from `observer_stack`: that one answers "who
+    /// Deliberately separate from `observer`: that one answers "who
     /// subscribes to this read" and is suspended by [`untracked`]; this one
     /// answers "who owns this allocation" and is suspended by [`unowned`].
     ///
@@ -193,7 +203,8 @@ pub(crate) struct Runtime {
 impl Runtime {
     fn new() -> Self {
         Self {
-            observer_stack: Vec::new(),
+            observer: None,
+            suspensions: tracking::Suspensions::default(),
             pending_effects: VecDeque::new(),
             pending_effects_set: HashSet::default(),
             definite_effects: HashSet::default(),
@@ -1914,132 +1925,6 @@ pub fn derived<T: Clone + PartialEq + 'static>(f: impl Fn() -> T + 'static) -> M
     Memo::new(f)
 }
 
-/// Run a function without tracking any signal reads.
-///
-/// Useful for reading signals without creating subscriptions.
-///
-/// # See also
-///
-/// [`unowned`] suspends the *owner* stack instead of the *observer* stack —
-/// it changes who owns resources created inside `f`, not who subscribes to
-/// signals read inside it. The two are independent, and picking the wrong one
-/// fails silently.
-pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
-    /// Pushes the popped observer back on drop — including while unwinding.
-    ///
-    /// A bare pop/push pair has the same failure mode `BatchGuard` closes for
-    /// [`batch`] (#232): a panic in `f` that is caught upstream skips the
-    /// restore, and because the enclosing `ObserverGuard`'s drop pops the top
-    /// of the stack blindly, the missing entry makes it remove a *lower*
-    /// frame's observer — an unrelated effect silently stops subscribing.
-    struct RestoreObserver {
-        observer: Option<ObserverId>,
-    }
-
-    impl Drop for RestoreObserver {
-        fn drop(&mut self) {
-            if let Some(obs) = self.observer.take() {
-                let _ = restore::with_runtime_on_drop("the observer untracked() popped", |rt| {
-                    rt.observer_stack.push(obs)
-                });
-            }
-        }
-    }
-
-    // Temporarily remove the current observer; the guard restores it on the
-    // way out, panic or not.
-    let _restore = RestoreObserver {
-        observer: RUNTIME.with(|rt| rt.borrow_mut().observer_stack.pop()),
-    };
-
-    f()
-}
-
-/// Run an app's callback with **no** observer in view (issues #285, #931).
-///
-/// Call this wherever framework or library code invokes a callback the *app*
-/// supplied — an event handler, a hook, an observer, a dismiss handler — from a
-/// place that may be inside a running effect. Handlers respond to events;
-/// effects respond to signals. Without it, every signal the callback reads is
-/// recorded as a dependency of whichever effect happened to make the call, and
-/// that effect re-runs on the app's writes to state it never read itself.
-///
-/// Every app-callback type's `invoke` ([`Callback`](crate::Callback),
-/// [`ValueCallback`](crate::ValueCallback), [`InputCallback`](crate::InputCallback),
-/// [`FileDropCallback`](crate::FileDropCallback),
-/// [`ScrollCallback`](crate::events::ScrollCallback)) goes through here, and so
-/// do the selection and selection-sync callbacks, the keyboard and paste
-/// interceptors, the dismiss stack,
-/// [`Drag::cancel`](crate::events::Drag::cancel)'s `on_cancel`, the child
-/// observers ([`on_child_inserted`](crate::dom::on_child_inserted) — which every
-/// `for` reconcile reaches from inside its effect) and the rich-text editor's
-/// `EditorHandle` hooks.
-///
-/// This suspends the **whole** observer stack, not just its top as
-/// [`untracked`] does: an effect created inside another running effect sits
-/// two frames deep, and popping one frame would hand the callback's reads to
-/// the outer effect instead (#932). Effects that *run* inside `f` (a callback's
-/// write flushing outside a batch, an effect the callback creates) push their
-/// own observer onto the emptied stack and track normally. The stack is
-/// restored on the way out, including while unwinding.
-///
-/// Only tracking changes. Batching, the owner stack and effect flushing are
-/// untouched: a callback's writes flush exactly when a bare call's would, and a
-/// signal it creates belongs to whatever owner is ambient — combine with
-/// [`Owner::run`] or [`unowned`] for that.
-///
-/// Do **not** use it around code that is the caller's own synchronous work,
-/// such as the closure handed to `EditorHandle::update`: an effect that reads a
-/// signal there does mean to depend on it.
-pub fn untracked_handler<R>(f: impl FnOnce() -> R) -> R {
-    let _suspended = scope::SuspendObservers::take();
-    f()
-}
-
-/// [`untracked_handler`] as a guard: the whole observer stack is suspended
-/// from this call until the returned value is dropped (issue #943).
-///
-/// For library code that runs app-supplied code under a borrow it holds in a
-/// guard of its own, where a closure cannot span the region — the rich-text
-/// editor's `EditorHandle` holds one beside every borrow of its core, so the
-/// plugin methods the handle itself runs (`apply`, `decorations`,
-/// `handle_paste`, a plugin's command) are untracked. Everything
-/// [`untracked_handler`] says applies, including its warning: the caller's
-/// own synchronous code must run with the guard dropped — and so plugin code
-/// the caller's code calls in that window (an `update` closure calling
-/// `state.apply(..)`) is tracked, as the caller's.
-///
-/// Drop guards in the reverse order they were taken, as scoped guards are, and
-/// on the thread that took them: the guard is `!Send` and `!Sync`, because the
-/// observer stack it restores is thread-local.
-///
-/// ```compile_fail
-/// fn assert_send<T: Send>(_: T) {}
-/// assert_send(rinch_core::reactive::suspend_tracking());
-/// ```
-#[must_use = "tracking resumes as soon as the guard is dropped"]
-pub struct TrackingSuspended {
-    _suspended: scope::SuspendObservers,
-    /// `!Send` + `!Sync`: dropped on another thread it would restore this
-    /// thread's observers onto that thread's stack.
-    _not_send: std::marker::PhantomData<*const ()>,
-}
-
-impl std::fmt::Debug for TrackingSuspended {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("TrackingSuspended")
-    }
-}
-
-/// Suspend dependency tracking until the returned guard is dropped; see
-/// [`TrackingSuspended`].
-pub fn suspend_tracking() -> TrackingSuspended {
-    TrackingSuspended {
-        _suspended: scope::SuspendObservers::take(),
-        _not_send: std::marker::PhantomData,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2247,67 +2132,6 @@ mod tests {
             *log.borrow(),
             vec!["writer", "other", "cascaded"],
             "the cascade must not preempt an effect already queued for this flush"
-        );
-    }
-
-    /// A panic inside an effect must not strand its `ObserverId` on the
-    /// observer stack (issue #141).
-    ///
-    /// The stack is what `Signal::track` reads to decide who subscribes, so a
-    /// stranded id silently subscribes itself to *every* signal read for the
-    /// rest of the thread's life — and that observer's slot is gone, so the
-    /// symptom is unbounded queue churn far from the panic that caused it.
-    #[test]
-    fn a_panicking_effect_does_not_strand_its_observer() {
-        let depth_before = RUNTIME.with(|rt| rt.borrow().observer_stack.len());
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Effect::new(|| panic!("boom"));
-        }));
-        assert!(result.is_err(), "the effect body must have panicked");
-
-        let depth_after = RUNTIME.with(|rt| rt.borrow().observer_stack.len());
-        assert_eq!(
-            depth_after, depth_before,
-            "the observer stack must unwind with the panic"
-        );
-
-        // Positive control: the runtime is still usable afterwards, and a
-        // signal read at top level (outside any effect) does not wake anyone.
-        // With a stranded observer this signal would acquire a subscriber whose
-        // slot is gone, and every later `set` would queue it forever.
-        let sig = Signal::new(0);
-        let runs = Rc::new(Cell::new(0));
-        let r = runs.clone();
-        let _e = Effect::new(move || {
-            sig.get();
-            r.set(r.get() + 1);
-        });
-        assert_eq!(runs.get(), 1, "the new effect runs once at creation");
-
-        sig.get(); // top-level read: must not subscribe anything
-        sig.set(1);
-        assert_eq!(
-            runs.get(),
-            2,
-            "exactly the one live subscriber re-runs, no more"
-        );
-    }
-
-    /// The same guarantee for a memo, whose user computation runs lazily in
-    /// `Memo::get` rather than in its dirty-marker effect.
-    #[test]
-    fn a_panicking_memo_computation_does_not_strand_its_observer() {
-        let depth_before = RUNTIME.with(|rt| rt.borrow().observer_stack.len());
-
-        let memo = Memo::new(|| -> i32 { panic!("boom") });
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| memo.get()));
-        assert!(result.is_err(), "the memo computation must have panicked");
-
-        let depth_after = RUNTIME.with(|rt| rt.borrow().observer_stack.len());
-        assert_eq!(
-            depth_after, depth_before,
-            "the observer stack must unwind with the panic"
         );
     }
 
