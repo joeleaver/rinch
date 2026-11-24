@@ -4,8 +4,15 @@
 //! [`TableMap`].
 //!
 //! Two simplifications versus PM, both safe for the starter-kit schema (documented
-//! at each site): inserted cells are always plain `table_cell` (no header-type
-//! inference), and there is no `colwidth` attribute to carry.
+//! at each site): a row [`add_row`] inserts is always plain `table_cell`s (no
+//! header-row inference), and there is no `colwidth` attribute to carry.
+//!
+//! One addition: a cell a command makes (a new row's or column's, a split's, a
+//! cleared one's paragraph) takes the `text_align` of the cell it is modelled
+//! on, where PM's `createAndFill` gives a default one (#2210). An unset
+//! alignment is not `left`, and a column mixing the two has no Markdown
+//! delimiter, so without it `addRowAfter` in a `:---` table turned the pipe
+//! table into an HTML one.
 //!
 //! All commands read **state** (the selection + document), never the host DOM, and
 //! produce a single [`Transaction`]; structural integrity comes from the transform
@@ -65,13 +72,41 @@ pub fn selected_rect(state: &EditorState) -> Option<TableRect> {
     })
 }
 
-/// An empty `table_cell` holding one empty paragraph.
-fn make_empty_cell(schema: &Schema) -> Option<Node> {
-    let para = schema
-        .create_node("paragraph", Attrs::new(), Fragment::empty())
-        .ok()?;
+/// An empty `ty` cell (`table_cell` or `table_header_cell`) `cols` columns
+/// wide, holding one [`empty_paragraph_like`] `like`. A one-column cell has no
+/// `colspan` attribute, as the cell `addRow`/`addColumn` always made.
+fn make_empty_cell(schema: &Schema, ty: &str, cols: usize, like: Option<&Node>) -> Option<Node> {
+    let para = empty_paragraph_like(schema, like)?;
+    let attrs = if cols <= 1 {
+        Attrs::new()
+    } else {
+        Attrs::from_iter([("colspan", span_value(cols))])
+    };
     schema
-        .create_node("table_cell", Attrs::new(), Fragment::from_node(para))
+        .create_node(ty, attrs, Fragment::from_node(para))
+        .ok()
+}
+
+/// An empty paragraph aligned like the first block of the cell `like` (#2210):
+/// its `text_align` when it has one and the schema's paragraph takes the
+/// attribute, else unset. The alignment is what a Markdown pipe table keeps
+/// per column, so a cell made in a column's likeness keeps the column one
+/// alignment.
+fn empty_paragraph_like(schema: &Schema, like: Option<&Node>) -> Option<Node> {
+    let align = like
+        .and_then(|cell| cell.content().maybe_child(0))
+        .and_then(|block| block.attrs().get_str("text_align"))
+        .filter(|_| {
+            schema
+                .node_type("paragraph")
+                .is_some_and(|nt| nt.spec().attrs.contains_key("text_align"))
+        });
+    let attrs = match align {
+        Some(a) => Attrs::from_iter([("text_align", AttrValue::from(a))]),
+        None => Attrs::new(),
+    };
+    schema
+        .create_node("paragraph", attrs, Fragment::empty())
         .ok()
 }
 
@@ -150,9 +185,21 @@ impl Cells {
 /// Insert a column at grid index `col` (`0..=width`). Where an existing cell spans
 /// across the insertion line its colspan grows; otherwise an empty cell is spliced
 /// into each row. Port of `addColumn`.
+///
+/// Each new cell is modelled on the cell beside it in its row, in PM's
+/// reference column: the one on the left, or at the table's left edge the one
+/// it pushes right; when that is a header column, the one on the other side,
+/// or none at either edge (then the cells are plain `table_cell`s). The new
+/// cell takes that cell's type, so a header row gets a header cell, and its
+/// alignment (#2210).
 fn add_column(info: &TableRect, col: usize, schema: &Schema) -> Option<Vec<BatchEdit>> {
     let map = &info.map;
     let width = map.width();
+    let cells = Cells::new(info);
+    let mut ref_col = Some(col.saturating_sub(1)).filter(|&c| c < width);
+    if ref_col.is_some_and(|c| column_is_header(info, &cells, c)) {
+        ref_col = (col > 0 && col < width).then_some(col);
+    }
     let mut edits = Vec::new();
     let mut row = 0;
     while row < map.height() {
@@ -174,14 +221,27 @@ fn add_column(info: &TableRect, col: usize, schema: &Schema) -> Option<Vec<Batch
             row = rect.bottom.max(row + 1);
         } else {
             let at = map.position_at(row, col);
+            let like = ref_col.and_then(|c| cells.node(info, map.map()[row * width + c]));
+            let ty = like.map_or("table_cell", |cell| cell.type_name());
             edits.push(BatchEdit::insert(
                 at,
-                Fragment::from_node(make_empty_cell(schema)?),
+                Fragment::from_node(make_empty_cell(schema, ty, 1, like)?),
             ));
             row += 1;
         }
     }
     Some(edits)
+}
+
+/// Whether every slot of grid column `col` is a `table_header_cell` (PM
+/// `columnIsHeader`; a hole is not one).
+fn column_is_header(info: &TableRect, cells: &Cells, col: usize) -> bool {
+    let width = info.map.width();
+    (0..info.map.height()).all(|row| {
+        cells
+            .node(info, info.map.map()[row * width + col])
+            .is_some_and(|cell| cell.type_name() == "table_header_cell")
+    })
 }
 
 /// Remove the grid columns `left..right` (`right <= width`). A cell that spans
@@ -269,10 +329,13 @@ fn remove_columns(
 /// size on the old rule: without it a title cell of `colspan = 10` over rows
 /// of 2 cells made a new row of `[1, 1, colspan 8]`.
 ///
-/// The new cells are plain `table_cell`s, as before, whatever `like` holds.
+/// The new cells are plain `table_cell`s, as before, whatever `like` holds;
+/// each takes the alignment of the cell of `like` it is cut under (#2210),
+/// and a run of holes none.
 /// Walks the grid row once: the map it reads is already that size.
 fn add_row(info: &TableRect, row: usize, like: usize, schema: &Schema) -> Option<Vec<BatchEdit>> {
     let map = &info.map;
+    let cell_nodes = Cells::new(info);
     let width = map.width();
     let slots = map.map();
     let row_pos = map.row_start(row)?;
@@ -322,7 +385,8 @@ fn add_row(info: &TableRect, row: usize, like: usize, schema: &Schema) -> Option
         while end < width && end - col < cap && like_slot(end) == owner && !from_above(end) {
             end += 1;
         }
-        cells.push(make_empty_cell_spanning(schema, end - col)?);
+        let like_cell = cell_nodes.node(info, owner);
+        cells.push(make_empty_cell(schema, "table_cell", end - col, like_cell)?);
         col = end;
     }
     let new_row = schema
@@ -335,21 +399,6 @@ fn add_row(info: &TableRect, row: usize, like: usize, schema: &Schema) -> Option
 /// The most holes [`add_row`] always fills with one cell per column, however
 /// few cells the table has (see there).
 const HOLE_CELLS_FLOOR: usize = 1000;
-
-/// An empty cell `cols` columns wide: [`make_empty_cell`] for one column (the
-/// very cell `addRow` always made), else the same built with that `colspan`.
-fn make_empty_cell_spanning(schema: &Schema, cols: usize) -> Option<Node> {
-    if cols <= 1 {
-        return make_empty_cell(schema);
-    }
-    let para = schema
-        .create_node("paragraph", Attrs::new(), Fragment::empty())
-        .ok()?;
-    let attrs = Attrs::from_iter([("colspan", span_value(cols))]);
-    schema
-        .create_node("table_cell", attrs, Fragment::from_node(para))
-        .ok()
-}
 
 /// Remove the grid rows `top..bottom` (not all of them). A cell spanning into
 /// them from above loses the rows it had there; a cell starting in them and
@@ -828,9 +877,8 @@ pub fn clear_cells(state: &EditorState) -> Option<Transaction> {
         if cell_is_empty(cell) {
             continue;
         }
-        let para = schema
-            .create_node("paragraph", Attrs::new(), Fragment::empty())
-            .ok()?;
+        // The cleared cell keeps its alignment (#2210).
+        let para = empty_paragraph_like(schema, Some(cell))?;
         let from = cell_pos + 1;
         let to = from + cell.content_size();
         edits.push(BatchEdit::replace(from, to, Fragment::from_node(para)));
@@ -1240,8 +1288,10 @@ pub fn split_cell() -> Command {
             if count == 0 {
                 continue;
             }
+            // Cells like the master: its type (PM `splitCell`'s default
+            // `getCellType`) and its alignment (#2210).
             let cells = (0..count)
-                .map(|_| make_empty_cell(schema))
+                .map(|_| make_empty_cell(schema, cell.type_name(), 1, Some(&cell)))
                 .collect::<Option<Vec<_>>>()?;
             edits.push(BatchEdit::insert(at, Fragment::from_children(cells)));
         }
