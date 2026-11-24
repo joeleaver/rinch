@@ -1532,12 +1532,22 @@ platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
 | Mod+Shift+B | Blockquote |
 | Mod+Shift+L / E / R / J | Align left / center / right / justify |
 | Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
-| Enter | Split block / new list item (between two blocks: a new empty paragraph there) |
-| Shift+Enter | Insert a hard break (line break within the block) |
+| Enter | Split block / new list item (between two blocks: a new empty paragraph there); in a code block, a new line (`newlineInCode`) |
+| Shift+Enter | Insert a hard break (line break within the block); in a code block, a new line (`insertLineBreak`) |
+| Mod+Enter | In a code block: leave it for a new paragraph after it (`exitCode`) |
 | Tab / Shift+Tab | Move between table cells, else indent / outdent a list item. Consumed even where neither applies, so Tab never leaves an editable editor; an app that wants it to claims it in `on_key`. In a [read-only](#read-only) editor: move the focus to the next / previous Tab stop |
 | Backspace / Delete | Delete backward / forward |
 | Ctrl+Backspace / Ctrl+Delete (Alt on macOS) | Delete the word backward / forward |
 | Page Up / Page Down (Option+ on macOS) | Move the caret about a page (0.875 of the scroller's height) up / down at its column, scrolling the same amount; Shift extends. At the first / last line: the document's start / end. Read-only: scroll only. Plain Page Up / Down on macOS: scroll only |
+
+In a code block a line is a `"\n"` in its text (a code block holds no hard
+break), as in ProseMirror: Enter and Shift+Enter type one over the selection,
+and Mod+Enter leaves the block for an empty paragraph after it, the caret in
+it. Each is a command of its own — `newlineInCode`, `insertLineBreak` (a new
+line in a code block, else a hard break) and `exitCode` — for a toolbar or
+your own binding. Mod+Enter is the editor's even outside a code block, where
+it does nothing; an app that uses Ctrl/Cmd+Enter (to send, say) claims it in
+`on_key`, which sees the key first.
 
 The four alignment chords are the Google Docs ones, and some of them are also
 chords of the browser or the platform, which may take the key before the editor

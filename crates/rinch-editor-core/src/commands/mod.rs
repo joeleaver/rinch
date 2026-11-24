@@ -10,7 +10,10 @@
 
 use std::rc::Rc;
 
+pub mod code;
 pub mod table_ops;
+
+pub use code::{exit_code, insert_line_break, newline_in_code};
 
 use crate::Fragment;
 use crate::command::{Command, chain};
@@ -995,11 +998,15 @@ pub fn create_paragraph_near() -> Command {
 }
 
 /// The Enter handler (`splitBlock` is the toolbar/programmatic name; Enter binds
-/// here): split a list item into a new item, else put a paragraph at a caret
-/// between blocks, else lift an empty block out of its wrapper, else split the
-/// current block. ProseMirror's base Enter chain, `newlineInCode` aside.
+/// here): in a code block type a newline ([`newline_in_code`], #2993), else
+/// split a list item into a new item, else put a paragraph at a caret between
+/// blocks, else lift an empty block out of its wrapper, else split the current
+/// block. ProseMirror's base Enter chain with its list keymap's
+/// `splitListItem` ahead of it — after `newlineInCode`, so Enter in a code
+/// block inside a list item is a newline, not a new item.
 pub fn split_block_or_list_item() -> Command {
     chain(vec![
+        newline_in_code(),
         split_list_item("list_item"),
         split_list_item("task_item"),
         create_paragraph_near(),
@@ -1645,6 +1652,9 @@ impl Plugin for BaseCommandsPlugin {
             ("indent", indent()),
             ("insertHorizontalRule", insert_horizontal_rule()),
             ("insertHardBreak", insert_hard_break()),
+            ("insertLineBreak", insert_line_break()),
+            ("newlineInCode", newline_in_code()),
+            ("exitCode", exit_code()),
             ("insertTable", insert_table(3, 3)),
             ("addRowBefore", table_ops::add_row_before()),
             ("addRowAfter", table_ops::add_row_after()),
@@ -1696,7 +1706,8 @@ impl Plugin for BaseCommandsPlugin {
             ("Mod-Shift-s", "toggleStrike"),
             ("Mod-e", "toggleCode"),
             ("Enter", "enter"),
-            ("Shift-Enter", "insertHardBreak"),
+            ("Shift-Enter", "insertLineBreak"),
+            ("Mod-Enter", "exitCode"),
             ("Backspace", "deleteCharBackward"),
             ("Delete", "deleteCharForward"),
             ("Tab", "sinkListItem"),
