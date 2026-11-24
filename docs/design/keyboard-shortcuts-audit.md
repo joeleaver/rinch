@@ -4,7 +4,7 @@
 rinch claims; keep the keys Chrome has, and make every one of them
 interceptable). No code has changed yet. The plan comes first. The inventory it
 rests on follows as an appendix: every key rinch handles on desktop and on the
-web, 51 entries, with file:line.
+web, 59 entries, with file:line.
 
 File:line references are against `main` at `f9d15abf7`. Paths are relative to
 `crates/` unless they start with `docs/`.
@@ -70,8 +70,9 @@ the old chords in a few lines of a keymap plugin.
   falls through wherever it does not apply, so an app's Ctrl/Cmd+Enter
   (send) still works outside code blocks. Revisit if the editor gains another
   way out.
-- **R1, F12.** It opens DevTools in debug builds only, which matches Chrome's
-  F12. `App::devtools` and `RINCH_DEVTOOLS` turn it off.
+- **R1, F12.** It opens DevTools in debug builds only. Chrome opens its
+  DevTools on F12 too, so this is class A (Chrome parity), not an app
+  shortcut. `App::devtools` and `RINCH_DEVTOOLS` turn it off.
 - **E1–E8, E18, E20.** The editor's caret, delete, Enter, select-all,
   undo/redo, clipboard and Mod-B/I/U. Chrome's `contenteditable` has all of
   them.
@@ -91,21 +92,30 @@ the old chords in a few lines of a keymap plugin.
 only after every app hook has had the key and declined it, and any hook can
 take the key from it, as `preventDefault` does in a browser.
 
-Rinch beats the app in three places only, and Chrome beats the page in the
-same three:
+Rinch beats the app in four places only, and Chrome beats the page in the
+same four. Three of them beat even the app's menu accelerators, as they do
+today:
 
-- Escape during a drag (R3).
-- Escape under a pointer lock (R4).
+- Escape under a pointer lock (R4). The shell skips the menu matcher for it
+  (`rinch/src/shell/rinch_runtime/winit_input.rs:419`).
 - An open runtime popup: the `<select>` list (R15) or the text context menu
-  (R16). A native popup takes the keyboard before the page sees it.
+  (R16). A native popup takes the keyboard before the page sees it, and
+  `try_menu_shortcut` runs no chord while one is open (`rinch/src/app/focus.rs:918`).
 
-An app's own menu accelerators stay first, because they are the app's.
+The fourth runs after the accelerators:
+
+- Escape during a drag (R3). A menu accelerator bound to Escape runs first,
+  through `try_menu_shortcut` (`winit_input.rs:419`–`:420`; on the web, the
+  `window` capture chord listener).
+
+Apart from R4, R15 and R16, the app's own menu accelerators stay first,
+because they are the app's.
 Component key handlers count as app code: the components are a library that
 runs on top of the app, like a page's JS widget library.
 
 | # | Handler, on both backends | Browser equivalent |
 |---|---|---|
-| 1 | Menu accelerators (the app's), then the three exceptions above | the browser chrome |
+| 1 | R4, R15 and R16, then the app's menu accelerators, then R3 (the exceptions above) | the browser chrome |
 | 2 | **The interceptor** (`set_keyboard_interceptor`), moved ahead of everything below. On the web it becomes a `window` capture listener | `window` capture listener |
 | 3 | `EditorHandle::on_key`, a node view's `on_key`, element `onkeydown` (nearest first) | target phase |
 | 4 | Popup key entries and the dismiss stack (components) | `document` listeners |
@@ -118,8 +128,10 @@ delegate, so a page's `preventDefault` beats rinch as it beats Chrome.
 
 Today's departures from this order:
 
-- On desktop, the interceptor runs after element `onkeydown`.
-- On the web, the interceptor runs after the editor's keymap.
+- On both backends, the interceptor runs after element `onkeydown`: desktop
+  `event_dispatch.rs:1964` before `:1991`, web `event_delegation.rs:3994`
+  (`data-onkeydown`) before `:4013`.
+- On the web, the interceptor also runs after the editor's keymap.
 - `on_app_key` never sees the editor's keys.
 - Nothing on the web reads `defaultPrevented`.
 
@@ -144,13 +156,31 @@ dismiss entry (step 4).
 - **W1:** the web withholds only the keyups of presses a focused surface
   claimed, as desktop does (#1784).
 
+### 6. Proposed, not yet decided: the graph view (K12–K18)
+
+The graph view's canvas (`rinch-graph-view`) was missed by the first pass. Its
+keys are below in the inventory. These are proposals for Joe's decision
+(tracked on #3062); none is in the agreed list above, and none is in the PRs
+below until he decides.
+
+- **K17:** match `+`, `=` and `-` only without Ctrl, Meta or Alt. Today
+  `canvas_key` consumes them with any modifier, so on the web Ctrl+= and
+  Ctrl+- zoom the graph instead of the page while the canvas has focus.
+  Whether the bare zoom and fit keys stay on by default is the open question.
+- **K14:** drop Cmd+Y on macOS, as R11 does for fields and the editor.
+- **K12:** Delete and Backspace are consumed even with nothing selected.
+  Proposed: consume them only when something was deleted.
+- **All of K12–K18:** the graph view has no option for its keys. Proposed: a
+  `keyboard: bool` option (on by default, since these are the control's own
+  editing keys) and an `on_key` hook that runs first.
+
 ### The PRs, in order
 
 | PR | Contents | Sections |
 |---|---|---|
-| 1 | **The handler order** on both backends, `defaultPrevented` on the web, and `on_app_key` offered the editor's keys. Pinned by one cross-backend test file per step, and documented on `focus-and-keyboard.md` | 4 |
+| 1 | **The handler order** on both backends, `defaultPrevented` on the web, and `on_app_key` offered the editor's keys. Also the web's surface keyups (W1) and read-only editor keys (E19), which touch the same web listeners. Pinned by one cross-backend test file per step, and documented on `focus-and-keyboard.md` | 4, 5 |
 | 2 | **Editor keys:** remove the 17 formatting chords (E9, E10, E13–E17) from the base keymap; `TabBehavior::MoveFocus` becomes the default; add `EditorHandle::unbind_key(chord)` / `Keymap::remove`, so an app can drop any kept chord without dropping the whole base keymap; the web's per-platform Mod; Cmd+Y off on macOS. ui-zoo, the markdown-editor example and Pimble bind the chords they want and opt back into indenting. Update `docs/src/guide/contenteditable.md#keyboard-shortcuts` and `docs/internals/editor.md` | 1, 2, 5 |
-| 3 | **Runtime:** remove Alt+I; Android `Unhandled` and Back; the web's surface keyups (W1) and read-only editor keys (E19) | 1, 5 |
+| 3 | **Runtime:** remove Alt+I; Android `Unhandled` and Back | 1, 5 |
 | 4 | **Components:** remove Tree's Ctrl+A and PageUp/PageDown; Sortable's `keyboard` prop, off by default | 1, 2 |
 | 5 | **Guide page** `docs/src/guide/keyboard.md`: every key rinch still handles, the handler order, how to take a key, and how to bind the removed chords. Add it to `SUMMARY.md` | all |
 
@@ -181,8 +211,8 @@ consumes the key stops it.
 
 | # | Step | Where | Who it belongs to |
 |---|---|---|---|
-| 0a | Escape ends a pointer lock | `:393` | rinch |
-| 0b | **The app's menu accelerators**, unless a focused control keeps the bare key (`chord_yields_to`, `rinch/src/menu/mod.rs:980`), a `<select>` popup is open, or the text context menu is open | shell, `rinch/src/shell/rinch_runtime/winit_input.rs:420` → `rinch/src/app/focus.rs:908` | app |
+| 0a | Escape ends a pointer lock. The shell skips the menu matcher for this key (`winit_input.rs:419`), so it runs ahead of the accelerators | `:393` | rinch |
+| 0b | **The app's menu accelerators**, unless a focused control keeps the bare key (`chord_yields_to`, `rinch/src/menu/mod.rs:980`), or a `<select>` popup or the text context menu is open (`focus.rs:918`: no chord runs then) | shell, `rinch/src/shell/rinch_runtime/winit_input.rs:420` → `rinch/src/app/focus.rs:908` | app |
 | 0c | Escape cancels a DOM drag | `:1847` | rinch |
 | 1 | `EditorHandle::on_key`, when an editor has focus | `:1887` | app |
 | 2 | A node view's `NodeViewSpec::on_key`, when focus is inside a node view | `:1919` | app |
@@ -205,8 +235,11 @@ Consequences:
 - **`on_app_key` never sees the editor's keys**, nor the keys of a `<select>`
   popup or the text context menu, on either platform (`offer_app_key`'s
   docs, `:125`).
-- **Menu accelerators beat everything except steps 0a and 0b's yield
-  check**: the editor's `on_key`, element handlers and the interceptor.
+- **Menu accelerators beat every handler except three:** Escape under a
+  pointer lock (R4, step 0a), and an open `<select>` popup or text context
+  menu (R15, R16), which suppress them (`focus.rs:918`). They also defer to
+  0b's yield check. So an accelerator bound to Escape beats the drag cancel
+  (R3, step 0c), the editor's `on_key`, element handlers and the interceptor.
   These are the app's own chords, so this is app against app, not rinch
   against app. But it means an app cannot turn off one of its own chords
   for one focused element, except through `ChordYield`.
@@ -259,13 +292,13 @@ delegate's keys. Read the web consequences above alongside it.
 
 | ID | Key | What rinch does | File:line | Scope | Chrome | Precedence (who beats it) | Off switch | Class |
 |---|---|---|---|---|---|---|---|---|
-| R1 | F12 | Toggles the DevTools window (desktop only) | `rinch/src/app/event_dispatch.rs:2751` | app | Opens DevTools. A page can `preventDefault` it | menu, el, int, ak | Off by default in release builds (`devtools_keys.rs:27`). `App::devtools(bool)`, `RinchApp::set_devtools`, `RINCH_DEVTOOLS=on\|off` | **B**, already debug-only |
+| R1 | F12 | Toggles the DevTools window (desktop only) | `rinch/src/app/event_dispatch.rs:2751` | app | Opens DevTools. A page can `preventDefault` it | menu, el, int, ak | Off by default in release builds (`devtools_keys.rs:27`). `App::devtools(bool)`, `RinchApp::set_devtools`, `RINCH_DEVTOOLS=on\|off` | **A** (Chrome parity: F12 opens Chrome's DevTools), debug-only |
 | R2 | Alt+I (Option+I on macOS) | Toggles inspect mode (desktop only) | `event_dispatch.rs:2757` | app, **text fields included** | Nothing on Windows or Linux. On macOS, Option+I is the circumflex dead key (ˆ). Chrome's inspect chord is Ctrl+Shift+C | menu, el, int, ak | Same as R1 | **B**, debug-only. ⚑ It runs before text input, so in a debug build Option+I cannot type ˆ in a field on macOS, and Alt+I cannot type its character on any layout where it types one |
-| R3 | Escape during a DOM drag | Cancels the drag | desktop `event_dispatch.rs:1847`, web `event_delegation.rs:3973` | drag | Cancels the drag. During HTML5 DnD the page gets no key events | **nothing**: desktop runs it ahead of every handler. On the web a page capture listener can stop it | none | A (Chrome parity). ⚑ beats the app, as Chrome's does |
+| R3 | Escape during a DOM drag | Cancels the drag | desktop `event_dispatch.rs:1847`, web `event_delegation.rs:3973` | drag | Cancels the drag. During HTML5 DnD the page gets no key events | ⚑ **every DOM handler**: it runs ahead of the editor, element handlers, the interceptor and `on_app_key`. Only a menu accelerator bound to Escape runs first (desktop `try_menu_shortcut`, `winit_input.rs:419`–`:420`; web, the `window` capture chord listener). On the web a page capture listener can also stop it | none | A (Chrome parity). ⚑ beats the app's DOM hooks, as Chrome's does |
 | R4 | Escape under a pointer lock | Ends the lock and consumes the key | `event_dispatch.rs:393`, `pointer_lock.rs` | lock | Ends the lock, and the page cannot stop that | nothing | none | A (Chrome parity) |
 | R5 | Tab / Shift+Tab | Moves to the next or previous Tab stop; wraps inside `trap_focus` | desktop `event_dispatch.rs:2778` → `app/mod.rs:5610`; web trap `event_delegation.rs:4080` (outside a trap the browser moves focus) | app | Same. A page can `preventDefault` it | menu, el, int, ak | consume the key; `tabindex`/`data-nofocus`; `trap_focus: false` | A |
 | R6 | Enter / Space on a focused button-like node | Activates it: Enter on press, Space on release | desktop `:2812`, web `event_delegation.rs:4094` | control | Same | menu, el, int, ak | consume the key | A |
-| R7 | Enter, Space, Alt+ArrowDown on a closed `<select>` | Opens the popup | `event_dispatch.rs:2828` | control | Same | menu (yields: `KeyOwner::Select`), el, int, ak | consume the key | A |
+| R7 | Enter, Space, Alt+ArrowDown on a closed `<select>` | Opens the popup | `event_dispatch.rs:2828` | control | Same in Chrome on Linux. **Unverified for Chrome on Windows and macOS**, whose closed `<select>` follows the platform's combo box; which of these keys open it there has not been checked | menu (yields: `KeyOwner::Select`), el, int, ak | consume the key | A |
 | R8 | Enter in an `<input>` | Commits `onchange`, then fires `onsubmit` | desktop `:2816` → `app/mod.rs:4841`; web `event_delegation.rs:4101` | field | Implicit form submission | menu (yields), el, int, ak | consume the key; Shift+Enter | A |
 | R9 | Arrows, Home/End, Backspace/Delete, word and line variants (Ctrl on Windows and Linux; Option and Cmd on macOS) | Field caret and delete keys, following each platform's keymap | `:2788` → `text_keymap.rs:94` | field | Same (Cocoa bindings on macOS) | menu (yields: `KeyOwner::Text`), el, int, ak | consume the key | A |
 | R10 | Ctrl/Cmd + A, C, V, X, Z, Shift+Z | Select all, clipboard, undo/redo in a field | `:2796`–`:2803` | field | Same | **menu first** (a chord holds a modifier, so it never yields), el, int, ak | consume the key | A |
@@ -337,7 +370,8 @@ from step 4. Focus does not have to be inside the overlay.
 | K5 | ColorInput: Escape | Closes the dropdown | `color_input.rs:512` | popup | Escape closes | el, int | **none**, deliberately ungated | A. ⚑ no option |
 | K6 | DropdownMenu, ContextMenu: arrows, Home/End, letter type-ahead (a single match activates) | Item navigation | `menu_nav.rs:235`–`:259`, listener `:360` | ⚑ **app-wide while open** (an `on_app_key` listener; focus can be anywhere; text fields excluded). ContextMenu never closes on focus leave, so it keeps these keys until closed | Menu: same, with focus in the menu. A native context menu grabs the keys | el, int, and `on_app_key` listeners registered before the menu opened | `keyboard_nav: false`, `typeahead: false`, `loop_focus`, `on_key` | A |
 | K7 | DropdownMenu, ContextMenu: Escape | Closes the menu and returns focus | `menu_nav.rs:371` | popup, document-wide | Same | el, int | `close_on_escape: false` | A |
-| K8 | DropdownMenuSub: ArrowRight/Enter/Space on its row; ArrowLeft/Escape in its flyout; Escape document-wide (`push_dismiss_handler`, not `_within`) | Opens or closes the submenu | `dropdown_menu_sub.rs:950`, `:961`, `:345` | control, popup | APG submenu; Chrome closes the innermost menu | ⚑ **element `onkeydown`, so it runs before every app hook except the app's own `onkeydown` deeper in the tree** (desktop) | **none** (`disabled` stops it opening, but the key is still consumed) | A. ⚑ no option |
+| K7b | The DOM menu bar (`rinch/src/menu/app_menu_bar.rs`): Escape | Closes the open menu. Declines while no menu is open, so Escape falls through | `app_menu_bar.rs:316` (dismiss stack) | popup, document-wide | A native menu bar closes on Escape | el, int | none (only while a menu is open) | A |
+| K8 | DropdownMenuSub: ArrowRight/Enter/Space on its row; ArrowLeft/Escape in its flyout; Escape document-wide through the dismiss stack (`push_dismiss_handler`; `_within` would only order nested entries by DOM position, `rinch-core/src/events/dismiss.rs:193`, and is document-wide too) | Opens or closes the submenu | `dropdown_menu_sub.rs:950`, `:961`, `:345` | control, popup | APG submenu; Chrome closes the innermost menu | ⚑ **element `onkeydown`, so it runs before every app hook except the app's own `onkeydown` deeper in the tree** (desktop) | **none** (`disabled` stops it opening, but the key is still consumed) | A. ⚑ no option |
 | K9 | SortableItem: Space/Enter lift and drop; arrows move; Escape cancels; Tab cancels without being consumed | Keyboard drag | `sortable.rs:2307`–`:2356` | control | No browser or APG equivalent (the dnd-kit convention) | element `onkeydown`, as K8 | `lift_keys`, `disabled`. The arrows and Escape have **no** option | **C**: no Chrome equivalent. A UX choice that is only partly configurable |
 | K10 | Tree: arrows, Home/End, PageUp/PageDown (±10), `*`, Space, Enter, Shift+run, type-ahead | Tree navigation and selection | `tree.rs:2513`–`:3007` | control | APG tree (PageUp/PageDown is an extra) | key entry: el, int | `keyboard: false` is the default, so it is opt-in; `handle_key` | A |
 | K11 | Tree: Ctrl/Cmd+A | Selects the cursor row's **siblings** | `tree.rs:2935` | control | APG: Ctrl+A selects all | as K10 | opt-in (`keyboard`, `multiple`, `select_on_click`); `handle_key` | **C**: different from APG, though scoped and opt-in |
@@ -347,6 +381,30 @@ Accordion, Slider, NumberInput (no ArrowUp/ArrowDown stepping), HoverCard and
 Tooltip (no Escape), Stepper, Pagination. These are gaps against WAI-ARIA, not
 claims, and are out of this audit's scope.
 
+Excluded: `rinch::hotkey::HotkeyCapture` (`rinch/src/hotkey/capture.rs:74`,
+Escape cancels a capture). It is a state machine the app feeds from its own
+key handler while capturing; rinch binds no key there.
+
+### Graph view (`rinch-graph-view/src/canvas.rs`, both platforms)
+
+All of these are `canvas_key` (`:474`–`:520`), an element `data-onkeydown` on
+the canvas root (`:187`). They apply only while the canvas has focus. "Mod" is
+Ctrl or Meta on every OS (`k.ctrl || k.meta`). The graph view has **no option**
+for any of them. Precedence on both backends today: element `onkeydown`, so it
+runs before the interceptor (step 3 before step 4 on desktop; `:3994` before
+`:4013` on the web) and before `on_app_key`. Decisions on these rows are
+proposals; see [section 6](#6-proposed-not-yet-decided-the-graph-view-k12k18).
+
+| ID | Key | What it does | File:line | Chrome / platform | Off switch | Class |
+|---|---|---|---|---|---|---|
+| K12 | Delete, Backspace | Deletes the selection. Consumed even when nothing is selected | `canvas.rs:477` | No browser equivalent; the convention of canvas editors | none | **C**: always consumed |
+| K13 | Mod+Z, Mod+Shift+Z | Undo, redo | `:481`–`:482` | A control's own undo, like a field's | none | A |
+| K14 | Mod+Y | Redo, Cmd+Y included on macOS | `:483` | Redo on Windows and Linux; **on macOS, Cmd+Y opens History** (as R11) | none | **C**: as R11 |
+| K15 | Mod+A | Selects every node | `:484` | A control's select-all | none | A |
+| K16 | Escape | Cancels an active drag, else clears the selection | `:488` | Escape cancels or deselects | none | A |
+| K17 | `+`, `=`, `-` (any modifiers), `0` (not with Mod) | Zoom in, zoom out, fit | `:496`–`:507` | No browser equivalent. ⚑ With Ctrl held, `+`/`=`/`-` hide Chrome's page zoom (Ctrl+= / Ctrl+-) on the web | none | **C** |
+| K18 | Arrows (Shift: ×10) | Nudges the selected nodes. Falls through when nothing is selected | `:508`–`:520` | Moving a selected item, as drawing apps do | none | A |
+
 ### Web-only runtime
 
 | ID | Key | What it does | File:line | Chrome | Precedence | Off switch | Class |
@@ -355,13 +413,13 @@ claims, and are out of this audit's scope.
 
 ## Counts
 
-51 bindings in all:
+59 bindings in all ("Components" includes the graph view, K12–K18):
 
 | Class | Runtime | Editor | Components | Web-only | Total |
 |---|---|---|---|---|---|
-| A | 14 (R3–R10, R12–R17) | 10 (E1–E8, E18, E20) | 9 (K1–K8, K10) | 0 | **33** |
-| B | 2 (R1, R2) | 7 (E9, E10, E13–E17) | 0 | 0 | **9** |
-| C | 2 (R11, R18) | 4 (E11, E12, E19, E21) | 2 (K9, K11) | 1 (W1) | **9** |
+| A | 15 (R1, R3–R10, R12–R17) | 10 (E1–E8, E18, E20) | 14 (K1–K8, K7b, K10, K13, K15, K16, K18) | 0 | **39** |
+| B | 1 (R2) | 7 (E9, E10, E13–E17) | 0 | 0 | **8** |
+| C | 2 (R11, R18) | 4 (E11, E12, E19, E21) | 5 (K9, K11, K12, K14, K17) | 1 (W1) | **12** |
 
 R17 is a precedence rule (a focused control keeps its bare keys over the
 app's menu accelerators) rather than one key. It is counted as one row.
@@ -379,21 +437,26 @@ app's menu accelerators) rather than one key. It is counted as one row.
    `on_app_key`.** On desktop the interceptor beats it. On the web only
    `EditorHandle::on_key` does. The same app code therefore behaves
    differently on the two platforms.
-3. **Desktop: there is no capture-phase hook.** The interceptor runs after
-   element `onkeydown`, so a component's own `onkeydown` (K8 DropdownMenuSub,
-   K9 Sortable) cannot be pre-empted by the app at all. In a browser a
-   `document` capture listener can.
+3. **No rinch capture-phase hook, on either backend.** The interceptor runs
+   after element `onkeydown` on desktop (`:1964` before `:1991`) and after
+   element `data-onkeydown` on the web (`event_delegation.rs:3994` before
+   `:4013`). So a component's own `onkeydown` (K8 DropdownMenuSub, K9
+   Sortable, K12–K18 graph view) cannot be pre-empted through rinch at all.
+   On the web a page can still add its own `document` capture listener; on
+   desktop there is nothing.
 4. **`on_app_key` never sees editor keys** (both platforms), nor those of an
    open `<select>` popup or the text context menu.
-5. **Escape before every handler:** R3 (drag) and R4 (pointer lock). This
-   matches Chrome, so no change is proposed.
+5. **Escape ahead of the app:** R4 (pointer lock) runs before every handler,
+   menu accelerators included; R3 (drag) before every DOM handler, after the
+   accelerators. Both match Chrome, so no change is proposed.
 6. **R17:** a focused control keeps its bare keys over the app's own menu
    accelerator. This matches native controls. `ChordYield::TextOnly`
    releases non-text owners only.
 7. **R18, Android:** every key answers `Handled`, and Back becomes Escape.
    The system's Back and, it seems, the volume keys never run.
 8. **E10, E14, E16 on the web:** browser chords (Ctrl+E, Ctrl+Shift+B,
-   Ctrl+Shift+R) are kept even when the command does nothing.
+   Ctrl+Shift+R) are kept even when the command does nothing. K17 does the
+   same to Ctrl+= and Ctrl+- (page zoom) while a graph canvas has focus.
 9. **E19, W1 on the web:** keys and keyups are stopped before they reach the
    page's own listeners.
 10. **R2:** in a debug build, Alt+I (Option+I) beats text input in a focused
@@ -413,14 +476,15 @@ first, where some earlier hook exists, or not at all:
 - E19.
 - K4 (Select's list keys), K5 (ColorInput Escape), K8 (DropdownMenuSub),
   and the arrows and Escape of K9.
+- K12–K18: every graph view key.
 - **Any single editor keymap chord.** There is no `unbind_key`, and
   `remove_plugin` drops the whole base keymap together with its commands.
 
 ### (B): app-level shortcuts that rinch claims
 
-- **R1 and R2 (DevTools):** already debug-only, with `App::devtools` and
-  `RINCH_DEVTOOLS`. One thing is left: whether Alt+I should still beat text
-  input in a field in a debug build (finding 10).
+- **R2 (Alt+I, inspect mode):** debug-only, with `App::devtools` and
+  `RINCH_DEVTOOLS`, but it beats text input in a field in a debug build
+  (finding 10). Removed in the plan. R1 (F12) is class A: Chrome has it.
 - **E9, E10, E13–E17:** the editor's formatting chords beyond Chrome's
   Mod-B/I/U: strikethrough, code, three list types, blockquote, paragraph,
   four alignments and six headings, 17 chords in all. A Chrome
@@ -442,5 +506,7 @@ first, where some earlier hook exists, or not at all:
   partly configurable.
 - **K11:** Tree's Ctrl+A selects siblings rather than all.
 - **W1:** keyups swallowed by a focused surface on the web.
+- **K12, K14, K17:** the graph view's always-consumed Delete/Backspace, macOS
+  Cmd+Y, and zoom keys that take Ctrl+= / Ctrl+-. Proposals in section 6.
 
 What is done about each finding is in [The plan](#the-plan).
