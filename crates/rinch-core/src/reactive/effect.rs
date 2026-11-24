@@ -347,9 +347,9 @@ pub(super) fn unsubscribe_deps(id: ObserverId) {
 pub(super) fn dispose_effect(id: ObserverId) {
     // Dropping the closure below runs user `Drop` code, and a read from it
     // must not subscribe whoever is mid-run (issue #494). The dispose fixpoint
-    // already suspends the stack for its own call here; this covers the direct
-    // `Effect::dispose` path, which runs outside any fixpoint. (Suspending an
-    // already-empty stack is a no-op, so the two compose.)
+    // already suspends tracking for its own call here; this covers the direct
+    // `Effect::dispose` path, which runs outside any fixpoint. (A second
+    // suspension only raises the run's suspension count, so the two compose.)
     let _untracked = super::tracking::SuspendObservers::take();
     let inner = EFFECTS.with(|effects| effects.borrow_mut().remove(&id));
     if let Some(inner) = &inner {

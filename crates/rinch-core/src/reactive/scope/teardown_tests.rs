@@ -273,7 +273,7 @@ fn a_teardown_read_subscribes_no_observer_at_any_nesting_depth() {
 /// fixpoint — and a captured value's `Drop` that reads a signal must not
 /// subscribe the effect that called it (issue #494). The guard for this
 /// path lives in `dispose_effect` itself, which the fixpoint's step 2 also
-/// calls (a second suspension of an already-empty stack is a no-op).
+/// calls (a second suspension only raises the run's suspension count).
 #[test]
 fn a_direct_effect_disposes_closure_drop_does_not_subscribe_the_disposing_effect() {
     let probe = Signal::new(0u32);
