@@ -154,12 +154,19 @@ fn k3_k4_a_moved_box_over_a_positioned_contents_wrapper_repaints_partially() {
             "`{wrapper}`: full repaint: {stats:?}"
         );
     }
-    // Positive control: a real fixed descendant does answer unbounded.
-    let (mut app, clipper, _b) = mount("", "position: relative", "position: fixed", "");
+    // Positive control: a real sticky descendant does answer unbounded. (A
+    // real fixed one no longer does for a moved box: it does not move with
+    // it, so the move's walk leaves it out, #2222.)
+    let (mut app, clipper, _b) = mount("", "position: relative", "position: sticky", "");
     let _ = full_frame(&mut app);
     clipper.set_style("left", "30px");
     let stats = step(&mut app);
     assert_eq!(stats.get(Counter::RepaintFull), 1, "control: {stats:?}");
+    let (mut app, clipper, _b) = mount("", "position: relative", "position: fixed", "");
+    let _ = full_frame(&mut app);
+    clipper.set_style("left", "30px");
+    let stats = step(&mut app);
+    assert_eq!(stats.get(Counter::RepaintFull), 0, "fixed: {stats:?}");
 }
 
 /// P1: `overflow: auto` on a contents element makes nothing scrollable in

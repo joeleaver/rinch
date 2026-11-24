@@ -45,6 +45,7 @@ pub use clip::{
 };
 use contenteditable::*;
 pub use damage::{DamageRegion, MAX_DAMAGE_RECTS};
+pub(crate) use layer_bounds::measure_subtree_reach;
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
@@ -97,18 +98,21 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 ///   rather than the node, and when its ink or transform changed in the same
 ///   frame.
 ///
-/// A **positioned** box (`absolute`, `fixed` or `relative`) whose position
-/// changed also grows both rects by how far its painted subtree reaches past
-/// it ([`opacity_layer_bounds`]): a dragged panel's overflowing children move
-/// with it without being dirty themselves, and so does the absolute badge of a
-/// `relative` row, whether an author moved it or reflow shifted it — the
-/// resized parent's rect does not reach a descendant that overflows it.
+/// A box whose position changed also grows both rects by how far its painted
+/// subtree reaches past it ([`opacity_layer_bounds`]): a dragged panel's
+/// overflowing children move with it without being dirty themselves, and so
+/// does the absolute badge of a `relative` row, whether an author moved it or
+/// reflow shifted it — the resized parent's rect does not reach a descendant
+/// that overflows it. Static boxes are walked too since #2222 (a margin change
+/// left a static box's overflowing child, contained absolute badge, child's
+/// shadow and overflowing text at their old place), except one that clips on
+/// both axes now and as painted, whose own rect holds its in-flow content.
+/// A box whose clip axes changed since it was painted, moved or not, is
+/// walked with its own clip left out, so the overflow it painted unclipped is
+/// cleared.
 /// Descendants that *are* dirty or removed bring their own painted rects,
 /// which is what keeps a child that closed or flipped side in the same frame
-/// covered. Static boxes are not walked: walking every row a reflow shifts
-/// made a frame cost O(rows × subtree). What that leaves out is a static
-/// box's in-flow child whose own ink (a spread shadow) reaches past a parent
-/// that reflow shifted.
+/// covered.
 ///
 /// A box whose **place in the paint order** changed since it was painted is
 /// walked the same way, whatever its `position` (`reorders_subtree`, #1384):
@@ -242,6 +246,43 @@ fn compute_damage_impl(
         region.add(r)
     };
 
+    // The boxes with a paint-dirty node (or a removed subtree's parent)
+    // under them, built the first time a moved box asks: such a box's
+    // recorded subtree reach describes its old subtree only (#2222).
+    // Sorted, for a binary search: a reflow's moved rows share a parent, so
+    // the list is a handful of ids however many rows moved, and hashing each
+    // row was most of what the check cost.
+    let dirty_ancestors: std::cell::OnceCell<Vec<RawNodeId>> = std::cell::OnceCell::new();
+    let has_dirty_below = |id: RawNodeId| {
+        dirty_ancestors
+            .get_or_init(|| {
+                let mut above = Vec::new();
+                let mut last = None;
+                let starts = tree
+                    .paint_dirty_nodes
+                    .iter()
+                    .map(|&d| tree.get(d).and_then(|n| n.parent))
+                    .chain(tree.bar_check_parents.iter().map(|&p| Some(p)));
+                for start in starts {
+                    // A sibling of the last one: its chain is in already.
+                    if start.is_none() || start == last {
+                        continue;
+                    }
+                    last = start;
+                    let mut cur = start;
+                    while let Some(a) = cur {
+                        above.push(a);
+                        cur = tree.get(a).and_then(|n| n.parent);
+                    }
+                }
+                above.sort_unstable();
+                above.dedup();
+                above
+            })
+            .binary_search(&id)
+            .is_ok()
+    };
+
     // Deduplicate — paint_dirty_nodes may have duplicates
     let mut seen = HashSet::new();
     for &node_id in &tree.paint_dirty_nodes {
@@ -267,16 +308,31 @@ fn compute_damage_impl(
             ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
             scale,
         );
-        // A positioned box that moved carries its whole painted subtree with
-        // it (see the doc above). A subtree the walk cannot bound answers
-        // `UNBOUNDED` and the frame repaints in full.
+        // A box that moved carries its whole painted subtree with it, static
+        // or positioned (see the doc above, #2222). A subtree the walk cannot
+        // bound answers `UNBOUNDED` and the frame repaints in full.
         let moved = node.painted.is_some()
             && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
-        let moved_layer = moved
-            && matches!(
+        // A box that started or stopped clipping its content since it was
+        // painted: what it painted unclipped is cleared or what it paints
+        // unclipped now is drawn, past its own rect (#2222). Walked with its
+        // own clip left out.
+        let clip_changed = node
+            .painted
+            .as_ref()
+            .is_some_and(|p| (p.clips_x, p.clips_y) != node.clip_axes());
+        // A static box that clips on both axes, now and as it was painted,
+        // holds its in-flow content inside its own rect, so the walk would
+        // add nothing to its own ink: skipped, which keeps a moved scroller
+        // of more rows than the walk's budget from repainting the window.
+        // (What escapes its clip is absolute against a box above it, which
+        // the walk narrows at the clip too, #550.)
+        let walk_moved = moved
+            && (matches!(
                 node.computed_style.position,
                 PositionValue::Absolute | PositionValue::Fixed | PositionValue::Relative
-            );
+            ) || node.clip_axes() != (true, true)
+                || clip_changed);
         // A box whose place in the paint order changed — it started or
         // stopped being a stacking context or a positioned layer, or its
         // `z-index` moved — reorders what its subtree paints against the
@@ -303,8 +359,30 @@ fn compute_damage_impl(
         // everything under it but a fixed box — #549). Clippers above that
         // containing block clip either way.
         let mut escapes = false;
-        if (moved_layer || reordered || filtered) && w > 0.0 && h > 0.0 {
-            let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
+        if (walk_moved || clip_changed || reordered || filtered) && w > 0.0 && h > 0.0 {
+            let bounds = if clip_changed {
+                layer_bounds::unclipped_root_bounds(tree, node_id, scale, ax, ay)
+            } else if reordered || filtered {
+                opacity_layer_bounds(tree, node_id, scale, ax, ay)
+            } else {
+                // Only moved: the reach its last paint recorded holds where it
+                // was and where it is, while nothing under it has changed
+                // (#2222). Otherwise walked, its fixed descendants left out:
+                // they do not move with it.
+                match node.painted.as_ref().and_then(|p| p.subtree_reach) {
+                    Some(crate::node::SubtreeReach::Within([x0, y0, x1, y1]))
+                        if !has_dirty_below(node_id) =>
+                    {
+                        Rect::new(
+                            ax + x0 as f64 * scale,
+                            ay + y0 as f64 * scale,
+                            ax + x1 as f64 * scale,
+                            ay + y1 as f64 * scale,
+                        )
+                    }
+                    _ => layer_bounds::moved_subtree_bounds(tree, node_id, scale, ax, ay),
+                }
+            };
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
@@ -334,6 +412,23 @@ fn compute_damage_impl(
                 escapes = !contains && subtree_has_escaping_absolute(tree, node_id);
             }
             ink = ink.max(reach);
+        }
+        // A box whose rect now and rect as painted, each grown by its ink and
+        // reach, both lie off the surface names nothing visible: every rect
+        // below would be clamped away. Skipped before its clip chains are
+        // walked, which is most of what a reflow's off-window rows cost
+        // (#2948's review). Only for a box with a rect of its own: a box-less
+        // node and a split inline name other boxes' rects below.
+        if w > 0.0 && h > 0.0 && !node.is_split_inline() {
+            let m = margin + spread.get();
+            let surface = Rect::new(-m, -m, viewport_w + m, viewport_h + m);
+            let off = |r: Rect| {
+                r.x1 <= surface.x0 || r.y1 <= surface.y0 || r.x0 >= surface.x1 || r.y0 >= surface.y1
+            };
+            let now = transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h)));
+            if off(now) && painted_rect_with(tree, node_id, scale, ink).is_none_or(off) {
+                continue;
+            }
         }
         let clip_of = |id: RawNodeId, painted: bool| {
             if escapes {

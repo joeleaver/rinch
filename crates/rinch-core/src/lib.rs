@@ -91,7 +91,7 @@ pub use task::{Sleep, TaskHandle, sleep, spawn_local};
 // Re-export cross-platform timers
 pub use timer::{
     IntervalHandle, TimeoutHandle, clear_interval, clear_timeout, fire_timeout, set_interval,
-    set_timeout, set_timer_backend, set_timer_backend_with_cancel,
+    set_timeout, set_timer_backend, set_timer_backend_with_cancel, set_yield_backend, yield_now,
 };
 
 // Re-export reactive types for convenience
