@@ -104,8 +104,15 @@ correctness resting on mtimes again.
 **Cost.** None in the steady state: workspace crates were already rebuilt on every run that got
 the cache the ordinary way round, which is every run but the unlucky ones. The first run of each
 job after this change is cold (no rust-cache entry exists yet), and so is a PR run whose base
-`main` has not yet saved for the current lockfile; a cold `clippy` was about 11 minutes against
-about 5 warm on 2026-11-24.
+`main` has not yet saved for the current lockfile. Measured on `main` (2026-11-24): the two
+`clippy` steps took about 4.5 minutes cold (run 45311422899, a cache miss) and 1.4–2.2 minutes
+warm.
+
+After this landed, the old `Linux-cargo-*` / `macOS-cargo-*` entries (about 6.7 GB) were deleted
+with `gh cache delete`: until they expired they used the 10 GB budget and could evict `main`'s
+new entries. A `workflow_dispatch` run of CI never saves, and a runner-image update to its
+preinstalled stable toolchain changes the key (rust-cache hashes every installed toolchain)
+until `main` saves again.
 
 ## The `test` shards
 
