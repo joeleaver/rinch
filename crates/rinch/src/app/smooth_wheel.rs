@@ -68,7 +68,7 @@
 //! Smooth programmatic scrolling is on whatever the wheel switch says: the
 //! page asked for it. [`RinchApp::set_smooth_programmatic_scroll`] turns it
 //! off (the hook for the OS reduced-motion setting, #2209): requests then
-//! land at once.
+//! land on the next frame.
 //!
 //! # What ends one early
 //!
@@ -108,6 +108,9 @@ pub(crate) enum CurveKind {
     /// A smooth programmatic scroll (#2291): `sqrt(|delta|)` frames capped at
     /// 1.5 s, `cubic-bezier(0.42, 0, 0, 1)`.
     Programmatic,
+    /// A keyboard scroll (#2977): 150 ms whatever the distance
+    /// (`kConstant`, 9 frames of 60 Hz), `ease-in-out`.
+    Keyboard,
 }
 
 impl CurveKind {
@@ -116,13 +119,14 @@ impl CurveKind {
         match self {
             CurveKind::Wheel => segment_duration_ms(delta),
             CurveKind::Programmatic => programmatic_duration_ms(delta),
+            CurveKind::Keyboard => KEYBOARD_DURATION_MS,
         }
     }
 
     /// The ease's second control point's `x`.
     fn ease_x2(self) -> f64 {
         match self {
-            CurveKind::Wheel => EASE_X2,
+            CurveKind::Wheel | CurveKind::Keyboard => EASE_X2,
             CurveKind::Programmatic => PROGRAMMATIC_EASE_X2,
         }
     }
@@ -144,7 +148,7 @@ pub(crate) struct WheelAnimation {
 pub(crate) struct SmoothWheelState {
     pub(crate) enabled: bool,
     /// Whether a `scroll-behavior: smooth` programmatic scroll animates
-    /// (#2291); off, it lands at once.
+    /// (#2291); off, it lands on the next frame.
     pub(crate) programmatic: bool,
     pub(crate) running: Vec<WheelAnimation>,
     /// Set while a [`PlatformEvent::MouseWheelLines`](rinch_platform::PlatformEvent::MouseWheelLines)
@@ -189,6 +193,11 @@ const EPSILON: f64 = 0.01;
 const EASE_X1: f64 = 0.42;
 const EASE_X2: f64 = 0.58;
 const MAX_SLOPE: f64 = 1000.0;
+
+/// A keyboard segment's duration, in ms: `kConstantDuration`, 9 frames of
+/// 60 Hz (measured in Chrome 158: 40 px, a page and 24 700 px each took
+/// about 150 ms).
+const KEYBOARD_DURATION_MS: f64 = 9.0 / DURATION_DIVISOR * 1000.0;
 
 /// A programmatic segment's duration cap, in ms (measured in Chrome 158).
 const PROGRAMMATIC_MAX_DURATION_MS: f64 = 1500.0;
@@ -320,6 +329,7 @@ pub(crate) struct ScrollCurve {
 
 impl ScrollCurve {
     /// A wheel curve from rest at `initial` to `target`, starting at `now`.
+    #[cfg(test)]
     pub(crate) fn new(initial: f64, target: f64, now: f64) -> Self {
         Self::of_kind(CurveKind::Wheel, initial, target, now)
     }
@@ -433,7 +443,7 @@ fn velocity_based_duration_bound(
 /// The scroll range of `id` on `axis`, `(min, max)`: `0..=range`, or
 /// `-range..=0` horizontally for a container that scrolls from its right
 /// edge (`scrollbar::scroll_bounds`, #2546).
-fn offset_bounds(doc: &RinchDocument, id: u64, axis: WheelAxis) -> (f64, f64) {
+pub(crate) fn offset_bounds(doc: &RinchDocument, id: u64, axis: WheelAxis) -> (f64, f64) {
     use rinch_dom::paint::scrollbar::{ScrollbarAxis, scroll_bounds};
     let axis = match axis {
         WheelAxis::Vertical => ScrollbarAxis::Vertical,
@@ -477,8 +487,9 @@ impl RinchApp {
     }
 
     /// Turn `scroll-behavior: smooth` for programmatic scrolls on (the
-    /// default) or off (#2291). Off, a smooth scroll write lands at once, as
-    /// `auto` does, and one running ends at its target on the next frame:
+    /// default) or off (#2291). Off, a smooth scroll write lands on the next frame with no
+    /// glide (an `auto` write lands in the write itself), and one running ends at its target
+    /// on the next frame:
     /// the switch for the OS's reduced-motion setting (#2209).
     pub fn set_smooth_programmatic_scroll(&mut self, enabled: bool) {
         self.smooth_wheel.programmatic = enabled;
@@ -514,6 +525,30 @@ impl SmoothWheelState {
         axis: WheelAxis,
         delta: f64,
     ) -> bool {
+        self.animate_by(doc, id, axis, delta, CurveKind::Wheel)
+    }
+
+    /// Where the animation running on `id`'s `axis` is headed, if one runs
+    /// and nothing else has moved the offset since it last wrote.
+    pub(crate) fn heading_to(&self, doc: &RinchDocument, id: u64, axis: WheelAxis) -> Option<f64> {
+        let (offset, _) = precise_offset(doc, id, axis)?;
+        self.running
+            .iter()
+            .find(|a| a.node == id && a.axis == axis && a.written == offset)
+            .map(|a| a.curve.target())
+    }
+
+    /// `delta` px on `axis` of `id` on a `kind` curve: start an animation, or
+    /// move the running one's target on by it (and make its next segment a
+    /// `kind` one). Answers whether the target moved.
+    pub(crate) fn animate_by(
+        &mut self,
+        doc: &RinchDocument,
+        id: u64,
+        axis: WheelAxis,
+        delta: f64,
+        kind: CurveKind,
+    ) -> bool {
         let Some((offset, remainder)) = precise_offset(doc, id, axis) else {
             return false;
         };
@@ -528,6 +563,7 @@ impl SmoothWheelState {
             if target == anim.curve.target() {
                 return false;
             }
+            anim.curve.set_kind(kind);
             anim.curve.update_target(now, target);
             return true;
         }
@@ -541,7 +577,7 @@ impl SmoothWheelState {
         self.running.push(WheelAnimation {
             node: id,
             axis,
-            curve: ScrollCurve::new(initial, target, now),
+            curve: ScrollCurve::of_kind(kind, initial, target, now),
             written: offset,
         });
         true
@@ -576,6 +612,10 @@ impl SmoothWheelState {
             .iter_mut()
             .find(|a| a.node == id && a.axis == axis && a.written == offset);
         if let Some(anim) = running {
+            // Already headed there: nothing to retarget, as `animate_by` answers.
+            if anim.curve.target() == target {
+                return;
+            }
             anim.curve.set_kind(kind);
             anim.curve.update_target(now, target);
             return;
@@ -654,13 +694,13 @@ impl RinchApp {
                 // instant writes do).
                 if offset != anim.written
                     || dragged == Some(anim.node)
-                    || (anim.curve.kind() == CurveKind::Wheel
+                    || (anim.curve.kind() != CurveKind::Programmatic
                         && d.tree.scroll_locked_out(anim.node))
                 {
                     return false;
                 }
                 let enabled = match anim.curve.kind() {
-                    CurveKind::Wheel => wheel_on,
+                    CurveKind::Wheel | CurveKind::Keyboard => wheel_on,
                     CurveKind::Programmatic => programmatic_on,
                 };
                 let finished = !enabled || anim.curve.is_finished(now);

@@ -6025,9 +6025,21 @@ pub struct PaintedState {
 /// A subtree's painted reach ([`PaintedState::subtree_reach`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SubtreeReach {
-    /// Everything it painted lies in `[x0, y0, x1, y1]`, in CSS px from its
-    /// border-box origin, before its own transform. Contains the box.
-    Within([f32; 4]),
+    /// Everything it painted lies in `rect` (`[x0, y0, x1, y1]`), in CSS px
+    /// from its border-box origin, before its own transform, measured with no
+    /// box on the device grid. Contains the box.
+    ///
+    /// Paint snaps each box to the device grid in its own space, before its
+    /// transform (#2368), and the reach is read at any scale and wherever the
+    /// box has moved to. A box no transform inside the subtree moves is
+    /// snapped on the subtree's own grid, so the rect's snapped self bounds
+    /// it. A transformed one moves by at most half a device pixel per edge
+    /// in its own space, and `snap_gain` is how far, per axis (x, y), its
+    /// transforms carry each such pixel: the largest of any transformed box,
+    /// `[0, 0]` when there is none. What the subtree paints is within the
+    /// rect, scaled and placed, snapped out, grown by half a device pixel
+    /// times the gain (`paint::layer_bounds::placed_subtree_reach`).
+    Within { rect: [f32; 4], snap_gain: [f32; 2] },
     /// A descendant the walk could not place, which a clip above may still
     /// bound (`position: sticky`).
     Unknown,

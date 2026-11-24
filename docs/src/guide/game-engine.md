@@ -556,7 +556,8 @@ way — it already sees every key before a focused surface does, on both backend
 `preventDefault()`ed just because the surface is focused, matching an unfocused `<canvas>`.
 Space, PageUp/Down and the arrow keys can scroll the page, and Tab leaves the canvas. A web
 game steering with any of those must claim them via `set_key_handler`, or the page scrolls
-under it.
+under it. The same holds on the desktop since #2977: an unclaimed arrow, page key or
+Space scrolls the scroller around the surface, or the page.
 
 ### Mouse look (pointer lock)
 

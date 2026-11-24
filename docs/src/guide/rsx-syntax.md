@@ -516,9 +516,25 @@ list.scroll_to(None, Some(0.0), ScrollBehavior::Auto);      // as the CSS says
 ```
 
 `RinchApp::set_smooth_programmatic_scroll(false)` makes every such scroll land
-at once (the hook for the OS reduced-motion setting, #2209, which rinch does
+on the next frame, with no glide (the hook for the OS reduced-motion setting, #2209, which rinch does
 not read on the desktop yet). On the web the browser does all of this itself.
-Keyboard scrolling is not modelled on the desktop yet.
+
+**Keyboard scrolling** (issue #2977). When no text field or editor has the key
+and no handler took it, the keys scroll as they do in Chrome: an arrow 40 px,
+Page Up / Page Down and Space / Shift+Space seven-eighths of the scrollport,
+Home / End (Ctrl too; Cmd+Up / Cmd+Down on macOS, Option+Up / Down a page) to
+the start or the end. What scrolls is the focused box's nearest scroller that
+can still move that way, else the scroller you last pressed in, else the page; a
+scroller at its end hands the key on to the one around it, and a fixed box
+(a header) hands it to the page. Space on a focused button, form control or
+`<summary>` (or a node with its own `onclick`)
+still activates it; on a focused link it scrolls, as in Chrome (Enter follows
+the link). The scroll glides over 150 ms, Chrome's keyboard curve, with
+`onscroll` on every frame; `smooth_wheel_scroll(false)` (one switch for every
+user scroll, as Chrome has one) makes it jump. CSS `scroll-behavior` does not
+apply to it: it is for programmatic scrolls, in Chrome as here. A key handler
+that consumes the key (an element's `on_key`, the app's key listeners)
+keeps it from scrolling.
 
 On desktop a scroll offset is kept on the **device pixel grid** (issue #1543),
 so scrolled text moves by whole device pixels and does not re-space as it
