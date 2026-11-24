@@ -1799,6 +1799,9 @@ pub(crate) fn shape_text_leaf(
     let leaf = LeafText::of(&text.content, text.white_space);
     let font_family = crate::fonts::parley_text_family(font_cx, &text.font_family, &leaf.text);
     let mut builder = layout_cx.ranged_builder(font_cx, &leaf.text, 1.0, true);
+    // The parent's direction (#2940): parley's default, `Auto`, gives each
+    // paragraph its own.
+    builder.set_base_direction(text.base_direction);
     builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
     use parley::style::StyleProperty as P;
     builder.push_default(P::FontSize(text.font_size));
@@ -12515,8 +12518,12 @@ impl RinchDocument {
         // (CSS Text 3 §7.1), so it overflows to the left (Chrome 157; an rtl
         // scroll container scrolls to it, #2546). It overflowed to the
         // right, past the inline start, before.
+        // Under `unicode-bidi: plaintext` each paragraph has its own
+        // direction (#2940), so a right-to-left one in a `ltr` block is
+        // aligned away from the left too.
         let ltr = css_direction_is_ltr(nodes, root_id);
         let aligned_away = !ltr
+            || base_direction == parley::BaseDirection::Auto
             || matches!(
                 alignment,
                 parley::layout::Alignment::Right
@@ -12853,7 +12860,6 @@ impl RinchDocument {
         glyph.break_all_lines(None);
         let ellipsis_width = glyph.width();
         let glyph_baseline = glyph.lines().next().map_or(0.0, |l| l.metrics().baseline);
-        let rtl = il.layout.is_rtl();
 
         let mut hidden: Vec<std::ops::Range<usize>> = Vec::new();
         let mut hidden_boxes = Vec::new();
@@ -12939,7 +12945,9 @@ impl RinchDocument {
             let at_left = if over_left != over_right {
                 over_left
             } else {
-                rtl
+                // The line's own paragraph's direction (#2940: a `plaintext`
+                // block's paragraphs each have theirs).
+                line.is_rtl()
             };
             // Whether an extent `x0..x1` is past the point the "…" fits at.
             let past = |x0: f32, x1: f32| {

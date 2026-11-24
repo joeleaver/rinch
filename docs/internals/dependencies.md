@@ -216,7 +216,9 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     gone (below).
   - **A block's paragraph runs in the block's `direction`** (`TreeBuilder::set_base_direction`,
     `ifc::block_bidi`): `Rtl` or `Ltr`, so an `ltr` paragraph that starts with Hebrew is still left
-    to right (#2594); only `unicode-bidi: plaintext` leaves it on parley's first-strong `Auto`.
+    to right (#2594); only `unicode-bidi: plaintext` leaves it on parley's first-strong `Auto`,
+    which gives each paragraph its own (Parley Fork item 19, #2940), and aligns such a block within
+    its content width as it does an `rtl` one (`aligned_away`).
     `unicode-bidi` on an inline element is the bidi controls CSS injects around its content
     (`ifc::inline_bidi_controls`, #2588: LRE/RLE, LRI/RLI/FSI, LRO/RLO … PDF/PDI), pushed into the
     flat text as `IfcOp::Control`s that own no DOM text, as a `<wbr>`'s character does; a
@@ -1015,8 +1017,8 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`a95d78063bc05502327e384d9fdac927016d877a`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17) and #15 (item 18)): commits on parley's
+(`73e8afa10c482d69be6763efd1a85b1ca04a448f`, branch `rinch-patch`, with fork PRs joeleaver/parley-fork#6 and #8
+(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17), #15 (item 18), #16 (items 19 and 20, rinch #2940 and #2950) and #18 (item 21, rinch #2944) merged): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1362,6 +1364,48 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `no_system_render_properties_without_system_fonts`, `tests/system_render_properties.rs` (a
     private `FONTCONFIG_FILE` whose `target="font"` rule tests the matched family) and
     `the_config_default_substitution_is_found_where_fontconfig_has_it`.
+
+19. **Each paragraph its own base direction under `BaseDirection::Auto`** (`90e833e1`,
+    `parley_engine/src/bidi.rs`, `parley_engine/src/analysis.rs`, `parley/src/layout/line_break.rs`,
+    `parley/src/layout/alignment.rs`; #2940; fork PR joeleaver/parley-fork#16). UAX #9 P1–P3: under
+    `Auto` the text is split into paragraphs at each paragraph separator (class B, which a
+    preserved newline and rinch's `<br>` are; CR LF is one), each resolved on its own with the
+    base level of its own first strong character, left to right with none (and for the empty
+    paragraph after a separator at the end), as CSS `unicode-bidi: plaintext` asks and Blink does.
+    Before, the first strong character of all the text set every paragraph's direction:
+    `<pre dir=auto>א⏎abc</pre>` put `abc` at the right. `Analysis::paragraphs` lists the
+    paragraphs after the first by byte index; each line records the level of the paragraph it
+    starts in (`Line::base_level`, `Line::is_rtl`), which alignment, hanging whitespace and the L1
+    reset of item 8 read. `Layout::is_rtl` is the first paragraph's. rinch's IFC aligns a
+    `plaintext` block within its content width (`aligned_away`), as an `rtl` one, and the "…" of
+    `text-overflow` goes by the line's direction. Every other builder sets a direction, since `Auto` is parley's
+    default: `ComputedStyle::base_direction` (the element's `direction`, `Auto` only under
+    `plaintext`) in `build_parley_layout` (a `<textarea>`, select labels, image placeholders), a
+    flex or grid text leaf (`TextMeasure::base_direction`) and the paint fallback; a tooltip takes
+    its first strong character's (review of #2969: an `ltr` textarea's Hebrew-led second line had
+    gone right to left). An explicit direction still makes the text one
+    paragraph with every embedding running across a separator, as before; Chrome resolves each
+    paragraph on its own there too (reopening the bidi controls after a forced break), so in a
+    `dir=rtl` block a neutral that starts a paragraph after a Latin one (`abc<br><img>abc`) takes
+    the Latin's direction here and the paragraph's in Chrome (known difference, #2962). Pinned by
+    the fork's `test_plaintext_paragraphs.rs` and `auto_resolves_each_paragraph_on_its_own`, and
+    `crates/rinch-dom/tests/plaintext_paragraphs_2940_tests.rs` (Chrome 158).
+
+20. **A caret at a line's logical edge beside text of another direction is at the line's edge**
+    (`1a248dc4`, `3930dffd`, `parley/src/editing/cursor.rs`; #2950; fork PR
+    joeleaver/parley-fork#16). `Cursor::geometry` draws a caret at a line's logical start
+    (downstream, or after a hard break) or end (upstream, or before a hard break or the text's
+    end), beside a cluster whose bidi level (`Run::bidi_level`, its level on the line) is not the
+    paragraph's, at the line's visual start or end edge in the paragraph's direction
+    (`line_edge_caret`), as Blink does: Chrome 158 draws `abc`'s offset 0 in an rtl paragraph at
+    the line's right and offset 3 at its left, where parley used the run's own edges (the `a`'s
+    left, the `c`'s right). `Cursor::from_point`, and rinch's own hit test by line
+    (`text_query::caret_on_line`) through the public `line_edge_hit`, map a point on the outer
+    half of the cluster at either visual end of a line, or past it, beside such a cluster to that
+    position (Chrome 158's `caretRangeFromPoint` left of that `abc` is 3, on the `c`'s right half
+    0). Where the levels agree nothing changes. Mid-line bidi boundaries are as they were. Pinned
+    by the fork's `test_line_edge_caret.rs` and
+    `crates/rinch-dom/tests/line_edge_caret_2950_tests.rs` (Chrome 158).
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has

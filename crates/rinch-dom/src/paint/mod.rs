@@ -7371,6 +7371,9 @@ fn paint_text_leaf(
     // constraint below at fractional scale factors.)
     tree.perf.bump(crate::perf::Counter::ShapePaint);
     let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
+    builder.set_base_direction(
+        parent_computed.map_or(parley::BaseDirection::Ltr, |s| s.base_direction()),
+    );
     builder.set_line_break_override(Some(crate::ifc::CHROME_LINE_BREAKS));
     builder.push_default(parley::style::StyleProperty::FontSize(font_size));
     builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
