@@ -111,6 +111,14 @@ pub struct ColorInput {
     /// `spellcheck`. A hex code with a digit is never checked whatever this
     /// says (the default skip rules); a code of letters alone (`#ffaacc`) is.
     pub spellcheck: Option<bool>,
+    /// The colour text field's HTML `autocomplete` attribute (#3028). The
+    /// default is `"off"`: the picker opens below the field, where the
+    /// browser would list its remembered entries, and a native
+    /// `<input type="color">` offers no autofill either. Empty writes no
+    /// attribute (the browser's default); any other value is written as
+    /// given. On desktop the attribute is kept on the element for the DOM;
+    /// there is no autofill there.
+    pub autocomplete: String,
 }
 
 impl Default for ColorInput {
@@ -132,11 +140,12 @@ impl Default for ColorInput {
             swatches: Vec::new(),
             swatches_per_row: None,
             disallow_input: false,
-            // The one field whose default is not `Default::default()`, which is
+            // The fields whose defaults are not `Default::default()`, which is
             // why this impl is written out rather than derived.
             close_on_click_outside: true,
             z_index: None,
             spellcheck: None,
+            autocomplete: "off".to_string(),
         }
     }
 }
@@ -294,6 +303,9 @@ impl Component for ColorInput {
         let text_input = rinch_macros::rsx! { input { class: "rinch-color-input__input" } };
         if let Some(on) = self.spellcheck {
             text_input.set_attribute("spellcheck", if on { "true" } else { "false" });
+        }
+        if !self.autocomplete.is_empty() {
+            text_input.set_attribute("autocomplete", &self.autocomplete);
         }
         if !self.placeholder.is_empty() {
             text_input.set_attribute("placeholder", &self.placeholder);

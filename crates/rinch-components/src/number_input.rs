@@ -132,6 +132,13 @@ pub struct NumberInput {
     /// modification, or Enter) — HTML `change` semantics, receives the final
     /// value. Fires only if the value changed since focus (issue #226).
     pub onchange: Option<InputCallback>,
+    /// The field's HTML `autocomplete` attribute (#3028): a token list such as
+    /// `"username"`, `"current-password"`, `"new-password"`, `"email"` or
+    /// `"one-time-code"`, which password managers and the browser's autofill
+    /// read. Empty (the default) writes no attribute, the browser's default.
+    /// On desktop the attribute is kept on the element for the DOM; there is
+    /// no autofill there.
+    pub autocomplete: String,
 }
 
 impl std::fmt::Debug for NumberInput {
@@ -166,6 +173,7 @@ impl std::fmt::Debug for NumberInput {
             )
             .field("oninput", &self.oninput.as_ref().map(|_| "<callback>"))
             .field("onchange", &self.onchange.as_ref().map(|_| "<callback>"))
+            .field("autocomplete", &self.autocomplete)
             .finish()
     }
 }
@@ -274,6 +282,9 @@ impl Component for NumberInput {
         // Input element
         let input =
             rinch_macros::rsx! { input { class: "rinch-number-input__input", r#type: "number" } };
+        if !self.autocomplete.is_empty() {
+            input.set_attribute("autocomplete", &self.autocomplete);
+        }
 
         // Uncontrolled display state (#501). With no `value_fn` nothing else
         // writes the field, so the steppers own it: `shown` is the number the
