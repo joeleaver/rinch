@@ -146,8 +146,8 @@ mod pointer_lock;
 #[cfg(feature = "windowing")]
 pub mod popup;
 /// Reduced motion (#2209): the OS's setting, the app's override
-/// ([`App::reduced_motion`](app_builder::App::reduced_motion)) and the reactive
-/// [`prefers_reduced_motion`](reduced_motion::prefers_reduced_motion).
+/// ([`App::reduced_motion`]) and the reactive
+/// [`prefers_reduced_motion`].
 #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub mod reduced_motion;
 pub mod render_surface;
