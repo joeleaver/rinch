@@ -1021,8 +1021,9 @@ fn span_box_rects<'a>(
         note_span_line_visits(on.len());
         // Each edge on the nearest device pixel, as Chrome 156 snaps a
         // fragment's box (#2607): the IFC root's content origin is on the
-        // device grid, so its own grid is the device's.
-        let snap = |v: f64| (v * scale).round();
+        // device grid, so its own grid is the device's. The rule a block
+        // box's edges snap by (#2368).
+        let snap = |v: f64| super::pixel_snap::snap_edge(v * scale);
         span_fragment_rects(
             &get,
             inline_layout,

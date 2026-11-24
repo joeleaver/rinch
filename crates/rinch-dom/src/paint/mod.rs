@@ -21,6 +21,7 @@ mod layer_bounds;
 pub mod painter;
 mod phases;
 use phases::Phase;
+pub mod pixel_snap;
 pub mod radii;
 pub(crate) mod raster_cache;
 pub use raster_cache::BUDGET_BYTES as RASTER_CACHE_BUDGET_BYTES;
@@ -369,16 +370,13 @@ fn compute_damage_impl(
                 // was and where it is, while nothing under it has changed
                 // (#2222). Otherwise walked, its fixed descendants left out:
                 // they do not move with it.
+                // The reach is unsnapped; placing it adds what snapping its
+                // boxes to this scale's device grid can (#2368).
                 match node.painted.as_ref().and_then(|p| p.subtree_reach) {
-                    Some(crate::node::SubtreeReach::Within([x0, y0, x1, y1]))
+                    Some(crate::node::SubtreeReach::Within { rect, snap_gain })
                         if !has_dirty_below(node_id) =>
                     {
-                        Rect::new(
-                            ax + x0 as f64 * scale,
-                            ay + y0 as f64 * scale,
-                            ax + x1 as f64 * scale,
-                            ay + y1 as f64 * scale,
-                        )
+                        layer_bounds::placed_subtree_reach(rect, snap_gain, scale, ax, ay)
                     }
                     _ => layer_bounds::moved_subtree_bounds(tree, node_id, scale, ax, ay),
                 }
@@ -419,13 +417,20 @@ fn compute_damage_impl(
         // walked, which is most of what a reflow's off-window rows cost
         // (#2948's review). Only for a box with a rect of its own: a box-less
         // node and a split inline name other boxes' rects below.
+        // The box and its snapped self (#2368), for both the off-surface test
+        // and the rect added below; both ask only of a box with an area.
+        let own_box = if w > 0.0 && h > 0.0 {
+            pixel_snap::box_reach(ax, ay, w, h)
+        } else {
+            Rect::ZERO
+        };
         if w > 0.0 && h > 0.0 && !node.is_split_inline() {
             let m = margin + spread.get();
             let surface = Rect::new(-m, -m, viewport_w + m, viewport_h + m);
             let off = |r: Rect| {
                 r.x1 <= surface.x0 || r.y1 <= surface.y0 || r.x0 >= surface.x1 || r.y0 >= surface.y1
             };
-            let now = transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h)));
+            let now = transform.transform_rect_bbox(ink.grow(own_box));
             if off(now) && painted_rect_with(tree, node_id, scale, ink).is_none_or(off) {
                 continue;
             }
@@ -443,7 +448,7 @@ fn compute_damage_impl(
         if w > 0.0
             && h > 0.0
             && add(
-                transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h))),
+                transform.transform_rect_bbox(ink.grow(own_box)),
                 clip_now(node_id),
             )
         {
@@ -474,7 +479,7 @@ fn compute_damage_impl(
                 if rw > 0.0
                     && rh > 0.0
                     && add(
-                        rt.transform_rect_bbox(Rect::new(rx, ry, rx + rw, ry + rh)),
+                        rt.transform_rect_bbox(pixel_snap::box_reach(rx, ry, rw, rh)),
                         clip_now(root_id),
                     )
                 {
@@ -533,7 +538,7 @@ fn compute_damage_impl(
             if rw > 0.0
                 && rh > 0.0
                 && add(
-                    rt.transform_rect_bbox(root_ink.grow(Rect::new(rx, ry, rx + rw, ry + rh)))
+                    rt.transform_rect_bbox(root_ink.grow(pixel_snap::box_reach(rx, ry, rw, rh)))
                         .inflate(own_reach, own_reach),
                     clip_now(root_id),
                 )
@@ -619,7 +624,7 @@ fn compute_damage_impl(
                     scale,
                 );
                 if add(
-                    ot.transform_rect_bbox(ink.grow(Rect::new(ox, oy, ox + ow, oy + oh))),
+                    ot.transform_rect_bbox(ink.grow(pixel_snap::box_reach(ox, oy, ow, oh))),
                     clip_now(owner),
                 ) {
                     return DamageRegion::full(viewport_w, viewport_h);
@@ -1162,16 +1167,12 @@ fn clip_chain_walk(
                 // current style either frame, same approximation as the radii
                 // above) is left unbounded rather than cut at its edge.
                 let (x0, x1) = if a.clips_x {
-                    let ix = x + left;
-                    let iw = (w - left - right).max(0.0);
-                    (ix, ix + iw)
+                    clip::padding_edges(x, w, left, right)
                 } else {
                     (x - clip::AXIS_UNBOUNDED, x + clip::AXIS_UNBOUNDED)
                 };
                 let (y0, y1) = if a.clips_y {
-                    let iy = y + top;
-                    let ih = (h - top - bottom).max(0.0);
-                    (iy, iy + ih)
+                    clip::padding_edges(y, h, top, bottom)
                 } else {
                     (y - clip::AXIS_UNBOUNDED, y + clip::AXIS_UNBOUNDED)
                 };
@@ -1294,7 +1295,9 @@ fn boxed_owner(tree: &NodeTree, node_id: RawNodeId) -> Option<RawNodeId> {
 /// with no shadow and no outline.
 #[inline]
 fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale: f64) -> Rect {
-    let r = Rect::new(x, y, x + w, y + h);
+    // The box as paint draws it, on the device grid (#2368), as well as where
+    // it is laid out.
+    let r = pixel_snap::box_reach(x, y, w, h);
     let cs = &node.computed_style;
     if cs.box_shadow.is_empty()
         && cs.text_shadow.is_empty()
@@ -1538,7 +1541,7 @@ fn painted_rect_with(
     }
     let (px, py, pt) = position_and_transform_in(tree, node_id, scale, Frame::Painted);
     let ink = Outsets::from_css(painted.ink, scale).max(extra);
-    Some(pt.transform_rect_bbox(ink.grow(Rect::new(px, py, px + pw, py + ph))))
+    Some(pt.transform_rect_bbox(ink.grow(pixel_snap::box_reach(px, py, pw, ph))))
 }
 
 /// How far past a border box something reaches, per side, in physical pixels.
@@ -6318,6 +6321,19 @@ fn paint_node_unmasked(
     // Sticky position adjustment
     let y = sticky_y(tree, node, y, offset_y, scale);
 
+    // What the box draws for itself is drawn on whole device pixels (#2368,
+    // `pixel_snap`): its background, borders, shadows, outline and replaced
+    // content, from `device_box`. `x`/`y` stay unsnapped for everything placed
+    // *from* the box — its children, its text, its transform origin — since
+    // Chrome snaps each box from its own accumulated position.
+    let device_box = pixel_snap::snapped_box(x, y, w, h);
+    let (sx, sy, sw, sh) = (
+        device_box.x0,
+        device_box.y0,
+        device_box.width(),
+        device_box.height(),
+    );
+
     // Compose this node's CSS transform (about its transform-origin) onto
     // the parent transform. Shared by every paint arm below and by the cull
     // test — a transformed node renders at its visual position, not its
@@ -6479,7 +6495,7 @@ fn paint_node_unmasked(
         NodeKind::Element(el) if el.tag == "svg" && !phase.draws_content() => {}
         NodeKind::Element(el) if el.tag == "img" && !phase.draws_content() => {}
         NodeKind::Element(el) if el.tag == "svg" => {
-            paint_svg(tree, node, painter, scale, x, y, w, h, node_transform);
+            paint_svg(tree, node, painter, scale, sx, sy, sw, sh, node_transform);
         }
         NodeKind::Element(el) if el.tag == "img" => {
             paint_img(
@@ -6488,7 +6504,7 @@ fn paint_node_unmasked(
                 node,
                 painter,
                 scale,
-                (x, y, w, h),
+                (sx, sy, sw, sh),
                 font_cx,
                 layout_cx,
                 node_transform,
@@ -6528,7 +6544,7 @@ fn paint_node_unmasked(
             if !phase.draws_content() {
                 return;
             }
-            let rect = Rect::new(x, y, x + w, y + h);
+            let rect = device_box;
             let opacity = node.computed_style.opacity;
             if opacity < 1.0 {
                 let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
@@ -6620,7 +6636,7 @@ fn paint_node_unmasked(
         // Inline painting for render surfaces — draws pixels at the element's
         // position like <img>, participating in normal stacking and clipping.
         NodeKind::Element(_) => {
-            let rect = Rect::new(x, y, x + w, y + h);
+            let rect = device_box;
             // A table's own background, border and shadows are its table
             // box's, which its captions are outside (#2394): the bands they
             // take above and below are left out. (Its outline goes round
@@ -6628,11 +6644,12 @@ fn paint_node_unmasked(
             let (by, bh) = match crate::table_layout::caption_bands(tree, node) {
                 Some((top, bottom)) => {
                     let (top, bottom) = (top as f64 * scale, bottom as f64 * scale);
-                    (y + top, (h - top - bottom).max(0.0))
+                    let (y0, y1) = clip::padding_edges(y, h, top, bottom);
+                    (y0, y1 - y0)
                 }
-                None => (y, h),
+                None => (sy, sh),
             };
-            let box_rect = Rect::new(x, by, x + w, by + bh);
+            let box_rect = Rect::new(sx, by, sx + sw, by + bh);
             let visible = !matches!(
                 node.computed_style.visibility,
                 VisibilityValue::Hidden | VisibilityValue::Collapse
@@ -6688,8 +6705,8 @@ fn paint_node_unmasked(
                     node_id,
                     painter,
                     scale,
-                    Rect::new(x, y, x + w, y + h),
-                    &radii.shape(Rect::new(x, y, x + w, y + h)),
+                    rect,
+                    &radii.shape(rect),
                     node_transform,
                     font_cx,
                     layout_cx,
@@ -6848,9 +6865,9 @@ fn paint_node_unmasked(
                     paint_box_shadow(
                         painter,
                         &node.computed_style.box_shadow,
-                        x,
+                        sx,
                         by,
-                        w,
+                        sw,
                         bh,
                         scale,
                         node,
@@ -6909,9 +6926,9 @@ fn paint_node_unmasked(
                     borders::paint_inset_box_shadow(
                         painter,
                         &node.computed_style.box_shadow,
-                        x,
+                        sx,
                         by,
-                        w,
+                        sw,
                         bh,
                         scale,
                         radii,
@@ -6975,12 +6992,12 @@ fn paint_node_unmasked(
                 }
 
                 // Render borders per-side with style support
-                paint_borders(painter, node, scale, x, by, w, bh, radii, node_transform);
+                paint_borders(painter, node, scale, sx, by, sw, bh, radii, node_transform);
             }
             if visible && phase.draws_content() {
                 // Render outline (drawn outside the box model). A table's
                 // goes round its captions too, as in Chrome.
-                paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
+                paint_outline(painter, node, scale, sx, sy, sw, sh, radii, node_transform);
 
                 // A `RenderSurface`'s frame is its content, as an `<img>`'s
                 // picture is (#1768): in the content box, over the background
@@ -6995,7 +7012,7 @@ fn paint_node_unmasked(
                         painter,
                         node,
                         scale,
-                        (x, y, w, h),
+                        (sx, sy, sw, sh),
                         ink,
                         radii,
                         node_transform,
@@ -7007,7 +7024,14 @@ fn paint_node_unmasked(
                 if HOST_TEXTURES_ON.with(Cell::get)
                     && node.attributes.contains_key("data-host-texture")
                 {
-                    paint_host_texture(painter, node, scale, (x, y, w, h), radii, node_transform);
+                    paint_host_texture(
+                        painter,
+                        node,
+                        scale,
+                        (sx, sy, sw, sh),
+                        radii,
+                        node_transform,
+                    );
                 }
 
                 // Render input element value
