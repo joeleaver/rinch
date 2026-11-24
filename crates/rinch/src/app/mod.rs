@@ -332,6 +332,7 @@ mod key_event_data_tests;
 mod key_repeat_tests;
 #[cfg(test)]
 mod key_up_redraw_486_tests;
+mod keyboard_scroll;
 #[cfg(test)]
 mod label_activation_866_tests;
 #[cfg(test)]
@@ -1307,6 +1308,9 @@ pub struct RinchApp {
     pub(crate) last_click_time: Instant,
     /// Position of last mouse click.
     pub(crate) last_click_pos: (f32, f32),
+    /// The node the last press landed on: where a keyboard scroll starts
+    /// when nothing has focus (#2977), as Chrome's does.
+    pub(crate) keyboard_scroll_anchor: Option<u64>,
     /// Current click count (1 = single, 2 = double, 3 = triple).
     pub(crate) click_count: u8,
     /// Font context for hit testing (reused across frames).
@@ -1686,6 +1690,7 @@ impl RinchApp {
             owned_theme_generation: 0,
             last_click_time: rinch_core::timer::now(),
             last_click_pos: (0.0, 0.0),
+            keyboard_scroll_anchor: None,
             click_count: 0,
             hit_test_font_cx: rinch_dom::fonts::new_font_context(),
             hit_test_layout_cx: parley::LayoutContext::new(),

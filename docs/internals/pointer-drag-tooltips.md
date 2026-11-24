@@ -756,8 +756,9 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   chains as a direct one does.
 - **Not here**: the web (the browser scrolls, and smooths, by itself) and
   Android (its wheels are touch pans and flings, pixels). The OS's
-  reduced-motion setting is not read (#2209); the app passes it. Keyboard
-  scrolling is not modelled on the desktop at all.
+  reduced-motion setting is not read (#2209); the app passes it.
+- **Keyboard scrolls** (#2977) ride it too, on `CurveKind::Keyboard`: see
+  `docs/internals/focus-and-keyboard.md`, "Keyboard scrolling".
 - **Programmatic scrolls** (#2291) ride the same machinery: see "Smooth
   programmatic scrolls" below.
 
