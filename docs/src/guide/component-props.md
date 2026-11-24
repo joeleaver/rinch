@@ -704,9 +704,19 @@ Without an image (or once it failed, unless `keep_failed_image`), the avatar sho
 |------|------|---------|-------------|
 | `variant` | `String` | `""` | "filled", "light", "outline", "dot", "transparent", "white", "default", "gradient" |
 | `size` | `String` | `""` | |
-| `color` | `String` | `""` | |
+| `color` | `String` | `""` | A palette name, `primary`, or a raw CSS colour (`#…`, `rgb(…)`, `hsl(…)`). Empty is the primary colour |
 | `radius` | `String` | `""` | One of `xs sm md lg xl`. A badge is a pill by default, so this squares it off |
 | `full_width` | `bool` | `false` | |
+| `left_section` | `Option<SectionRenderer>` | `None` | Content before the label (a status dot, an icon), in `span.rinch-badge__section[data-position="left"]` |
+| `right_section` | `Option<SectionRenderer>` | `None` | Content after the label (a remove "x"), in `span.rinch-badge__section[data-position="right"]` |
+
+A badge with a section wraps its children in `span.rinch-badge__label`; one
+without keeps them directly in the badge. Every variant reads
+`--rinch-badge-color` (the solid colour), `--rinch-badge-light`,
+`--rinch-badge-light-color` and `--rinch-badge-text` (the filled variant's
+text, white, black on `lime` and `yellow`). Every badge sets all four itself,
+so an app rule that changes one targets the badge (`.my-badge.rinch-badge`),
+not an ancestor (#2201).
 
 ### Card
 
@@ -867,14 +877,23 @@ this stepper wrote its `data-step` rather than the caller.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `color` | `String` | `""` | |
+| `color` | `String` | `""` | A palette name, `primary`, `info`/`success`/`warning`/`error`, or a raw CSS colour. Empty is blue |
 | `variant` | `String` | `""` | "filled", "light", "outline", "transparent", "white", "default" |
 | `title` | `String` | `""` | |
+| `title_section` | `Option<SectionRenderer>` | `None` | The title as nodes, inside `.rinch-alert__title`; wins over `title` |
+| `role` | `String` | `""` | The root's ARIA role. Empty is `"alert"` (as Mantine's Alert); `"status"` is a polite live region |
 | `radius` | `String` | `""` | |
 | `with_close_button` | `bool` | `false` | |
 | `close_button_label` | `String` | `""` | The close button's `aria-label`. Empty is `"Close"` |
 | `icon` | `Option<TablerIcon>` | `None` | |
 | `onclose` | `Option<Callback>` | `None` | |
+
+Every variant reads `--rinch-alert-color` (filled background, outline),
+`--rinch-alert-light`, `--rinch-alert-light-text`, `--rinch-alert-light-strong`
+(the light title), `--rinch-alert-filled-text` (white) and
+`--rinch-alert-outline-text`; a built-in colour's class sets all of them, any
+other colour sets all of them inline (#2200), so a nested Alert inherits none. `--rinch-alert-close-hover` is the close
+button's hover background.
 
 ### Loader
 
@@ -903,13 +922,23 @@ wins over the context.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `value` | `Option<f32>` | `None` | Percentage 0-100 |
-| `value_fn` | `Option<ReactiveF32>` | `None` | Reactive value binding (auto-wrapped) |
+| `value` | `Option<f32>` | `None` | `0..=max`. `None` with no `value_fn` is an indeterminate bar, as a `<progress>` without a value |
+| `value_fn` | `Option<ReactiveF32>` | `None` | Reactive value binding (auto-wrapped); moves the bar and `aria-valuenow` |
+| `max` | `Option<f32>` | `None` | A full bar's value. `None`, or a value that is not a positive number, is 100 (Chrome's `<progress>` defaults to 1.0; 100 keeps a `value` a percentage) |
+| `indeterminate` | `bool` | `false` | An indeterminate bar (a sweeping segment, no `aria-valuenow`) whatever the value |
+| `indeterminate_fn` | `Option<ReactiveBool>` | `None` | Reactive `indeterminate` (auto-wrapped); wins over `indeterminate` |
+| `aria_label` | `String` | `""` | The bar's `aria-label`. Empty writes none |
 | `color` | `String` | `""` | |
 | `size` | `String` | `""` | |
 | `radius` | `String` | `""` | |
 | `striped` | `bool` | `false` | |
 | `animated` | `bool` | `false` | |
+
+A value change animates the width (`width 200ms ease`, as Mantine's Progress
+animates it). `--rinch-progress-transition` changes it; `none` makes a change
+jump, as Chrome's `<progress>` does. `--rinch-progress-indeterminate-duration` (1.5s) times
+the indeterminate sweep, and `--rinch-progress-stripe-color` colours the
+stripes.
 
 ### Skeleton
 

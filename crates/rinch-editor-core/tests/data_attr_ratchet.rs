@@ -33,6 +33,10 @@ const SAFE: &[(&str, &str)] = &[
     ("data-next", "Pagination's own buttons"),
     ("data-prev", "Pagination's own buttons"),
     ("data-page", "Pagination's own buttons"),
+    (
+        "data-position",
+        "Badge's sections (`.rinch-badge__section`)",
+    ),
     ("data-icon-for", "Stepper's step icon box"),
     ("data-icon-has", "Stepper's step icon box"),
     ("data-icon-live", "Stepper's step icon box"),

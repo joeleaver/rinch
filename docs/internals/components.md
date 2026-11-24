@@ -433,3 +433,53 @@ props with the old string as the empty default: `Loader::aria_label`
 ("Close"). Pins: `rinch-components/tests/button_loading_1334.rs`,
 `rinch-components/tests/loader_and_labels_2205.rs`, and the computed-style check
 `rinch/src/app/decorative_pseudo_773_tests.rs::a_loading_button_draws_the_shared_loader_in_its_text_colour`.
+
+## Component colour variables (#2200, #2201, #2204)
+
+`Alert` and `Badge` take any colour, not only the names they had rules for.
+Every variant's rule reads the component's custom properties
+(`--rinch-alert-color`, `-light`, `-light-text`, `-light-strong`,
+`-filled-text`, `-outline-text`; `--rinch-badge-color`, `-light`,
+`-light-color`, `-text`), and the value is set in one of two places:
+
+- a **built-in name** sets them from the stylesheet: Alert's six classes
+  (`.rinch-alert--blue` …, so `info`/`success`/`warning`/`error` still map onto
+  them) and Badge's fourteen `[data-color]` rules. The rendered tree for those
+  names is unchanged (no inline style), and their shades are the ones the old
+  per-variant rules named: `rinch/tests/component_colors_2200.rs` paints each
+  against a swatch of the old value, beside #2879's light-scheme test;
+- **any other colour** sets them inline through `style_string()`, from
+  `color_utils::color_tokens`: a raw CSS colour (`is_raw_css_color`) is the
+  solid colour with a 10% `color-mix` tint for the light background, `primary`
+  reads `--rinch-primary-color…`, and any other name reads
+  `--rinch-color-{name}-6` / `-light…`, so an app's own token family named that
+  way works too. An unknown Alert name used to fall back to blue; it now reads
+  undefined tokens and paints no fill, as Button's does.
+
+**Every colour sets every variable** (review of #2960). Custom properties
+inherit, so a variable one colour left unset came from the enclosing
+component: a filled blue Alert inside a yellow one took the yellow's
+`--rinch-alert-filled-text` (yellow-9), and a colourless Badge in a coloured
+Badge's section took that badge's colour. Each Alert colour class and
+`Alert::style_string` set all six (white included); `.rinch-badge` itself sets
+the primary defaults, and each `[data-color]` rule and `Badge::style_string`
+set all four. An app overrides one on the component (`.my-alert.rinch-alert`),
+not on an ancestor. Pin:
+`component_colors_2200.rs::a_nested_component_does_not_inherit_the_outer_ones_colours`.
+
+`Alert` is `role="alert"` (Mantine's), set from `role` (empty is `"alert"`); a
+quoted `"role":` root attribute still overrides it after render.
+`Alert::title_section` and `Badge::{left,right}_section` are `SectionRenderer`s.
+A Badge wraps its children in `.rinch-badge__label` only when it has a section.
+
+`Progress` follows `<progress>`: no `value` and no `value_fn` is indeterminate
+(`.rinch-progress--indeterminate`, no `aria-valuenow`, a 40% segment swept by
+`transform` keyframes, so it needs no relayout per frame; it was a 0% bar).
+One `apply` writes a state, called once for a static bar and from the one effect
+when `value_fn` or `indeterminate_fn` is set, so `aria-valuenow` follows the
+width (it was written once, #2204). The modifier class goes on and off with
+`add_class`/`remove_class` (#717). `max` scales the width (`value * (100 /
+max)`, exactly the value at the default 100) and is `aria-valuemax`. The width
+transition is `var(--rinch-progress-transition, width 200ms ease)`, the one
+Progress always had (Mantine animates width too); `none` makes it jump, as
+`<progress>` does. Pins: `rinch-components/tests/alert_badge_progress_2200.rs`.
