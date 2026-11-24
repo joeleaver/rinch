@@ -1,46 +1,62 @@
 //! The memo of each scroll container's descendant walk ([`DeepOverflow`]):
-//! kept until something the walk read changes where it could move the reach.
+//! kept, and brought up to date in place, as what the walk read changes.
 
-use super::deep_walk::{
-    Snaps, Span, WalkSnap, box_origin, containing_rect, lines_span, walk_deep_overflow, walk_out,
-};
+use super::deep_record::{AGAIN, BELOW, Level, Records, SELF, Walker};
+use super::deep_walk::WalkSnap;
 use super::extents::Reach;
 use super::measure::border_box_in;
 use crate::NodeTree;
 use crate::node::RawNodeId;
 
-/// One container's kept [`walk_deep_overflow`].
+/// One container's kept walk.
 #[derive(Debug, Clone)]
 pub(super) struct DeepEntry {
     pub(super) reach: Reach,
     /// The transformed boxes the walk met, not entered: measured on each
     /// read, where they are drawn ([`border_box_in`]).
     pub(super) live: Vec<RawNodeId>,
-    /// What the walk read of every box it met ([`WalkSnap`]), and found
-    /// below it.
-    pub(super) snaps: Snaps,
+    /// What the walk read of the container itself: whether it is the
+    /// containing block of an absolute or a fixed box below it decides
+    /// whether that box is its overflow.
+    pub(super) own: WalkSnap,
+    /// What was pushed of the container or below it since the last check
+    /// (`deep_record::SELF`, `BELOW`, `AGAIN`).
+    pub(super) touch: u8,
 }
 
-/// [`deep_overflow`](super::deep_walk::deep_overflow)'s memo: each scroll container's walk, kept until
-/// something it read changes (#2054).
+/// [`deep_overflow`](super::deep_walk::deep_overflow)'s memo: each scroll
+/// container's walk, kept with a record of every box it met
+/// (`deep_record::Rec`), and brought up to date in place as they change
+/// (#2054).
 ///
 /// Every read first checks the boxes pushed paint-dirty, and the parents a
 /// subtree left (`NodeTree::bar_check_parents`), since the last check — so
 /// also before a paint consumes the tree and drains those lists. A box that
 /// changes anything the walk reads (its box, its lines, whether it clips,
 /// is transformed, positioned, displayed or collapsed) is pushed there,
-/// whether or not it moved since the last paint. For each such box, the
-/// entry of each container above it is dropped unless the walk recorded
-/// that box with the same [`WalkSnap`], or recorded a box between them as a
-/// stop (one it did not enter) that is itself unchanged: a hover over a row
-/// keeps its scroller's entry, a box toggled to `overflow: hidden`, a
-/// change and change-back between two paints, or a box added under one the
-/// walk entered drops it. A box whose snapshot differs in its box or lines
-/// alone keeps the entry when nothing of it was counted and all of it is
-/// still inside its top box ([`moved_inside`], [`Keep::top`](super::deep_walk::Keep::top)): a row
-/// resized in a page walks nothing. A parent a subtree left drops every entry above
-/// it short of such a stop. A whole-document restyle drops every entry;
-/// an entry of a container no longer in the tree is freed.
+/// whether or not it moved since the last paint.
+///
+/// The check marks each recorded box pushed, and each recorded box above
+/// it up to its container; a parent a subtree left is marked as having
+/// something below it changed, and a box met under another parent than the
+/// one it is under now has its records dropped (it is recorded again where
+/// it is). Then each container marked is brought up to date
+/// (`deep_record::Walker::visit`): from the container down, only the marked
+/// boxes are visited; each is measured where it is now, and what is below it
+/// is taken from its record unless something below it was marked. Records
+/// are kept in each box's own frame, so a box that moved carries what is
+/// below it. A box with no record (one added) is walked and recorded; a
+/// freed box's record is dropped. So a row removed from a long list
+/// measures the list and each row after it, where it is now, and nothing
+/// below them; a row resized measures it and the boxes above it.
+///
+/// A change the records cannot follow walks the container again: a box
+/// whose kind changed (it clips, or stops; is transformed, positioned,
+/// displayed, collapsed or contained differently; its padding or border
+/// moved its content), an element outside the box tree changed (a split
+/// inline, which may be an absolute box's containing block), or the
+/// container's own containing-block bits. A whole-document restyle drops
+/// every entry; a removed container's entry is freed.
 #[derive(Debug, Default)]
 pub(crate) struct DeepOverflow {
     state: std::cell::RefCell<DeepOverflowState>,
@@ -48,30 +64,18 @@ pub(crate) struct DeepOverflow {
 
 #[derive(Debug, Default)]
 pub(super) struct DeepOverflowState {
-    entries: std::collections::HashMap<RawNodeId, DeepEntry>,
+    entries: rustc_hash::FxHashMap<RawNodeId, DeepEntry>,
+    /// Every entry's records, by box ([`Records`]).
+    recs: Records,
     /// How much of `paint_dirty_nodes` and `bar_check_parents` has been
     /// checked since the last paint consumed them.
     checked: (usize, usize),
     /// Whether this paint's whole-document restyle has dropped the entries.
     whole_dropped: bool,
-    /// Walks made, for the tests that pin the memo.
+    /// Walks of a container's whole subtree, for the tests that pin the memo.
     walks: u64,
-    /// The record map of the biggest entry dropped since the last walk,
-    /// emptied: the next walk fills it ([`walk_deep_overflow`]). A walk
-    /// after a drop is most often of the same subtree, and growing its map
-    /// from nothing rehashed every record several times over.
-    spare: Snaps,
-}
-
-impl DeepOverflowState {
-    /// Keep a dropped entry's record map for the next walk, if it is the
-    /// biggest dropped since the last one.
-    fn recycle(&mut self, mut snaps: Snaps) {
-        if snaps.capacity() > self.spare.capacity() {
-            snaps.clear();
-            self.spare = snaps;
-        }
-    }
+    /// Boxes measured, walked or brought up to date.
+    measured: u64,
 }
 
 impl DeepOverflow {
@@ -79,10 +83,7 @@ impl DeepOverflow {
         let mut state = self.state.borrow_mut();
         Self::check(tree, &mut state);
         if !state.entries.contains_key(&container_id) {
-            let snaps = std::mem::take(&mut state.spare);
-            let entry = walk_deep_overflow(tree, container_id, snaps);
-            state.walks += 1;
-            state.entries.insert(container_id, entry);
+            Self::walk(tree, &mut state, container_id);
         }
         let entry = &state.entries[&container_id];
         let mut reach = entry.reach;
@@ -94,6 +95,39 @@ impl DeepOverflow {
             }
         }
         reach
+    }
+
+    /// Walk `container_id`'s subtree and record it (overwriting any record
+    /// left from an entry dropped before).
+    fn walk(tree: &NodeTree, state: &mut DeepOverflowState, container_id: RawNodeId) {
+        let mut live = Vec::new();
+        let DeepOverflowState { recs, .. } = state;
+        let mut walker = Walker {
+            tree,
+            owner: container_id,
+            recs,
+            live: &mut live,
+            measured: 0,
+            again: false,
+        };
+        walker.children(container_id, Level::Top, true);
+        let reach = walker.top_reach(container_id);
+        let measured = walker.measured;
+        let own = match tree.get(container_id) {
+            Some(node) => WalkSnap::of(tree, node, false),
+            None => return,
+        };
+        state.measured += measured;
+        state.walks += 1;
+        state.entries.insert(
+            container_id,
+            DeepEntry {
+                reach,
+                live,
+                own,
+                touch: 0,
+            },
+        );
     }
 
     /// Called by `NodeTree::consume_paint_dirty` before it drains the lists
@@ -108,16 +142,17 @@ impl DeepOverflow {
     /// the empty lists. Not in [`Self::before_paint_consumed`]: the consume
     /// reads the bars it records ([`scrollbars`](super::scrollbars)) before
     /// it clears `bar_check_parents`, and a check there that started again
-    /// from 0 took the parents it had already checked as new, and dropped —
-    /// and walked again — every entry above them, on every frame a subtree
-    /// left (as a whole-document frame's would drop every entry twice).
+    /// from 0 took the parents it had already checked as new, and measured
+    /// them again on every frame a subtree left (as a whole-document frame's
+    /// would drop every entry twice).
     pub(crate) fn after_paint_consumed(&self) {
         let mut state = self.state.borrow_mut();
         state.checked = (0, 0);
         state.whole_dropped = false;
     }
 
-    /// Check what was pushed since the last check (see [`DeepOverflow`]).
+    /// Check what was pushed since the last check, and bring each entry it
+    /// reached up to date (see [`DeepOverflow`]).
     fn check(tree: &NodeTree, state: &mut DeepOverflowState) {
         let dirty = &tree.paint_dirty_nodes;
         let parents = &tree.bar_check_parents;
@@ -132,14 +167,15 @@ impl DeepOverflow {
         let from = state.checked;
         state.checked = (dirty.len(), parents.len());
         if state.entries.is_empty() {
+            if !state.recs.is_empty() {
+                state.recs = Records::default();
+            }
             return;
         }
         if tree.whole_document_damaged {
             if !state.whole_dropped {
-                let dropped = std::mem::take(&mut state.entries);
-                for (_, entry) in dropped {
-                    state.recycle(entry.snaps);
-                }
+                state.entries.clear();
+                state.recs = Records::default();
                 state.whole_dropped = true;
             }
             return;
@@ -151,219 +187,204 @@ impl DeepOverflow {
         // lists are not pruned when a node is freed, `NodeTree::remove_subtree`),
         // and a freed slot may hold a new node: checked lookups.
         state.entries.retain(|&id, _| tree.get(id).is_some());
-        let mut chain: Vec<RawNodeId> = Vec::new();
-        for (&id, forced) in dirty[from.0..]
+        let mut marker = Marker {
+            tree,
+            state,
+            last: None,
+        };
+        for (&id, lost_child) in dirty[from.0..]
             .iter()
             .map(|id| (id, false))
             .chain(parents[from.1..].iter().map(|id| (id, true)))
         {
-            if state.entries.is_empty() {
-                return;
-            }
-            let Some(node) = tree.get(id) else {
+            marker.note(id, lost_child);
+        }
+        Self::bring_up_to_date(tree, state);
+    }
+
+    /// Bring every entry the check marked up to date, or drop it to be
+    /// walked again where the records cannot follow.
+    fn bring_up_to_date(tree: &NodeTree, state: &mut DeepOverflowState) {
+        let marked: Vec<RawNodeId> = state
+            .entries
+            .iter()
+            .filter(|(_, e)| e.touch != 0)
+            .map(|(&id, _)| id)
+            .collect();
+        for container in marked {
+            let DeepOverflowState {
+                entries,
+                recs,
+                measured,
+                ..
+            } = state;
+            let Some(node) = tree.get(container) else {
+                entries.remove(&container);
                 continue;
             };
-            let now = WalkSnap::of(tree, node, false);
-            chain.clear();
-            let mut current = Some(id);
-            while let Some(a) = current {
-                chain.push(a);
-                current = tree.get_live(a).and_then(|n| n.parent);
-            }
-            for j in 0..chain.len() {
-                let Some(entry) = state.entries.get_mut(&chain[j]) else {
-                    continue;
+            let Some(entry) = entries.get_mut(&container) else {
+                continue;
+            };
+            let touch = std::mem::take(&mut entry.touch);
+            let own = WalkSnap::of(tree, node, false);
+            let mut again = touch & AGAIN != 0
+                || !(node.scrolls_x() || node.scrolls_y())
+                || (touch & SELF != 0 && !own.same_kind(&entry.own));
+            if !again && touch & BELOW != 0 {
+                let mut walker = Walker {
+                    tree,
+                    owner: container,
+                    recs,
+                    live: &mut entry.live,
+                    measured: 0,
+                    again: false,
                 };
-                let found = if j > 0 {
-                    chain[..j]
-                        .iter()
-                        .enumerate()
-                        .find_map(|(i, a)| entry.snaps.get(a).map(|rec| (i, rec.snap)))
+                walker.children(container, Level::Top, false);
+                *measured += walker.measured;
+                if walker.again {
+                    again = true;
                 } else {
-                    None
-                };
-                let keep = found.is_some_and(|(i, snap)| {
-                    if i == 0 {
-                        // The box itself: unchanged, and not a parent a
-                        // subtree left (unless the walk stopped there) —
-                        // or changed where nothing it adds is counted.
-                        if forced {
-                            same_snap(&snap, &now) && snap.is_stop()
-                        } else {
-                            same_snap(&snap, &now) || moved_inside(tree, chain[j], entry, id)
-                        }
-                    } else {
-                        // A box between: a stop the walk did not enter,
-                        // as it was.
-                        snap.is_stop()
-                            && tree
-                                .get_live(chain[i])
-                                .is_some_and(|n| same_snap(&snap, &WalkSnap::of(tree, n, snap.out)))
-                    }
-                });
-                if !keep && let Some(dropped) = state.entries.remove(&chain[j]) {
-                    state.recycle(dropped.snaps);
+                    entry.reach = walker.top_reach(container);
                 }
+            }
+            if again {
+                entries.remove(&container);
+            } else {
+                entry.own = own;
             }
         }
     }
 
-    /// How many walks the memo has made: a test reads it to see a read
-    /// answered from the memo (`testing::deep_overflow_walks`).
+    /// How many times the memo has walked a container's whole subtree: a test
+    /// reads it to see a range answered from the memo
+    /// (`testing::deep_overflow_walks`).
     pub(crate) fn walks(&self) -> u64 {
         self.state.borrow().walks
     }
+
+    /// How many boxes the memo has measured, in walks and in bringing its
+    /// records up to date (`testing::deep_overflow_measured`).
+    pub(crate) fn measured(&self) -> u64 {
+        self.state.borrow().measured
+    }
 }
 
-/// Whether box `id`, whose [`WalkSnap`] differs from the one `entry`'s walk
-/// recorded, changed only where it adds nothing to the kept reach — and if
-/// so, the record follows it. Only its box (where it is, inline offset
-/// included, and how big) and its lines may have changed — nothing that
-/// decides whether the walk counts it or goes into it, and not its content
-/// origin, which moves what is placed from it with no change to their
-/// `layout` ([`WalkSnap`]) — and
-/// either it counts nothing (out of the container's overflow, displayed
-/// `none`, or transformed, which each read measures anew), or nothing of it
-/// was counted and all of it — its box, its lines and what the walk found
-/// below it, moved with it — is now inside its top box ([`Keep::top`](super::deep_walk::Keep::top)); for
-/// the top box itself, all that is below it is inside its new box.
-///
-/// A box below it that moved too is checked on its own, where it is now; one
-/// that did not moved with it, and is in what the walk found below it. So no
-/// counted contribution changed, and the entry stands. What is found inside
-/// is added to the record of each box above it up to the top box, so a later
-/// move of one of them is checked with it (a record only grows: a box that
-/// shrank is checked as it was, which can only drop the entry).
-pub(super) fn moved_inside(
-    tree: &NodeTree,
-    container_id: RawNodeId,
-    entry: &mut DeepEntry,
-    id: RawNodeId,
-) -> bool {
-    let Some(node) = tree.get_live(id) else {
-        return false;
-    };
-    let Some(rec) = entry.snaps.get(&id).copied() else {
-        return false;
-    };
-    // The box-tree path from the box up to the container, which positions
-    // are summed along.
-    let mut path: Vec<RawNodeId> = vec![id];
-    loop {
-        let Some(parent) = crate::RinchDocument::box_tree_parent(&tree.nodes, path[path.len() - 1])
-        else {
-            return false;
-        };
-        if parent == container_id {
-            break;
-        }
-        if path.len() > 4096 {
-            return false;
-        }
-        path.push(parent);
-    }
-    let top_level = path.len() == 1;
-    let out = if top_level {
-        !(node.taffy_style_owned_by_contents_splice()
-            || crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, node))
-    } else {
-        walk_out(tree, container_id, node)
-    };
-    let now = WalkSnap::of(tree, node, out);
-    // Only where its box is, how big, and its lines may differ — not its
-    // content origin: the record of what is below it holds the lines and
-    // atomic inlines placed from that origin where they were, and they do
-    // not move in their own `layout` when it does.
-    if (WalkSnap {
-        layout: rec.snap.layout,
-        inline_offset: rec.snap.inline_offset,
-        lines: rec.snap.lines,
-        ..now
-    }) != rec.snap
-        || now.contents
-    {
-        return false;
-    }
-    let follow = |entry: &mut DeepEntry| {
-        if let Some(r) = entry.snaps.get_mut(&id) {
-            r.snap = now;
-        }
-    };
-    if now.out || now.transformed || now.display == crate::computed_style::DisplayValue::None {
-        follow(entry);
-        return true;
-    }
-    if rec.counted {
-        return false;
-    }
-    // Each box's children's origin now, from the container down
-    // ([`box_origin`], summed in the walk's order).
-    let mut at = vec![(0.0_f64, 0.0_f64); path.len()];
-    let mut origin = (0.0_f64, 0.0_f64);
-    for k in (0..path.len()).rev() {
-        let Some(n) = tree.get_live(path[k]) else {
-            return false;
-        };
-        origin = box_origin(tree, n, origin);
-        at[k] = origin;
-    }
-    // The top box: the highest box on the path that is not a `display:
-    // contents` wrapper.
-    let Some(t) = (0..path.len()).rev().find(|&k| {
-        tree.get_live(path[k])
-            .is_some_and(|n| !n.taffy_style_owned_by_contents_splice())
-    }) else {
-        return false;
-    };
-    let Some(top) = tree.get_live(path[t]) else {
-        return false;
-    };
-    let Some(rect) = containing_rect(
-        top,
-        at[t].0,
-        at[t].1,
-        top.layout.width as f64,
-        top.layout.height as f64,
-    ) else {
-        return false;
-    };
-    // Everything of the box now: its box (not the top box's own, which the
-    // walk does not count), its lines, and what was found below it, moved
-    // as its children's origin moved.
-    let (x, y) = at[0];
-    let mut span = rec.below.moved((x - rec.at.0, y - rec.at.1));
-    if WalkSnap::stops(node) {
-        span = Span::EMPTY;
-    } else if let Some((x0, x1, y1)) = lines_span(node, x, y) {
-        span.grow(x0, x1, y1);
-    }
-    if t != 0 {
-        let (w, h) = (node.layout.width as f64, node.layout.height as f64);
-        if w > 0.0 || h > 0.0 {
-            span.grow(x, x + w, y + h);
-        }
-    }
-    if !span.inside(&rect) {
-        return false;
-    }
-    // Every box above it, up to the top box, holds it now.
-    for k in 1..=t {
-        let Some(r) = entry.snaps.get_mut(&path[k]) else {
-            return false;
-        };
-        r.below
-            .join(span.moved((r.at.0 - at[k].0, r.at.1 - at[k].1)));
-    }
-    follow(entry);
-    true
+/// The check's marking of what was pushed ([`DeepOverflow`]).
+struct Marker<'a> {
+    tree: &'a NodeTree,
+    state: &'a mut DeepOverflowState,
+    /// The box the last upward marking started from: the rows of a list
+    /// share their parent, and the second marks nothing the first did not.
+    last: Option<RawNodeId>,
 }
 
-/// Whether a box's snapshot now matches the one a walk recorded: `out` is
-/// the walk's own judgement (it depends on the box's ancestors, whose own
-/// snapshots carry what decides it), so it is taken from the record.
-pub(super) fn same_snap(recorded: &WalkSnap, now: &WalkSnap) -> bool {
-    WalkSnap {
-        out: recorded.out,
-        ..*now
-    } == *recorded
+impl Marker<'_> {
+    /// Note box `id`, pushed paint-dirty or (`lost_child`) a parent a subtree
+    /// left.
+    fn note(&mut self, id: RawNodeId, lost_child: bool) {
+        let flag = if lost_child { BELOW } else { SELF };
+        if let Some(entry) = self.state.entries.get_mut(&id) {
+            entry.touch |= flag;
+        }
+        let tree = self.tree;
+        let Some(node) = tree.get(id) else {
+            // Freed: its record goes, and its parent was pushed as one a
+            // subtree left.
+            self.forget(id);
+            return;
+        };
+        if node.is_text() {
+            // Its lines are its IFC root's, which is pushed when they move.
+            return;
+        }
+        let parent = node.box_tree_parent();
+        let Some(rec) = self.state.recs.get_mut(&id) else {
+            if node.is_split_inline() {
+                // Not a box, so not recorded, but its style may decide an
+                // absolute box's containing block below it.
+                if let Some(owner) = self.mark_from(parent) {
+                    if let Some(entry) = self.state.entries.get_mut(&owner) {
+                        entry.touch |= AGAIN;
+                    }
+                }
+            } else {
+                // A box added (or one below a box the walk did not enter,
+                // which the marking stops at).
+                self.mark_from(parent);
+            }
+            return;
+        };
+        rec.touch |= flag;
+        let recorded = rec.parent;
+        if parent != Some(recorded) {
+            // Moved, or taken out, since it was met: its records go, its old
+            // parent lost it, and where it is now records it again.
+            self.purge(id);
+            self.last = None;
+            self.mark_from(Some(recorded));
+            self.last = None;
+            self.mark_from(parent);
+            return;
+        }
+        self.mark_from(parent);
+    }
+
+    /// Mark the recorded boxes from `start` up to the container whose walk
+    /// met them as having something below them changed; the container's
+    /// entry, if the marking reaches one. Stops at a box the walk did not go
+    /// into (nothing below it is read), and where an earlier marking passed.
+    fn mark_from(&mut self, start: Option<RawNodeId>) -> Option<RawNodeId> {
+        if start.is_some() && start == self.last {
+            return None;
+        }
+        self.last = start;
+        let mut current = start;
+        while let Some(a) = current {
+            if let Some(entry) = self.state.entries.get_mut(&a) {
+                entry.touch |= BELOW;
+                return Some(a);
+            }
+            match self.state.recs.get_mut(&a) {
+                Some(rec) => {
+                    if !rec.snap.entered() {
+                        return None;
+                    }
+                    if rec.touch & BELOW != 0
+                        && self
+                            .state
+                            .entries
+                            .get(&rec.owner)
+                            .is_some_and(|e| e.touch & BELOW != 0)
+                    {
+                        return Some(rec.owner);
+                    }
+                    rec.touch |= BELOW;
+                    current = Some(rec.parent);
+                }
+                None => current = self.tree.get(a).and_then(|n| n.box_tree_parent()),
+            }
+        }
+        None
+    }
+
+    /// Drop freed box `id`'s record.
+    fn forget(&mut self, id: RawNodeId) {
+        if let Some(rec) = self.state.recs.remove(&id)
+            && rec.snap.transformed
+            && let Some(entry) = self.state.entries.get_mut(&rec.owner)
+        {
+            entry.live.retain(|&l| l != id);
+        }
+    }
+
+    /// Drop the records of box `id` and of every recorded box below it.
+    fn purge(&mut self, id: RawNodeId) {
+        self.forget(id);
+        let tree = self.tree;
+        for &child in crate::RinchDocument::box_tree_children(&tree.nodes, id).iter() {
+            if self.state.recs.contains_key(&child) {
+                self.purge(child);
+            }
+        }
+    }
 }

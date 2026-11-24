@@ -3445,6 +3445,25 @@ impl Node {
         InlineFlowRole::InFlowBlock
     }
 
+    /// This node's parent in the **box tree**
+    /// ([`RinchDocument::box_tree_parent`](crate::RinchDocument::box_tree_parent),
+    /// which reads it from the slab), for a caller holding the node.
+    pub fn box_tree_parent(&self) -> Option<RawNodeId> {
+        // A hoisted out-of-flow box is held by its host's lists, not its DOM
+        // parent's (#591): its `layout` is relative to the host, so every
+        // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
+        if let Some(host) = self.hoisted_out_of_flow_to {
+            return Some(host);
+        }
+        if let Some(b) = self.run_box {
+            return Some(b);
+        }
+        // A box needs no arm of its own: it keeps a real `parent` edge to its
+        // container (it is simply absent from that container's `children`), so
+        // the ordinary answer is already right.
+        self.parent
+    }
+
     /// Whether this is a `display: inline` element **broken around** in-flow
     /// block-level content — CSS 2.1 §9.2.1.1's block-in-inline, #513.
     ///

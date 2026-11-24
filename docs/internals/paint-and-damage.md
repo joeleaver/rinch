@@ -697,47 +697,56 @@ the empty lists only once it has drained both (`after_paint_consumed`): the
 bars it records in between read the walk, and a check there that started
 from 0 took the parents already checked as new and walked a second time on
 every frame a subtree left (`dom::row_shift_damage`, 2000 rows with one
-removed: +93% on the batch, perf review of #2961). For each such box the entry of
-each container above it is dropped unless the walk recorded that box with
-the same snapshot, or recorded a box between them as a stop (not entered)
-that is itself unchanged: a hover colour keeps the entry; a box toggled to
-`overflow: hidden`, a size changed and changed back between two paints, a
-transform given with no layout, or a box added under one the walk entered
-drops it. (The first version judged "moved" against the last *paint*, with
-`geometry_may_have_moved`, and missed both the `overflow` toggle and the
-change-and-back: review of #2961.) A box whose snapshot differs in its box
-(position, inline offset included, and size) or its lines alone — not its
-content origin, since what its record holds below it was placed from the old
-one — is kept too when it adds nothing to the reach
-(`moved_inside`): the walk does not count what lies inside the border box of
-its **top box** — the first box below the scroller, through `display:
-contents` wrappers (`Keep::top`, `containing_rect`; not an empty, atomic
-inline or transformed one) — since the scroller's own measure counts that box
-at least as far, and records for every box what it found below it
-(`Rec::below`, moved with the box) and whether any of it was counted. So a box
-of which nothing was counted, whose box, lines and what was below it are
-inside its top box where they are now, keeps the entry, and its extent is
-joined into the record of each box above it up to the top box; the top box
-itself is kept when nothing below it was counted and all of it is inside its
-new box. A paragraph resized in a page, or an absolute gauge moved inside it,
-walks nothing (`shell::relayout_beside_text` walked the page on each layout,
-+9% on the batch: perf review of #2961); a counted box that moves, or a box
-that moves something past its top box, drops the entry. A whole-document
-restyle drops every entry; a removed container's entry is freed. A walk
-records one `Rec` per box in an FxHash map (`Snaps`; with SipHash the
-inserts were half the walk), and fills the map of the biggest entry dropped
-since the last walk, so a walk of the same subtree grows no table. **What it
-still costs:** a frame that drops the entry walks the subtree once — about
-750 instructions per box. A row removed from a long list does (the list is a
-parent a subtree left, and the top box shrank under what its record holds),
-so `row_shift_damage`'s frame is +25% on `main` (12.04M → 15.10M Ir) where it
-walks 4,000 boxes. A read in between is a lookup,
+removed: +93% on the batch, perf review of #2961). The walk is not dropped
+for what it can follow: it is **brought up to date in place**
+(`deep_record.rs`, #2054 perf rework). Every box it met has a record
+(`Rec`), kept by box across containers: its `WalkSnap`, the container whose
+walk met it, its box-tree parent then, what its children contribute in its
+own children frame (`kids`, from where the box places its children, so a box
+that moves carries what is below it unchanged) and its own contribution. The
+check marks: a recorded box pushed paint-dirty is `SELF`, and each record
+above it up to the container is `BELOW` (the climb stops at a record already
+marked); a box with no record marks from its parent; a freed box is
+forgotten; a recorded box now under another box-tree parent is forgotten with
+its subtree and marks both parents; a split inline marks its container to be
+walked again. Then each marked container goes once through its children: a
+child nothing was marked of answers its kept contribution, a child with no
+record is recorded fresh, and a marked one is measured where it is now — its
+`WalkSnap` taken again (an absolute box's out-of-overflow rule asked again,
+since its size decides it) and only its marked children visited. The
+container is walked again only where the records cannot follow: a box whose
+kind changed (`WalkSnap::same_kind`: whether it clips, is transformed,
+positioned, displayed, `contents`, collapsed or a containing block, its
+`DisplayMode` or its content origin; its box, inline offset and lines may
+change), a box met under another parent or by another walk, a box that
+entered or left the container's overflow, a split inline, or a change to the
+container's own kind. The reach is then taken from the children's records as
+a fresh walk takes it: what is below each top box (the first box below the
+scroller, through `display: contents` wrappers), unless all of it is inside
+that box's border box (`containing_rect`), which the scroller's own measure
+counts at least as far. A hover colour measures the one box; a row removed
+from a long list measures each row that moved (one box each: nothing below a
+row moved with it) and nothing else. **What it still costs:**
+`row_shift_damage` (2000 rows, one removed) is +10% on `main` (12.04M → 13.29M
+Ir; the dropped-walk version was 15.10M), because main counts
+none of this: main's range is the scroller's children alone, which is wrong
+for #2054 (a box overflowing its own parent is in Chrome's range) and only
+happens to equal the right answer when, as there, nothing below a row
+overflows it. Measuring a moved row exactly is about 280 instructions
+(`WalkSnap::of`, its contribution, the climb that marks it and the visit), so
+the cost is the price of the right range on such a frame, not a walk. A
+whole-document restyle drops every entry and record; a removed container's
+entry is freed. A read in between is a lookup,
 the check of what was pushed since the last one, and a measure of the listed
 transformed boxes. Layout's clamp asks the in-flow range first
 (`content_extents_in_flow` leaves this out, as it leaves out the listed
 absolutes), so a relayout scrolled within it walks nothing. Pins: `tests/geometry_queries_2257_tests.rs`
-(`SCROLLERS`, the walk count `testing::deep_overflow_walks`, and the
-`kept_matches_fresh` scenarios, each against a fresh document).
+(`SCROLLERS`), `tests/scroll_range_descendants_2054_tests.rs`,
+`tests/deep_overflow_kept_2054_tests.rs` (the walk and measure counts
+`testing::deep_overflow_walks` / `deep_overflow_measured`, and the
+`kept_matches_fresh` scenarios, each against a fresh document) and
+`tests/deep_overflow_kept_fuzz_2054_tests.rs` (random edit sequences against
+a fresh document at every read; `RINCH_KEPT_FUZZ_SEEDS=<n>` runs more).
 
 **A box that does not scroll (#2223).** It has no range for a bar or the
 wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it

@@ -46,8 +46,11 @@
 //! * `overflow_abs` — the absolute boxes listed for a container from below
 //!   its children (#770);
 //! * `deep_walk` — the walk of a scroll container's descendants below its
-//!   own children (#2054), and what a kept walk records of each box;
-//! * `deep_memo` — the per-container memo of that walk and what drops it.
+//!   own children (#2054), and what it reads of each box;
+//! * `deep_record` — what a kept walk records of each box, and the walk that
+//!   records a subtree or brings its records up to date;
+//! * `deep_memo` — the per-container memo of that walk, and the check that
+//!   finds what changed under it.
 
 use crate::NodeTree;
 use crate::computed_style::ScrollbarWidthValue;
@@ -55,6 +58,7 @@ use crate::node::RawNodeId;
 use peniko::color::{AlphaColor, Srgb};
 
 mod deep_memo;
+mod deep_record;
 mod deep_walk;
 mod extents;
 mod measure;

@@ -129,7 +129,7 @@ pub fn scroll_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
         if let Some(child) = tree.get_live(child_id)
             && crate::out_of_flow::contributes_to_scrollable_overflow(tree, node_id, child)
         {
-            descend_into(tree, node_id, child, (0.0, 0.0), &mut reach, &mut None);
+            descend_into(tree, node_id, child, (0.0, 0.0), &mut reach);
         }
     }
     if reach == Reach::NONE {

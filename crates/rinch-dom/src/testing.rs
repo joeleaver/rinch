@@ -343,6 +343,13 @@ pub fn deep_overflow_walks(tree: &NodeTree) -> u64 {
     tree.deep_overflow.walks()
 }
 
+/// How many boxes the scroll ranges' kept walks have measured (#2054), in
+/// walks and in bringing their records up to date: a test reads it to see a
+/// change re-measure only the boxes it reached and the boxes above them.
+pub fn deep_overflow_measured(tree: &NodeTree) -> u64 {
+    tree.deep_overflow.measured()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::RinchDocument;
