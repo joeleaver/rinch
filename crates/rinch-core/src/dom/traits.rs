@@ -1583,6 +1583,27 @@ pub trait DomDocument {
     /// Equivalent to `element.scrollLeft = value` in the web DOM.
     fn set_scroll_left(&mut self, _node: NodeId, _scroll_left: f64) {}
 
+    /// Scroll an element to `left` / `top` (an axis given `None` stays),
+    /// moving as `behavior` says: `element.scrollTo({left, top, behavior})`
+    /// in the web DOM (#2291). `Auto` follows the element's computed
+    /// `scroll-behavior`, which is what [`Self::set_scroll_top`] and
+    /// [`Self::set_scroll_left`] do. The default ignores `behavior`.
+    fn scroll_to_with(
+        &mut self,
+        node: NodeId,
+        left: Option<f64>,
+        top: Option<f64>,
+        behavior: crate::dom::ScrollBehavior,
+    ) {
+        let _ = behavior;
+        if let Some(left) = left {
+            self.set_scroll_left(node, left);
+        }
+        if let Some(top) = top {
+            self.set_scroll_top(node, top);
+        }
+    }
+
     /// Get the total scrollable content height of an element.
     /// Equivalent to `element.scrollHeight` in the web DOM.
     fn scroll_height(&self, _node: NodeId) -> f64 {

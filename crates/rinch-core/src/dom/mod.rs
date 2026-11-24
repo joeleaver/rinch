@@ -214,6 +214,19 @@ pub fn has_render_scope() -> bool {
 // NodeId and NodeHandle
 // ============================================================================
 
+/// How a scroll write moves: CSSOM View's `ScrollBehavior` (#2291).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollBehavior {
+    /// As the element's computed `scroll-behavior` says (`auto` jumps,
+    /// `smooth` animates).
+    #[default]
+    Auto,
+    /// Animate, whatever the stylesheet says.
+    Smooth,
+    /// Jump, whatever the stylesheet says.
+    Instant,
+}
+
 /// Unique identifier for a DOM node: a slot **index** and a **generation**,
 /// packed into one `u64` on every target (issue #723).
 ///
@@ -1275,6 +1288,19 @@ impl NodeHandle {
     pub fn set_scroll_left(&self, scroll_left: f64) {
         if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_scroll_left(self.node_id, scroll_left);
+        }
+    }
+
+    /// Scroll this element to `left` / `top` (an axis given `None` stays
+    /// where it is), as `element.scrollTo({left, top, behavior})` does
+    /// (#2291). [`ScrollBehavior::Auto`] follows the element's computed
+    /// `scroll-behavior` (what [`Self::set_scroll_top`] does);
+    /// [`ScrollBehavior::Smooth`] animates and [`ScrollBehavior::Instant`]
+    /// jumps whatever the stylesheet says.
+    pub fn scroll_to(&self, left: Option<f64>, top: Option<f64>, behavior: ScrollBehavior) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut()
+                .scroll_to_with(self.node_id, left, top, behavior);
         }
     }
 

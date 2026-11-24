@@ -633,8 +633,10 @@ its content-box height (#1367): a caret in a scroller below the fold of a
 scrolling page was scrolled into its scroller and left off screen. Not
 modelled: the containing-block chain (an `absolute` box is walked through its
 DOM ancestors, so a scroller between it and its containing block is moved
-although it cannot move the box), and smooth scrolling (neither backend
-animates it). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
+although it cannot move the box), and `overflow: hidden` scrollers (above). A
+scroller whose `scroll-behavior` is `smooth` animates its part from the next
+frame (#2291; `docs/internals/pointer-drag-tooltips.md`, "Smooth programmatic
+scrolls"). Pins: `app/scroll_into_view_nested_842_tests.rs` (Chrome 156,
 two and three levels of padded, bordered scrollers in a scrolling page, both
 axes, a placed target, a scroller taller than the window, a fixed boundary,
 #1367's padded rows), `app/mod.rs` `scroll_into_view_tests` (transforms), and

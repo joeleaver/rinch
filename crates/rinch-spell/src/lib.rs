@@ -14,6 +14,10 @@
 //!   email addresses, words with digits, all-caps words, over-long words).
 //!   [`misspelled`] runs a checker over those ranges. A word in a script no
 //!   loaded dictionary writes in is never marked.
+//! - [`PlatformChecker`] implements it over the operating system's own
+//!   spellchecker: `NSSpellChecker` on macOS, the Spell Checking API
+//!   (`ISpellChecker`) on Windows. It is the default backend there, as in
+//!   Chrome ([`runtime::Backend`]); [`platform`] has the details.
 //! - [`PersonalDictionary`] holds the user's words in memory; the app loads
 //!   and saves it. Words ignored for the session are kept apart and never
 //!   persisted.
@@ -46,7 +50,9 @@
 
 mod hunspell;
 mod listeners;
+mod locale;
 mod personal;
+pub mod platform;
 pub mod runtime;
 mod segment;
 #[cfg(all(feature = "system-dictionaries", not(target_family = "wasm")))]
@@ -61,7 +67,9 @@ pub use hunspell::{CHROME_MAX_SUGGEST_LEN, DictionaryError, HunspellChecker, Hun
 /// `Script::Cyrillic`, …
 pub use icu_properties::props::Script;
 pub use listeners::ListenerId;
+pub use locale::normalize_locale;
 pub use personal::{PersonalDictionary, PersonalDictionaryChange};
+pub use platform::PlatformChecker;
 pub use segment::{CHROME_MAX_CHECKED_LEN, SkipRules, words};
 
 /// How many suggestions Chrome offers (`kMaxSuggestions` in
@@ -120,6 +128,24 @@ pub trait SpellChecker: Send + Sync {
         let _ = id;
         false
     }
+
+    /// Whether each of `words` is spelled correctly, in order: one answer per
+    /// word, as [`check`](Self::check) gives it. The checking thread asks in
+    /// batches, so a backend whose every call is costly (a platform engine
+    /// that must hop to another thread) can answer many words per hop. The
+    /// default asks [`check`](Self::check) for each.
+    fn check_batch(&self, words: &[&str]) -> Vec<bool> {
+        words.iter().map(|w| self.check(w)).collect()
+    }
+
+    /// Whether [`suggest`](Self::suggest) should run on the thread that wants
+    /// the suggestions (the UI thread, for the text context menu) rather than
+    /// on a background thread. `true` for an engine bound to the main thread
+    /// (macOS's `NSSpellChecker`), whose calls from elsewhere wait for the
+    /// main thread anyway. Default `false`.
+    fn suggest_on_calling_thread(&self) -> bool {
+        false
+    }
 }
 
 impl<T: SpellChecker + ?Sized> SpellChecker for std::sync::Arc<T> {
@@ -146,6 +172,12 @@ impl<T: SpellChecker + ?Sized> SpellChecker for std::sync::Arc<T> {
     }
     fn remove_change_listener(&self, id: ListenerId) -> bool {
         (**self).remove_change_listener(id)
+    }
+    fn check_batch(&self, words: &[&str]) -> Vec<bool> {
+        (**self).check_batch(words)
+    }
+    fn suggest_on_calling_thread(&self) -> bool {
+        (**self).suggest_on_calling_thread()
     }
 }
 
