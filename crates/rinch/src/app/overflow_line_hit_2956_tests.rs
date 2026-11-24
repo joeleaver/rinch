@@ -60,6 +60,52 @@ const CASES: &[(&str, &[Probe])] = &[
         "<div id=a style='box-sizing:border-box;height:30px;padding-top:20px'>two</div>",
         &[(5.0, 35.0, "a"), (200.0, 35.0, "-")],
     ),
+    // A line that starts left of its box (a negative `text-indent`; box
+    // 100..200, text from 40): the prune must take the lines' own bounds,
+    // not `0..width` from the content origin.
+    (
+        "<div id=b style='margin-left:100px;text-indent:-60px;height:20px;width:100px'>abcdef</div>",
+        &[(45.0, 10.0, "b"), (75.0, 10.0, "b"), (30.0, 10.0, "host")],
+    ),
+    // An rtl `nowrap` line wider than its box is aligned to the box's right
+    // edge and overflows to the left (box 200..240).
+    (
+        "<div id=c style='direction:rtl;width:40px;margin-left:200px;white-space:nowrap'>abcdefghij</div>",
+        &[
+            (190.0, 10.0, "c"),
+            (170.0, 10.0, "c"),
+            (100.0, 10.0, "host"),
+        ],
+    ),
+    // A clipping root the prune never skips (a stacking context holding a
+    // positioned box): its hidden second line is still not hit.
+    (
+        "<div id=a style='height:20px;overflow:hidden;position:relative;z-index:0'>one<br>two<span id=p style='position:absolute'>x</span></div>",
+        &[(5.0, 30.0, "-"), (5.0, 10.0, "a")],
+    ),
+    // Clipping one axis (`overflow-x: clip`) leaves the other's overflow
+    // drawn, and hit, also past an ancestor; the clipped axis's is neither.
+    (
+        "<div id=a style='height:20px;overflow-x:clip'>one<br>two</div>",
+        &[(5.0, 30.0, "a"), (200.0, 30.0, "-")],
+    ),
+    (
+        "<div id=o style='height:10px'><div id=a style='height:20px;overflow-x:clip'>one<br>two</div></div>",
+        &[(5.0, 30.0, "a")],
+    ),
+    (
+        "<div id=a style='width:20px;white-space:nowrap;overflow-x:clip'>abcdefgh</div>",
+        &[(40.0, 10.0, "host")],
+    ),
+    // `overflow-y: clip`, the same the other way round.
+    (
+        "<div id=a style='width:20px;white-space:nowrap;overflow-y:clip'>abcdefgh</div>",
+        &[(40.0, 10.0, "a"), (100.0, 10.0, "host")],
+    ),
+    (
+        "<div id=a style='height:20px;overflow-y:clip'>one<br>two</div>",
+        &[(5.0, 30.0, "-")],
+    ),
 ];
 
 fn document(markup: &str) -> (rinch_dom::RinchDocument, u64) {
@@ -113,10 +159,12 @@ fn name(doc: &rinch_dom::RinchDocument, host: u64, hit: Option<u64>) -> String {
 /// Mutants: the old bounds test (border box or inline padding only) — every
 /// `a`/`s` point over an overflowing line answers what is behind it;
 /// leaving the lines out of `flow_extent` — the same points are pruned
-/// before the bounds test is reached. (Accepting the line in a box that
-/// clips is not reachable here: a clipping box's flow extent is its own box,
-/// so the prune skips it first, and the `overflow: hidden` case pins the
-/// answer, not the guard.)
+/// before the bounds test is reached; the lines' extent taken as `0..width`
+/// from the content origin — the negative `text-indent` and rtl points are
+/// pruned; accepting a line in a box that clips (the guard dropped) — the
+/// stacking context's hidden line answers `a`; the guard on both axes at
+/// once — the `overflow-x: clip` box's line below it answers what is behind
+/// it.
 #[test]
 fn text_on_an_overflowing_line_is_hit_as_chrome_158_hits_it() {
     let mut wrong = Vec::new();

@@ -115,6 +115,22 @@ fn random_style(r: &mut Rng, depth: usize) -> String {
         5 => s += "overflow-y: clip; overflow-x: visible; ",
         _ => {}
     }
+    // Lines placed off `0..width` from the content origin (#2956 review): a
+    // negative `text-indent` starts one left of it, an rtl `nowrap` line
+    // wider than its box overflows to the left, and the prune's flow extent
+    // must still reach them. Drawn from a copy of the stream, which `r`
+    // does not advance past, so every other choice — every document this
+    // generator made before — stays as it was, and these properties are
+    // added to them. (Perturbing the stream itself turns up an unrelated
+    // pruned/unpruned divergence, #3012.)
+    let mut l = Rng(r.0.rotate_left(29) | 1);
+    match l.below(10) {
+        0 => s += &format!("text-indent: {}px; ", l.below(120) as i64 - 80),
+        1 => s += "direction: rtl; ",
+        2 => s += "white-space: nowrap; ",
+        3 => s += "direction: rtl; white-space: nowrap; ",
+        _ => {}
+    }
     match r.below(14) {
         0 => {
             s += &format!(
@@ -1076,13 +1092,12 @@ fn reference_hit_test_node(
         && !clip_y
         && super::inline_box_outside(tree, node, x - nx, y - ny);
     // Text on a line that overflows the root's box (#2956): Chrome 158 hits
-    // the line's text, as it draws it, wherever the line is. Not a root that
-    // clips, whose overflow is not drawn. `flow_extent` holds the lines, so
-    // the prune reaches them.
+    // the line's text, as it draws it, wherever the line is, except where
+    // the root clips it (per axis: `check_children`). `flow_extent` holds
+    // the lines on the open axes, so the prune reaches them.
     let on_overflowing_line = !point_in_bounds
         && !in_inline_box
-        && !clip_x
-        && !clip_y
+        && check_children
         && node.text_layout.is_some()
         && super::visible_text_at(tree, node, x - nx, y - ny);
     if clipped.is_some()

@@ -12589,6 +12589,7 @@ impl RinchDocument {
         let max_width = max_width.unwrap_or(f32::INFINITY);
         let align_width = align_width.map_or(f32::INFINITY, |a| a.width);
         let glyph_overflow = InlineLayout::glyph_overflow_of(&text_layout, max_width, align_width);
+        let lines_x_reach = InlineLayout::lines_x_reach_of(&text_layout);
         (
             InlineLayout {
                 layout: text_layout,
@@ -12617,6 +12618,7 @@ impl RinchDocument {
                 clamp_continues: nodes[root_id].clamp_lines.is_some_and(|(_, more)| more),
                 float_bands: floats.filter(|f| !f.is_empty()).cloned(),
                 glyph_overflow,
+                lines_x_reach,
                 bidi_control_ranges,
             },
             font_family_resolves.get(),
