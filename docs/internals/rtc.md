@@ -170,6 +170,23 @@ There are no cargo features for the backends: the target picks one.
     candidates. The URL is baked in at build time as `RINCH_RTC_TEST_URL`.
     With `RINCH_RTC_REQUIRE_LIVE=1`, the test fails rather than skips when
     the URL is missing.
+    - **The `tick` channel loses messages, and the test allows for it
+      (#3014).** `tick` is unordered with no retransmits, so a datagram lost
+      on the way takes its message with it. Chrome's 200 kB `control` burst
+      overflows lite_echo's UDP receive buffer (a debug str0m reads one
+      datagram per loop): the kernel's per-socket drop count was 2 to 6 per
+      run locally, and the three ticks sent beside the burst failed to come
+      back in 2 runs of 10 (CI: batches #2971 and #3004). The test now sends
+      each tick after the burst and resends it every 250 ms until its echo
+      arrives, as a game would.
+    - **A channel can be open while the peer still says `Connecting`**: the
+      browser fires the channel's `open` and `connectionstatechange` as
+      separate tasks in either order. The test waits for both.
+    - Every wait is wall-clock (`performance.now()`), 10 s each, and a timeout
+      reports the elapsed time, the peer and channel states, and lite_echo's
+      `GET /stats`: what the newest peer received per channel, its datagram
+      counts, str0m's errors and the kernel's drop count for its socket. A
+      passing run logs each wait's time (`--nocapture` shows them).
   - Locally, run Firefox through Playwright's bundled build against
     `wasm-bindgen-test-runner`'s interactive page (`NO_HEADLESS=1`).
 
