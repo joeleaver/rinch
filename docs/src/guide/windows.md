@@ -2068,7 +2068,12 @@ When the app ends is `App::exit_when`:
 `rinch::exit()` ends the app under any of them. It can be called from any thread, and
 before the app runs: an exit asked for before `App::run` (by a thread that watches for
 `SIGTERM`, started first) is kept, and the run then returns at once, `Ok(())` from
-`App::try_run`, without connecting to the display or opening a window. It takes a lock, so
+`App::try_run`, without connecting to the display or opening a window. One that arrives
+while the run is connecting to the display ends it as soon as the app's component is
+mounted, before any window is shown. This holds in an app that made a `RinchContext`
+first (rendered offscreen, say), whether the exit came before the context or after it. One
+asked for while a run is going ends that run; what it leaves unanswered when it ends is
+dropped with it, so a second `exit()` racing the first does not end a later run. It takes a lock, so
 it is not async-signal-safe: never call it from inside a signal handler itself, but from a
 thread the handler wakes (signal-hook's `iterator::Signals`, for instance).
 

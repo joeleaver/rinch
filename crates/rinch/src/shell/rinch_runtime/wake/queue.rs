@@ -22,14 +22,18 @@ pub(crate) enum Drainer {
     /// [`RinchNativeEvent::Exit`] among them makes the run return before it
     /// opens a window ([`NativeEventQueue::take_exit`]).
     Coming,
-    /// A desktop runtime was made (and possibly has ended since): it drains
-    /// the queue at each wake. Never left: a request sent after the runtime
-    /// is gone waits for the next one, as it always has.
+    /// A desktop runtime is running: it drains the queue at each wake. Left
+    /// when its run ends ([`NativeEventQueue::note_run_ended`]).
     Runtime,
-    /// None was made and a [`RinchContext`](crate::embed::RinchContext) was:
-    /// an embed host, whose own loop drains nothing here. Its contexts'
-    /// requests are their host's (#2801), and one from outside any context is
-    /// dropped. A runtime made later still takes over.
+    /// No runtime is running and a [`RinchContext`](crate::embed::RinchContext)
+    /// was made: an embed host, whose own loop drains nothing here. Its
+    /// contexts' requests are their host's (#2801), and one from outside any
+    /// context is dropped, except [`RinchNativeEvent::Exit`]: one exit is
+    /// kept, for a desktop runtime the process may still run (an app that
+    /// renders offscreen first, then calls [`App::run`](crate::App::run)),
+    /// which takes it as [`Drainer::Coming`]'s runtime does (#3015). In a
+    /// process that never runs one it is one event, never drained and never
+    /// acted on: only a run's start looks for it.
     #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
     EmbedHost,
 }
@@ -66,6 +70,10 @@ pub(crate) struct NativeEventQueue {
     drainer: Drainer,
     /// Whether a request past [`KEPT_BEFORE_RUN`] was dropped and warned of.
     overflowed: bool,
+    /// Whether a `RinchContext` was ever made: what the queue returns to when
+    /// a run ends ([`Drainer::EmbedHost`] if so, else [`Drainer::Coming`]).
+    #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+    context_made: bool,
 }
 
 impl NativeEventQueue {
@@ -82,21 +90,28 @@ impl NativeEventQueue {
             rerender_pending: false,
             drainer,
             overflowed: false,
+            #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+            context_made: false,
         }
     }
 
     /// Queue `event` for the window `to` names. Returns whether it was
     /// added, and so whether a wake is owed: `false` for a `ReRender` that
     /// coalesced into one already queued, and for an event nothing will
-    /// drain (`Drainer::EmbedHost`, or past [`KEPT_BEFORE_RUN`] before a
-    /// runtime, or a second exit kept before one).
+    /// drain (`Drainer::EmbedHost`'s requests but one exit, or past
+    /// [`KEPT_BEFORE_RUN`] before a runtime, or a second exit kept before
+    /// one).
     pub(crate) fn push(&mut self, to: EventFor, event: RinchNativeEvent) -> bool {
         match self.drainer {
             Drainer::Runtime => {}
             #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
             Drainer::EmbedHost => {
-                tracing::debug!("no desktop runtime to take {event:?}: dropped");
-                return false;
+                // The exit is kept for a runtime the process may still run
+                // (#3015); nothing else from outside a context is (#2801).
+                if !matches!(event, RinchNativeEvent::Exit) || self.holds_exit() {
+                    tracing::debug!("no desktop runtime to take {event:?}: dropped");
+                    return false;
+                }
             }
             Drainer::Coming => {
                 if matches!(event, RinchNativeEvent::Exit) {
@@ -142,8 +157,10 @@ impl NativeEventQueue {
             .any(|(_, e)| matches!(e, RinchNativeEvent::Exit))
     }
 
+    /// Empty the queue and return its memory: up to [`KEPT_BEFORE_RUN`]
+    /// events kept before a run, or what a long run's bursts grew it to.
     fn clear(&mut self) {
-        self.events.clear();
+        self.events = VecDeque::new();
         self.rerender_pending = false;
     }
 
@@ -153,21 +170,51 @@ impl NativeEventQueue {
         self.drainer = Drainer::Runtime;
     }
 
-    /// A `RinchContext` was made. With no runtime made, the process is an
-    /// embed host: what was kept for a runtime is dropped, and so is every
-    /// later request from outside a context.
+    /// A `RinchContext` was made. With no runtime running, the process is an
+    /// embed host: what was kept for a runtime is dropped but an exit, and so
+    /// is every later request from outside a context but one exit
+    /// ([`Drainer::EmbedHost`]).
     #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
     pub(super) fn note_embed_host(&mut self) {
+        self.context_made = true;
         if self.drainer == Drainer::Coming {
-            if !self.events.is_empty() {
+            let exit = self.holds_exit();
+            let dropped = self.events.len() - usize::from(exit);
+            if dropped > 0 {
                 tracing::debug!(
-                    "an embedded RinchContext and no desktop runtime: {} kept request(s) dropped",
-                    self.events.len()
+                    "an embedded RinchContext and no desktop runtime: {dropped} kept request(s) dropped"
                 );
             }
             self.drainer = Drainer::EmbedHost;
             self.clear();
+            if exit {
+                self.events
+                    .push_back((EventFor::Sender(None), RinchNativeEvent::Exit));
+            }
         }
+    }
+
+    /// The desktop runtime's run ended (its loop returned, or it ended before
+    /// the loop for an exit): the queue is as it was before any run.
+    ///
+    /// What is still queued was sent while that runtime existed, so it is
+    /// that runtime's, and it is dropped with it: its windows are gone, and
+    /// an exit among them (a second `exit()` racing the first, or one sent as
+    /// the loop was stopping) asked to end the run that has just ended. It
+    /// must not end the next run before it starts. What is sent from here on
+    /// is for the next run, kept as before the first one (an exit from a
+    /// signal-watching thread between two runs ends the second), and bounded
+    /// by [`KEPT_BEFORE_RUN`] again rather than queued for a runtime that
+    /// will never drain it.
+    pub(super) fn note_run_ended(&mut self) {
+        self.clear();
+        self.overflowed = false;
+        #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+        if self.context_made {
+            self.drainer = Drainer::EmbedHost;
+            return;
+        }
+        self.drainer = Drainer::Coming;
     }
 
     /// Whether an exit is waiting for a run that has not begun. When one is,

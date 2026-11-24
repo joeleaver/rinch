@@ -47,11 +47,53 @@ pub(crate) fn note_embed_host() {
 
 /// Whether [`exit`](crate::exit) was asked for before the run that is
 /// starting (#3015): the run then returns `Ok(())` without opening a
-/// window. Called at the top of [`App::try_run`](crate::App::try_run) and
-/// again just before the event loop runs, which covers an exit sent from
-/// another thread while the display was being connected to.
+/// window. Called at the top of [`App::try_run`](crate::App::try_run);
+/// [`run_unless_exit_asked`] looks again just before the event loop runs,
+/// which covers an exit sent from another thread while the display was being
+/// connected to.
 pub(crate) fn take_exit_before_run() -> bool {
     NATIVE_EVENT_QUEUE.lock().unwrap().take_exit()
+}
+
+/// Run the event loop (`run`, given the runtime it runs) unless an exit was
+/// asked for since [`App::try_run`](crate::App::try_run) looked — sent from
+/// another thread while the display was being connected to and the app
+/// mounted, #3015 — in which case the runtime is dropped and the run ends
+/// with `Ok(())` before any window is made. Either way, once the run has
+/// ended the queue is as it was before any run
+/// ([`NativeEventQueue::note_run_ended`]): what the ended runtime left in it
+/// is dropped, and what is sent after it is kept for the next run.
+pub(super) fn run_unless_exit_asked<R>(
+    runtime: R,
+    run: impl FnOnce(R) -> Result<(), crate::RunError>,
+) -> Result<(), crate::RunError> {
+    run_unless_exit_asked_in(&NATIVE_EVENT_QUEUE, runtime, run)
+}
+
+/// [`run_unless_exit_asked`] on `queue`, which its unit tests make their own.
+fn run_unless_exit_asked_in<R>(
+    queue: &Mutex<NativeEventQueue>,
+    runtime: R,
+    run: impl FnOnce(R) -> Result<(), crate::RunError>,
+) -> Result<(), crate::RunError> {
+    /// Notes the run's end however it ends, a panic out of the loop
+    /// included, after the runtime is dropped (its shutdown's own requests
+    /// are the ended run's too).
+    struct RunEnds<'a>(&'a Mutex<NativeEventQueue>);
+    impl Drop for RunEnds<'_> {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .note_run_ended();
+        }
+    }
+    let _ends = RunEnds(queue);
+    if queue.lock().unwrap().take_exit() {
+        drop(runtime);
+        return Ok(());
+    }
+    run(runtime)
 }
 
 /// How many native events are queued for the desktop runtime, for a test

@@ -705,7 +705,11 @@ what will drain the queue (`Drainer`, #3015): `RinchContext::new` calls
 where no `RinchRuntime` was made yet that makes it an embed host
 (`Drainer::EmbedHost`): what was kept for a runtime is dropped, and so is
 every later request from outside a context, with a `tracing::debug!`, since
-nothing would drain it. A runtime made later still takes over
+nothing would drain it, except one `Exit`: an app may render offscreen through
+a context and then run, and an exit asked for before or after the context
+must still end that run (#3015). The queue holds at most that one exit, so an
+embed-only process cannot grow it, and nothing acts on it but a run's start
+(`take_exit`): no runtime drains it and no wake is sent. A runtime made later still takes over
 (`note_runtime_made`, from `RinchRuntime::with_app`). Before either, events
 are kept for the runtime to come (see `app-and-windows.md`, "An exit before
 the run"). The crate's own unit tests drive the queue with no runtime, so its

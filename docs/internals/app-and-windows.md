@@ -1939,14 +1939,21 @@ process; one process can also open both as windows, #2416), checked in a nested
   kept `Exit` empties the queue and the run returns `Ok(())` before the display is
   connected to. The entry point (`try_run_rinch_with_window_props_and_menu`) looks
   again just before `run_app`, after `note_runtime_made`, for an exit another thread
-  sent while the display was connected to; one sent after that is the running loop's,
-  so a window may already be open. The drainer state lives under the queue's lock,
+  sent while the display was connected to (`wake::run_unless_exit_asked`: the
+  component is mounted by then, no window is made); one sent after that is the running
+  loop's, so a window may already be open. When the run ends (its loop returns, or it
+  ends at that second look) `note_run_ended` drops what the runtime left queued (a
+  second exit sent as the loop stopped must not end the next run) and returns the
+  drainer to `Coming`, or `EmbedHost` if a context was ever made: what is sent after a
+  run is kept for the next, bounded again. Emptying the queue replaces its `VecDeque`
+  with a fresh one, so a cleared queue holds no memory. The drainer state lives under the queue's lock,
   so a send racing the runtime's construction is kept or queued, never lost. #2801
   had dropped every event sent with no runtime made, which lost an exit from a
   signal-watching thread started before the run (deskrinch: the app ran on until
   killed). What is dropped now is an embed host's (a `RinchContext` made and no
-  runtime): see `game-engine.md`. Pins: `wake/queue/tests.rs`,
-  `rinch/tests/exit_before_run_3015.rs` (its own process).
+  runtime), but never its exit: see `game-engine.md`. Pins: `wake/queue/tests.rs`,
+  `wake/tests.rs` (the second look), `rinch/tests/exit_before_run_3015.rs` and
+  `exit_before_run_embed_3015.rs` (each its own process).
 - **Each turn,** every open window gets its `AboutToWait` (`about_to_wait_others`),
   so a process-wide change (a theme, a shared signal) restyles every window in the
   turn after it.

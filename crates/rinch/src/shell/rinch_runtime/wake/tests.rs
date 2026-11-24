@@ -370,3 +370,83 @@ fn an_event_carries_the_document_that_sent_it() {
         (EventFor::Window(7), RinchNativeEvent::CloseWindow)
     ));
 }
+
+/// The second look for an exit (#3015), as `try_run_rinch_with_window_props_and_menu`
+/// makes it: an exit sent from another thread after `App::try_run` looked
+/// and while the runtime was made (the display connected to, the app
+/// mounted) ends the run before the event loop runs, with `Ok(())`, the
+/// runtime dropped; and the run's end leaves the queue as before any run.
+#[test]
+fn an_exit_while_the_display_connects_ends_the_run_before_the_loop() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Runtime(Arc<AtomicBool>);
+    impl Drop for Runtime {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let queue = Arc::new(std::sync::Mutex::new(NativeEventQueue::with_drainer(
+        Drainer::Coming,
+    )));
+    // `App::try_run`'s first look: nothing asked yet.
+    assert!(!queue.lock().unwrap().take_exit());
+    // `RinchRuntime::with_app`, while the display is connected to.
+    queue.lock().unwrap().note_runtime();
+    // The signal-watching thread's exit, in the window between the looks.
+    let sender = Arc::clone(&queue);
+    std::thread::spawn(move || {
+        sender
+            .lock()
+            .unwrap()
+            .push(EventFor::Sender(None), RinchNativeEvent::Exit);
+    })
+    .join()
+    .unwrap();
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut looped = false;
+    let result = run_unless_exit_asked_in(&queue, Runtime(Arc::clone(&dropped)), |_| {
+        looped = true;
+        Ok(())
+    });
+    assert!(result.is_ok(), "{result:?}");
+    assert!(!looped, "the event loop ran for a run asked to exit");
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "the runtime was not dropped"
+    );
+    let q = queue.lock().unwrap();
+    assert!(q.is_empty());
+    assert_eq!(q.drainer(), Drainer::Coming, "the run's end was not noted");
+}
+
+/// Without an exit the loop runs, its result is the run's, and what the
+/// runtime left queued when its loop ended (a second exit racing the first)
+/// ends with it rather than ending the next run (#3015).
+#[test]
+fn without_an_exit_the_loop_runs_and_its_leftovers_end_with_it() {
+    let queue = std::sync::Mutex::new(NativeEventQueue::with_drainer(Drainer::Coming));
+    queue.lock().unwrap().note_runtime();
+    let result = run_unless_exit_asked_in(&queue, (), |()| {
+        let mut q = queue.lock().unwrap();
+        q.push(EventFor::Sender(None), RinchNativeEvent::Exit);
+        q.push(EventFor::Sender(None), RinchNativeEvent::Exit);
+        let _ = q.drain().len();
+        // The second exit, sent as the loop stopped.
+        q.push(EventFor::Sender(None), RinchNativeEvent::Exit);
+        Err(crate::RunError::DisplayLost("gone".into()))
+    });
+    assert!(
+        matches!(result, Err(crate::RunError::DisplayLost(_))),
+        "{result:?}"
+    );
+    let mut q = queue.lock().unwrap();
+    assert_eq!(q.drainer(), Drainer::Coming);
+    assert!(
+        !q.take_exit(),
+        "the ended run's exit would end the next run"
+    );
+}
