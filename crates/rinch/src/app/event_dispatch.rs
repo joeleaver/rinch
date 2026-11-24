@@ -4403,6 +4403,10 @@ impl RinchApp {
             );
             (painter.pixels().to_vec(), sw, sh)
         };
+        // What the ghost covers wherever it is drawn: its damage (#173).
+        #[cfg(software_shell)]
+        let snapshot_bounds =
+            rinch_dom::paint::paint_subtree_bounds(&doc.borrow().tree, node_id, scale_factor);
 
         self.active_dnd = Some(ActiveDrag {
             node_id,
@@ -4414,6 +4418,8 @@ impl RinchApp {
             snapshot_width,
             #[cfg(software_shell)]
             snapshot_height,
+            #[cfg(software_shell)]
+            snapshot_bounds,
             anchor,
             cursor,
             over_target: None,

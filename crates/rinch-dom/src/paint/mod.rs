@@ -4392,6 +4392,25 @@ pub fn paint_subtree(
     fold_span_line_visits(tree);
 }
 
+/// Where [`paint_subtree`] can draw for the same `root_node_id` and `scale`:
+/// device pixels around the scene origin its border box is put at, every
+/// descendant, shadow and outline included, and its own transform applied.
+/// `None` when the walk cannot bound what the subtree paints.
+///
+/// A drag ghost is the scene `paint_subtree` records, appended at the
+/// pointer: the frame that moves it on or takes it away must repaint every
+/// pixel it covered, and its box alone misses an outline, a shadow or the
+/// antialiased edge at a fractional offset.
+pub fn paint_subtree_bounds(tree: &NodeTree, root_node_id: RawNodeId, scale: f64) -> Option<Rect> {
+    let node = tree.get(root_node_id)?;
+    let bounds = opacity_layer_bounds(tree, root_node_id, scale, 0.0, 0.0);
+    if bounds == UNBOUNDED {
+        return None;
+    }
+    let transform = compose_node_transform(node, 0.0, 0.0, scale, Affine::IDENTITY);
+    Some(transform.transform_rect_bbox(bounds))
+}
+
 /// Add the inline-ink walks' (span, line) visits made on this thread since
 /// the last fold — by this paint, and by the damage computed for it — to
 /// `tree`'s `inline_span_line_visits` counter.
