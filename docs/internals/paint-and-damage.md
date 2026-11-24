@@ -9,21 +9,37 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 ### Rendering Backends
 
 Rinch has two rendering backends. Every desktop build carries the software one;
-the `gpu-renderer` feature (which `gpu` implies) adds the GPU one, and the window picks between them at run time:
+the `gpu-renderer` feature (which `gpu` implies) adds the GPU one, and the window picks between them at run time.
+`gpu` is one of `rinch`'s default features (`default = ["desktop", "gpu"]`, 2026-11-24); the workspace dependency
+is declared `default-features = false`, so a workspace member names `gpu` to get it:
 
 | Backend | Feature | Renderer | Presentation |
 |---------|---------|----------|--------------|
-| **GPU** | `"gpu"` | Vello + wgpu | GPU compositing |
+| **GPU** | `"gpu"` (a default) | Vello + wgpu | GPU compositing |
 | **Software** | (always on desktop) | tiny-skia | softbuffer |
 
 Set in `Cargo.toml`:
 ```toml
 # GPU, with software as the fallback and on request:
 rinch = { workspace = true, features = ["desktop", "gpu"] }
+rinch = { version = "…" }  # outside the workspace: the defaults
 
 # Software only:
 rinch = { workspace = true, features = ["desktop"] }
+rinch = { version = "…", default-features = false, features = ["desktop"] }
 ```
+
+A software-only build is the opt-out for a small tool: it leaves out the GPU
+shell, `rinch-renderer`, tokio and the wgpu code only the GPU renderer reaches
+(measured 2026-11-24 on `hello-rinch-dom`, release, stripped: 31.4 MB against
+39.3 MB, and about a third more release build time), and opens no GPU device at
+run time. It still compiles wgpu and Vello: `rinch-dom` depends on `vello`
+unconditionally (its `Scene` is the display list), and Vello's default
+features bring wgpu. A GPU build stays
+off the GPU with `RINCH_RENDERER=software|cpu` or `App::renderer(Renderer::Software)`.
+CI covers both: the software-only `rinch` lines say `--no-default-features`
+(`.github/workflows/ci.yml`: the `feature-gated` test shard, the crate-scoped
+clippy step, `check-macos`), and `--workspace` and `test-gpu` run the GPU half.
 
 On a `gpu-renderer` build, `App::renderer(Renderer)` chooses (`shell/renderer.rs`):
 `Renderer::Auto` (the default) creates the GPU renderer when the window opens

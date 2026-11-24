@@ -2303,20 +2303,35 @@ A debug build is several times slower: measure popups in release.
 
 ## Rendering Backends
 
-Rinch has two rendering backends. Every `desktop` (or `windowing`) build carries the software one; the `gpu` (or `gpu-renderer`) feature adds the GPU one beside it, and such a build chooses between them **at run time**, when the window opens.
+Rinch has two rendering backends. Every `desktop` (or `windowing`) build carries the software one; the `gpu` (or `gpu-renderer`) feature adds the GPU one beside it, and such a build chooses between them **at run time**, when the window opens. **`gpu` is one of rinch's default features**, so a plain `rinch = "…"` dependency carries both renderers and presents on the GPU, falling back to software when the GPU will not start.
 
-| Build | Renderers it carries |
-|-------|----------------------|
-| `features = ["desktop"]` | Software only |
-| `features = ["desktop", "gpu"]` | GPU and software, chosen at run time |
-| `features = ["windowing"]` | Software only, no native menus |
-| `features = ["windowing", "gpu-renderer"]` | GPU and software, chosen at run time, no native menus |
+| Dependency | Renderers it carries |
+|------------|----------------------|
+| `rinch = "…"` (the defaults: `desktop` and `gpu`) | GPU and software, chosen at run time |
+| `default-features = false, features = ["desktop"]` | Software only |
+| `default-features = false, features = ["windowing", "gpu-renderer"]` | GPU and software, chosen at run time, no native menus |
+| `default-features = false, features = ["windowing"]` | Software only, no native menus |
+
+A software-only build has to turn the defaults off: `features = ["desktop"]`
+alone adds to the defaults, and still carries the GPU renderer. Inside this
+repository's workspace the `rinch` dependency is already declared with
+`default-features = false`, so a member that writes `workspace = true,
+features = ["desktop"]` is software only, and names `"gpu"` to get the GPU
+renderer.
+
+**Why leave the GPU renderer out.** A small tool (a tray helper, a dialog, a
+panel) gains little from it and pays for it: it makes a release binary about
+8 MB larger (31 MB against 39 MB, stripped, for a hello-world window) and the
+build longer, and at run time opening a GPU device costs startup time and GPU
+and driver memory that the software renderer does not. Without rebuilding, `RINCH_RENDERER=software` or
+`App::renderer(Renderer::Software)` keeps a GPU build off the GPU (below), but
+the GPU renderer is still compiled in.
 
 `windowing` is `desktop` without the native menus, and `gpu-renderer` is the
 GPU renderer on it; `gpu` is `desktop` and `gpu-renderer` together (see
 [Menus → Without native menus](menus.md#without-native-menus)).
 
-### GPU (`features = ["gpu"]`)
+### GPU (`features = ["gpu"]`, the default)
 
 Windows are rendered using Vello, a GPU-accelerated 2D graphics library via wgpu. This provides:
 

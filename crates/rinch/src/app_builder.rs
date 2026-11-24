@@ -511,9 +511,9 @@ where
     ///
     /// [`Renderer::Auto`](crate::Renderer::Auto), the default, presents on the
     /// GPU when the build has the GPU renderer (`gpu-renderer`, which `gpu`
-    /// implies) and the GPU starts, and falls
-    /// back to the software renderer (with a warning in the log) when it does
-    /// not. A software adapter (a CPU Vulkan driver such as lavapipe, or
+    /// implies; `gpu` is one of rinch's default features) and the GPU starts,
+    /// and falls back to the software renderer (with a warning in the log)
+    /// when it does not. A software adapter (a CPU Vulkan driver such as lavapipe, or
     /// Windows' WARP) counts as a GPU that does not start: rinch's own
     /// software renderer is cheaper, so `Auto` takes it, and GPU frames and
     /// `gpu_handle` are then unavailable.
@@ -522,6 +522,13 @@ where
     /// fall back. The `RINCH_RENDERER` environment variable (`auto`, `gpu`,
     /// `software` or `cpu`) overrides this, so a user can force a renderer
     /// without a rebuild.
+    ///
+    /// To leave the GPU renderer out of the build altogether, depend on rinch
+    /// with `default-features = false, features = ["desktop"]` (or
+    /// `["windowing"]`): the binary is smaller, the build shorter, and the app
+    /// never opens a GPU device or holds its memory, which suits a small tool.
+    /// Such a build has only the software renderer, whatever this asks for;
+    /// `Renderer::Gpu` there logs a warning.
     ///
     /// An app that configures the GPU device itself
     /// ([`gpu_config`](App::gpu_config), [`external_gpu`](App::external_gpu))

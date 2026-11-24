@@ -41,10 +41,21 @@ rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop",
 - `"native-menus"` — the OS menu bar (Windows, macOS) and the menus a tray shows, through muda; implies `"windowing"`. On Linux muda links GTK 3 and libxdo.
 - `"components"` — the 60+ component library (Button, TextInput, Modal, etc.).
 - `"theme"` — CSS variable generation, color palettes, dark mode. Auto-enabled by `"components"`.
-- `"gpu"` — adds GPU rendering via Vello/wgpu beside the software renderer; the window uses the GPU and falls back to software when it will not start or is only a software driver such as lavapipe (see [Rendering Backends](windows.md#rendering-backends)). Optional. It is `"desktop"` and `"gpu-renderer"` together.
+- `"gpu"` — adds GPU rendering via Vello/wgpu beside the software renderer; the window uses the GPU and falls back to software when it will not start or is only a software driver such as lavapipe (see [Rendering Backends](windows.md#rendering-backends)). It is `"desktop"` and `"gpu-renderer"` together, and **on by default**: the dependency above has it.
 - `"gpu-renderer"` — the same GPU renderer on `"windowing"` alone, with no native menus. Optional.
 - `"clipboard"` — clipboard read/write. Optional.
 - `"file-dialogs"` — native open/save dialogs. Optional.
+
+`desktop` and `gpu` are rinch's default features. For a software-only build,
+which is smaller, builds faster and opens no GPU device (a good fit for a small
+tool), turn the defaults off and name `desktop` yourself:
+
+```toml
+rinch = { git = "https://github.com/joeleaver/rinch.git", default-features = false, features = ["desktop", "components", "theme"] }
+```
+
+A GPU build can also be kept off the GPU at run time, with
+`RINCH_RENDERER=software` or `App::renderer(Renderer::Software)`.
 
 **No `[patch]` lines at all.** rinch depends on crates.io wgpu 30, on Vello
 0.11 from `joeleaver/vello-fork` and on winit 0.31.0-beta.4 from

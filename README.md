@@ -99,7 +99,7 @@ rsx! {
 rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "components", "theme"] }
 ```
 
-Add `"gpu"` for GPU rendering, or leave it off for software rendering (no GPU required — works in CI, containers, SSH sessions, your grandma's laptop).
+GPU rendering (`"gpu"`) is a default feature: the window presents on the GPU and falls back to software rendering when the GPU will not start. For a software-only build (no GPU required, a smaller binary and a shorter build: works in CI, containers, SSH sessions, your grandma's laptop), add `default-features = false` and keep `"desktop"` in the list.
 
 No `[patch]` lines are needed at all: delete any old winit, dpi or wgpu-fork ones from your `[patch.crates-io]`. Use `rinch::wgpu` and `rinch::vello` instead of your own `wgpu`/`vello` dependencies; add `wgpu = "30"` only to turn on an extra feature.
 
