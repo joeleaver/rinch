@@ -415,13 +415,20 @@ fn compute_damage_impl(
         // walked, which is most of what a reflow's off-window rows cost
         // (#2948's review). Only for a box with a rect of its own: a box-less
         // node and a split inline name other boxes' rects below.
+        // The box and its snapped self (#2368), for both the off-surface test
+        // and the rect added below; both ask only of a box with an area.
+        let own_box = if w > 0.0 && h > 0.0 {
+            pixel_snap::box_reach(ax, ay, w, h)
+        } else {
+            Rect::ZERO
+        };
         if w > 0.0 && h > 0.0 && !node.is_split_inline() {
             let m = margin + spread.get();
             let surface = Rect::new(-m, -m, viewport_w + m, viewport_h + m);
             let off = |r: Rect| {
                 r.x1 <= surface.x0 || r.y1 <= surface.y0 || r.x0 >= surface.x1 || r.y0 >= surface.y1
             };
-            let now = transform.transform_rect_bbox(ink.grow(pixel_snap::box_reach(ax, ay, w, h)));
+            let now = transform.transform_rect_bbox(ink.grow(own_box));
             if off(now) && painted_rect_with(tree, node_id, scale, ink).is_none_or(off) {
                 continue;
             }
@@ -439,7 +446,7 @@ fn compute_damage_impl(
         if w > 0.0
             && h > 0.0
             && add(
-                transform.transform_rect_bbox(ink.grow(pixel_snap::box_reach(ax, ay, w, h))),
+                transform.transform_rect_bbox(ink.grow(own_box)),
                 clip_now(node_id),
             )
         {
