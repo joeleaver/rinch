@@ -15,10 +15,21 @@ pub fn is_raw_css_color(color: &str) -> bool {
 /// [`rinch_theme::contrast_text`] of it (`white` or `black`; `white` for a
 /// colour it cannot read, such as `hsl(…)`).
 pub fn contrast_for(color: &str) -> String {
+    contrast_value(color, &format!("--rinch-color-{color}"), None)
+}
+
+/// The text colour that reads on `color`'s solid fill: the one rule behind
+/// [`contrast_for`] and [`ColorTokens::contrast`] (#3020). For a raw CSS
+/// colour it is [`rinch_theme::contrast_text`] of it and `family` is unused;
+/// for a name it is the `{family}-contrast` token, with `fallback` as the
+/// `var()` fallback when one is given.
+fn contrast_value(color: &str, family: &str, fallback: Option<&str>) -> String {
     if is_raw_css_color(color) {
         rinch_theme::contrast_text(color).to_string()
+    } else if let Some(fallback) = fallback {
+        format!("var({family}-contrast, {fallback})")
     } else {
-        format!("var(--rinch-color-{color}-contrast)")
+        format!("var({family}-contrast)")
     }
 }
 
@@ -56,7 +67,8 @@ pub fn accent_vars(prefix: &str, color: &str) -> String {
 /// - a raw CSS colour ([`is_raw_css_color`]) is the solid colour, with its
 ///   light tint mixed from it, the colour itself as the text on the tint,
 ///   and [`rinch_theme::contrast_text`] of it as the text on the solid colour;
-/// - `"primary"` reads the `--rinch-primary-color…` tokens;
+/// - `"primary"` reads `--rinch-primary-color` and its `-light…` and
+///   `-contrast` tokens;
 /// - any other name reads `--rinch-color-{name}-6`,
 ///   `--rinch-color-{name}-light…` and `--rinch-color-{name}-contrast`, so a
 ///   palette name and an app's own token family named the same way both work.
@@ -72,14 +84,22 @@ pub struct ColorTokens {
     pub light_strong: String,
     /// Body text on the `light` background.
     pub light_text: String,
-    /// Text on the solid colour (#2208): the theme's contrast token for a
-    /// name, falling back to `white` where the family has none, or `white`
-    /// / `black` computed from a raw colour.
+    /// Text on the solid colour (#2208): for a name, its family's contrast
+    /// token with `white` as the `var()` fallback for a family that has
+    /// none (`var(--rinch-color-{name}-contrast, white)`); for a raw colour,
+    /// `white` or `black` computed from it, as [`contrast_for`] does.
     pub contrast: String,
 }
 
 /// [`ColorTokens`] for a non-empty `color` prop value.
 pub fn color_tokens(color: &str) -> ColorTokens {
+    // The token family a name reads (unused for a raw colour).
+    let prefix = if color == "primary" {
+        "--rinch-primary-color".to_string()
+    } else {
+        format!("--rinch-color-{color}")
+    };
+    let contrast = contrast_value(color, &prefix, Some("white"));
     if is_raw_css_color(color) {
         ColorTokens {
             base: color.to_string(),
@@ -87,14 +107,9 @@ pub fn color_tokens(color: &str) -> ColorTokens {
             light_color: color.to_string(),
             light_strong: color.to_string(),
             light_text: color.to_string(),
-            contrast: rinch_theme::contrast_text(color).to_string(),
+            contrast,
         }
     } else {
-        let prefix = if color == "primary" {
-            "--rinch-primary-color".to_string()
-        } else {
-            format!("--rinch-color-{color}")
-        };
         ColorTokens {
             base: if color == "primary" {
                 "var(--rinch-primary-color)".to_string()
@@ -105,11 +120,7 @@ pub fn color_tokens(color: &str) -> ColorTokens {
             light_color: format!("var({prefix}-light-color)"),
             light_strong: format!("var({prefix}-light-color-strong)"),
             light_text: format!("var({prefix}-light-text)"),
-            contrast: if color == "primary" {
-                "var(--rinch-primary-color-contrast, white)".to_string()
-            } else {
-                format!("var({prefix}-contrast, white)")
-            },
+            contrast,
         }
     }
 }

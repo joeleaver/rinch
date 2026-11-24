@@ -142,7 +142,7 @@ fn every_alert_variant_reads_the_colour_variables() {
     for rule in [
         ".rinch-alert--light { border: 1px solid transparent; background-color: var(--rinch-alert-light); color: var(--rinch-alert-light-text); }",
         ".rinch-alert--light .rinch-alert__title { color: var(--rinch-alert-light-strong); }",
-        "background-color: var(--rinch-alert-color); color: var(--rinch-alert-filled-text, white);",
+        "background-color: var(--rinch-alert-color, var(--rinch-primary-color)); color: var(--rinch-alert-filled-text, var(--rinch-primary-color-contrast, white));",
         "border: 1px solid var(--rinch-alert-color); color: var(--rinch-alert-outline-text, var(--rinch-alert-color));",
     ] {
         assert!(css.contains(rule), "missing: {rule}");
