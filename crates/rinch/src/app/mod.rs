@@ -388,6 +388,8 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
+#[cfg(test)]
+mod stepper_window_2195_tests;
 // Uses `perf_expect` (software shell) and names the pointer (desktop).
 #[cfg(all(test, software_shell, feature = "windowing"))]
 mod rehover_2766_tests;

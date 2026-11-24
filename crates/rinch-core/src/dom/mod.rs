@@ -483,6 +483,21 @@ impl NodeHandle {
             .is_some_and(|doc| doc.borrow().is_connected(self.node_id))
     }
 
+    /// Whether the document has let go of this node: it was
+    /// [`discard`](Self::discard)ed, alone or under an ancestor
+    /// ([`DomDocument::is_retired`]). `false` once the document is gone, and on
+    /// a backend whose discard reclaims nothing, where a discarded node is
+    /// only detached.
+    ///
+    /// For a component that moved a node out of a subtree it does not own and
+    /// must not outlive (the `Stepper`'s shown step content, issue #2195): when
+    /// the subtree it came from is retired, the moved node goes with it.
+    pub fn is_retired(&self) -> bool {
+        self.doc
+            .upgrade()
+            .is_some_and(|doc| doc.borrow().is_retired(self.node_id))
+    }
+
     /// This node's document identity (see [`DomDocument::doc_key`]), or `0` if
     /// the document is already gone.
     ///

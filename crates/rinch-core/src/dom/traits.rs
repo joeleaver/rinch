@@ -379,9 +379,11 @@ pub trait DomDocument {
     /// [`discard_node`](Self::discard_node)ed, on a backend that reclaims
     /// (issue #733).
     ///
-    /// This is a diagnostic, not part of the removal contract: the reactive
-    /// helpers ask it of the node a view hands them, to warn about a cache
-    /// returning a subtree that was discarded under it. `rinch-web` and
+    /// Two kinds of caller: the reactive helpers ask it of the node a view
+    /// hands them, to warn about a cache returning a subtree
+    /// that was discarded under it, and a component that moved a node out of a
+    /// subtree retires that node with the subtree (`NodeHandle::is_retired`,
+    /// the `Stepper`'s content region, issue #2195). `rinch-web` and
     /// `MockDomDocument` answer from their node tables, and `rinch-dom` from its
     /// slab (issue #723: a freed slot, or one reused under another generation).
     /// The default is `false`, which is all a backend whose `discard_node`

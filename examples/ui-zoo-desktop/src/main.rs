@@ -36,7 +36,37 @@ body {
 .main-content {
     padding: var(--rinch-spacing-xl);
 }
+
+/* UI Zoo's own title: multi-colour letters in a pill (BorderlessWindow draws a
+   plain title by default, issue #2196). */
+.rinch-borderlesswindow__brand {
+    font-weight: 700;
+    padding: 2px 10px;
+    margin: 0 4px;
+    letter-spacing: 0.5px;
+    background: var(--rinch-color-default);
+    border-radius: var(--rinch-radius-sm);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
 "#;
+
+/// The "UI Zoo" title with each letter in its own colour.
+fn rainbow_title(__scope: &mut RenderScope, title: &str) -> NodeHandle {
+    const COLORS: [&str; 6] = [
+        "#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff", "#5f27cd",
+    ];
+    let row = rsx! { span { style: "display: flex; align-items: center;" } };
+    for (i, ch) in title.chars().enumerate() {
+        if ch == ' ' {
+            row.append_child(&rsx! { span { "\u{00A0}" } });
+        } else {
+            let letter = rsx! { span { {ch.to_string()} } };
+            letter.set_attribute("style", &format!("color: {};", COLORS[i % COLORS.len()]));
+            row.append_child(&letter);
+        }
+    }
+    row
+}
 
 fn build_app(
     current_section: Signal<usize>,
@@ -63,6 +93,8 @@ fn build_app(
             }
         }
     });
+
+    let title_section: SectionRenderer = Rc::new(|__scope| rainbow_title(__scope, "UI Zoo"));
 
     // Right section: hide-to-tray button (before window controls)
     let right_section: SectionRenderer = Rc::new(move |__scope| {
@@ -93,6 +125,7 @@ fn build_app(
 
             BorderlessWindow {
                 title: "UI Zoo",
+                title_section: Some(title_section),
                 radius: "md",
                 left_section: Some(left_section),
                 right_section: Some(right_section),
