@@ -49,6 +49,9 @@ pub fn styles() -> String {
 .rinch-text--gray { color: var(--rinch-color-gray-6); }
 .rinch-text--dark { color: var(--rinch-color-dark-6); }
 
+/* Any other colour: `Text { color }` writes it to the variable. */
+.rinch-text--custom-color { color: var(--rinch-text-color); }
+
 /* Text alignment */
 .rinch-text--left { text-align: left; }
 .rinch-text--center { text-align: center; }
@@ -60,16 +63,19 @@ pub fn styles() -> String {
 .rinch-text--lowercase { text-transform: lowercase; }
 .rinch-text--capitalize { text-transform: capitalize; }
 
-/* Text truncate */
+/* Text truncate (`Text { truncate }`). A block, not the base flex row: a
+   flex container's text is an anonymous item, which draws no ellipsis. */
 .rinch-text--truncate {
+    display: block;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-/* Text line clamp */
+/* Text line clamp (`Text { line_clamp }` writes the count) */
 .rinch-text--line-clamp {
     display: -webkit-box;
+    -webkit-line-clamp: var(--rinch-text-line-clamp);
     -webkit-box-orient: vertical;
     overflow: hidden;
 }

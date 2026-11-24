@@ -34,45 +34,44 @@ pub struct SimpleGrid {
 }
 
 impl SimpleGrid {
-    /// Generate inline style for the grid.
-    fn style_string(&self) -> String {
-        let mut styles = vec!["display: grid".to_string()];
+    /// The custom properties the grid's props set, for its inline style.
+    ///
+    /// Only these go inline. The grid itself (`display`, the template, the
+    /// gaps) is the `.rinch-simple-grid` rule, which reads them with today's
+    /// defaults as fallbacks, so an app stylesheet can still change the
+    /// layout: a breakpoint rule on the class (`.my-grid.rinch-simple-grid {
+    /// grid-template-columns: 1fr }` in an `@media`), or on the variables when
+    /// the prop is unset. They used to be written inline, defaults included,
+    /// where no stylesheet could reach them (#2207).
+    fn style_vars(&self) -> Vec<(&'static str, String)> {
+        let mut vars = Vec::new();
 
-        // Grid template columns
         if !self.min_child_width.is_empty() {
-            // Auto-fill with minimum width
-            styles.push(format!(
-                "grid-template-columns: repeat(auto-fill, minmax({}, 1fr))",
-                self.min_child_width
+            vars.push((
+                "--rinch-simple-grid-template",
+                format!("repeat(auto-fill, minmax({}, 1fr))", self.min_child_width),
             ));
-        } else {
-            // Fixed number of columns
-            let cols = self.cols.unwrap_or(1);
-            styles.push(format!("grid-template-columns: repeat({}, 1fr)", cols));
+        } else if let Some(cols) = self.cols {
+            vars.push(("--rinch-simple-grid-cols", cols.to_string()));
         }
 
-        // Gap
-        let gap = self.spacing_to_css(&self.spacing);
-        let v_gap = if self.vertical_spacing.is_empty() {
-            gap.clone()
-        } else {
-            self.spacing_to_css(&self.vertical_spacing)
-        };
-
-        if gap == v_gap {
-            styles.push(format!("gap: {}", gap));
-        } else {
-            styles.push(format!("row-gap: {}", v_gap));
-            styles.push(format!("column-gap: {}", gap));
+        if !self.spacing.is_empty() {
+            vars.push((
+                "--rinch-simple-grid-gap",
+                self.spacing_to_css(&self.spacing),
+            ));
+        }
+        if !self.vertical_spacing.is_empty() {
+            vars.push((
+                "--rinch-simple-grid-row-gap",
+                self.spacing_to_css(&self.vertical_spacing),
+            ));
         }
 
-        styles.join("; ")
+        vars
     }
 
     fn spacing_to_css(&self, spacing: &str) -> String {
-        if spacing.is_empty() {
-            return "var(--rinch-spacing-md)".to_string();
-        }
         match spacing {
             "xs" => "var(--rinch-spacing-xs)".to_string(),
             "sm" => "var(--rinch-spacing-sm)".to_string(),
@@ -89,7 +88,11 @@ impl Component for SimpleGrid {
         let container = rinch_macros::rsx! {
             div { class: "rinch-simple-grid" }
         };
-        container.set_attribute("style", &self.style_string());
+        let vars = self.style_vars();
+        if !vars.is_empty() {
+            let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            container.set_styles(&pairs);
+        }
         for child in children {
             container.append_child(child);
         }

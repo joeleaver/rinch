@@ -302,6 +302,8 @@ pub(crate) mod input_region;
 #[cfg(all(test, feature = "windowing"))]
 mod input_region_tests;
 // Uses `perf_expect`, which exists only with the software shell.
+#[cfg(test)]
+mod display_props_2207_tests;
 #[cfg(all(test, software_shell))]
 mod inline_hover_2648_tests;
 #[cfg(all(test, software_shell))]

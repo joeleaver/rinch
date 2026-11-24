@@ -44,6 +44,11 @@ pub fn styles() -> String {
     line-height: var(--rinch-h6-line-height);
 }
 
+/* `Title { size }` other than a level: after the levels, so it wins. */
+.rinch-title--custom-size {
+    font-size: var(--rinch-title-size);
+}
+
 /* Title alignment */
 .rinch-title--left { text-align: left; }
 .rinch-title--center { text-align: center; }
