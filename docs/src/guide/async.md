@@ -167,6 +167,16 @@ render, and the next render frees the old one. Such a handler belongs to that
 render, so a task it spawns ends at the re-render. Create the signal outside
 the re-rendering component (above the `rsx!`) to keep both.
 
+Two more cases keep the render's lifetime. A handler written in a `for` row,
+`if` branch or `match` arm *inside* a re-rendering component's children
+belongs to that row, branch or arm, and the re-render rebuilds it. So in
+`Paper { shadow: {|| …busy…}, if show.get() { button { onclick: … } } }` the
+task ends when `busy` changes. The same happens with a handler in a helper
+function called among those children (`{row(__scope)}`), because that helper
+has its own `rsx!`. To keep the task, put the `if` (or the helper's call)
+outside the re-rendering component, or start the task from a handler that is
+not inside one.
+
 `TaskHandle::abort()` stops a task early; `is_finished()` says whether it has
 completed, been aborted, panicked, or been dropped with its component. Dropping
 the handle does not stop the task. Call both on the UI thread: the handle is
