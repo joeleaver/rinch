@@ -288,8 +288,8 @@ where
                 // every write to it would re-run the whole windowing pass
                 // instead of just the row's own reactive bindings. Rows create
                 // their own effects for reactivity via `{|| expr}` closures.
-                // The owner guard is a separate stack from `untracked`'s
-                // observer stack (issue #141) and stays outside.
+                // The owner guard is independent of the observer `untracked`
+                // hides (issue #141) and stays outside.
                 let node = {
                     let _owner = child_scope.push_owner();
                     crate::reactive::untracked(|| view(item_data.clone(), &mut child_scope))

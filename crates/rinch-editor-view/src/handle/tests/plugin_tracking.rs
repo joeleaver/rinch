@@ -90,8 +90,8 @@ fn alternating(a: usize, b: usize) -> impl Fn() -> Selection {
 
 /// Install a [`Reads`] plugin reading `store` at `site` on `h`, then
 /// `drive` the editor from an app effect created inside another
-/// effect's run (two frames deep on the observer stack, as #931's
-/// hook fixtures are). Writing `store` must re-run neither effect.
+/// effect's run (two observer runs deep, as #931's hook fixtures
+/// are). Writing `store` must re-run neither effect.
 fn assert_plugin_untracked(h: &EditorHandle, site: Site, drive: impl Fn() + 'static) {
     let (own, store) = (Signal::new(0u32), Signal::new(0u32));
     let fired = Rc::new(Cell::new(0u32));

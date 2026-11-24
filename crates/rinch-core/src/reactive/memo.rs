@@ -161,7 +161,7 @@ impl<T: Clone + PartialEq + 'static> MemoInner<T> {
         let _owner_guard = owner.push();
         // Retracking: this is the pass that reads the memo's dependencies, so
         // it replaces the set the previous recompute took out (#171).
-        let _observer_guard = super::effect::ObserverGuard::push_retracking(self.id);
+        let _observer_guard = super::tracking::ObserverGuard::push_retracking(self.id);
         let _depth = super::ReactiveDepthGuard::enter();
 
         let value = (self.f.borrow())();
@@ -337,7 +337,7 @@ impl<T: Clone + PartialEq + 'static> Memo<T> {
             .expect("Memo type mismatch (internal error)");
 
         // The reader, captured before the refresh pushes the memo's own id.
-        let observer = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied());
+        let observer = super::tracking::current_observer();
 
         // Bring the value up to date first, so the version recorded below is
         // the version of the value this read returns.

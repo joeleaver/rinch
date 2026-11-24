@@ -224,7 +224,7 @@ impl<T: 'static> Signal<T> {
     /// records nothing, which keeps the registry lookup to once per dependency
     /// per run rather than once per read.
     fn track(&self) {
-        let Some(observer) = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied()) else {
+        let Some(observer) = super::tracking::current_observer() else {
             return;
         };
         // Clone the signal's own cell out of the store under a brief shared
@@ -1097,8 +1097,8 @@ mod nested_read_tests {
 
     #[test]
     fn a_memo_computation_can_nest_reads_of_different_signals() {
-        // A memo's refresh runs with the memo's marker on the observer stack
-        // too, so `track()` takes the mutable path there as well.
+        // A memo's refresh runs with the memo's marker as the current
+        // observer too, so `track()` takes the mutable path there as well.
         use crate::reactive::Memo;
 
         let a = Signal::new(1i32);

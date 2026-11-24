@@ -191,13 +191,9 @@ pub fn generate_reactive_component_stmt(
         // region: their signal reads are what schedule a re-render. The
         // caller's root bindings below are effects of their own (issue #1190).
         //
-        // `untracked` pops exactly ONE observer, so a read inside it
-        // subscribes the next observer down the stack. The leak worked
-        // through that: a nested `match_dom`'s own untracked popped the
-        // match effect and exposed this re-render effect underneath. The
-        // invariant is that every effect-creating render boundary wraps its
-        // user render in exactly one `untracked` — this wrap included — so
-        // the stack stays balanced at any nesting depth.
+        // A read inside `untracked` subscribes no observer at all, at any
+        // nesting depth: a nested run hides the one beneath it (#3047; before
+        // that a one-frame pop here exposed the effect underneath, #1190).
         let #result_var = rinch::core::reactive::untracked(|| {
             let #temp_var = __scope.create_element("template");
             #(#children_code)*
@@ -427,13 +423,9 @@ pub fn element_to_dom_component_reactive(
         // region: their signal reads are what schedule a re-render. The
         // caller's root bindings below are effects of their own (issue #1190).
         //
-        // `untracked` pops exactly ONE observer, so a read inside it
-        // subscribes the next observer down the stack. The leak worked
-        // through that: a nested `match_dom`'s own untracked popped the
-        // match effect and exposed this re-render effect underneath. The
-        // invariant is that every effect-creating render boundary wraps its
-        // user render in exactly one `untracked` — this wrap included — so
-        // the stack stays balanced at any nesting depth.
+        // A read inside `untracked` subscribes no observer at all, at any
+        // nesting depth: a nested run hides the one beneath it (#3047; before
+        // that a one-frame pop here exposed the effect underneath, #1190).
         let #result_var = rinch::core::reactive::untracked(|| {
             let #temp_var = __scope.create_element("template");
             #(#children_code)*

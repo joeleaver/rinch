@@ -206,7 +206,7 @@ pub fn current_owner() -> Option<Owner> {
 /// lifetime of the thread.
 ///
 /// The owner-stack counterpart to [`untracked`](crate::reactive::untracked), which
-/// suspends the *observer* stack instead. The two are independent and easy to
+/// suspends the current *observer* instead. The two are independent and easy to
 /// confuse; picking the wrong one fails silently.
 ///
 /// # Warning
