@@ -1128,7 +1128,7 @@ fn reference_hit_test_node(
 /// even though that test is specifically the oracle for this function.
 ///
 /// Direct, not fuzzed: on the exact fixture the production `hit_test_node`
-/// fixture in `hit_testing.rs` uses (#535's own
+/// fixture in `hit_testing/tests/clip.rs` uses (#535's own
 /// `a_click_past_an_open_axis_still_reaches_overflowing_content_...`), the
 /// real path and the oracle must now agree — a click past the container's
 /// own box on the *open* (`overflow-y: visible`) axis still reaches the
