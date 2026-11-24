@@ -399,3 +399,9 @@ backend), `rinch-web/tests/menu_sub_2214.rs` (Chrome and Firefox),
 
 - `Alt + I` - Toggle inspect mode (hover highlight for element info)
 - `F12` - Toggle DevTools window
+
+Both are debug-only by default (`App::devtools`, `RINCH_DEVTOOLS`;
+`app/devtools_keys.rs`). Every other key rinch handles itself (field and
+editor keys, popups, components, the web backend), with its precedence
+against an app's handlers, is inventoried in
+`docs/design/keyboard-shortcuts-audit.md` (2026-11-24).
