@@ -1107,16 +1107,15 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
         e[2] = e[2].max(r2 + ox - sx);
         e[3] = e[3].max(r3 + oy - sy);
     }
-    // An IFC root's lines, which a run painted in Appendix E phases hits
-    // where they overflow the box (#2276, `PhasedRun::member`).
-    // Lines no larger than the box are taken to be inside it (the common
-    // case, asked first so a page of paragraphs pays a compare each); a line
-    // pushed past the box by its padding alone is missed by the prune.
+    // An IFC root's lines, which are hit wherever they overflow the box: in
+    // a run painted in Appendix E phases (#2276, `PhasedRun::member`) and by
+    // `hit_test_node`'s own bounds test (#2956). Placed at the content
+    // origin, so a line no larger than the box still overflows it when the
+    // root's padding or border pushes it out; a size-only shortcut here
+    // would let the prune skip that line, which the hit test answers.
     if !clip_x
         && !clip_y
         && let Some(inline) = node.text_layout.as_ref()
-        && (inline.layout.width() > node.layout.width
-            || inline.layout.height() > node.layout.height)
     {
         let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
         let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);

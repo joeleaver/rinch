@@ -53,6 +53,13 @@ const CASES: &[(&str, &[Probe])] = &[
         "<div id=o style='height:10px'><div id=a style='height:20px'>one<br>two</div></div>",
         &[(5.0, 30.0, "a"), (5.0, 15.0, "a")],
     ),
+    // A line no taller than its 30px box, pushed out of it by the padding
+    // (box 0..30, line 20..40): the prune must place the lines at the
+    // content origin, not compare their size with the box's.
+    (
+        "<div id=a style='box-sizing:border-box;height:30px;padding-top:20px'>two</div>",
+        &[(5.0, 35.0, "a"), (200.0, 35.0, "-")],
+    ),
 ];
 
 fn document(markup: &str) -> (rinch_dom::RinchDocument, u64) {
