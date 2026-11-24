@@ -306,8 +306,8 @@ recomputed by each IFC pass and is not kept under a `display: none` ancestor,
 inline or block, so membership is the rendered-ness test; width is not
 consulted, since Chrome 158 stops Tab on an empty `<a href></a>` (a `0x17`
 rect). Pins: `rinch/src/app/inline_tab_stops_2963_tests.rs` (Chrome-measured
-order). The `:focus-visible` outline of an inline element is not drawn around
-its fragments yet (#2973).
+order). The `:focus-visible` outline of an inline element is drawn round its
+line fragments (#2973; `paint-and-damage.md`, "Outlines of inline elements").
 
 A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
