@@ -1244,13 +1244,22 @@ impl std::fmt::Debug for ForItem {
 /// Callback type for component events.
 ///
 /// Uses `Rc` for `Clone` support, allowing callbacks to be stored and invoked.
+///
+/// A callback runs under the owner that was ambient where it was **created**
+/// (issue #3027): a task it spawns, a timer it sets or a signal it creates
+/// belongs to the component that wrote it, not to the one it was handed to.
+/// [`new`](Self::new) (and so `From` and `rsx!`) captures that owner; a
+/// callback built from the tuple field directly captures none and runs under
+/// whatever is ambient when it is called.
 #[derive(Clone)]
 pub struct Callback(pub Rc<dyn Fn()>);
 
 impl Callback {
-    /// Create a new callback from a function.
+    /// Create a new callback from a function, bound to the ambient owner (see
+    /// the type's docs).
     pub fn new<F: Fn() + 'static>(f: F) -> Self {
-        Self(Rc::new(f))
+        let owner = crate::reactive::CreatorOwner::capture();
+        Self(Rc::new(move || owner.run(&f)))
     }
 
     /// Invoke the callback.
@@ -1277,13 +1286,16 @@ impl std::fmt::Debug for Callback {
 /// Callback type for components that pass a value (like sliders, number inputs).
 ///
 /// Uses `Rc` for `Clone` support, allowing callbacks to be stored and invoked.
+/// Runs under the owner ambient where it was created, as [`Callback`] does.
 #[derive(Clone)]
 pub struct ValueCallback<T>(pub Rc<dyn Fn(T)>);
 
 impl<T> ValueCallback<T> {
-    /// Create a new value callback from a function.
+    /// Create a new value callback from a function, bound to the ambient owner
+    /// (see [`Callback`]).
     pub fn new<F: Fn(T) + 'static>(f: F) -> Self {
-        Self(Rc::new(f))
+        let owner = crate::reactive::CreatorOwner::capture();
+        Self(Rc::new(move |value| owner.run(|| f(value))))
     }
 
     /// Invoke the callback with a value.

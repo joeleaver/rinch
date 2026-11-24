@@ -123,6 +123,27 @@ Effect::new(move || {
 });
 ```
 
+A task spawned from an **event handler** belongs to the component that wrote
+the handler. A handler passed to a component as a prop is the caller's, even
+when that component re-renders: in
+
+```rust
+Button {
+    loading: {|| busy.get()},
+    onclick: move || {
+        busy.set(true);
+        spawn_local(async move { send().await; busy.set(false) });
+    },
+    "Send"
+}
+```
+
+the click's `busy.set(true)` rebuilds the `Button`, and the task runs on; it is
+dropped when the component containing this `rsx!` unmounts, or when the `for`
+row or `if` branch it is written in goes. Every callback (`Callback`,
+`ValueCallback`, …) runs under the owner it was created under, so the same holds
+for a timer it sets or a signal it creates.
+
 `TaskHandle::abort()` stops a task early; `is_finished()` says whether it has
 completed, been aborted, panicked, or been dropped with its component. Dropping
 the handle does not stop the task. Call both on the UI thread: the handle is

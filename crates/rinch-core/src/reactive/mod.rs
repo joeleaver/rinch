@@ -95,7 +95,7 @@ pub use poll::{
     PollRate, drain_polls, next_poll_due, poll_signal, polls_want_every_frame, set_poll_waker,
 };
 pub use scope::{
-    CleanupHandle, OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup,
+    CleanupHandle, CreatorOwner, OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup,
     on_cleanup_removable, unowned,
 };
 pub(crate) use scope::{on_cleanup_for_ambient_owner, record_handler};

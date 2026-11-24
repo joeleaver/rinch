@@ -963,6 +963,52 @@ pub fn unowned<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// The owner an app callback runs under: the one ambient where the callback
+/// was **created** (issue #3027).
+///
+/// Every app-callback kind (`Callback`, `ValueCallback`, `InputCallback`,
+/// `FileDropCallback`, `ScrollCallback`) captures one in its `new` and runs its
+/// function under it. So a task, timer or signal a handler creates belongs to
+/// the component that wrote the handler, whose signals the handler captured —
+/// not to the scope of whichever component the callback was handed to, which
+/// for a component re-rendered by a reactive prop is one render of it, gone
+/// when the handler's own write re-renders it.
+///
+/// No live owner at creation (app lifetime, or [`unowned`]) captures nothing,
+/// and the callback runs under whatever is ambient when it is invoked: the
+/// owner of the handler that dispatched it. A creator that has unmounted
+/// since is treated the same way, rather than pushed as "no owner", so what
+/// the callback creates still ends with a live component instead of living
+/// for the rest of the program.
+///
+/// Holds an [`Owner`], a `Weak`: a callback stored anywhere never keeps its
+/// creator's scope alive.
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct CreatorOwner(Option<Owner>);
+
+impl CreatorOwner {
+    /// The live ambient owner now, if there is one.
+    pub fn capture() -> Self {
+        Self(current_owner())
+    }
+
+    /// Run `f` under the captured owner while it is alive, otherwise under
+    /// whatever owner is ambient.
+    pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        match &self.0 {
+            Some(owner) if owner.is_alive() => owner.run(f),
+            _ => f(),
+        }
+    }
+}
+
+impl std::fmt::Debug for CreatorOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CreatorOwner").field(&self.0).finish()
+    }
+}
+
 /// Run `f` against the live ambient owner's scope, if there is one.
 ///
 /// "Live" is load-bearing in both directions: a dead **or disposed** top entry

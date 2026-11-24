@@ -145,6 +145,9 @@ pub fn generate_reactive_component_stmt(
     // This is the statement path: no return value, the function handles insertion.
     let body = quote! {
         let __scope = __child_scope;
+        // The owner of the code placing this component (issue #3027).
+        #[allow(unused_variables)]
+        let __rinch_caller_owner = __scope.caller_owner();
 
         #[allow(clippy::needless_update)]
         let #comp_var = #comp_name {
@@ -373,6 +376,9 @@ pub fn element_to_dom_component_reactive(
     // then appends to the actual parent — avoiding __scope.parent() misrouting.
     let body = quote! {
         let __scope = __child_scope;
+        // The owner of the code placing this component (issue #3027).
+        #[allow(unused_variables)]
+        let __rinch_caller_owner = __scope.caller_owner();
 
         #[allow(clippy::needless_update)]
         let #comp_var = #comp_name {
@@ -655,7 +661,9 @@ impl RootBindings {
 /// Generate field assignment tokens for component props.
 ///
 /// When `invoke_closures` is true (reactive mode), closure props are invoked to get
-/// their current value (tracking signals), then wrapped like static values.
+/// their current value (tracking signals), then wrapped like static values, and
+/// `on*` handler props are created under `__rinch_caller_owner`, which the
+/// reactive render body binds (issue #3027).
 pub fn generate_component_field_assignments(
     comp_props: &[&RsxProp],
     invoke_closures: bool,
@@ -670,7 +678,19 @@ pub fn generate_component_field_assignments(
             if name_str == "oninput" || name_str.starts_with("on") {
                 // Use IntoEventHandler trait so the field can be either T or Option<T>
                 // (e.g., Callback, Option<Callback>, ValueCallback<T>, Option<ValueCallback<T>>).
-                quote! { #name: IntoEventHandler::into_event_handler(#value) }
+                if invoke_closures {
+                    // A re-rendering component's struct is built inside one
+                    // render's scope, but its handlers are the caller's: a
+                    // callback runs under the owner it is created under, so
+                    // create it under the caller's (issue #3027). Without
+                    // this, a task the handler spawns is the render's, and
+                    // the re-render its own write causes drops it.
+                    quote! {
+                        #name: __rinch_caller_owner.run(|| IntoEventHandler::into_event_handler(#value))
+                    }
+                } else {
+                    quote! { #name: IntoEventHandler::into_event_handler(#value) }
+                }
             } else if name_str == "icon" || name_str.ends_with("_icon") {
                 // #718: on the reactive path a closure must be INVOKED before
                 // being wrapped in `Some(...)` — the icon field is

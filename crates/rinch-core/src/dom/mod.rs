@@ -1914,6 +1914,9 @@ where
     // Every output scope names the scope this call was made from as its
     // parent (issue #732) — see the matching note in `show_dom`.
     let creator_scope_id = scope.id();
+    // The owner of the code placing this component: each render's handler
+    // props are built under it, not under that render's scope (issue #3027).
+    let caller_owner = crate::reactive::CreatorOwner::capture();
 
     let cc = current_content.clone();
     let cs = current_scope.clone();
@@ -1968,6 +1971,7 @@ where
         // Render fresh
         if let Some(doc) = doc_weak.upgrade() {
             let mut child_scope = RenderScope::with_parent(doc, parent_id, Some(creator_scope_id));
+            child_scope.set_caller_owner(caller_owner.clone());
             // The component's own resources belong to its own scope, not to the
             // effect that re-renders it (issue #141). This is the deepest reach
             // of the ambient owner: `render_fn` runs arbitrary user
