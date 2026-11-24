@@ -1,9 +1,9 @@
-# Keyboard shortcuts audit (2026-11-24)
+# Keyboard shortcuts: the line, and the plan (2026-11-24)
 
-**Status:** audit only. No code changed. This is an inventory of every key
-rinch handles itself, on desktop and on the web, so that Joe can decide where
-the line between a framework default and an app's own shortcut falls. The
-summary issue carries the proposed rule and the open questions.
+**Status:** proposal. No code has changed. The plan comes first: the rule, the
+precedence model, the changes as a series of PRs, and the decisions they need.
+The inventory it rests on follows (every key rinch handles on desktop and on
+the web, 51 entries, with file:line).
 
 File:line references are against `main` at `f9d15abf7`. Paths are relative to
 `crates/` unless they start with `docs/`.
@@ -27,6 +27,97 @@ docs had no list of the keys rinch claims. Two standing rules apply here (see
 - **(B) App-level shortcuts that rinch claims.** These should be opt-in,
   debug-only, or removed.
 - **(C) Unclear.** Each entry says why.
+
+## The plan
+
+### The rule
+
+**Everything rinch does with a key is a browser *default action*.** It runs
+only after every app hook has had the key and declined it, and any hook can
+take the key from it, as `preventDefault` does in a browser. That puts every
+(A) binding on the right side of the line without removing any of them. The
+(B) bindings become opt-in. Each (C) binding gets a decision below.
+
+Rinch beats the app in only three places, and Chrome beats the page in the
+same three:
+
+- Escape during a drag (R3).
+- Escape under a pointer lock (R4).
+- An open runtime popup, meaning the `<select>` list (R15) or the text
+  context menu (R16). A native popup takes the keyboard before the page sees
+  it.
+
+An app's own menu accelerators stay first, because they are the app's.
+Component key handlers count as app code: the components are a library that
+runs on top of the app, like a page's JS widget library.
+
+### The order of key handlers, on both backends
+
+| # | Handler | Browser equivalent |
+|---|---|---|
+| 1 | Menu accelerators (the app's), then the three parity exceptions above | the browser chrome |
+| 2 | **The interceptor** (`set_keyboard_interceptor`), moved ahead of everything below. On the web it becomes a `window` capture listener that also honours `defaultPrevented` | `window` capture listener |
+| 3 | `EditorHandle::on_key`, node view `on_key`, element `onkeydown` nearest first | target phase |
+| 4 | Popup key entries and the dismiss stack (components) | `document` listeners |
+| 5 | `on_app_key`, **now offered the editor's keys too** | `window` bubble listener |
+| 6 | Rinch's defaults: the editor keymap and caret keys, field keys, Tab, activation, `onsubmit`, scrolling, DevTools | default action |
+
+**On the web, every rinch key listener checks `defaultPrevented` first.** That
+covers the menu chord listener, the editor's capture listener and the bubble
+delegate. A page `preventDefault` then beats rinch, as it beats Chrome.
+
+Today's departures from this order:
+
+- The interceptor runs after element `onkeydown` on desktop.
+- On the web, the interceptor runs after the editor keymap.
+- `on_app_key` never sees the editor's keys.
+- Nothing on the web reads `defaultPrevented`.
+
+Issue #1678's case still works under the new order: a `[[` picker in a field inside
+a `Modal` gets Escape, because its handler (step 3) still runs before the
+modal's dismiss entry (step 4).
+
+### The PRs, in order
+
+| PR | Change | Entries it settles |
+|---|---|---|
+| 1 | **The handler order.** Move the interceptor to step 2 on both backends, ahead of the editor's `on_key` and element `onkeydown`. Offer `on_app_key` the editor's keys before the keymap. On the web, check `defaultPrevented` in the menu chord listener, the editor's capture listener and the bubble delegate. Pin the order in one cross-backend test file per step, and document it on `focus-and-keyboard.md` | findings 1–4; makes every (A) entry interceptable, including K4, K5, K8 and K9, which have no option today |
+| 2 | **Editor keymap.** Split E9, E10 and E13–E17 out of the base keymap into a `FormattingShortcutsPlugin`. It is **off by default** and turned on with `Editor { formatting_shortcuts: true }` or `EditorHandle::set_formatting_shortcuts`, as #2210 did for the markdown rules. Add `Keymap::remove` / `EditorHandle::unbind_key(chord)`. On the web, Mod becomes Cmd on macOS and Ctrl elsewhere (ProseMirror's rule, from `navigator.platform`). Drop Cmd+Y redo on macOS, in fields too | E9, E10, E13–E17, E21, R11, the "no single unbind" gap |
+| 3 | **DevTools inspect key.** Move it from Alt+I to Ctrl+Shift+C (Cmd+Shift+C on macOS), Chrome's own chord, so it never eats a typed character. F12 stays. Both stay debug-only | R2 |
+| 4 | **Android.** Answer `InputStatus::Unhandled` for keys rinch does not map (volume and media keys). For Back, deliver Escape first, and hand Back to the OS when nothing consumed it. The Back half needs the key to be dispatched inside the input callback, so the answer is known before the callback returns; today events are queued and run later. Check on a device | R18 |
+| 5 | **Small parity fixes.** The web stops swallowing keyups a surface did not claim (match desktop, #1784). A read-only editor on the web calls `preventDefault` on printable keys but no longer stops their propagation. Tree's Ctrl/Cmd+A selects all rows, as APG says. Sortable gets a `keyboard: bool` prop | W1, E19, K11, K9 |
+| 6 | **Guide page** `docs/src/guide/keyboard.md`: the handler order, what each built-in does, and how to take a key from it. Add it to `SUMMARY.md` | the missing list of keys |
+
+PR 1 comes first because it is the one change that makes the rule true. The
+others are independent of each other and could run in parallel after it.
+
+### Kept as they are
+
+- **E12: Tab indents in lists and tables.** This is the recorded exception
+  from #2210, and `TabBehavior::MoveFocus` is its switch.
+- **E11: Mod-Enter `exitCode`.** It is code-block control and already falls
+  through where it does not apply.
+- **R1: F12.** Already debug-only.
+- **R17: the chord yield.** A focused control keeps its bare keys over the
+  app's bare-key accelerators. Native controls do the same, and
+  `ChordYield::TextOnly` exists.
+
+### Decisions for Joe
+
+1. **Should the formatting chords be off by default (PR 2)?** This changes
+   behaviour for ui-zoo and Pimble, which would turn them on. The
+   alternative is to keep them on but make them fall through where they do
+   not apply, which still leaves Mod-E, Mod-Shift-B and Mod-Shift-R
+   shadowing browser chords on the web. **Recommended: off by default.**
+2. **Should the interceptor run first (PR 1)?** This changes the order for
+   any app whose interceptor relies on running after element `onkeydown`.
+   **Recommended: yes.** It is the only way an app can pre-empt a
+   component's own `onkeydown` on desktop.
+3. **Should inspect move from Alt+I to Ctrl+Shift+C (PR 3)?**
+   **Recommended: yes.** The alternative is to keep Alt+I but skip it while a
+   text field or the editor holds focus.
+
+# Appendix: the inventory
 
 ## How a key travels today
 
@@ -300,21 +391,4 @@ first, where some earlier hook exists, or not at all:
 - **K11:** Tree's Ctrl+A selects siblings rather than all.
 - **W1:** keyups swallowed by a focused surface on the web.
 
-## Questions for Joe
-
-1. **Should the (B) editor chords become an opt-in plugin?** For example a
-   `FormattingShortcutsPlugin`, off by default as `MarkdownInputRulesPlugin`
-   is since #2210, keeping only Mod-B/I/U, undo/redo, select-all and the
-   clipboard as base keys. Or should they stay on, but fall through where
-   they do not apply, with an `unbind_key`?
-2. **Should rinch-web honour `defaultPrevented`?** A page `preventDefault`
-   would then beat every rinch binding, as it beats the browser's own
-   defaults. The menu chord listener and the editor's capture listener would
-   check it first. On desktop the equivalent would be an app hook that runs
-   ahead of element `onkeydown`, a true capture phase.
-3. **Should the editor's keymap run after the interceptor on the web**, as it
-   does on desktop, so that one app's code behaves the same on both?
-4. **Android Back:** pass it to the OS when nothing consumes the Escape it
-   becomes, and answer `Unhandled` for keys rinch does not map?
-5. **The macOS chords:** drop Cmd+Y redo on macOS, and make the web's Mod
-   Cmd-only on macOS and Ctrl-only elsewhere?
+The decisions these findings need are listed under [Decisions for Joe](#decisions-for-joe).
