@@ -3715,6 +3715,12 @@ pub struct NodeTree {
     /// the painted state skip the per-run walk that finds the others. Set by
     /// the cascade; sticky — clearing it would need a count nobody keeps.
     pub inline_text_shadows: bool,
+    /// Whether a non-atomic inline element has ever computed an outline
+    /// (#2973). Until one has, paint, damage and the clip proof do not look
+    /// through an IFC's elements for the outlines drawn round their
+    /// fragments (`paint::text::inline_outline_spans`). Set by the cascade;
+    /// sticky, as [`Self::inline_text_shadows`] is.
+    pub inline_outlines: bool,
     /// Whether any element has ever computed a `filter` that moves pixels
     /// (`blur()`, `drop-shadow()`, #2719). Until one has, damage does not
     /// walk a dirty node's ancestors for the blur reach that spreads its
@@ -4631,6 +4637,7 @@ impl NodeTree {
             painted_bars: HashMap::new(),
             whole_document_damaged: false,
             inline_text_shadows: false,
+            inline_outlines: false,
             raster_filters: false,
             backdrop_filters: false,
             backdrop_nodes: Vec::new(),
@@ -5103,6 +5110,15 @@ impl NodeTree {
         self.marker_moves.push((node_id, resized));
     }
 
+    /// Whether ink measures walk an IFC root's inline elements: some inline
+    /// element has had a `text-shadow` or stroke of its own
+    /// ([`Self::inline_text_shadows`]) or an outline
+    /// ([`Self::inline_outlines`], #2973). The `members` flag of
+    /// `paint::ink_outsets_in` and [`PaintedState::of_in`].
+    pub fn walks_inline_members(&self) -> bool {
+        self.inline_text_shadows || self.inline_outlines
+    }
+
     /// The paint that consumed `paint_dirty_nodes` has run: forget them, and
     /// record that each one's pixels are now at its current box
     /// (`prev_layout = layout`, see [`Node::prev_layout`]).
@@ -5129,7 +5145,7 @@ impl NodeTree {
         // the painted boxes below are rewritten (`bar_watch_scrollers` reads
         // `prev_layout`), and their bars recorded after.
         let watched = crate::paint::bar_watch_scrollers(self);
-        let members = self.inline_text_shadows;
+        let members = self.walks_inline_members();
         let taffy = &self.taffy;
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
