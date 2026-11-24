@@ -89,6 +89,10 @@ fn completed(scope: &mut RenderScope) -> NodeHandle {
 }
 
 fn stepper_app(active: u32) -> RinchApp {
+    stepper_app_with(active, true)
+}
+
+fn stepper_app_with(active: u32, content_for_active_only: bool) -> RinchApp {
     mount(move |scope| {
         let kids = [
             step(scope, "one"),
@@ -98,6 +102,7 @@ fn stepper_app(active: u32) -> RinchApp {
         ];
         Stepper {
             active,
+            content_for_active_only,
             ..Default::default()
         }
         .render(scope, &kids)
@@ -138,6 +143,65 @@ fn the_completed_block_is_laid_out_once_active_is_past_the_last_step() {
         let (.., h) = abs_box(&app, one(&app, hidden));
         assert_eq!(h, 0.0, "`{hidden}` is not shown past the end");
     }
+}
+
+/// `content_for_active_only: false`: every step's content is laid out inside
+/// its own step, and the completed block still waits for `active` to pass the
+/// last step.
+#[test]
+fn with_content_for_active_only_off_every_step_shows_its_content_in_place() {
+    let app = stepper_app_with(1, false);
+    let steps = nodes_with_class(&app, "rinch-stepper__step");
+    assert_eq!(steps.len(), 3);
+    for (name, step) in ["one", "two", "three"].into_iter().zip(steps) {
+        let shown = one(&app, &format!("content-{name}"));
+        let (x, y, w, h) = abs_box(&app, shown);
+        assert_eq!(h, 40.0, "`{name}` is laid out at its own height");
+        assert!(w > 0.0, "`{name}` has a width");
+        let (sx, sy, sw, sh) = abs_box(&app, step);
+        assert!(
+            x >= sx && y >= sy && x + w <= sx + sw + 0.5 && y + h <= sy + sh + 0.5,
+            "`{name}` lies inside its step: content {:?}, step {:?}",
+            (x, y, w, h),
+            (sx, sy, sw, sh)
+        );
+    }
+    let completed = one(&app, "rinch-stepper__completed");
+    assert_eq!(display(&app, completed), DisplayValue::None);
+
+    let app = stepper_app_with(3, false);
+    let completed = one(&app, "rinch-stepper__completed");
+    assert_ne!(display(&app, completed), DisplayValue::None);
+}
+
+/// The setting is each stepper's own: a default stepper nested in the step
+/// content of one with the option off still hides its inactive steps' content.
+#[test]
+fn a_nested_stepper_follows_its_own_content_setting() {
+    let app = mount(|scope| {
+        let inner_kids = [step(scope, "inner-a"), step(scope, "inner-b")];
+        let inner = Stepper {
+            active: 0,
+            ..Default::default()
+        }
+        .render(scope, &inner_kids);
+        let outer_step = StepperStep {
+            label: "outer".into(),
+            ..Default::default()
+        }
+        .render(scope, &[inner]);
+        Stepper {
+            active: 0,
+            content_for_active_only: false,
+            ..Default::default()
+        }
+        .render(scope, &[outer_step])
+    });
+    let (.., shown) = abs_box(&app, one(&app, "content-inner-a"));
+    assert_eq!(shown, 40.0, "the inner active step's content shows");
+    let hidden = one(&app, "content-inner-b");
+    let (.., h) = abs_box(&app, hidden);
+    assert_eq!(h, 0.0, "the inner inactive step's content stays hidden");
 }
 
 #[test]

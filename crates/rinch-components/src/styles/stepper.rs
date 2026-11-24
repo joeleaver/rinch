@@ -127,9 +127,23 @@ pub fn styles() -> String {
 
 /* Step content. Hidden inside its step; the Stepper moves the active step's
    content into `.rinch-stepper__content`, below the steps, where it shows
-   (issue #2195, Mantine's layout). */
+   (issue #2195, Mantine's layout).
+
+   With `content_for_active_only: false` the stepper carries
+   `--content-in-steps`, moves nothing, and every step shows its content in
+   place. The choice travels as a custom property each stepper sets for its own
+   subtree, so a stepper nested in another's step content follows its own
+   setting, not the outer one's (a descendant selector would reach into it). */
+.rinch-stepper {
+    --rinch-stepper-step-content-display: none;
+}
+
+.rinch-stepper--content-in-steps {
+    --rinch-stepper-step-content-display: block;
+}
+
 .rinch-stepper__step-content {
-    display: none;
+    display: var(--rinch-stepper-step-content-display, none);
 }
 
 .rinch-stepper__content > .rinch-stepper__step-content {
@@ -137,8 +151,9 @@ pub fn styles() -> String {
     padding-top: var(--rinch-spacing-md);
 }
 
-/* A step with no children has nothing to show and takes no room. */
-.rinch-stepper__content > .rinch-stepper__step-content:empty {
+/* A step with no children has nothing to show and takes no room, in the
+   region or in its step. After the region's rule, which it must win. */
+.rinch-stepper__step-content:empty {
     display: none;
 }
 

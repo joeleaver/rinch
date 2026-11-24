@@ -155,6 +155,10 @@ pub(super) const STEP_CLASS: &str = "rinch-stepper__step";
 /// completed block (issue #2195).
 pub(super) const CONTENT_COMPLETED_CLASS: &str = "rinch-stepper__content--completed";
 
+/// On the stepper when [`Stepper::content_for_active_only`] is off: every step
+/// shows its own content inside the step (issue #2195).
+pub(super) const CONTENT_IN_STEPS_CLASS: &str = "rinch-stepper--content-in-steps";
+
 /// A step's own content wrapper, which holds its children (issue #2195).
 pub(super) const STEP_CONTENT_CLASS: &str = "rinch-stepper__step-content";
 

@@ -10,10 +10,16 @@ use super::*;
 /// remembers where it came from, and goes back there — into its step, before
 /// the separator — as soon as it is no longer the one to show. That is also
 /// what makes a step that leaves the stepper (a `for` reconcile, a move to
-/// another stepper) take its content with it.
+/// another stepper) take its content with it, and a step that is
+/// **discarded** retire it: the content is the step's, so it does not outlive
+/// it.
 #[derive(Debug, Clone)]
 pub(super) struct ContentRegion {
     pub(super) region: NodeHandle,
+    /// [`Stepper::content_for_active_only`]: whether the active step's content
+    /// is moved into the region at all. When it is not, every step keeps its
+    /// content and only the completed block comes here.
+    pub(super) for_active_only: bool,
     pub(super) shown: Rc<RefCell<Vec<Shown>>>,
     /// Whether the region carries `--completed`. Kept here rather than read
     /// back from the region's `class`: the region is this render's own node,
@@ -83,8 +89,12 @@ pub(super) fn step_content(step: &NodeHandle) -> Option<NodeHandle> {
 /// **A step's content** is moved into the region while its step is the one at
 /// `active`, and back into its step as soon as it is not — another step became
 /// the active one, or the step left the stepper, which then takes its content
-/// with it. Content something else took out of the region is forgotten, not
-/// put back.
+/// with it. A step that was **discarded** (a `for` row discards the step it
+/// built) takes its content with it the same way: the content is discarded,
+/// since the recursive discard of the step could not reach it in the region.
+/// Content something else took out of the region is forgotten, not put back
+/// and not discarded: it is the app's now. With
+/// [`Stepper::content_for_active_only`] off, no step's content is taken in.
 ///
 /// **A completed block** is moved into the region whatever `active` is, and
 /// shown there only by the `--completed` modifier the region carries once
@@ -105,6 +115,10 @@ pub(super) fn settle_content(steps: &[NodeHandle], completed: &[NodeHandle], d: 
         if s.node.parent_node().map(|p| p.node_id()) != Some(region_id) {
             return false;
         }
+        if s.home.is_retired() {
+            s.node.discard();
+            return false;
+        }
         let wanted = target.is_some_and(|t| t.node_id() == s.home.node_id());
         if !wanted {
             s.return_home();
@@ -112,7 +126,8 @@ pub(super) fn settle_content(steps: &[NodeHandle], completed: &[NodeHandle], d: 
         wanted
     });
 
-    if let Some(step) = target
+    if d.content.for_active_only
+        && let Some(step) = target
         && shown.is_empty()
         && let Some(content) = step_content(step)
     {

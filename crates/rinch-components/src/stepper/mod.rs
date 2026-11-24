@@ -130,8 +130,10 @@ impl std::str::FromStr for StepperOrientation {
 /// [`StepperCompleted`] block is shown there instead; before that it is hidden.
 /// Content is moved, not copied, so its effects and handlers are the ones it
 /// rendered with, and it goes back into its step when another step becomes the
-/// active one (or when the step leaves the stepper).
-#[derive(Debug, Default)]
+/// active one (or when the step leaves the stepper, and is discarded with the
+/// step when the step is). Set [`Stepper::content_for_active_only`] to `false`
+/// to keep every step's content inside its step instead.
+#[derive(Debug)]
 pub struct Stepper {
     /// Currently active step (0-indexed).
     ///
@@ -216,6 +218,37 @@ pub struct Stepper {
     /// number. The step's own `progress_icon` wins, and a step that arrives
     /// later takes this one as it lands (issue #716).
     pub progress_icon: Option<TablerIcon>,
+    /// Whether only the active step's content is shown, in the
+    /// `.rinch-stepper__content` region below the steps (default `true`, the
+    /// Mantine layout; issue #2195).
+    ///
+    /// `false` is the escape hatch: the stepper moves no step's content, and
+    /// every step shows its own content **inside the step**, after its body
+    /// (the stepper carries `rinch-stepper--content-in-steps`). That suits a
+    /// vertical stepper laid out as a timeline; an app that wants only some
+    /// steps' content seen there hides the rest with its own rule, such as
+    /// `.rinch-stepper__step--inactive .rinch-stepper__step-content { display:
+    /// none }`. The [`StepperCompleted`] block is shown below the steps past the
+    /// last one either way.
+    pub content_for_active_only: bool,
+}
+
+impl Default for Stepper {
+    fn default() -> Self {
+        Self {
+            active: 0,
+            size: String::new(),
+            orientation: String::new(),
+            color: String::new(),
+            radius: String::new(),
+            icon_size: String::new(),
+            allow_next_steps_select: false,
+            on_step_click: None,
+            completed_icon: None,
+            progress_icon: None,
+            content_for_active_only: true,
+        }
+    }
 }
 
 /// Which of the three states a step is in.
@@ -282,6 +315,10 @@ impl Stepper {
         let radius_cls = crate::class_utils::radius_class("rinch-stepper", &self.radius);
         classes.extend(radius_cls.as_deref());
 
+        if !self.content_for_active_only {
+            classes.push(CONTENT_IN_STEPS_CLASS);
+        }
+
         classes.join(" ")
     }
 }
@@ -328,6 +365,7 @@ impl Component for Stepper {
             settler: next_settler(),
             content: ContentRegion {
                 region: content_region.clone(),
+                for_active_only: self.content_for_active_only,
                 shown: Rc::new(RefCell::new(Vec::new())),
                 completed: Rc::new(Cell::new(false)),
             },

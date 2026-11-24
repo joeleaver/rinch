@@ -27,7 +27,7 @@ mod common;
 use common::{collect_by_class, find_by_class, has_class};
 
 struct Tree {
-    _doc: Rc<RefCell<MockDomDocument>>,
+    doc: Rc<RefCell<MockDomDocument>>,
     scope: RenderScope,
     root: NodeHandle,
 }
@@ -38,11 +38,23 @@ impl Tree {
         let body = doc.borrow().body();
         let mut scope = RenderScope::new(doc.clone(), body);
         let root = build(&mut scope);
-        Self {
-            _doc: doc,
-            scope,
-            root,
-        }
+        Self { doc, scope, root }
+    }
+
+    /// Whether the document has let go of `node` (it was discarded).
+    fn retired(&self, node: &NodeHandle) -> bool {
+        self.doc.borrow().is_retired(node.node_id())
+    }
+
+    /// The `.rinch-stepper__step-content` wrapper holding the marker `text`.
+    fn content_of(&self, text: &str) -> NodeHandle {
+        let mut markers = Vec::new();
+        collect_by_class(&self.root, "marker", &mut markers);
+        markers
+            .into_iter()
+            .find(|m| m.text_content().as_deref() == Some(text))
+            .and_then(|m| m.parent_node())
+            .unwrap_or_else(|| panic!("a content wrapper holding `{text}`"))
     }
 
     fn region(&self) -> NodeHandle {
@@ -67,6 +79,10 @@ impl Tree {
             .map(|m| m.text_content().unwrap_or_default())
             .collect()
     }
+}
+
+fn parent_id(node: &NodeHandle) -> Option<rinch_core::dom::NodeId> {
+    node.parent_node().map(|p| p.node_id())
 }
 
 /// A step whose content is one `.marker` holding `text`.
@@ -327,4 +343,214 @@ fn label_description_and_icon_take_nodes() {
         "",
         "no number is written into it"
     );
+}
+
+/// The step a `for` row built is **discarded** when the row goes, not just
+/// detached, and while it is the active one its content sits in the region,
+/// out of reach of the recursive discard. The content belongs to the step, so
+/// it is retired with it — not put back into a step the document no longer
+/// holds, alive and attached to nothing.
+#[test]
+fn discarding_the_active_step_retires_its_content() {
+    let tree = Tree::build(|scope| {
+        let kids = [step(scope, "one"), step(scope, "two"), step(scope, "three")];
+        stepper(scope, 1, &kids)
+    });
+    let content = tree.content_of("two");
+    assert_eq!(
+        parent_id(&content),
+        Some(tree.region().node_id()),
+        "shown at first"
+    );
+
+    let two = tree.steps()[1].clone();
+    two.discard();
+
+    assert!(tree.retired(&two), "the step is gone");
+    assert_eq!(Tree::markers(&tree.region()), ["three"]);
+    assert!(
+        tree.retired(&content),
+        "the discarded step's content is retired with it (parent now {:?})",
+        content.parent_node().map(|p| p.node_id())
+    );
+}
+
+/// The same discard, reached through a wrapper the step sits in — the shape a
+/// `for` row has.
+#[test]
+fn discarding_the_wrapper_of_the_active_step_retires_its_content() {
+    let tree = Tree::build(|scope| {
+        let wrapper = scope.create_element("div");
+        wrapper.set_attribute("class", "row");
+        wrapper.append_child(&step(scope, "two"));
+        let kids = [step(scope, "one"), wrapper, step(scope, "three")];
+        stepper(scope, 1, &kids)
+    });
+    let content = tree.content_of("two");
+    let wrapper = find_by_class(&tree.root, "row").expect("the row wrapper");
+
+    wrapper.discard();
+
+    assert_eq!(Tree::markers(&tree.region()), ["three"]);
+    assert!(tree.retired(&content), "retired with the row");
+}
+
+/// A step that is not the active one holds its own content, so the recursive
+/// discard takes both; and content that went back home is retired with its
+/// step too.
+#[test]
+fn discarding_a_step_that_is_not_active_retires_its_content() {
+    let tree = Tree::build(|scope| {
+        let kids = [step(scope, "one"), step(scope, "two"), step(scope, "three")];
+        stepper(scope, 1, &kids)
+    });
+    let three = tree.content_of("three");
+    let two = tree.content_of("two");
+
+    // `two` leaves the region (step one goes, so `three` is at `active`) and is
+    // then discarded from its own step.
+    tree.steps()[0].discard();
+    assert_eq!(Tree::markers(&tree.region()), ["three"]);
+    let steps = tree.steps();
+    assert_eq!(Tree::markers(&steps[0]), ["two"], "back in its step");
+    steps[0].discard();
+
+    assert!(tree.retired(&two), "retired with its step");
+    assert!(!tree.retired(&three), "the shown content stays");
+    assert_eq!(Tree::markers(&tree.region()), Vec::<String>::new());
+}
+
+/// The stepper itself discarded retires the shown content, which is under its
+/// region.
+#[test]
+fn discarding_the_stepper_retires_the_shown_content() {
+    let tree = Tree::build(|scope| {
+        let kids = [step(scope, "one"), step(scope, "two"), step(scope, "three")];
+        stepper(scope, 1, &kids)
+    });
+    let shown = tree.content_of("two");
+    let hidden = tree.content_of("one");
+    tree.root.discard();
+    assert!(tree.retired(&shown));
+    assert!(tree.retired(&hidden));
+}
+
+/// A step **removed** (detached, not discarded) keeps its content, and put
+/// back at `active` it shows that same content again.
+#[test]
+fn a_removed_step_put_back_shows_its_own_content_again() {
+    let tree = Tree::build(|scope| {
+        let kids = [step(scope, "one"), step(scope, "two"), step(scope, "three")];
+        stepper(scope, 1, &kids)
+    });
+    let content = tree.content_of("two");
+    let two = tree.steps()[1].clone();
+    two.remove();
+    assert_eq!(Tree::markers(&tree.region()), ["three"]);
+    assert!(!tree.retired(&content), "a removal keeps the content alive");
+
+    let three = tree.steps()[1].clone();
+    tree.steps_container().insert_before(&two, &three);
+
+    assert_eq!(Tree::markers(&tree.region()), ["two"]);
+    assert_eq!(
+        parent_id(&content),
+        Some(tree.region().node_id()),
+        "the same content node, not a copy"
+    );
+    assert_eq!(Tree::markers(&tree.steps()[2]), ["three"]);
+}
+
+/// Content **the app takes out of the region** is the app's from then on: the
+/// stepper forgets it, and does not pull it back into its step when another
+/// step becomes the active one.
+#[test]
+fn content_the_app_takes_out_of_the_region_is_forgotten() {
+    let mut tree = Tree::build(|scope| {
+        let kids = [step(scope, "one"), step(scope, "two"), step(scope, "three")];
+        stepper(scope, 1, &kids)
+    });
+    let content = tree.content_of("two");
+    let elsewhere = tree.scope.create_element("div");
+    tree.root.append_child(&elsewhere);
+    elsewhere.append_child(&content);
+
+    // A pass: step one goes, so `three` is now at `active`.
+    tree.steps()[0].remove();
+
+    assert_eq!(Tree::markers(&tree.region()), ["three"]);
+    assert_eq!(
+        parent_id(&content),
+        Some(elsewhere.node_id()),
+        "the content stays where the app put it"
+    );
+    assert_eq!(
+        Tree::markers(&tree.steps()[0]),
+        Vec::<String>::new(),
+        "and is not put back into step two"
+    );
+}
+
+/// `content_for_active_only` (issue #2195's escape hatch): on by default, the
+/// active step's content is moved into the region; off, every step keeps its
+/// own content and the stepper says so with `--content-in-steps`. The
+/// completed block comes below the steps either way.
+#[test]
+fn content_for_active_only_off_keeps_every_steps_content_in_its_step() {
+    assert!(Stepper::default().content_for_active_only, "on by default");
+    for (only_active, active) in [(true, 1), (false, 1), (false, 3)] {
+        let tree = Tree::build(|scope| {
+            let kids = [
+                step(scope, "one"),
+                step(scope, "two"),
+                step(scope, "three"),
+                completed(scope),
+            ];
+            Stepper {
+                active,
+                content_for_active_only: only_active,
+                ..Default::default()
+            }
+            .render(scope, &kids)
+        });
+        let case = format!("content_for_active_only {only_active}, active {active}");
+        assert_eq!(
+            has_class(&tree.root, "rinch-stepper--content-in-steps"),
+            !only_active,
+            "{case}"
+        );
+        let steps = tree.steps();
+        let in_steps: Vec<Vec<String>> = steps.iter().map(Tree::markers).collect();
+        let region = Tree::markers(&tree.region());
+        if only_active {
+            assert_eq!(in_steps, [vec!["one"], vec![], vec!["three"]], "{case}");
+            assert_eq!(region, ["two", "done"], "{case}");
+        } else {
+            assert_eq!(in_steps, [["one"], ["two"], ["three"]], "{case}");
+            assert_eq!(region, ["done"], "{case}: only the completed block");
+        }
+        assert_eq!(
+            has_class(&tree.region(), "rinch-stepper__content--completed"),
+            active == 3,
+            "{case}"
+        );
+    }
+}
+
+/// With the option off, a change to the list moves no content either.
+#[test]
+fn content_for_active_only_off_moves_nothing_on_a_later_pass() {
+    let tree = Tree::build(|scope| {
+        let kids = [step(scope, "one"), step(scope, "two"), step(scope, "three")];
+        Stepper {
+            active: 1,
+            content_for_active_only: false,
+            ..Default::default()
+        }
+        .render(scope, &kids)
+    });
+    tree.steps()[0].remove();
+    let in_steps: Vec<Vec<String>> = tree.steps().iter().map(Tree::markers).collect();
+    assert_eq!(in_steps, [["two"], ["three"]]);
+    assert_eq!(Tree::markers(&tree.region()), Vec::<String>::new());
 }
