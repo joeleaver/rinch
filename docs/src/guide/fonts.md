@@ -276,8 +276,11 @@ On the web it does nothing: the browser loads fonts from the page's CSS
 (`@font-face` or a stylesheet `<link>`). It does nothing yet on Android. In
 a process that embeds rinch through `RinchContext` (with no desktop app
 running) it is ignored, and faces registered before the first
-`RinchContext` was made are dropped then: register faces with
-`RinchContext::register_app_font`.
+`RinchContext` was made are dropped then, as are faces queued after the last
+turn of a desktop run that ends in such a process: register faces with
+`RinchContext::register_app_font`. A desktop app that makes a `RinchContext`
+in `main` before `App::run` loses the faces it registered up to then; rinch
+logs a warning with the count when the app's runtime starts.
 
 ## Fonts installed while the app runs
 

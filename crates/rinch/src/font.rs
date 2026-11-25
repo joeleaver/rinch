@@ -173,8 +173,12 @@ pub const DEFAULT_SYSTEM_FONT_WATCH: std::time::Duration = std::time::Duration::
 ///   a face registered before `TestApp::mount` reaches the test's window.
 /// - **An embed host** (a `RinchContext` made
 ///   and no desktop runtime running): ignored, with nothing kept; faces
-///   registered before the first context was made are dropped then. The
-///   host registers faces with `RinchContext::register_app_font`.
+///   registered before the first context was made are dropped then, and so
+///   are those queued after the last turn of a desktop run that ends in an
+///   embed host. The host registers faces with
+///   `RinchContext::register_app_font`. A desktop app that makes a
+///   `RinchContext` before `App::run` loses the faces registered up to
+///   then, with a warning once its runtime starts.
 /// - **Web**: does nothing. The browser loads fonts from the page's CSS
 ///   (`@font-face`, a stylesheet `<link>`), as [`App::fonts`](crate::App::fonts)
 ///   leaves it to.

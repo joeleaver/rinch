@@ -33,6 +33,10 @@ impl RinchRuntime {
         // From here native events are queued: this runtime drains them
         // (#2801).
         wake::note_runtime_made();
+        // Faces dropped while the process looked like an embed host are
+        // lost; say so now that it turned out to be an app (#3042).
+        #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+        let _ = registered_fonts::warn_dropped();
         // The named video sink factory (rinch-core's hook), so video players
         // and rinch-rtc's remote tracks deliver frames through the
         // RenderSurface compositing pipeline. Here rather than in the two

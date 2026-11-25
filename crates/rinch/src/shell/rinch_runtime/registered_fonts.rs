@@ -4,11 +4,16 @@
 
 use super::*;
 use crate::font::AppFont;
+use std::cell::Cell;
 
 thread_local! {
     /// Faces [`queue_font`] queued, in order, for the runtime's next turn
     /// (or the runtime to come, or a `TestApp`).
     static QUEUED: RefCell<Vec<AppFont>> = const { RefCell::new(Vec::new()) };
+
+    /// How many faces [`drop_queued`] dropped since a desktop runtime was
+    /// last made, for [`warn_dropped`] to report if one is made after all.
+    static DROPPED: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Queue `font` for whatever will register it with a window, and wake that.
@@ -101,12 +106,33 @@ pub(crate) fn take_new_fonts(kept: &mut Vec<AppFont>) -> Vec<AppFont> {
 pub(super) fn drop_queued() {
     let dropped = QUEUED.with(|queued| std::mem::take(&mut *queued.borrow_mut()));
     if !dropped.is_empty() {
+        DROPPED.with(|n| n.set(n.get() + dropped.len()));
         tracing::debug!(
             "an embed host and no desktop runtime: {} queued font face(s) dropped \
              (register with RinchContext::register_app_font)",
             dropped.len()
         );
     }
+}
+
+/// Warn (and return how many) if faces `register_font` queued were dropped because the process
+/// looked like an embed host, now that a desktop runtime is being made: an
+/// app that makes a `RinchContext` in `main` before `App::run` loses the
+/// faces it registered up to then (#3042). Called by `RinchRuntime::with_app`
+/// on the UI thread. A plain embed host never makes a runtime, so it never
+/// reaches this and stays quiet (the drop itself is a debug log).
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+pub(super) fn warn_dropped() -> usize {
+    let n = DROPPED.with(|n| n.replace(0));
+    if n > 0 {
+        tracing::warn!(
+            "{n} font face(s) passed to rinch::font::register_font were dropped: they were \
+             registered while a RinchContext existed and no desktop runtime had started yet, \
+             which is an embed host. Pass them to App::fonts, or register them once the app \
+             is running"
+        );
+    }
+    n
 }
 
 impl RinchRuntime {

@@ -487,3 +487,25 @@ fn a_run_ending_in_an_embed_host_drops_the_queued_faces() {
         "kept for the next run"
     );
 }
+
+/// A desktop runtime made after faces were dropped as an embed host's reports
+/// them once (#3042); with none dropped it reports nothing.
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+#[test]
+fn a_runtime_made_after_dropped_faces_reports_them_once() {
+    use crate::font::AppFont;
+    use crate::shell::rinch_runtime::registered_fonts::{
+        drop_queued, queue_font_for, take_new_fonts, warn_dropped,
+    };
+    const FACE: &[u8] = include_bytes!("../../../../assets/fonts/Inter-Regular.ttf");
+
+    let _ = take_new_fonts(&mut Vec::new());
+    let _ = warn_dropped();
+    assert_eq!(warn_dropped(), 0, "nothing dropped, nothing to report");
+    queue_font_for(Drainer::Coming, false, AppFont::serif(FACE));
+    queue_font_for(Drainer::Coming, false, AppFont::sans_serif(FACE));
+    drop_queued();
+    drop_queued();
+    assert_eq!(warn_dropped(), 2, "the faces dropped, once");
+    assert_eq!(warn_dropped(), 0, "reported once");
+}

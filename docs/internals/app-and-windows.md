@@ -192,10 +192,15 @@ whether to wake anything:
   out to be one (in `main`, before its first `RinchContext`) are dropped when
   it does (`wake::note_embed_host`), and so are any queued after the last turn
   of a run that ends in one (`run_unless_exit_asked`'s `RunEnds`), as the
-  window requests kept for a runtime are. A run that ends with no context
-  made keeps them for the next run's runtime, which takes them as it is made. A context's code calling it while a
-  desktop runtime runs in the same process registers with the runtime's
-  windows, not the context.
+  window requests kept for a runtime are. A run that ends with no
+  context made keeps them for the next run's runtime, which takes them as it
+  is made. When a desktop runtime is made after faces were dropped this way
+  (an app that made a `RinchContext` in `main` before `App::run`),
+  `RinchRuntime::with_app` logs one `warn` with the count
+  (`registered_fonts::warn_dropped`); a plain embed host never makes a
+  runtime, so it logs only the `debug` lines. A context's code calling it
+  while a desktop runtime runs in the same process registers with the
+  runtime's windows, not the context.
 
 A face identical to one already queued or registered (`AppFont::is_same_face`:
 the same bytes, generics and `script_fallback`) is skipped, at the queue and
