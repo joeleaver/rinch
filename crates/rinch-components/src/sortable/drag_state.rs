@@ -82,8 +82,9 @@ pub(super) fn carried_class(keyboard: bool, source: SortSource) -> Option<&'stat
 }
 
 /// The carried items' extent along x and y, each with the list's spacing
-/// after it (measured between the pressed item and its neighbour along the
-/// list's axis): what a gap opens by. Zero where the host has no boxes.
+/// after it (measured beside the pressed item on its line,
+/// [`spacing_beside`]): what a gap opens by. Zero where the host has no
+/// boxes.
 pub(super) fn carried_extent(
     cfg: &ListConfig,
     item: &NodeHandle,
@@ -103,22 +104,11 @@ pub(super) fn carried_extent(
         })
         .filter(|f| *f > 0.0)
         .unwrap_or(1.0);
-    let spacing = at
-        .and_then(|i| {
-            let here = item.bounding_rect()?;
-            let (start, len) = span(&here, cfg.axis);
-            if let Some((next, _)) = all.get(i + 1) {
-                let (n, _) = span(&next.bounding_rect()?, cfg.axis);
-                Some(n - (start + len))
-            } else {
-                let (prev, _) = all.get(i.checked_sub(1)?)?;
-                let (p, plen) = span(&prev.bounding_rect()?, cfg.axis);
-                Some(start - (p + plen))
-            }
-        })
-        .unwrap_or(0.0)
-        .max(0.0)
-        / fit;
+    let boxes: Vec<Option<AxisBox>> = all
+        .iter()
+        .map(|(n, _)| Some(AxisBox::of(&n.bounding_rect()?, cfg.axis)))
+        .collect();
+    let spacing = at.map_or(0.0, |i| spacing_beside(&boxes, i)) / fit;
     let (mut w, mut h) = (0.0, 0.0);
     for node in carried {
         if let Some((nw, nh)) = size_of(node) {

@@ -142,6 +142,9 @@ pub enum SortIndicator {
     /// a gap the size of what is carried, and back when the place moves on.
     /// The slide is a CSS transition (`--rinch-sortable-reflow-duration`,
     /// `--rinch-sortable-reflow-easing`); layout does not move.
+    ///
+    /// With [`SortableList::slot`] the gap also holds a box the app can
+    /// style, where the drop lands.
     Gap,
     /// The gap and the caret.
     Both,

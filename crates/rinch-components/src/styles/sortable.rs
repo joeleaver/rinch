@@ -58,6 +58,44 @@ pub fn styles() -> String {
     transition: transform var(--rinch-sortable-reflow-duration, 150ms)
         var(--rinch-sortable-reflow-easing, ease);
 }
+/* SortableList::slot (with a gap): a box the size of what is carried, where
+   the drop lands. Always the list's own pseudo-element, never an item's, so
+   an item's overflow cannot clip it. Between items (and in the room a
+   collapsed item left at the end of its own list) it is the list's absolute
+   ::before over the box the component writes as --rinch-sortable-slot-x /
+   -y / -width / -height, measured from the items as laid out (physical
+   offsets of a measured box, so right to left and reversed rows are placed
+   as laid out), and it moves nothing; at the end of a list it is the list's
+   in-flow ::after, --rinch-sortable-slot-size along the axis, so the list
+   grows to hold it. It shows only as the app styles it:
+   --rinch-sortable-slot-background, -border, -radius. */
+.rinch-sortable--slot::before {
+    content: "";
+    position: absolute;
+    left: var(--rinch-sortable-slot-x, 0px);
+    top: var(--rinch-sortable-slot-y, 0px);
+    width: var(--rinch-sortable-slot-width, 0px);
+    height: var(--rinch-sortable-slot-height, 0px);
+}
+.rinch-sortable--slot-into::after {
+    content: "";
+    flex: none;
+    align-self: stretch;
+    height: var(--rinch-sortable-slot-size, 0px);
+}
+.rinch-sortable--horizontal.rinch-sortable--slot-into::after {
+    height: auto;
+    width: var(--rinch-sortable-slot-size, 0px);
+}
+.rinch-sortable--slot::before,
+.rinch-sortable--slot-into::after {
+    box-sizing: border-box;
+    pointer-events: none;
+    background: var(--rinch-sortable-slot-background, transparent);
+    border: var(--rinch-sortable-slot-border, none);
+    border-radius: var(--rinch-sortable-slot-radius, 0px);
+}
+
 /* SortPreview::Clone and ::Custom: a `.rinch-sortable__ghost` wrapper on
    <body> holding `display: contents` stand-ins for the item's ancestors, so
    the preview's body inherits and matches selectors as the item does. The

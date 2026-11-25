@@ -28,6 +28,7 @@ pub use raster_cache::BUDGET_BYTES as RASTER_CACHE_BUDGET_BYTES;
 pub mod scrollbar;
 mod select;
 pub mod slicing;
+mod subtree;
 mod svg;
 mod text;
 mod text_clip;
@@ -51,6 +52,7 @@ pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
 };
+pub use subtree::{paint_subtree, paint_subtree_at, paint_subtree_bounds};
 pub(crate) use svg::parse_paint_order;
 use svg::*;
 pub(crate) use text::LayeredSpans;
@@ -312,8 +314,19 @@ fn compute_damage_impl(
         // A box that moved carries its whole painted subtree with it, static
         // or positioned (see the doc above, #2222). A subtree the walk cannot
         // bound answers `UNBOUNDED` and the frame repaints in full.
-        let moved = node.painted.is_some()
-            && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
+        // A transform that changed carries it too: a translate written frame
+        // by frame by a `transform` transition moves no layout, and the box
+        // stays a stacking context throughout, so neither the layout test
+        // nor `reordered` below sees what its subtree painted past the box
+        // (a sortable item's `::before` slot, left at the item's old place).
+        // Asked only of a box with a transform of its own, now or as painted.
+        let moved = node.painted.as_ref().is_some_and(|p| {
+            node.prev_layout.x != node.layout.x
+                || node.prev_layout.y != node.layout.y
+                || ((p.transform.is_some() || node.has_applied_transform())
+                    && position_and_transform_in(tree, node_id, scale, Frame::Painted).2
+                        != transform)
+        });
         // A box that started or stopped clipping its content since it was
         // painted: what it painted unclipped is cleared or what it paints
         // unclipped now is drawn, past its own rect (#2222). Walked with its
@@ -4352,44 +4365,6 @@ pub fn viewport_ready(node: &Node) -> bool {
     node.attributes
         .get("data-viewport-ready")
         .is_none_or(|v| v == "true")
-}
-
-/// Paint a subtree rooted at `root_node_id` into `painter`, positioned at (0, 0).
-///
-/// Used for drag-and-drop snapshot capture. The subtree is translated so its
-/// top-left corner is at the scene origin, making it easy to reposition later.
-pub fn paint_subtree(
-    tree: &NodeTree,
-    painter: &mut dyn Painter,
-    root_node_id: RawNodeId,
-    scale: f64,
-    font_cx: &mut parley::FontContext,
-    layout_cx: &mut parley::LayoutContext<Brush>,
-) {
-    // paint_node computes each node's position as: offset + layout.x * scale.
-    // To place the subtree root at (0, 0), we negate just the root's own
-    // layout position — NOT the full absolute position (which would over-shift
-    // by the entire ancestor chain).
-    let Some(node) = tree.get(root_node_id) else {
-        return;
-    };
-    let offset_x = -(node.layout.x as f64 * scale);
-    let offset_y = -(node.layout.y as f64 * scale);
-    let _snapshot = SnapshotPaintScope::enter(root_node_id);
-    ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
-        paint_node(
-            tree,
-            root_node_id,
-            painter,
-            scale,
-            offset_x,
-            offset_y,
-            font_cx,
-            layout_cx,
-            Affine::IDENTITY,
-        )
-    });
-    fold_span_line_visits(tree);
 }
 
 /// Add the inline-ink walks' (span, line) visits made on this thread since

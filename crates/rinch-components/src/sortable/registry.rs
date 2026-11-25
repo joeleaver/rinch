@@ -18,6 +18,8 @@ pub(super) struct ListConfig {
     pub(super) drag_keys: Option<SortKeys>,
     pub(super) preview: SortPreview,
     pub(super) indicator: SortIndicator,
+    /// Draw the open gap's slot ([`SortableList::slot`]).
+    pub(super) slot: bool,
     pub(super) source: SortSource,
     /// The document and its `<body>`, where a preview is mounted.
     pub(super) doc: std::rc::Weak<RefCell<dyn rinch_core::dom::DomDocument>>,
@@ -140,6 +142,8 @@ pub(super) struct Active {
     /// Items carrying a shift, and lists carrying the reflow class.
     pub(super) shifted: Vec<(NodeHandle, f32, f32)>,
     pub(super) reflowing: Vec<NodeHandle>,
+    /// What draws the gap's slot now: an item or an empty list.
+    pub(super) slot: Option<Slot>,
 }
 
 thread_local! {

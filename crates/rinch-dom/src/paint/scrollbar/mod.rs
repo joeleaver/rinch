@@ -71,6 +71,7 @@ pub(crate) use extents::{
     ExactFlow, ROUNDED_RANGE_SLACK, content_extents_in_flow, content_extents_in_flow_rounded,
 };
 pub use extents::{content_extents, scroll_extents};
+pub(crate) use measure::taffy_origin;
 pub(crate) use overflow_abs::OverflowAbsolutes;
 
 /// How thick a thumb is drawn, in logical pixels.

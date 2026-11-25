@@ -1,6 +1,7 @@
 //! Presentation: the gap at the place on offer, laid out as item shifts.
 
 use super::*;
+use rinch_core::dom::NodeId;
 
 /// Take `props` out of `node`'s inline style.
 pub(super) fn clear_props(node: &NodeHandle, props: &[&str]) {
@@ -111,7 +112,24 @@ pub(super) fn reflow() {
         return;
     };
     let mut want: Vec<(NodeHandle, NodeHandle, f32, f32)> = Vec::new();
-    let mut add = |cfg: &ListConfig, node: &NodeHandle, d: f32| {
+    // Each list's direction, read once: a shift `d` is counted along the
+    // flow, and drawn toward smaller coordinates in a list that runs backward
+    // (right to left, `*-reverse`).
+    let mut forward: Vec<(NodeId, bool)> = Vec::new();
+    let mut add = |want: &mut Vec<(NodeHandle, NodeHandle, f32, f32)>,
+                   cfg: &ListConfig,
+                   node: &NodeHandle,
+                   d: f32| {
+        let id = cfg.node.node_id();
+        let ahead = match forward.iter().find(|f| f.0 == id) {
+            Some(f) => f.1,
+            None => {
+                let f = runs_forward(cfg);
+                forward.push((id, f));
+                f
+            }
+        };
+        let d = if ahead { d } else { -d };
         let (dx, dy) = match cfg.axis {
             SortAxis::Vertical => (0.0, d),
             SortAxis::Horizontal => (d, 0.0),
@@ -145,10 +163,11 @@ pub(super) fn reflow() {
             if plan.keys.contains(key) {
                 before += 1;
             } else if before > 0 {
-                add(&cfg, node, -per * before as f32);
+                add(&mut want, &cfg, node, -per * before as f32);
             }
         }
     }
+    let mut slot_now: Option<Slot> = None;
     if let Some((list, slot)) = &plan.gap_at
         && let Some(cfg) = list_by_id(&plan.group, list, plan.doc).filter(|c| c.indicator.gap())
     {
@@ -158,12 +177,23 @@ pub(super) fn reflow() {
             // the ones between the place and the source make room and the
             // source sits at the place — nothing is painted over it.
             for (node, d) in reordered(&cfg, &plan.keys, *slot, plan.spacing) {
-                add(&cfg, &node, d);
+                add(&mut want, &cfg, &node, d);
             }
         } else {
             let d = along(&cfg);
-            for (node, _) in rest_of(&cfg.node, &plan.keys).0.iter().skip(*slot) {
-                add(&cfg, node, d);
+            let rest = rest_of(&cfg.node, &plan.keys).0;
+            if cfg.slot {
+                // Read before the gap's own shift is added: where each item
+                // would be without the gap (its collapse shift, if any).
+                let shift_of = |node: &NodeHandle| {
+                    want.iter()
+                        .find(|w| w.0.node_id() == node.node_id())
+                        .map_or((0.0, 0.0), |w| (w.2, w.3))
+                };
+                slot_now = slot_at(&cfg, &rest, *slot, d - plan.spacing, plan.spacing, shift_of);
+            }
+            for (node, _) in rest.iter().skip(*slot) {
+                add(&mut want, &cfg, node, d);
             }
         }
     }
@@ -204,10 +234,22 @@ pub(super) fn reflow() {
         }
         shifted.push((node, 0.0, 0.0));
     }
-    ACTIVE.with(|a| {
-        if let Some(a) = a.borrow_mut().as_mut() {
-            a.shifted = shifted;
-            a.reflowing = reflowing;
-        }
+    let old_slot = ACTIVE.with(|a| {
+        let mut a = a.borrow_mut();
+        let a = a.as_mut()?;
+        a.shifted = shifted;
+        a.reflowing = reflowing;
+        std::mem::replace(&mut a.slot, slot_now.clone())
     });
+    match (old_slot, slot_now) {
+        (Some(old), Some(new)) if old.same(&new) => {}
+        (old, new) => {
+            if let Some(old) = old {
+                old.erase();
+            }
+            if let Some(new) = new {
+                new.draw();
+            }
+        }
+    }
 }

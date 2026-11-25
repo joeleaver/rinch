@@ -563,3 +563,57 @@ max)`, exactly the value at the default 100) and is `aria-valuemax`. The width
 transition is `var(--rinch-progress-transition, width 200ms ease)`, the one
 Progress always had (Mantine animates width too); `none` makes it jump, as
 `<progress>` does. Pins: `rinch-components/tests/alert_badge_progress_2200.rs`.
+
+## The sortable slot (#3065)
+
+`SortableList::slot` (off by default; Pimble turns it on) puts a box the size
+of what is carried where a gap's drop lands. Off, `reflow` never calls
+`slot_at`, so no class, property or generated box is written and no layout
+changes. On, it is drawn by one `Slot { list, place }` per drag
+(`rinch-components/src/sortable/slot.rs`; the boxes it is placed from,
+`AxisBox`, are in `sortable/axis_box.rs`), always on the **list**, never on
+an item: an item's `overflow: hidden` used to clip a slot hung outside the
+item's box.
+
+- `SlotPlace::At { x, y, w, h }`: the list's `::before`
+  (`.rinch-sortable--slot`), `position: absolute` over the box written as
+  `--rinch-sortable-slot-x/-y/-width/-height`, in the list's padding-box frame.
+  It moves nothing. Used between items, and at the end of the source's own
+  collapsed list (the source still takes its room there).
+- `SlotPlace::End { size }`: the list's in-flow `::after`
+  (`.rinch-sortable--slot-into`), `--rinch-sortable-slot-size` along the axis,
+  so the list grows and a grid or wrapping row puts it where an appended item
+  goes. Used at the end of any other list, an empty one included.
+
+`slot_at` places `At` from the items' **laid-out** boxes, read with
+`NodeHandle::layout_box_in(list)` (`DomLayout::layout_box_in`: the untransformed
+border box in the container's padding-box frame; web sums
+`offsetLeft/Top` up the `offsetParent` chain with each intermediate
+`clientLeft/Top`, and desktop computes the same chain
+(`rinch-dom/src/dom_impl/layout/offset.rs`), each step from Taffy's unrounded
+layout rounded half up on its own as Chrome rounds `offsetLeft`; both `None`
+unless the list is on the item's offsetParent chain, so the list must stay
+positioned or otherwise a containing block for absolutes, the set the trait
+doc lists as measured in Chrome 158 and Firefox 160). `bounding_rect` would
+not do: on the web it includes the shift transforms. The flow direction comes
+from the geometry (`flows_forward`, the first two items on one line), so
+right-to-left and `*-reverse` rows work.
+The rule: the box of the item after the gap, plus its collapse shift, at its
+leading edge; if that falls before every line's start (a gap at a line break
+in the source's own collapsed list, where the items before it slid back a
+line), the item before the gap's shifted trailing edge plus the spacing
+instead. Every shift is written **along the flow** (`reflow` negates it in a
+backward list, `runs_forward`), so in a right-to-left or reversed row the
+items make room toward the flow's end and none is drawn over the slot (#3065
+review: they were shifted toward larger x there, over it); `slot_at` adds the
+translate as written. The pointer's mapping to a place is still forward-only
+(#3084). The spacing a gap opens by (`carried_extent`, `spacing_beside`) is
+measured between the facing edges of the pressed item and a neighbour **on
+its own line**: the next item, else the previous one, else (alone on its
+line) the first two items sharing any line, else 0. Measured against the next
+item in DOM order, a wrap or a grid took the distance across the line break
+(#3065 review), and measured one way only it came out negative in a
+right-to-left row. Pins: `crates/rinch/src/app/sortable_slot_tests.rs`, each placement
+checked as "the slot's painted box is where the dropped card then is" (column,
+wrap, grid, RTL, clipping card, both ends, empty list, off by default), and
+the spacing on the grabbed item's line (wrap, grid, alone on its line).

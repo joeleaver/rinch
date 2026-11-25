@@ -12,6 +12,40 @@ impl DomLayout for WebDocument {
         Some((el.offset_width() as f32, el.offset_height() as f32))
     }
 
+    /// `offsetLeft`/`offsetTop` summed up the `offsetParent` chain to
+    /// `container`, each `offsetParent` passed on the way adding its border
+    /// (`clientLeft`/`clientTop`: an offset is from its parent's padding
+    /// edge). Untransformed, where `getBoundingClientRect` (and so
+    /// `query_node_layout`) is not.
+    fn layout_box_in(
+        &self,
+        node: NodeId,
+        container: NodeId,
+    ) -> Option<rinch_core::reactive::ElementBounds> {
+        let target: &web_sys::Element = self.nodes.get(&container.0)?.dyn_ref()?;
+        let el: &web_sys::HtmlElement = self.nodes.get(&node.0)?.dyn_ref()?;
+        let (width, height) = (el.offset_width() as f32, el.offset_height() as f32);
+        let mut at = el.clone();
+        let (mut x, mut y) = (0.0f32, 0.0f32);
+        loop {
+            x += at.offset_left() as f32;
+            y += at.offset_top() as f32;
+            let parent = at.offset_parent()?;
+            if &parent == target {
+                break;
+            }
+            x += parent.client_left() as f32;
+            y += parent.client_top() as f32;
+            at = parent.dyn_into().ok()?;
+        }
+        Some(rinch_core::reactive::ElementBounds {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
     /// A `<br>`, an `<img>` or a node view's host
     /// (`WebDocument::br_caret_viewport_rect`).
     fn query_inline_box_caret(

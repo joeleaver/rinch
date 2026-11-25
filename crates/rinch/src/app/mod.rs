@@ -49,6 +49,8 @@ mod scroll_into_view;
 mod sortable_2091_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod sortable_2154_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod sortable_slot_tests;
 #[cfg(test)]
 mod tree_drop_tests;
 #[cfg(test)]
@@ -105,6 +107,10 @@ mod detach_damage_966_tests;
 mod devtools_keys;
 #[cfg(test)]
 mod devtools_keys_2689_tests;
+#[cfg(all(test, software_shell))]
+mod drag_ghost_pixmap_3065_tests;
+#[cfg(software_shell)]
+mod drag_ghost_software;
 #[cfg(all(test, feature = "windowing"))]
 mod img_error_2202_tests;
 #[cfg(test)]
@@ -271,6 +277,8 @@ mod gpu_bump_sizes_2466_tests;
 mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_composited_frame_2215_tests;
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
+mod gpu_drag_ghost_damage_tests;
 #[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_encoder_pool_2688_tests;
 #[cfg(all(test, software_shell, feature = "gpu-renderer"))]
@@ -969,15 +977,21 @@ pub(crate) struct ActiveDrag {
     /// Captured painting of the source element's subtree (at origin).
     #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
     pub snapshot: VelloPainter,
-    /// Captured RGBA pixels of the source element's subtree (software backend).
+    /// The software renderer's ghost, a pixmap of the source element's
+    /// subtree: `snapshot_bounds` out to whole pixels, within a surface's
+    /// width and height of the grab point. Owed, not painted, where the GPU
+    /// presents the window (#3065; `drag_ghost_software`).
     #[cfg(software_shell)]
-    pub snapshot_pixels: Vec<u8>,
-    /// Width of the snapshot pixmap in physical pixels.
+    pub(crate) snapshot_software: drag_ghost_software::SoftwareSnapshot,
+    /// Where the snapshot paints, in physical pixels around its origin,
+    /// measured once when the drag starts
+    /// (`rinch_dom::paint::paint_subtree_bounds`): the box, and whatever its
+    /// subtree draws past it. A subtree that cannot be bounded (a `fixed` or
+    /// `sticky` descendant) is drawn clipped to its box through its own
+    /// transform (the bounding box of the box as drawn), and this is that
+    /// box (#3065).
     #[cfg(software_shell)]
-    pub snapshot_width: u32,
-    /// Height of the snapshot pixmap in physical pixels.
-    #[cfg(software_shell)]
-    pub snapshot_height: u32,
+    pub snapshot_bounds: peniko::kurbo::Rect,
     /// Offset within the element where the grab happened, relative to its
     /// top-left, in **logical** pixels: it is `mousedown_pos` minus the node's
     /// layout origin, and `mousedown_pos` is a logical pointer position (#299).
@@ -1364,6 +1378,12 @@ pub struct RinchApp {
     /// Whether we have a previous frame's pixels for dirty region caching.
     #[cfg(software_shell)]
     pub(crate) has_previous_frame: bool,
+    /// Whether the last frame was built for the GPU (`build_gpu_frame`, or
+    /// `build_scene` for an embedded context; `note_gpu_frame`)
+    /// rather than the software renderer (`build_pixels`): which one presents
+    /// the window, so a drag paints the software ghost only for the second.
+    #[cfg(software_shell)]
+    pub(crate) presents_gpu_frames: bool,
     /// Why `has_previous_frame` was last cleared, for the next frame's
     /// `repaint_full_*` counter (see [`Self::invalidate_previous_frame`]).
     #[cfg(software_shell)]
@@ -1722,6 +1742,8 @@ impl RinchApp {
             device_pixel_ratio: 1.0,
             #[cfg(software_shell)]
             has_previous_frame: false,
+            #[cfg(software_shell)]
+            presents_gpu_frames: false,
             #[cfg(software_shell)]
             full_repaint_reason: None,
             perf_reactive_seen: {
@@ -2893,6 +2915,8 @@ impl RinchApp {
         sliced: bool,
     ) -> Option<Vec<rinch_dom::paint::slicing::SurfaceSlice>> {
         use rinch_dom::perf::{Counter, FullRepaintReason};
+        #[cfg(software_shell)]
+        self.note_gpu_frame();
         if !self.scene_dirty && self.scene_is_full && self.scene_sliced == sliced {
             self.perf_add(Counter::PaintCachedFrames, 1);
             return None;
@@ -3178,6 +3202,7 @@ impl RinchApp {
         target: Option<rinch_dom::perf::FullRepaintReason>,
     ) -> GpuFrameKind {
         use rinch_dom::perf::Counter;
+        self.note_gpu_frame();
         if !self.scene_dirty && target.is_none() {
             self.perf_add(Counter::PaintCachedFrames, 1);
             return GpuFrameKind::Unchanged;
@@ -3716,6 +3741,11 @@ impl RinchApp {
         transparent: bool,
     ) -> (&[u8], u32, u32) {
         let (w, h) = self.software_buffer_size(scale, size);
+        self.presents_gpu_frames = false;
+        // A drag that started while the GPU presented owes its ghost (#3065).
+        if let (Some(drag), Some(doc)) = (&mut self.active_dnd, &self.doc) {
+            self.scene_dirty |= drag.snapshot_software.paint_owed(doc);
+        }
 
         // Lazily create or resize the painter
         let first_frame = self.skia_painter.is_none();
@@ -3843,19 +3873,22 @@ impl RinchApp {
             }
 
             // Paint drag-and-drop snapshot overlay (if not suppressed by drop target)
-            if let (Some(drag), Some(_)) = (&self.active_dnd, ghost_now) {
+            let ghost = self.active_dnd.as_ref().and_then(|drag| {
+                let pixmap = drag.snapshot_software.painted()?;
+                ghost_now.map(|_| (drag.ghost_translate(scale), pixmap))
+            });
+            if let Some(((tx, ty), pixmap)) = ghost {
                 // Logical → device pixels, like the Vello twin above (#299):
                 // the blit lands in a physical-pixel pixmap.
-                let (tx, ty) = drag.ghost_translate(scale);
                 Self::blit_drag_overlay(
                     painter.pixels_mut(),
                     w,
                     h,
-                    &drag.snapshot_pixels,
-                    drag.snapshot_width,
-                    drag.snapshot_height,
-                    tx as i32,
-                    ty as i32,
+                    &pixmap.pixels,
+                    pixmap.width,
+                    pixmap.height,
+                    tx as i32 + pixmap.origin.0,
+                    ty as i32 + pixmap.origin.1,
                 );
             }
             // Carried into the next frame's damage so those pixels get
@@ -4021,14 +4054,12 @@ impl RinchApp {
                 return None;
             }
             let (tx, ty) = drag.ghost_translate(scale);
-            Self::ghost_overlay_rect(
-                tx as i32,
-                ty as i32,
-                drag.snapshot_width,
-                drag.snapshot_height,
-                w,
-                h,
-            )
+            // A GPU frame draws the scene and no pixmap, painted or not.
+            let pixmap = match (self.presents_gpu_frames, drag.snapshot_software.painted()) {
+                (true, _) => None,
+                (false, ghost) => Some(ghost.map_or(peniko::kurbo::Rect::ZERO, |g| g.rect())),
+            };
+            Self::ghost_overlay_rect(tx, ty, pixmap, drag.snapshot_bounds, w, h)
         });
         let inspect_now = self
             .inspect_highlight
@@ -4112,35 +4143,48 @@ impl RinchApp {
         }
     }
 
-    /// The framebuffer rect `blit_drag_overlay` touches for the same arguments,
-    /// clipped to the surface. `None` when the ghost lands entirely off-screen.
+    /// The framebuffer rect the drag ghost can touch at translate `(tx, ty)`,
+    /// clipped to the surface: `None` when it lands entirely off-screen.
     ///
-    /// Device (physical) pixels: `dx`/`dy` are the blit's destination offsets
-    /// and `src_w`/`src_h` the snapshot pixmap's size, so this is literally the
-    /// span of framebuffer the blit writes — the same space `compute_dirty_region`
-    /// returns and `clear_rect_*` takes. Deliberately derived from the blit
-    /// arguments rather than re-projected from the cursor: the ghost's position
-    /// then cannot drift from where it was actually drawn, whatever space the
-    /// shell's pointer coordinates turn out to be in (#299).
+    /// Device (physical) pixels, the space `compute_dirty_region` returns and
+    /// `clear_rect_*` takes. The rect holds what the frame's painter writes:
+    ///
+    /// - Vello appends the snapshot's scene at the fractional translate, so
+    ///   an edge at `x + 0.4` antialiases into the pixel past the box, and the
+    ///   scene holds whatever the subtree paints past its box (an outline, a
+    ///   shadow): `bounds` (`ActiveDrag::snapshot_bounds`);
+    /// - a software frame (`pixmap` is `Some`) also blits the pixmap, whose
+    ///   extent around the snapshot's origin is `pixmap`
+    ///   (`SoftwareGhost::rect`), at the translate truncated to whole pixels.
+    ///   An empty pixmap (none could be had) draws nothing: `None`. A GPU
+    ///   frame (`pixmap` is `None`) draws the scene whatever became of the
+    ///   pixmap, which it never blits (#3065).
+    ///
+    /// Both are rounded out to whole pixels. A rect cut to the truncated
+    /// translate left a column of the ghost's right edge and a row of its
+    /// bottom edge on screen at every place it moved from.
     #[cfg(software_shell)]
     fn ghost_overlay_rect(
-        dx: i32,
-        dy: i32,
-        src_w: u32,
-        src_h: u32,
+        tx: f64,
+        ty: f64,
+        pixmap: Option<peniko::kurbo::Rect>,
+        bounds: peniko::kurbo::Rect,
         dst_w: u32,
         dst_h: u32,
     ) -> Option<peniko::kurbo::Rect> {
-        let x0 = dx.max(0).min(dst_w as i32);
-        let y0 = dy.max(0).min(dst_h as i32);
-        let x1 = (dx + src_w as i32).clamp(0, dst_w as i32);
-        let y1 = (dy + src_h as i32).clamp(0, dst_h as i32);
-        if x0 >= x1 || y0 >= y1 {
+        use peniko::kurbo::{Rect, Vec2};
+        let surface = Rect::new(0.0, 0.0, dst_w as f64, dst_h as f64);
+        let scene = bounds + Vec2::new(tx, ty);
+        let drawn = match pixmap {
+            Some(pixmap) if pixmap.is_zero_area() => return None,
+            Some(pixmap) => scene.union(pixmap + Vec2::new(tx.trunc(), ty.trunc())),
+            None => scene,
+        };
+        let r = drawn.expand().intersect(surface);
+        if r.width() <= 0.0 || r.height() <= 0.0 {
             return None;
         }
-        Some(peniko::kurbo::Rect::new(
-            x0 as f64, y0 as f64, x1 as f64, y1 as f64,
-        ))
+        Some(r)
     }
 
     /// Blit premultiplied RGBA source pixels onto a destination buffer with
@@ -8601,32 +8645,116 @@ mod drag_ghost_dirty_region_tests {
     use super::*;
     use peniko::kurbo::Rect;
 
-    /// Every number here is a device (physical) pixel: the arguments are the
-    /// blit's own destination offsets and pixmap size, so the rect is the span
-    /// of framebuffer that was written, not a re-projection of the cursor.
+    /// The box of a `w` x `h` snapshot, as `paint_subtree_bounds` gives one
+    /// that paints nothing past its box.
+    fn boxed(w: u32, h: u32) -> Rect {
+        Rect::new(0.0, 0.0, w as f64, h as f64)
+    }
+
+    /// Every number here is a device (physical) pixel: the translate is the
+    /// blit's and the scene's, the pixmap's extent the blit's.
     #[test]
-    fn the_rect_is_the_span_the_blit_wrote() {
-        let r = RinchApp::ghost_overlay_rect(297, 501, 239, 40, 900, 700).unwrap();
+    fn the_rect_is_the_span_the_ghost_covers() {
+        let r = RinchApp::ghost_overlay_rect(
+            297.0,
+            501.0,
+            Some(boxed(239, 40)),
+            boxed(239, 40),
+            900,
+            700,
+        )
+        .unwrap();
         assert_eq!(r, Rect::new(297.0, 501.0, 536.0, 541.0));
+    }
+
+    /// Vello draws the ghost at the fractional translate: its right and
+    /// bottom edges antialias into the pixels past the truncated span, and a
+    /// rect cut there left a line of each edge behind at every place the
+    /// ghost moved from.
+    #[test]
+    fn a_fractional_translate_takes_the_pixels_its_edges_reach() {
+        let r = RinchApp::ghost_overlay_rect(
+            297.4,
+            501.6,
+            Some(boxed(239, 40)),
+            boxed(239, 40),
+            900,
+            700,
+        )
+        .unwrap();
+        assert_eq!(r, Rect::new(297.0, 501.0, 537.0, 542.0));
+    }
+
+    /// What the subtree paints past its box (an outline, a shadow) is the
+    /// ghost's too.
+    #[test]
+    fn what_paints_past_the_box_is_covered() {
+        let bounds = Rect::new(-3.0, -2.0, 245.0, 48.0);
+        let r = RinchApp::ghost_overlay_rect(297.0, 501.0, Some(boxed(239, 40)), bounds, 900, 700)
+            .unwrap();
+        assert_eq!(r, Rect::new(294.0, 499.0, 542.0, 549.0));
+    }
+
+    /// The software pixmap holds what paints past the box as well, so its
+    /// blit starts left of and above the truncated translate (#3065).
+    #[test]
+    fn a_pixmap_reaching_past_the_box_is_covered_from_its_origin() {
+        let (pixmap, bounds) = (
+            Rect::new(-60.0, -30.0, 180.0, 90.0),
+            Rect::new(-59.5, -29.5, 179.5, 89.5),
+        );
+        let r = RinchApp::ghost_overlay_rect(297.7, 501.0, Some(pixmap), bounds, 900, 700).unwrap();
+        assert_eq!(r, Rect::new(237.0, 471.0, 478.0, 591.0));
+    }
+
+    /// A ghost whose reach is off the surface damages nothing, however far
+    /// its subtree paints past its box (#3065: one that could not be
+    /// bounded damaged the whole surface on every frame, off-screen too).
+    #[test]
+    fn a_reach_entirely_off_screen_contributes_nothing() {
+        let bounds = Rect::new(-40.0, -40.0, 400.0, 300.0);
+        assert!(
+            RinchApp::ghost_overlay_rect(-900.0, 10.0, Some(boxed(239, 40)), bounds, 900, 700)
+                .is_none()
+        );
     }
 
     #[test]
     fn a_ghost_hanging_off_the_top_left_is_clipped_to_the_surface() {
-        let r = RinchApp::ghost_overlay_rect(-30, -12, 239, 40, 900, 700).unwrap();
+        let r = RinchApp::ghost_overlay_rect(
+            -30.0,
+            -12.0,
+            Some(boxed(239, 40)),
+            boxed(239, 40),
+            900,
+            700,
+        )
+        .unwrap();
         assert_eq!(r, Rect::new(0.0, 0.0, 209.0, 28.0));
     }
 
     #[test]
     fn a_ghost_hanging_off_the_bottom_right_is_clipped_to_the_surface() {
-        let r = RinchApp::ghost_overlay_rect(800, 680, 239, 40, 900, 700).unwrap();
+        let r = RinchApp::ghost_overlay_rect(
+            800.0,
+            680.0,
+            Some(boxed(239, 40)),
+            boxed(239, 40),
+            900,
+            700,
+        )
+        .unwrap();
         assert_eq!(r, Rect::new(800.0, 680.0, 900.0, 700.0));
     }
 
     #[test]
     fn a_ghost_entirely_off_screen_contributes_nothing() {
-        assert!(RinchApp::ghost_overlay_rect(-400, 10, 239, 40, 900, 700).is_none());
-        assert!(RinchApp::ghost_overlay_rect(10, 900, 239, 40, 900, 700).is_none());
-        assert!(RinchApp::ghost_overlay_rect(10, 10, 0, 40, 900, 700).is_none());
+        let off = |tx, ty, w, h| {
+            RinchApp::ghost_overlay_rect(tx, ty, Some(boxed(w, h)), boxed(w, h), 900, 700)
+        };
+        assert!(off(-400.0, 10.0, 239, 40).is_none());
+        assert!(off(10.0, 900.0, 239, 40).is_none());
+        assert!(off(10.0, 10.0, 0, 40).is_none());
     }
 
     /// At scale 2 the snapshot pixmap and the blit offsets are already doubled,
@@ -8635,7 +8763,15 @@ mod drag_ghost_dirty_region_tests {
     /// in logical pixels would truncate it here and leave half the ghost behind.
     #[test]
     fn the_rect_is_device_pixels_not_logical() {
-        let r = RinchApp::ghost_overlay_rect(1000, 800, 478, 80, 1800, 1400).unwrap();
+        let r = RinchApp::ghost_overlay_rect(
+            1000.0,
+            800.0,
+            Some(boxed(478, 80)),
+            boxed(478, 80),
+            1800,
+            1400,
+        )
+        .unwrap();
         assert_eq!(r, Rect::new(1000.0, 800.0, 1478.0, 880.0));
     }
 

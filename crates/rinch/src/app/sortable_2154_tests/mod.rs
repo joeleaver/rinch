@@ -375,11 +375,14 @@ fn assert_clean(f: &Fixture) {
         "rinch-sortable__item--lifted",
         "rinch-sortable__item--drop-before",
         "rinch-sortable__item--drop-after",
+        "rinch-sortable--slot",
+        "rinch-sortable--slot-into",
     ] {
         assert!(carrying(f, class).is_empty(), "{class} left behind");
     }
-    for k in ["a", "b", "c", "d", "e", "f"] {
-        assert_eq!(shift(f, k), None, "{k}'s shift left behind");
+    // Every card still on the board (a test may have emptied a list).
+    for k in f.board.get().into_iter().flat_map(|(_, keys)| keys) {
+        assert_eq!(shift(f, &k), None, "{k}'s shift left behind");
     }
     assert_eq!(sortable_drag(), None);
     assert_eq!(sortable_drag_pointer(), None);

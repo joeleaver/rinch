@@ -61,6 +61,17 @@ pub struct SortableList {
     /// How a place in this list is shown: a caret (the default), a gap that
     /// opens there, both, or nothing ([`SortIndicator`]).
     pub indicator: SortIndicator,
+    /// With a gap ([`SortIndicator::Gap`] or [`SortIndicator::Both`]): also
+    /// draw a box in the open gap, where the drop lands, for the app to style
+    /// (`--rinch-sortable-slot-background`, `-border`, `-radius`). Off by
+    /// default, and then nothing of it is drawn or written.
+    ///
+    /// The slot is the list's own `::before` (absolutely positioned over the
+    /// gap, so the list must stay its containing block: `position: relative`,
+    /// its default) and, at the end of a list the carried items come from
+    /// elsewhere, its in-flow `::after` (the list grows by the slot). A list
+    /// that turns it on gives up both pseudo-elements to it during a drag.
+    pub slot: bool,
     /// How this list's items look while a pointer drags them: unchanged (the
     /// default), dimmed, collapsed or hidden ([`SortSource`]).
     pub source: SortSource,
@@ -76,6 +87,7 @@ impl std::fmt::Debug for SortableList {
             .field("keyboard", &self.keyboard)
             .field("preview", &self.preview)
             .field("indicator", &self.indicator)
+            .field("slot", &self.slot)
             .field("source", &self.source)
             .finish()
     }
@@ -97,6 +109,7 @@ impl Default for SortableList {
             drag_keys: None,
             preview: SortPreview::Clone,
             indicator: SortIndicator::Caret,
+            slot: false,
             source: SortSource::Unchanged,
         }
     }
@@ -252,6 +265,7 @@ impl Component for SortableList {
             drag_keys: self.drag_keys.clone(),
             preview: self.preview.clone(),
             indicator: self.indicator,
+            slot: self.slot,
             source: self.source,
             doc: __scope.doc_weak(),
             body: __scope.body_handle(),

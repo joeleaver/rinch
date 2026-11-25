@@ -7,7 +7,9 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 **Absolute positioning.** Taffy resolves an out-of-flow box against its **direct
 parent**, always. CSS resolves an absolute box against the **padding box of the
 nearest ancestor that establishes a containing block**
-(`Node::establishes_abs_containing_block`: positioned, or transformed) — or,
+(`Node::establishes_abs_containing_block`: positioned, or a containing block
+for fixed boxes — see "A fixed box under a transformed ancestor" below — or
+`will-change: position`; Chrome 158 and Firefox 160 agree on that set, #3065) — or,
 when it has none, against the initial containing block. rinch corrects both
 (`crates/rinch-dom/src/out_of_flow.rs`, whose module doc has the detail):
 
@@ -601,7 +603,7 @@ percentages are Taffy's and right).
 **A fixed box under a transformed ancestor is contained by it** (#1372). A
 `transform` other than `none` (an identity included), `contain: paint` or
 `layout`, a `filter` or `backdrop-filter`, a `perspective`, or a `will-change`
-naming one of those or `transform` makes the element the containing block of
+naming one of those, `transform` or `contain` makes the element the containing block of
 its `position: fixed` descendants (CSS Transforms 1 §2;
 `Node::establishes_fixed_containing_block`, the non-transform ones read from
 `ComputedStyle::contains_fixed`). A positioned element does not, nor does a
