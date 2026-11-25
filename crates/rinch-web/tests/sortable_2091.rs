@@ -1,6 +1,6 @@
 //! Sortable lists (#2091) in a real browser: rinch-web's pointer-driven drag
 //! suite and key delegation drive `SortableList` the way desktop's event path
-//! does (`crates/rinch/src/app/sortable_2091_tests.rs`). A horizontal row of
+//! does (`crates/rinch/src/app/sortable_2091_tests/`). A horizontal row of
 //! three 150px columns in a 300px `overflow-x: auto` strip; each column a
 //! 90px `overflow-y: auto` list of 30px cards: c1 [a b c d], c2 [e], c3 [].
 //! c2 refuses a second card.
@@ -128,6 +128,7 @@ fn mount() -> Signal<Vec<Col>> {
             BOARD.with(|b| b.set(Some(board)));
             rsx! {
                 SortableList {
+                    keyboard: true,
                     group: "columns", id: "row", axis: SortAxis::Horizontal,
                     style: "--rinch-sortable-gap: 0px; width: 300px; overflow-x: auto; margin: 0; padding: 0",
                     ondrop: move |m: SortMove| on_drop(board, m),
@@ -140,6 +141,7 @@ fn mount() -> Signal<Vec<Col>> {
                             style: "flex: 0 0 150px; width: 150px",
                             SortableHandle { style: "height: 20px" }
                             SortableList {
+                                keyboard: true,
                                 group: "cards", id: c.id.clone(),
                                 style: "--rinch-sortable-gap: 0px; height: 90px; overflow-y: auto; margin: 0; padding: 0",
                                 judge: Some(Rc::new(judge) as SortJudge),

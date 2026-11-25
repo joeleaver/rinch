@@ -101,7 +101,7 @@ pub use inline_style::{
     StyleProp, collapse_declarations_where, is_important, normalize_property_name,
     serialize_declarations, split_declarations, split_declarations_keeping_duplicates,
 };
-pub use late_child::{on_child_inserted, on_child_removed};
+pub use late_child::{insert_observer_count, on_child_inserted, on_child_removed};
 pub use render_scope::*;
 pub use traits::*;
 
