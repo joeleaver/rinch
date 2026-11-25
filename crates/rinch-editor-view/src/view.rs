@@ -1330,6 +1330,11 @@ impl ViewDesc {
         if new_end - start > common {
             // New children go in before the unchanged suffix (or at the end).
             regroup = true;
+            let anchor = if inline {
+                None
+            } else {
+                self.block_end_anchor(old_end)
+            };
             let mut built = Vec::with_capacity(new_end - at);
             for i in at..new_end {
                 if let Some(new_desc) = ViewDesc::build(new.child(i), cx) {
@@ -1337,14 +1342,10 @@ impl ViewDesc {
                         built.push(new_desc);
                         continue;
                     }
-                    // At the end, still before the trailing-break placeholder,
-                    // which stays last until `sync_trailing_break` drops it.
-                    match self
-                        .children
-                        .get(old_end)
-                        .map(|c| &c.dom)
-                        .or(self.trailing_break.as_ref())
-                    {
+                    // Before the unchanged suffix, or right after the last
+                    // block: never after the overlays the view keeps in the
+                    // root (`Self::block_end_anchor`).
+                    match &anchor {
                         Some(next) => self.dom.insert_before(&new_desc.dom, next),
                         None => self.dom.append_child(&new_desc.dom),
                     }
@@ -1394,6 +1395,14 @@ impl ViewDesc {
             .iter()
             .map(|o| o.has_view && twice_set.contains(&node_key(&o.node)))
             .collect();
+        // Where the placed children go: before the unchanged suffix, or right
+        // after the stretch. Asked before anything in the stretch is retired or
+        // moved, so it names a node that stays where it is.
+        let anchor = if self.node.is_textblock() {
+            None
+        } else {
+            self.block_end_anchor(old_end)
+        };
         let mut old: Vec<Option<ViewDesc>> =
             self.children.drain(start..old_end).map(Some).collect();
         // An old descriptor some new child is the same node as is that child's,
@@ -1468,13 +1477,8 @@ impl ViewDesc {
                 retire(desc, cx, None);
             }
         }
-        // Place them in order before the unchanged suffix (or the trailing-break
-        // placeholder, or at the end); a kept host is moved, not rebuilt.
-        let anchor = self
-            .children
-            .get(start)
-            .map(|c| c.dom.clone())
-            .or(self.trailing_break.clone());
+        // Place them in order before `anchor`; a kept host is moved, not
+        // rebuilt.
         // A textblock places its inline children by `regroup_inline`, which
         // the caller runs.
         let placed_here = if self.node.is_textblock() {
@@ -1489,6 +1493,31 @@ impl ViewDesc {
             }
         }
         self.children.splice(start..start, placed);
+    }
+
+    /// The host node a block child that is to follow `children[..end]` is
+    /// inserted before: the first child of the unchanged suffix, else the
+    /// trailing-break placeholder, else whatever host node follows
+    /// `children[end - 1]` (with no children, the host's first node).
+    ///
+    /// The root also holds nodes that are not blocks: the caret, the selection
+    /// rectangles, the node-selection outline, the drop caret, the IME preedit,
+    /// all appended after the blocks. A block appended at the very end goes in
+    /// before them, so the host's children start with the blocks, in the
+    /// model's order, and sibling selectors over the blocks (`p + p`,
+    /// `:last-child`) read the document rather than wherever the caret is.
+    /// `None` means the blocks end the host and the new one is appended.
+    fn block_end_anchor(&self, end: usize) -> Option<NodeHandle> {
+        if let Some(next) = self.children.get(end) {
+            return Some(next.dom.clone());
+        }
+        if let Some(br) = &self.trailing_break {
+            return Some(br.clone());
+        }
+        match end.checked_sub(1).and_then(|i| self.children.get(i)) {
+            Some(last) => last.dom.next_sibling(),
+            None => self.dom.children().into_iter().next(),
+        }
     }
 
     /// The placed host node of the first block child, if any (the placeholder is
@@ -7329,6 +7358,10 @@ mod shared_wraps_1833_tests;
 #[cfg(test)]
 #[path = "incremental_fresh_1833_prop_tests.rs"]
 mod incremental_fresh_1833_prop_tests;
+
+#[cfg(test)]
+#[path = "block_order_tests.rs"]
+mod block_order_tests;
 
 #[cfg(test)]
 #[path = "inline_doc_1833_tests.rs"]
