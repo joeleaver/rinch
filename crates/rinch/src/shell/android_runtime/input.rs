@@ -6,8 +6,10 @@ use std::time::Instant;
 use android_activity::AndroidApp;
 use android_activity::InputStatus;
 use android_activity::input::{KeyAction, KeyEvent, KeyMapChar, Keycode, MotionAction};
-use rinch_platform::{KeyCode, Modifiers, PlatformEvent};
+use rinch_platform::{AppAction, KeyCode, Modifiers, PlatformEvent};
 
+use super::loop_state::LoopState;
+use super::process_actions;
 use crate::shell::android_key::{KeyPhase, KeyTranslator, MapChar, RawKey};
 use crate::shell::android_key_status::{KeyAnswers, KeyDelivery, KeyStatus, undelivered};
 use crate::shell::touch_gesture::{EventClock, TouchAction, TouchGesture};
@@ -115,6 +117,49 @@ pub(super) fn drain_input_events(
 
     for event in events {
         dispatch(event);
+    }
+}
+
+/// What one turn's input was, for the steps after it that react to it.
+pub(super) struct TurnInput {
+    /// Every event dispatched this turn, in order.
+    pub(super) events: Vec<PlatformEvent>,
+    /// Whether any of them asked for the platform's text-selection toolbar
+    /// (`AppAction::ShowTextContextMenu`, issue #813).
+    pub(super) toolbar_requested: bool,
+}
+
+impl LoopState {
+    /// Read and dispatch the activity's input queue.
+    pub(super) fn dispatch_input(&mut self, android_app: &AndroidApp) -> TurnInput {
+        // Each event is dispatched as it is read: a key's answer to the system
+        // (handled, or handed back) is what the app made of it (#3062).
+        let mut input_events = Vec::new();
+        let mut toolbar_requested = false;
+        drain_input_events(
+            android_app,
+            &mut self.gesture,
+            &mut self.event_clock,
+            self.scale_factor,
+            Instant::now(),
+            &mut self.keys,
+            &mut self.key_answers,
+            &mut |event| {
+                let actions =
+                    self.app
+                        .handle_event(event.clone(), self.physical_size, self.scale_factor);
+                toolbar_requested |= actions
+                    .iter()
+                    .any(|a| matches!(a, AppAction::ShowTextContextMenu));
+                process_actions(&actions, &mut self.running);
+                input_events.push(event);
+                self.app.key_down_unused()
+            },
+        );
+        TurnInput {
+            events: input_events,
+            toolbar_requested,
+        }
     }
 }
 

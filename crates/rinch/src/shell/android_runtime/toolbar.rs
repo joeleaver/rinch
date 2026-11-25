@@ -1,8 +1,14 @@
 //! The platform's floating text-selection toolbar (issue #813).
 
-use rinch_android::text_action::{PhysicalRect, TextActionItems, ToolbarMirror, ToolbarPush};
+use rinch_android::text_action::{
+    PhysicalRect, TextAction, TextActionEvent, TextActionItems, ToolbarMirror, ToolbarPush,
+};
+use rinch_platform::{MouseButton, PlatformEvent};
 
-use crate::app::TextEditState;
+use super::input::TurnInput;
+use super::loop_state::LoopState;
+use super::process_actions;
+use crate::app::{TextEditAction, TextEditState};
 
 /// The seam's anchor — the selection's real rect, or a 1px caret rect when it
 /// is collapsed, in logical window px — in the physical window pixels the
@@ -84,5 +90,108 @@ pub(super) fn push_text_toolbar(
             items,
             push == ToolbarPush::Start || long_press,
         ),
+    }
+}
+
+impl LoopState {
+    /// A long press on a text field asks for the platform's floating
+    /// text-selection toolbar (issue #813). The press itself — a right
+    /// button, from `tick_long_press` — was dispatched just before this under
+    /// `TextContextMenuPresentation::Shell`, so the field it landed on
+    /// holds the input claim and its caret is placed by the seam's caret
+    /// rule; the toolbar floats beside the state the seam reports. Any
+    /// other press, a key and a scroll take an open toolbar down, as they
+    /// do over a platform text view.
+    pub(super) fn answer_toolbar_request(&mut self, input: &TurnInput) {
+        let pressed_elsewhere = input.events.iter().any(|e| {
+            matches!(
+                e,
+                PlatformEvent::MouseDown {
+                    button: MouseButton::Left,
+                    ..
+                } | PlatformEvent::KeyDown { .. }
+                    | PlatformEvent::MouseWheel { .. }
+            )
+        });
+        if input.toolbar_requested {
+            // The platform convention: a long press selects the word under
+            // the finger (a press inside an existing selection keeps it), and
+            // an empty field — or a press on whitespace — keeps its caret and
+            // offers only Paste.
+            self.app.select_word_at_caret();
+            self.clipboard_has_clip = rinch_android::clipboard::has_text();
+            if let Some(state) = self.app.text_edit_state() {
+                push_text_toolbar(
+                    &mut self.text_toolbar,
+                    &state,
+                    self.scale_factor,
+                    self.clipboard_has_clip,
+                    true,
+                );
+            }
+        } else if pressed_elsewhere && self.text_toolbar.finish() {
+            rinch_android::text_action::finish_toolbar();
+        }
+    }
+
+    /// What the platform did with the text actions since the last turn: a
+    /// toolbar item tapped, an IME's own `performContextMenuAction`, or the
+    /// toolbar going away. Performed here, on the loop, through the seam —
+    /// which runs exactly the code the keyboard shortcut runs (issue #813).
+    pub(super) fn perform_text_actions(&mut self, toolbar_requested: bool) {
+        for event in rinch_android::text_action::drain_text_action_events() {
+            match event {
+                TextActionEvent::ToolbarDismissed => self.text_toolbar.dismissed(),
+                TextActionEvent::Perform { action, source } => {
+                    log::info!("text action: {action:?} from {source:?}");
+                    // Cut, Copy and Paste end the toolbar's interaction, from
+                    // either source. A toolbar item has finished the mode on
+                    // the Java side already — before reporting the item, so
+                    // its dismissal is normally drained by now — and the
+                    // mirror only has to stop believing in it, or the refresh
+                    // after this would re-prepare it and, on the UI thread,
+                    // start a new one (PR #819 review, F1). An IME request
+                    // finished nothing, so the loop asks. Not when a fresh
+                    // toolbar was requested this very turn: that one is newer
+                    // than anything this drain holds.
+                    if !toolbar_requested && self.text_toolbar.performing(action, source) {
+                        rinch_android::text_action::finish_toolbar();
+                    }
+                    let actions = self.app.perform_text_edit(match action {
+                        TextAction::Cut => TextEditAction::Cut,
+                        TextAction::Copy => TextEditAction::Copy,
+                        TextAction::Paste => TextEditAction::Paste,
+                        TextAction::SelectAll => TextEditAction::SelectAll,
+                    });
+                    process_actions(&actions, &mut self.running);
+                }
+            }
+        }
+    }
+
+    /// Keep an open toolbar current: the field's state is re-read every
+    /// turn, so Cut and Copy appear the moment Select all made a selection,
+    /// the toolbar follows a caret the user moved, and it goes when the
+    /// field loses the keyboard. `ToolbarMirror` makes this cost nothing
+    /// while nothing changed. A refresh never starts a toolbar (see
+    /// `push_text_toolbar`). Skipped on a long-press turn, which pushed the
+    /// state it just read.
+    pub(super) fn refresh_text_toolbar(&mut self, toolbar_requested: bool) {
+        if self.text_toolbar.is_shown() && !toolbar_requested {
+            match self.app.text_edit_state() {
+                Some(state) => push_text_toolbar(
+                    &mut self.text_toolbar,
+                    &state,
+                    self.scale_factor,
+                    self.clipboard_has_clip,
+                    false,
+                ),
+                None => {
+                    if self.text_toolbar.finish() {
+                        rinch_android::text_action::finish_toolbar();
+                    }
+                }
+            }
+        }
     }
 }
