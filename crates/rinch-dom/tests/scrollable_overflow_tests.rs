@@ -34,7 +34,7 @@
 //! | 200x100 `auto` `padding: 20px`, 161x61 child | 201x101 | 200x100 |
 //! | 200x100 `auto` `border: 5px` `padding: 20px`, 150x250 child | 190x290 | 190x90 |
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::{Scrollbars, content_extents, scrollbars};
 

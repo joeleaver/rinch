@@ -42,7 +42,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 /// `body > div.list > 500 * (div.row > span > "cell")`, laid out once with

@@ -12,7 +12,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_core::image::{
     DecodedImageError, ImageLoadResult, MAX_DECODED_IMAGE_BYTES, register_image_scheme,
     register_rgba, unregister_rgba,

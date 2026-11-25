@@ -6,7 +6,7 @@
 //! Expected rects (viewport, `getBoundingClientRect`) are Chromium
 //! 153.0.8010.12's with `*{box-sizing:border-box} body{margin:0}`.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 fn rect(html: &str, m: &str) -> [f32; 4] {

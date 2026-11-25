@@ -22,7 +22,7 @@
 //! The pictures arrive here one at a time through a loader that answers only
 //! once the test releases a source, a layout after each: deterministic, and
 //! the order Postrinch's loads happened to finish in.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
 use std::sync::{Arc, Mutex};

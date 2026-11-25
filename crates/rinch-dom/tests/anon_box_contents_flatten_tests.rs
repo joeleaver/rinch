@@ -40,7 +40,7 @@
 //! is witnessed today, and it is the one place in this file whose fixtures fail
 //! against a walk mutant (#585).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

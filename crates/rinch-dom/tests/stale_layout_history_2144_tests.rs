@@ -11,7 +11,7 @@
 //! No number here is a glyph measurement: each assertion compares two layouts
 //! of the same document on the same host.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::node::NodeKind;
 

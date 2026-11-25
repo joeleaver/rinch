@@ -31,7 +31,7 @@
 //! playing Segoe UI Emoji. The copies are told apart by blob id.
 
 use parley::fontique::{Blob, FontInfoOverride, GenericFamily};
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const SPACE_GROTESK: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-VariableFont_wght.ttf");

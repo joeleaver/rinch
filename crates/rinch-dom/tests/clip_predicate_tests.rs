@@ -23,7 +23,7 @@
 //!   `the_clip_rect_scales_with_the_dpi_scale` pin it.
 
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::computed_style::OverflowValue;
 use rinch_dom::computed_style::PositionValue;
 use rinch_dom::node::{NodeTree, RawNodeId};

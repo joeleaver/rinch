@@ -24,7 +24,7 @@
 mod scene;
 
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::computed_style::{BackgroundValue, LengthPercentageValue};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use scene::{H, W};

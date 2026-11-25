@@ -402,3 +402,42 @@ fn an_ltr_field_keeps_its_direction_whatever_its_value() {
         "the Hebrew word left of the Latin: {hebrew} vs {latin}"
     );
 }
+
+/// #2950: a Latin value in an rtl field has its first and last carets at
+/// the paragraph's edges, as Chrome 158 draws them: offset 0 at the column's
+/// right (110, its 1px caret held inside), offset 3 at the value's left, 83
+/// (`abc` is 27.92 wide, right-aligned in `[9, 111)`). A press left of the
+/// value is its end, one at the right edge its start. Hebrew opening an ltr
+/// field has offset 0 at the column's left. Before parley fork item 20 they
+/// were at the run's edges (offset 0 at 83, offset 3 at the right).
+#[test]
+fn latin_in_an_rtl_field_has_its_ends_at_the_paragraphs_edges_2950() {
+    let (mut app, id, field) = page("input", &[("dir", "rtl")], "", "abc");
+    focus(&mut app, &field, id);
+    key(&mut app, KeyCode::Home);
+    assert_eq!(caret_pos(&app, id), 0);
+    near(
+        caret_x(&field) + rinch_dom::form_control::CARET_WIDTH,
+        CONTENT_RIGHT,
+        0.5,
+        "Home: the caret ends at the column's right",
+    );
+    key(&mut app, KeyCode::End);
+    assert_eq!(caret_pos(&app, id), 3);
+    near(caret_x(&field), 83.08, 0.5, "End: at the value's left");
+    click(&mut app, 30.0, 15.0);
+    assert_eq!(caret_pos(&app, id), 3, "left of the value: its end");
+    click(&mut app, 109.0, 15.0);
+    assert_eq!(caret_pos(&app, id), 0, "at the right edge: its start");
+
+    let (mut app, id, field) = page("input", &[], "", HEBREW);
+    focus(&mut app, &field, id);
+    key(&mut app, KeyCode::Home);
+    assert_eq!(caret_pos(&app, id), 0);
+    near(
+        caret_x(&field),
+        CONTENT_LEFT,
+        0.5,
+        "ltr Home: the column's left",
+    );
+}

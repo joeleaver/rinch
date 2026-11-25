@@ -129,10 +129,6 @@ jobs:
           #     examples/gpu-device-config enable `rinch/gpu`.
           #   * event_dispatch.rs::paste_image_tests (cfg(all(test, windowing, clipboard)))
           #     runs only because four examples enable `rinch/clipboard`.
-          # And one runs ONLY in this shard, never under `--workspace`:
-          #   * app/mod.rs::drag_ghost_dirty_region_tests (cfg(all(test, software_shell)) —
-          #     the #173 pin) needs `windowing` WITHOUT `gpu-renderer`, and `--workspace`
-          #     unifies `rinch/gpu` on. Adding `gpu` to the `-p rinch` line below would kill it.
           # Retarget or drop those examples and the pins go dead silently, so name the
           # combinations here rather than inheriting them by luck.
           #
@@ -148,18 +144,19 @@ jobs:
           # `debug` is listed for the same reason: app/debug_commands.rs is
           # cfg(feature = "debug") and its #401 pins (MCP `scroll()` drives the real
           # wheel path) run under `--workspace` only because examples/ui-zoo-desktop
-          # enables `rinch/debug`. It does not pull `gpu`, so the software_shell
-          # pins below stay alive.
+          # enables `rinch/debug`.
           #
-          # `desktop` is listed on the `-p rinch` line to name that gate explicitly
-          # rather than inherit it: menu/mod.rs's muda half is cfg(feature =
-          # "native-menus") and its winit half cfg(feature = "windowing"), and
-          # `desktop` is a DEFAULT feature of `rinch`, so its #183 pins do run
-          # today — but they would die silently if that default ever flipped.
-          # Naming it in the existing set is free (the resolved features are
-          # unchanged); a separate `-p rinch --features desktop` line would be a
-          # whole extra build of `rinch` and its deps for identical coverage,
-          # because that line also picks up `desktop` from the defaults.
+          # The software-only shell. `gpu` is a default feature of `rinch` (with
+          # `desktop`), and `--workspace` unifies `rinch/gpu` on, so the shell's
+          # `cfg(not(feature = "gpu-renderer"))` paths (the software-only paint,
+          # window creation and pacing in shell/rinch_runtime/) are compiled and
+          # tested only on the `--no-default-features` lines here: the first one
+          # below (with native menus) and the `windowing` one (without). The GPU
+          # half of the same shell runs under `--workspace` and in `test-gpu`.
+          # `desktop` is named on those lines rather than inherited, so the
+          # #183 menu pins (menu/mod.rs's muda half is cfg(feature =
+          # "native-menus"), its winit half cfg(feature = "windowing")) cannot
+          # die silently with a change of defaults.
           - shard: feature-gated
             run: |
               cargo test -p rinch-editor-core --features serde,markdown
@@ -173,11 +170,11 @@ jobs:
               # shard, where ui-zoo and video-call turn `media` on: H.264 alone,
               # and a browser-shaped VP8-first offer answered in H.264.
               cargo test -p rinch-rtc --features media,media-vp8
-              cargo test -p rinch --features desktop,embed,theme,clipboard,debug
+              cargo test -p rinch --no-default-features --features desktop,embed,theme,clipboard,debug
               # #2435: the lib's tests without the native menus, where a
               # window's chords are armed at mount (`menu_bar_2435_tests`).
               cargo test -p rinch --no-default-features --features windowing --lib
-              # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
+              # `desktop` WITHOUT `clipboard`, software only as the lines above. The
               # text context menu's no-clipboard pin (#813,
               # `without_the_clipboard_feature_a_selected_field_greys_cut_and_copy`)
               # is cfg(not(feature = "clipboard")): the line above enables the
@@ -185,7 +182,7 @@ jobs:
               # line below compiles no `app` module at all — so without this line
               # it runs nowhere. Filtered to the menu's fixtures, which is all this
               # configuration adds; it is still a second build of `rinch`.
-              cargo test -p rinch --lib text_context_menu
+              cargo test -p rinch --no-default-features --features desktop --lib text_context_menu
               # The menu system without a desktop backend — the configuration
               # `rinch-web` resolves `rinch` to. It is the **decoupling** check, not
               # extra coverage: `menu::app_menu_bar`'s `portable_tests` and
@@ -559,11 +556,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # `cargo clippy --workspace` above unifies `rinch/gpu` on (pulled in by the
-      # GPU examples), which turns `software_shell` off workspace-wide — so this
-      # is the only configuration in which `software_shell`-gated code is ever
-      # linted (#629).
+      # GPU examples), and `gpu` is a default feature of `rinch` too, so the
+      # software-only shell (`cfg(not(feature = "gpu-renderer"))`) is linted
+      # with the native menus only by the `--no-default-features --features
+      # desktop` line here (#629). The bare line is `rinch`'s defaults, the
+      # configuration an app gets: `desktop` and `gpu`.
       - name: Run clippy (rinch, crate-scoped)
-        run: cargo clippy -p rinch --all-targets -- -D warnings
+        run: |
+          cargo clippy -p rinch --all-targets -- -D warnings
+          cargo clippy -p rinch --no-default-features --features desktop --all-targets -- -D warnings
 
       # Feature combinations the workspace-wide default build never exercises.
       # desktop + embed carries BOTH painters since #140 (the winit shell drives
@@ -589,7 +590,7 @@ jobs:
       # builds `rinch`, ~15s each here), so all three now run `--all-targets`.
       - name: Check rinch feature combinations
         run: |
-          cargo clippy -p rinch --features embed --all-targets -- -D warnings
+          cargo clippy -p rinch --no-default-features --features desktop,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
@@ -669,8 +670,9 @@ jobs:
       # out is a decision written here. A new optional feature of `rinch` goes
       # on this line.
       #
-      # `gpu` is in the list, so `software_shell` code is not linted here; the
-      # crate-scoped run above is the one that lints it.
+      # `gpu` is in the list, so the software-only shell
+      # (`cfg(not(feature = "gpu-renderer"))`) is not linted here; the
+      # crate-scoped `--no-default-features` runs above are the ones that lint it.
       - name: Check every optional rinch feature
         run: |
           cargo clippy -p rinch --all-targets --features \
@@ -1223,9 +1225,11 @@ jobs:
   # would have said so. `cargo clippy` type-checks without linking, so no
   # Apple SDK is needed; the targets are the toolchain's. Warnings are denied,
   # as in `check-android`, for the same reason (a helper only one platform
-  # calls). Three feature sets: the full desktop one, the bare one (no tray),
-  # where a tray-only helper goes unused, and one without the native menus
-  # (#2435), whose window wears the DOM bar. Runs on every PR, like the lints.
+  # calls). Three feature sets: the full desktop one, a bare software-only one
+  # (no tray, no GPU renderer: `gpu` is a default, so it says
+  # `--no-default-features`), where a tray-only or GPU-only helper goes unused,
+  # and one without the native menus (#2435), whose window wears the DOM bar.
+  # Runs on every PR, like the lints.
   check-macos:
     runs-on: ubuntu-24.04
     steps:
@@ -1253,7 +1257,7 @@ jobs:
             cargo clippy -p rinch --target "$target" \
               --features desktop,gpu,components,theme,file-dialogs,clipboard,system-tray \
               -- -D warnings
-            cargo clippy -p rinch --target "$target" \
+            cargo clippy -p rinch --target "$target" --no-default-features \
               --features desktop,components,theme -- -D warnings
             # No native menus (#2435): the window's menu is the DOM bar.
             cargo clippy -p rinch --target "$target" --no-default-features \

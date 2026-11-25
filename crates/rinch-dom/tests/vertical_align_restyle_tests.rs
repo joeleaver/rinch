@@ -5,7 +5,7 @@
 //! `vertical_align` in it, a class toggle that changes only `vertical-align`
 //! kept the old layout and the glyph never moved (found by #1359's review).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::text_query::glyph_bounds_for_offset;
 

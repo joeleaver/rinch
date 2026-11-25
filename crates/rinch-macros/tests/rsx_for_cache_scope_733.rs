@@ -17,7 +17,7 @@
 
 use rinch::prelude::*;
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{__retired_insertions, DomDocument};
+use rinch_core::dom::{__retired_insertions, DomTree};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;

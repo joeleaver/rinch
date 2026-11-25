@@ -334,7 +334,6 @@ fn a_painted_state_older_than_a_whole_document_restyle_is_not_trusted() {
 
     let doc = app.doc.as_ref().unwrap().clone();
     {
-        use rinch_core::dom::DomDocument;
         let mut d = doc.borrow_mut();
         let body = d.body();
         let s = d.create_element("style");
@@ -574,7 +573,7 @@ fn a_row_inserted_before_into_a_clipper_is_cleared_where_it_was() {
     assert_cleared(&mut app, (0, 100, 40, 140));
 }
 
-/// The same move by `DomDocument::insert_child` (review of #958, q13).
+/// The same move by `DomTree::insert_child` (review of #958, q13).
 ///
 /// Kills: `insert_child` not recording the moved row's old pixels.
 #[test]
@@ -594,7 +593,6 @@ fn a_row_inserted_as_child_into_a_clipper_is_cleared_where_it_was() {
         "positive control"
     );
     {
-        use rinch_core::dom::DomDocument;
         let doc = app.doc.as_ref().unwrap().clone();
         doc.borrow_mut()
             .insert_child(h[0].node_id(), h[1].node_id(), 0);

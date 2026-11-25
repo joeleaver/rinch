@@ -3,7 +3,7 @@
 //! and reports its drop, and a mount that builds under a root scope's owner.
 
 use rinch::prelude::*;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_core::dom::mock::MockDomDocument;
 use rinch_core::events::EventHandlerId;
 use rinch_core::task::set_task_scheduler;

@@ -3,7 +3,7 @@
 
 use super::super::hit_test;
 use super::{assert_agree, reference_hit_test};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// A long list in a scroller — the shape the prune exists for — scrolled to

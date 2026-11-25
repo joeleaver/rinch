@@ -19,7 +19,7 @@
 //!    own `overflow: auto` body still works. `RenderScope::body_handle()` is the
 //!    trap — on the web it is `<div id="rinch-body">`, not the page.
 //!
-//! See [`rinch_core::dom::DomDocument::set_scroll_locked`] for what each backend
+//! See [`rinch_core::dom::DomScroll::set_scroll_locked`] for what each backend
 //! then does, and why the count lives there rather than here.
 
 use std::cell::Cell;

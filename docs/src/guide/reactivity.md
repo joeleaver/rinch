@@ -261,12 +261,12 @@ Effect::new(move || {
 // This effect only re-runs when `count` changes, not when `name` changes
 ```
 
-`untracked` hides only the observer directly above it. That matters only while
-an effect's run is nested inside another effect's run — the first run of an
-`Effect::new` written inside another effect's body, for instance. A read inside
-`untracked` there is recorded on the outer effect. Later re-runs of the inner
-effect normally come from a flush with no effect beneath them and are unaffected (issue
-#932).
+A read inside `untracked` subscribes nothing, wherever it runs. An effect
+depends only on what it read during its own run: when its write re-runs other
+effects on the spot (outside a batch, a write flushes immediately) or a memo it
+reads recomputes, those runs track their own reads, and nothing they read —
+tracked or under `untracked` — is recorded on the effect that caused them
+(issue #3047).
 
 ### App handlers never subscribe the effect that calls them
 

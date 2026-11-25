@@ -20,7 +20,7 @@
 //! block-level children by them too (#1985); `direction: rtl` and the rest
 //! of block layout's rows are in `justify_direction_1995_tests.rs`.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

@@ -37,6 +37,7 @@ struct TextContextFields {
     word_break: crate::computed_style::WordBreakValue,
     line_break: crate::computed_style::LineBreakValue,
     hyphens_none: bool,
+    base_direction: parley::BaseDirection,
     text_indent: crate::computed_style::TextIndentValue,
     text_overflow: crate::computed_style::TextOverflowValue,
     parent_overflow_hidden: bool,
@@ -62,6 +63,7 @@ impl TextContextFields {
                 word_break: crate::computed_style::WordBreakValue::default(),
                 line_break: crate::computed_style::LineBreakValue::default(),
                 hyphens_none: false,
+                base_direction: parley::BaseDirection::Ltr,
                 text_indent: crate::computed_style::TextIndentValue::default(),
                 text_overflow: crate::computed_style::TextOverflowValue::default(),
                 parent_overflow_hidden: false,
@@ -96,6 +98,7 @@ impl TextContextFields {
             word_break: cs.word_break,
             line_break: cs.line_break,
             hyphens_none: cs.hyphens_none,
+            base_direction: cs.base_direction(),
             text_indent: cs.text_indent,
             text_overflow: cs.text_overflow,
             parent_overflow_hidden: matches!(
@@ -121,6 +124,7 @@ impl TextContextFields {
         tm.word_break = self.word_break;
         tm.line_break = self.line_break;
         tm.hyphens_none = self.hyphens_none;
+        tm.base_direction = self.base_direction;
         tm.text_indent = self.text_indent;
         tm.text_overflow = self.text_overflow;
         tm.parent_overflow_hidden = self.parent_overflow_hidden;
@@ -3485,7 +3489,7 @@ impl RinchDocument {
     ///
     /// # Where this is called from
     ///
-    /// **Five places in `dom_impl/dom_document_impl.rs` write `parent = None`.**
+    /// **Five places in `dom_impl/` (`tree.rs`, `content.rs`) write `parent = None`.**
     /// Four of them call this; the fifth does not need to. That count is the
     /// claim to check against `grep -n '\.parent = None'` if this file ever
     /// grows a sixth — an unhooked one is silent, which is how the fourth row
@@ -3616,7 +3620,7 @@ impl RinchDocument {
     ///
     /// # Where this is called from
     ///
-    /// **Four places in `dom_impl/dom_document_impl.rs` write
+    /// **Four places in `dom_impl/tree.rs` write
     /// `nodes[..].parent = Some(..)` for a node that may already be mounted**,
     /// and all four call this: `append_child`, `insert_before`, `insert_child`,
     /// and `replace_node` for its incoming `new`. `grep -n '\.parent = Some('`

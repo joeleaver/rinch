@@ -36,8 +36,8 @@
 //! | `ifc_css_line_scans` | `ifc.rs` `hang_pass`, a paragraph with seams or edge boxes | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`], [`a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_pays_no_rebreak`] (0): since parley 0.12 an NBSP does not hang, and no shape in the suite reaches the site (an instrumented run over the NBSP, line-separator and #1238 suites never did) |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `NodeContext::Text` and `layout_engine.rs`'s leaf measure (`shape_text_leaf`) | [`an_nbsp_glued_chain_in_a_flex_items_own_text_pays_no_rebreak`] (0, as above) |
-//! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
-//! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
+//! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`a_paragraph_ending_in_a_br_is_rebroken_without_parleys_empty_line`] — 1 from each |
+//! | `ifc_phantom_rebreaks` | none since #2944: an inline box too wide for its line no longer leaves an empty line (a min-content measure of a paragraph ending in one paid 1 alone) | [`an_overflowing_last_chip_pays_no_rebreak`], [`a_flex_items_paragraph_ending_in_a_chip_pays_no_rebreak`] (0) |
 //! | `ifc_tab_rebuilds` | `ifc.rs` `build_inline_layout` (the paint layout and the root compute's measure) | [`a_pre_paragraph_of_tabs_is_set_in_one_rebuild`] (1 per layout), [`a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds`] (2 per layout) |
 //! | `table_column_measures` | `table_layout.rs` `column_weights_from_cells` (#2141) — **deleted in #2327**, with the counter | none: [`a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone`] and [`a_cell_edit_in_a_spanning_table_costs_one_root_compute`] pin what a table edit costs without it |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
@@ -66,7 +66,7 @@
 mod perf_expect;
 
 use perf_expect::expect;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::perf::{Counter::*, FrameStats};
@@ -2421,10 +2421,12 @@ fn an_inline_block_with_a_padded_span_at_a_soft_wrap_pays_one_pass() {
 }
 
 /// #1050: a paragraph whose last item is an inline box too wide for its
-/// line. Parley commits an empty line after it, which `ifc_phantom_rebreaks`
-/// counts breaking the paragraph once more without.
+/// line. Parley 0.11.1 committed an empty line after it, which rinch broke the
+/// paragraph once more without, in the build and in the measure
+/// (`ifc_phantom_rebreaks` 2). The fork ends the box's line only at an item
+/// that starts the next one (#2944), so there is none: no rebreak.
 #[test]
-fn an_overflowing_last_chip_is_rebroken_without_parleys_empty_line() {
+fn an_overflowing_last_chip_pays_no_rebreak() {
     let mut doc = doc_with(
         ".p { width: 200px; } .chip { display: inline-block; width: 300px; height: 80px; }",
     );
@@ -2448,7 +2450,6 @@ fn an_overflowing_last_chip_is_rebroken_without_parleys_empty_line() {
             (ShapeIfcBuild, 1),
             (IfcMeasureInvalidations, 3),
             (IfcSignatureChanges, 1),
-            (IfcPhantomRebreaks, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -2463,12 +2464,53 @@ fn an_overflowing_last_chip_is_rebroken_without_parleys_empty_line() {
     );
 }
 
+/// #1172: a paragraph that ends in a `<br>`. Parley lays out one more line
+/// after a text-final newline, which `ifc_phantom_rebreaks` counts breaking
+/// the paragraph once more without, in the build and in the measure.
+#[test]
+fn a_paragraph_ending_in_a_br_is_rebroken_without_parleys_empty_line() {
+    let mut doc = doc_with(".p { width: 200px; }");
+    doc.tree.perf.reset();
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "p");
+    text(&mut doc, p, "x");
+    el(&mut doc, p, "br", "");
+    let s = cold_frame(&mut doc);
+    expect(
+        "paragraph ending in a br",
+        &s,
+        &[
+            (StyleResolves, 3),
+            (ElementsCascaded, 4),
+            (StyleNodesVisited, 4),
+            (FullStyleWalks, 1),
+            (TaffyStyleSyncs, 4),
+            (TaffyStyleChanges, 3),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (IfcSignatureChanges, 1),
+            (IfcPhantomRebreaks, 2),
+            (LayoutResolves, 2),
+            (LayoutSkippedPaintOnly, 1),
+            (IfcSetupPasses, 1),
+            (IfcFullPasses, 1),
+            (IfcFullInitial, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 /// #1050's cost on the common shape: a flex item's paragraph that *ends* in a
 /// small chip. Its min-content measure breaks at width 0, where every box
-/// takes parley's emergency branch, so the chip is an overflowing last item
-/// there and that measure is broken once more.
+/// overflows, so the chip is an overflowing last item there, and that measure
+/// was broken once more (`ifc_phantom_rebreaks` 1) until the empty line after
+/// it went (#2944).
 #[test]
-fn a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure() {
+fn a_flex_items_paragraph_ending_in_a_chip_pays_no_rebreak() {
     let mut doc = doc_with(
         ".row { display: flex; width: 300px; } .chip { display: inline-block; width: 16px; height: 16px; }",
     );
@@ -2498,7 +2540,6 @@ fn a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_meas
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
             (IfcSignatureChanges, 1),
-            (IfcPhantomRebreaks, 1),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
             (IfcSetupPasses, 1),
@@ -3245,7 +3286,6 @@ fn fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change() {
             (ShapeIfcBuild, 21),
             (ShapeAtomicInline, 40),
             (IfcMeasureInvalidations, 20),
-            (IfcPhantomRebreaks, 11),
             (LayoutResolves, 1),
             (TaffyRootComputes, 2),
             // 4 → 2 and the 2 cache hits gone with #1260: `<body>`'s flex
@@ -4108,7 +4148,6 @@ fn chips_in_flex_items_first_layout() {
             (IfcMeasureCacheHits, 50),
             (IfcMeasureInvalidations, 131),
             (IfcSignatureChanges, 40),
-            (IfcPhantomRebreaks, 40),
             (LayoutResolves, 1),
             (IfcSetupPasses, 1),
             (IfcFullPasses, 1),
@@ -4187,7 +4226,6 @@ fn a_colour_hover_with_a_relayout_on_a_row_of_chips_in_flex_items() {
             (ShapeAtomicInline, 5),
             (IfcMeasureCacheHits, 57),
             (IfcMeasureInvalidations, 6),
-            (IfcPhantomRebreaks, 2),
             (LayoutResolves, 1),
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 66),
@@ -4219,7 +4257,6 @@ fn a_text_edit_in_a_chip_in_a_flex_item() {
             (ShapeAtomicInline, 7),
             (IfcMeasureCacheHits, 2),
             (IfcMeasureInvalidations, 6),
-            (IfcPhantomRebreaks, 2),
             (LayoutResolves, 1),
             (TaffyRootComputes, 2),
             (TaffyMeasureCalls, 8),
@@ -4264,7 +4301,6 @@ fn a_one_pixel_resize_with_every_chip_capped() {
             (ShapeAtomicInline, 30),
             (IfcMeasureCacheHits, 50),
             (IfcMeasureInvalidations, 10),
-            (IfcPhantomRebreaks, 10),
             (LayoutResolves, 1),
             (TaffyRootComputes, 2),
             (TaffyMeasureCalls, 100),

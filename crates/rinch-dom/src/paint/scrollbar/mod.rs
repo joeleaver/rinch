@@ -312,7 +312,7 @@ fn auto_thumb_color(color: Option<peniko::Color>) -> AlphaColor<Srgb> {
 /// the overflow was smaller than that — which is why it was rarely seen, not
 /// because components avoided it: the Drawer body, the FloatingPanel body,
 /// the Select dropdown, the menu-bar dropdowns and `Code` are all padded or
-/// bordered scroll regions. `DomDocument::client_height`/`client_width` and
+/// bordered scroll regions. `DomScroll::client_height`/`client_width` and
 /// layout's `clamp_scroll_offsets` read it too. Prefer [`overflows`] when
 /// only the yes/no answer is wanted.
 pub fn visible_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
@@ -374,7 +374,7 @@ pub fn overflows(tree: &NodeTree, node_id: RawNodeId, axis: ScrollbarAxis) -> bo
 ///
 /// The one rule for "can this container take the wheel": the desktop wheel
 /// picks its container by it (the nearest one from the pointer up), and
-/// `DomDocument::can_scroll_toward` answers with it, so a wheel handler that
+/// `DomScroll::can_scroll_toward` answers with it, so a wheel handler that
 /// asks before declining gets what the default scroll will do.
 pub fn can_scroll_toward(tree: &NodeTree, node_id: RawNodeId, dx: f64, dy: f64) -> bool {
     let Some(node) = tree.get(node_id) else {

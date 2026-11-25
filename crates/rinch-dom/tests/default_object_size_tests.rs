@@ -15,7 +15,7 @@
 //! 300 is the natural width and not a fill. Chrome's `<iframe>` also carries
 //! its UA `border: 2px inset`, which is why it measures 304x154.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const BASE: &str = "margin: 0; box-sizing: border-box; font-size: 10px; line-height: 20px";

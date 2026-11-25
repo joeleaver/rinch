@@ -13,7 +13,7 @@
 //! behaviour — then alternates every [`BLINK_INTERVAL`].
 //!
 //! There is one clock **per document** (keyed by
-//! [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)), not one per
+//! [`DomTree::doc_key`](rinch_core::dom::DomTree::doc_key)), not one per
 //! thread: several embedded `RinchContext`s, or a desktop window beside them,
 //! share a thread and each has a keyboard of its own. A single
 //! thread-wide clock was retargeted by every document that ticked it, so two

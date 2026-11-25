@@ -224,7 +224,7 @@ impl<T: 'static> Signal<T> {
     /// records nothing, which keeps the registry lookup to once per dependency
     /// per run rather than once per read.
     fn track(&self) {
-        let Some(observer) = RUNTIME.with(|rt| rt.borrow().observer_stack.last().copied()) else {
+        let Some(observer) = super::tracking::current_observer() else {
             return;
         };
         // Clone the signal's own cell out of the store under a brief shared
@@ -1097,8 +1097,8 @@ mod nested_read_tests {
 
     #[test]
     fn a_memo_computation_can_nest_reads_of_different_signals() {
-        // A memo's refresh runs with the memo's marker on the observer stack
-        // too, so `track()` takes the mutable path there as well.
+        // A memo's refresh runs with the memo's marker as the current
+        // observer too, so `track()` takes the mutable path there as well.
         use crate::reactive::Memo;
 
         let a = Signal::new(1i32);
@@ -1151,10 +1151,10 @@ mod nested_read_tests {
 /// one check that makes a stale `Signal<T>` handle read as dead after its
 /// slot is recycled by a new signal — every read/write/track/notify call
 /// site goes through it. `a_dep_whose_slot_was_recycled_does_not_disturb_the_new_occupant`
-/// (`effect.rs`) looks like it would catch a dropped filter but does not: it
-/// only exercises `DepKey::unsubscribe`, and `ObserverId`s are never reused,
-/// so a stale key's `.remove()` is a no-op on the new occupant's subscriber
-/// set whether or not `get_inner` filters by generation.
+/// (`effect/unsubscribe_tests.rs`) looks like it would catch a dropped filter
+/// but does not: it only exercises `DepKey::unsubscribe`, and `ObserverId`s
+/// are never reused, so a stale key's `.remove()` is a no-op on the new
+/// occupant's subscriber set whether or not `get_inner` filters by generation.
 #[cfg(test)]
 mod slot_reuse_tests {
     use super::*;

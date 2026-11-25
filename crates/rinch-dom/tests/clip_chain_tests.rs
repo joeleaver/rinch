@@ -37,7 +37,7 @@
 //! provide (`reference_visual_regression_gap`).
 
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::node::RawNodeId;
 use rinch_dom::stacking::{PaintOrder, stacking_paint_order};

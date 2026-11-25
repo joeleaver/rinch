@@ -7,7 +7,7 @@
 //! not the same the second time is one frame of wrong geometry followed by a
 //! jump on the next unrelated relayout.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

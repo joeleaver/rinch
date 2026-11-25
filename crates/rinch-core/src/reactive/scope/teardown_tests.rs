@@ -210,18 +210,16 @@ fn a_cascading_disposals_teardown_reads_do_not_subscribe_the_disposing_effect() 
     assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
 }
 
-/// A teardown read subscribes no observer at ANY stack depth (issue #494).
+/// A teardown read subscribes no observer at ANY nesting depth (issue
+/// #494).
 ///
-/// Disposal is not a render boundary: it can begin with several observers
-/// live — here a bare `Effect::new` running inside another effect, stack
-/// `[outer, inner]`, where nothing has balanced the outer frame (bare
-/// `Effect::new` is not one of the #491 boundaries). A one-`untracked`
-/// guard — the render-side shape — would pop `inner` and hand the
-/// cleanup's read to `outer`, trading one wrong subscriber for another.
-/// This test fails the unfixed code (the inner effect re-runs) AND that
-/// mutant (the outer effect re-runs): teardown suspends the whole stack.
+/// Disposal is not a render boundary: it can begin with several observer
+/// runs in progress — here a bare `Effect::new` running inside another
+/// effect. When the observer runtime was a stack, a one-frame pop would
+/// have handed the cleanup's read to `outer`; since #3047 a nested run
+/// hides the outer one, and this pins that neither subscribes.
 #[test]
-fn a_teardown_read_subscribes_no_observer_at_any_stack_depth() {
+fn a_teardown_read_subscribes_no_observer_at_any_nesting_depth() {
     let probe = Signal::new(0u32);
     let outer_trigger = Signal::new(0u32);
     let outer_runs = Rc::new(Cell::new(0usize));
@@ -275,7 +273,7 @@ fn a_teardown_read_subscribes_no_observer_at_any_stack_depth() {
 /// fixpoint — and a captured value's `Drop` that reads a signal must not
 /// subscribe the effect that called it (issue #494). The guard for this
 /// path lives in `dispose_effect` itself, which the fixpoint's step 2 also
-/// calls (a second suspension of an already-empty stack is a no-op).
+/// calls (a second suspension only raises the run's suspension count).
 #[test]
 fn a_direct_effect_disposes_closure_drop_does_not_subscribe_the_disposing_effect() {
     let probe = Signal::new(0u32);

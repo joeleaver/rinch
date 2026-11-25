@@ -1133,7 +1133,7 @@ pub fn field_text_layout(
 /// The paragraph direction a text control's value runs in (#2939): its
 /// computed `direction` — which `dir=auto` takes from the value (#2272) — or,
 /// under `unicode-bidi: plaintext` (a `<textarea dir=auto>`, by the UA
-/// sheet), the first strong character's.
+/// sheet), each paragraph's first strong character's (#2940).
 pub fn field_base_direction(node: &Node) -> parley::BaseDirection {
     use style::computed_values::unicode_bidi::T as U;
     match crate::ifc::unicode_bidi_of(node) {

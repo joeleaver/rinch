@@ -426,14 +426,25 @@ pub fn caret_on_line(
             }
             let leading = x <= edge + advance * 0.5;
             let range = cluster.text_range();
-            // `Cursor::from_point`'s side rule.
-            byte = Some(if cluster.is_rtl() {
-                if leading { range.end } else { range.start }
-            } else if leading || cluster.is_line_break() == Some(BreakReason::Explicit) {
-                range.start
+            let side = if leading {
+                parley::layout::ClusterSide::Left
             } else {
-                range.end
-            });
+                parley::layout::ClusterSide::Right
+            };
+            // `Cursor::from_point`'s side rule, with its line edges: the
+            // outer half of a cluster at the line's end whose direction is
+            // not the paragraph's is the line's logical start or end (#2950).
+            byte = Some(
+                if let Some((at, _)) = parley::editing::line_edge_hit(&cluster, side) {
+                    at
+                } else if cluster.is_rtl() {
+                    if leading { range.end } else { range.start }
+                } else if leading || cluster.is_line_break() == Some(BreakReason::Explicit) {
+                    range.start
+                } else {
+                    range.end
+                },
+            );
             break 'runs;
         }
     }

@@ -3,7 +3,7 @@
 //! ownership record and must still be discarded with the branch.
 use rinch_core::Component;
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{DomDocument, DomTree, NodeHandle, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_core::show_dom;
 use std::cell::RefCell;

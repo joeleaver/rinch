@@ -2,7 +2,7 @@
 //! every subtree with no extent and no memo.
 
 use super::super::{Frame, descend, hit_test};
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
 

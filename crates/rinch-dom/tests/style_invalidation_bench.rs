@@ -12,7 +12,7 @@
 //! cargo test --release -p rinch-dom --test style_invalidation_bench -- --ignored --nocapture
 //! ```
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter;
 

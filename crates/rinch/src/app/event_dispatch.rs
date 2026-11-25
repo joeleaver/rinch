@@ -6209,7 +6209,7 @@ impl RinchApp {
             return Some(rect);
         }
         // Text only: vertical motion falls back to the model on a blank line,
-        // where `DomDocument::query_caret_rect` would answer the block's box.
+        // where `DomLayout::query_caret_rect` would answer the block's box.
         d.text_caret_window_rect_with_affinity(tb, flat, affinity)
     }
 

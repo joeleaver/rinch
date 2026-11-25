@@ -39,7 +39,7 @@ use std::rc::Rc;
 
 use rinch::app::RinchApp;
 use rinch::font::AppFont;
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeHandle, NodeId, RenderScope};
 use rinch_core::reactive::{Memo, Signal};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;

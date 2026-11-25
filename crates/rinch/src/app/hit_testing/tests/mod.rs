@@ -4,7 +4,7 @@ use super::{
     find_scroll_container_at_point, find_scrollbar_hit, painted_element_box,
 };
 use super::{flow_extent, hit_test};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 mod clip;

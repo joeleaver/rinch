@@ -598,7 +598,7 @@ fn a_virtualized_one_block_range_is_revealed() {
 /// instead of honouring it.
 #[test]
 fn a_reveal_in_a_hidden_editor_waits_and_is_fulfilled_when_shown() {
-    use rinch_core::dom::{DomDocument, NodeId};
+    use rinch_core::dom::NodeId;
     let mut p = page();
     let style = |p: &mut Page, style: &str| {
         let doc = p.app.doc.as_ref().unwrap().clone();

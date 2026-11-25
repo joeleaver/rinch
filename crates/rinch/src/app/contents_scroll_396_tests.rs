@@ -8,7 +8,7 @@
 //!
 //! These drive the whole desktop path: the real macro output, a real
 //! `PlatformEvent::MouseWheel` routed through `find_scroll_container` and
-//! clamped by `DomDocument::scroll_height`. The Chrome 153 reference for the
+//! clamped by `DomScroll::scroll_height`. The Chrome 153 reference for the
 //! markup (a 300px `overflow-y: auto` box around a `display: contents` wrapper
 //! of forty 27px rows) is `scrollHeight` 1080, `clientHeight` 300: 780px of
 //! travel.

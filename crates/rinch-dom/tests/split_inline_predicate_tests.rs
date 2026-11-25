@@ -40,7 +40,7 @@
 //! question is never asked. The fixture records both halves, because the reason
 //! the switch was unsafe is the reason it is now safe.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::{DisplayMode, InlineFlowRole, RinchDocument};
 
 const VW: f32 = 800.0;

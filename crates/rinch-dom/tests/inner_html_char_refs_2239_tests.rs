@@ -8,7 +8,7 @@
 #[path = "support/char_refs_2239.rs"]
 mod char_refs;
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 #[test]

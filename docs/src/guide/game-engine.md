@@ -761,7 +761,11 @@ Notes:
 
 The embed API is for when **your game owns the window and wgpu device**. Rinch runs headless — you feed it platform events, it produces a Vello scene, and you render/composite it yourself.
 
-Enable with: `features = ["desktop"]`
+Enable with: `features = ["embed"]`, the headless embed API without the desktop
+shell. `rinch::embed` is also there in any build with the GPU renderer (`gpu`,
+one of rinch's default features, or `gpu-renderer`), so an app on the default
+features needs nothing extra; `desktop` alone (with `default-features = false`)
+does not include it.
 
 ### Quick Start
 

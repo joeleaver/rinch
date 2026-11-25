@@ -1,7 +1,7 @@
 //! Round-2 review fixtures for #1673 (#1060). Pixel oracles on tiny-skia.
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

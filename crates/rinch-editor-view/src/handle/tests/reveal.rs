@@ -1,4 +1,5 @@
 use super::*;
+use rinch_core::dom::{DomContent, DomScroll};
 use std::cell::Cell;
 
 /// Five empty paragraphs — 0[p 1]2[p 3]4[p 5]6[p 7]8[p 9]10 — as 200x20

@@ -20,7 +20,7 @@
 //! stop generating anonymous boxes for the opaque ones — so every transparent
 //! fixture has an opaque twin that differs only in what the wrapper holds.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

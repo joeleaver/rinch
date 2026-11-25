@@ -11,7 +11,7 @@
 //! and one with a padding alone.
 
 use super::{event_target_at, hit_test};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, NodeId};
 
 #[path = "../../../rinch-dom/tests/support/inline_geom_2616.rs"]
 mod scene;

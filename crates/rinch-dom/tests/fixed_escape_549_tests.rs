@@ -34,7 +34,7 @@
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, Stroke};
 use peniko::{Brush, Fill};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::{
     BlendMode, GlyphSynthesis, PaintGlyph, PaintImage, PaintShape, Painter,

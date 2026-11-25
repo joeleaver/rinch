@@ -18,7 +18,7 @@
 //! `mark=x,y,width,height`. The container has `padding: 7px 0 0 11px`, so
 //! no item's start, centre and end coincide. No text is laid out.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

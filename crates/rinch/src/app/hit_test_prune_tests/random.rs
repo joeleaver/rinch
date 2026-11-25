@@ -2,7 +2,7 @@
 
 use super::super::hit_test;
 use super::assert_agree;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 struct Rng(u64);

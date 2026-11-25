@@ -394,7 +394,7 @@ pub(crate) fn hides_text_from_dir_auto(node: &Node) -> bool {
 /// The direction of the first strong character of `text` — `Some(true)` for
 /// right-to-left (bidi class `R` or `AL`), `Some(false)` for `L` — or `None`
 /// when it has none.
-fn first_strong_is_rtl(text: &str) -> Option<bool> {
+pub(crate) fn first_strong_is_rtl(text: &str) -> Option<bool> {
     use icu_properties::CodePointMapData;
     use icu_properties::props::BidiClass;
     let classes = CodePointMapData::<BidiClass>::new();

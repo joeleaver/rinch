@@ -18,7 +18,7 @@ use rinch_components::{
 };
 use rinch_core::Component;
 use rinch_core::Signal;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_macros::rsx;
 use rinch_tabler_icons::TablerIcon;

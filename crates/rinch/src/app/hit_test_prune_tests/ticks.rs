@@ -3,7 +3,7 @@
 
 use super::super::hit_test;
 use super::{assert_agree, reference_hit_test};
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 // ── Ticks: the `HitStyleKey` fields a tick can write ────────────────────────

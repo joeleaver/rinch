@@ -21,7 +21,7 @@
 //! `line-height`, so the line breaks are this face's and not the host's; the
 //! truncation point is asserted only as "a non-empty prefix of the word".
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

@@ -83,6 +83,10 @@ mod paint_phases_hit_2276_tests;
 mod overflow_line_hit_2956_tests;
 
 #[cfg(test)]
+#[path = "../relative_line_extent_3056_tests.rs"]
+mod relative_line_extent_3056_tests;
+
+#[cfg(test)]
 #[path = "../relative_inline_hit_2346_tests.rs"]
 mod relative_inline_hit_2346_tests;
 

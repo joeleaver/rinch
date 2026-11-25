@@ -83,6 +83,53 @@ pub(crate) fn resolve(app: Option<Renderer>, env: Option<&str>) -> Renderer {
     app.unwrap_or_default()
 }
 
+/// What a build without `gpu-renderer` says about its renderer when a window
+/// is created: a `Warn` when the GPU was asked for (by
+/// [`App::renderer`](crate::App::renderer) or `RINCH_RENDERER=gpu`), which
+/// this build cannot honour, naming the feature that would; an `Info` line
+/// otherwise.
+#[cfg(not(feature = "gpu-renderer"))]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SoftwareOnlyNotice {
+    /// Log at `info`.
+    Info(&'static str),
+    /// Log at `warn`.
+    Warn(&'static str),
+}
+
+/// The text a software-only build logs for a GPU request. It names both
+/// sources of the request, since the log line cannot tell them apart, and
+/// how to get the GPU renderer back.
+#[cfg(not(feature = "gpu-renderer"))]
+pub(crate) const GPU_REQUESTED_WITHOUT_GPU_RENDERER: &str = "rinch: the GPU renderer was \
+     requested (App::renderer(Renderer::Gpu) or RINCH_RENDERER=gpu), but this build of rinch \
+     has no GPU renderer: it was built without the `gpu` feature. Enable it by listing \
+     \"gpu\" in rinch's `features` (or dropping `default-features = false`). Presenting with \
+     the software renderer";
+
+/// [`SoftwareOnlyNotice`] for the renderer `choice`.
+#[cfg(not(feature = "gpu-renderer"))]
+pub(crate) fn software_only_notice(choice: Renderer) -> SoftwareOnlyNotice {
+    match choice {
+        Renderer::Gpu => SoftwareOnlyNotice::Warn(GPU_REQUESTED_WITHOUT_GPU_RENDERER),
+        Renderer::Auto | Renderer::Software => {
+            SoftwareOnlyNotice::Info("rinch: presenting with the software renderer")
+        }
+    }
+}
+
+/// Log [`software_only_notice`] for the [`resolved`] choice, once per
+/// process: the choice is the process's, so a second window has nothing new
+/// to say about it.
+#[cfg(not(feature = "gpu-renderer"))]
+pub(crate) fn announce_software_only() {
+    static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+    ANNOUNCED.call_once(|| match software_only_notice(resolved()) {
+        SoftwareOnlyNotice::Info(line) => tracing::info!("{line}"),
+        SoftwareOnlyNotice::Warn(line) => tracing::warn!("{line}"),
+    });
+}
+
 /// What to do when the GPU renderer failed to start.
 #[cfg(feature = "gpu-renderer")]
 #[derive(Debug, PartialEq, Eq)]
@@ -268,6 +315,37 @@ mod tests {
         assert_eq!(resolve(Some(Renderer::Software), None), Renderer::Software);
         assert_eq!(resolve(None, None), Renderer::Auto);
         assert_eq!(resolve(Some(Renderer::Gpu), Some("")), Renderer::Gpu);
+    }
+
+    #[cfg(not(feature = "gpu-renderer"))]
+    #[test]
+    fn a_software_only_build_warns_on_a_gpu_request_and_names_the_feature() {
+        assert_eq!(
+            software_only_notice(Renderer::Gpu),
+            SoftwareOnlyNotice::Warn(GPU_REQUESTED_WITHOUT_GPU_RENDERER)
+        );
+        // From the environment as well as from the app.
+        assert_eq!(
+            software_only_notice(resolve(Some(Renderer::Auto), Some("gpu"))),
+            SoftwareOnlyNotice::Warn(GPU_REQUESTED_WITHOUT_GPU_RENDERER)
+        );
+        for needle in [
+            "RINCH_RENDERER=gpu",
+            "Renderer::Gpu",
+            "`gpu` feature",
+            "\"gpu\"",
+        ] {
+            assert!(
+                GPU_REQUESTED_WITHOUT_GPU_RENDERER.contains(needle),
+                "the warning names {needle}"
+            );
+        }
+        for choice in [Renderer::Auto, Renderer::Software] {
+            assert!(
+                matches!(software_only_notice(choice), SoftwareOnlyNotice::Info(_)),
+                "{choice:?} asked for nothing this build lacks"
+            );
+        }
     }
 
     #[test]

@@ -21,7 +21,7 @@
 //! `content-box` the border would sit outside the 200px.
 
 use peniko::Brush;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

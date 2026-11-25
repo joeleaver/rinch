@@ -31,7 +31,7 @@
 //!   detach as a contents detach (dropping the own-id removal) is invisible
 //!   to CI; that mutant survived the entire pre-existing rinch-dom suite.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

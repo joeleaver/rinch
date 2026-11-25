@@ -13,7 +13,7 @@
 //! with the ignored test
 //! `conic_gradient_2719_tests::write_chrome_page`, then sample as above.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 #[path = "conic_gradient_2719_chrome.rs"]

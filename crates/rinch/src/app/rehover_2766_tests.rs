@@ -169,7 +169,7 @@ impl Scene {
         let ids: Vec<u64> = d.tree.nodes.iter().map(|(n, _)| n).collect();
         ids.into_iter()
             .filter(|&n| {
-                rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(n))
+                rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(n))
                     && d.tree.nodes[n].is_hovered
             })
             .filter_map(|n| d.tree.nodes[n].attributes.get("id").cloned())
@@ -261,7 +261,7 @@ fn ancestors_a_removal_leaves_the_pointer_outside_are_left() {
     let low = s.node("low");
     {
         let doc = s.app.doc.clone().unwrap();
-        rinch_core::dom::DomDocument::discard_node(
+        rinch_core::dom::DomTree::discard_node(
             &mut *doc.borrow_mut(),
             rinch_core::dom::NodeId(low),
         );

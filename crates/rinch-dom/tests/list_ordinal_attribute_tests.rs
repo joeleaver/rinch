@@ -22,7 +22,7 @@
 //! numbered by its position), so the `99999999999` and `abc` rows pin that the
 //! new reader still answers an error where the old one did.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::get_text_content;
 

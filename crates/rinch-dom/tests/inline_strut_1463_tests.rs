@@ -29,7 +29,7 @@
 //! | `<span lh60></span>` alone | 0 | |
 //! | `x` (plain line) | 20 | 0 |
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

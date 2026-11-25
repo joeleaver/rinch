@@ -292,6 +292,9 @@ pub struct TextMeasure {
     pub line_break: crate::computed_style::LineBreakValue,
     /// The parent's `hyphens: none` (#2621).
     pub hyphens_none: bool,
+    /// The base direction the leaf is laid out in: the parent's
+    /// ([`crate::computed_style::ComputedStyle::base_direction`], #2940).
+    pub base_direction: parley::BaseDirection,
     /// The parent's `text-indent` (#2628): the text is a flex or grid
     /// container's own, an anonymous item whose first line it indents.
     pub text_indent: crate::computed_style::TextIndentValue,
@@ -786,7 +789,7 @@ pub struct InlineLayout {
     /// `unicode-bidi` put around its content (#2588), ascending: `(start,
     /// end, closing)`, `closing` for the PDF/PDI after the content. No text
     /// node owns them; a caller counting the DOM's or a model's text steps
-    /// over them (`DomDocument::generated_flat_ranges`).
+    /// over them (`DomLayout::generated_flat_ranges`).
     pub bidi_control_ranges: Vec<(usize, usize, bool)>,
     /// The colour the root's own style gave the layout
     /// (`crate::ifc::root_text_color` at the build): what text no range
@@ -991,6 +994,27 @@ impl InlineLayout {
             return None;
         }
         self.layout.get(n - 1)
+    }
+
+    /// How far the relative inline elements of these lines move what they
+    /// draw, `[left, up, right, down]` in CSS px, each `<= 0` on the left and
+    /// up sides and `>= 0` on the right and down ones: the sum of each
+    /// direction's offsets over [`Self::relative_spans`]. Nested relative
+    /// elements compose (`text_query::unmoved_point` adds every offset
+    /// around a byte), so no byte is drawn moved further than this. A
+    /// rectangle holding the lines as laid out, grown by it, holds them as
+    /// drawn: hit testing's flow extent (#3056) and
+    /// `paint::inline_box_reach` read it.
+    pub fn relative_reach(&self) -> [f64; 4] {
+        let mut d = [0.0f64; 4];
+        for span in &self.relative_spans {
+            let (dx, dy) = (span.dx as f64, span.dy as f64);
+            d[0] += dx.min(0.0);
+            d[1] += dy.min(0.0);
+            d[2] += dx.max(0.0);
+            d[3] += dy.max(0.0);
+        }
+        d
     }
 
     /// Where the lines reach horizontally, `[x0, x1]` in CSS px from the
@@ -1598,7 +1622,7 @@ pub struct Node {
     /// attribute name (review of #1706: the lookup cost a hover frame 3.6%).
     text_sel: bool,
     /// The node whose content this positioned box highlights
-    /// ([`rinch_core::dom::DomDocument::set_highlight_owner`], #2666): paint
+    /// ([`rinch_core::dom::DomContent::set_highlight_owner`], #2666): paint
     /// draws it as part of that node's paint, over its backgrounds and under
     /// its text, rather than in its own place in the stacking order.
     pub(crate) highlight_owner: Option<RawNodeId>,
@@ -2164,7 +2188,7 @@ pub struct Node {
     /// keep the rule node with the old insets.
     pub inline_style_unmatched: Cell<bool>,
     /// The document's style sheets stop at this node (#2357,
-    /// `DomDocument::isolate_styles`): its descendants answer `false` to
+    /// `DomContent::isolate_styles`): its descendants answer `false` to
     /// Stylo's `TElement::matches_user_and_content_rules`, so they match
     /// only user-agent rules, presentational hints and their `style`
     /// attribute — Stylo's own gate for native anonymous content, the same
@@ -2457,7 +2481,7 @@ impl Node {
     }
 
     /// The node whose content this box is painted as a highlight of, if any
-    /// (#2666, [`rinch_core::dom::DomDocument::set_highlight_owner`]).
+    /// (#2666, [`rinch_core::dom::DomContent::set_highlight_owner`]).
     #[inline]
     pub fn highlight_owner(&self) -> Option<RawNodeId> {
         self.highlight_owner
@@ -4062,14 +4086,14 @@ pub struct NodeTree {
     /// The container of the rich-text editor holding the keyboard, when one
     /// does (issue #1126). Kept by the runtime's focus arbiter; an editor takes
     /// no CSS `:focus`, so it is not [`Self::focused_node`]. What
-    /// `DomDocument::active_element` answers for it, so an overlay opened from
+    /// `DomFocus::active_element` answers for it, so an overlay opened from
     /// an editor remembers the editor as its opener.
     pub keyboard_editor: Option<RawNodeId>,
     /// Currently active (mouse-pressed) node ID (for CSS :active).
     pub active_node: Option<RawNodeId>,
     /// The roots of every overlay currently holding a **scroll lock** (#474) —
     /// `Modal`/`Drawer`'s `lock_scroll`, arriving through
-    /// [`DomDocument::set_scroll_locked`](rinch_core::dom::DomDocument::set_scroll_locked).
+    /// [`DomScroll::set_scroll_locked`](rinch_core::dom::DomScroll::set_scroll_locked).
     ///
     /// A `Vec` rather than a flag or a count because it has to answer two
     /// questions at once: *is* the page locked (non-empty), and *which* subtrees
@@ -4142,7 +4166,7 @@ pub struct NodeTree {
     /// The selection each text control had when it last lost the keyboard,
     /// or the one stashed for its next focus — `(start, end, direction)` in
     /// UTF-16 code units, written by the desktop runtime — so
-    /// `DomDocument::text_selection_range` answers for an unfocused control as
+    /// `DomFocus::text_selection_range` answers for an unfocused control as
     /// a browser does (issue #1678). Dropped with the node.
     pub text_selections: HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
     /// How many live nodes have [`Node::style_isolated`] set (#2357). While

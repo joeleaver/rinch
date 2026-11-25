@@ -12,8 +12,9 @@
 //!   placeholder, not its frame (#348), yet every fresh frame it received
 //!   repainted its box to draw the same placeholder.
 //!
-//! Gated on `software_shell`: run under `cargo test -p rinch --features
-//! embed,theme,clipboard`, like `viewport_inputs_349_tests`.
+//! Gated on `software_shell`, which every `windowing` build sets, with the GPU
+//! renderer or without it (`build.rs`), so these run under `cargo test
+//! --workspace` and in CI's software-only `feature-gated` lines alike.
 
 use super::*;
 use crate::render_surface::{

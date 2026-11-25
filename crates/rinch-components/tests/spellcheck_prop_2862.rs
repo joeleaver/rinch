@@ -9,7 +9,7 @@ use rinch_components::color_input::ColorInput;
 use rinch_components::text_input::TextInput;
 use rinch_components::textarea::Textarea;
 use rinch_core::Component;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 
 mod common;

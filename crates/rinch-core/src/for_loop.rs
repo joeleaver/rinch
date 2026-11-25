@@ -655,8 +655,8 @@ where
                         // don't subscribe the for-loop's parent effect. Items create
                         // their own effects for reactivity via {|| expr} closures.
                         //
-                        // The owner guard is a separate stack from `untracked`'s
-                        // observer stack (issue #141). It must stay inside this
+                        // The owner guard is independent of the observer
+                        // `untracked` hides (issue #141). It must stay inside this
                         // match arm: the `Remove` arm disposes scopes, and that
                         // must run under the reconcile effect's owner.
                         let node = {
@@ -1017,7 +1017,7 @@ mod tests {
     /// sites 7 and 8 fire.
     #[test]
     fn an_item_body_is_attributed_to_its_own_item_scope() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::{Owner, Signal, current_owner};
         use std::cell::RefCell;
@@ -1268,7 +1268,7 @@ mod tests {
     /// "already mutably borrowed".
     #[test]
     fn removing_an_item_whose_cleanup_writes_a_signal_does_not_panic() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -1368,7 +1368,7 @@ mod tests {
     /// that kept the last.
     #[test]
     fn duplicate_key_renders_one_row_per_key() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use std::cell::RefCell;
 
@@ -1428,7 +1428,7 @@ mod tests {
     /// its node gone; if that variant is ever adopted this test has to change.
     #[test]
     fn a_duplicate_key_never_leaves_a_dead_scope_mounted() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::{Owner, Signal, current_owner};
         use std::cell::RefCell;
@@ -1510,7 +1510,7 @@ mod tests {
     /// order is already correct.
     #[test]
     fn duplicate_keys_do_not_desynchronise_keys_order() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -1582,7 +1582,7 @@ mod tests {
     /// for it.
     #[test]
     fn a_duplicate_key_introduced_by_an_update_does_not_thrash() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -1661,7 +1661,7 @@ mod tests {
     /// dead-scope bug it was fixing.
     #[test]
     fn an_unkeyed_for_renders_every_row_even_when_two_items_are_equal() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::{Owner, current_owner};
         use std::cell::RefCell;
@@ -1729,7 +1729,7 @@ mod tests {
     /// of assertions the [`KeySource`] split exists to keep apart.
     #[test]
     fn an_explicitly_keyed_for_still_drops_a_repeat_of_the_same_values() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use std::cell::RefCell;
 
@@ -1777,7 +1777,7 @@ mod tests {
     /// user would notice it — no row re-rendered, no node replaced.
     #[test]
     fn unkeyed_duplicate_rows_keep_their_identity_across_an_unrelated_update() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::Cell;
@@ -1855,7 +1855,7 @@ mod tests {
     /// exact failure `key:` exists to prevent.
     #[test]
     fn unkeyed_duplicates_survive_a_reorder_as_moves_not_re_renders() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::Cell;
@@ -1931,7 +1931,7 @@ mod tests {
     /// rule, so the reconcile's one-key-one-row invariant still holds.
     #[test]
     fn a_debug_impl_that_emits_the_separator_falls_back_to_first_wins() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use std::cell::RefCell;
 
@@ -1989,7 +1989,7 @@ mod tests {
     /// `Insert` arm already wraps `view` in `untracked` for the same reason.
     #[test]
     fn a_rejected_items_drop_does_not_subscribe_the_reconcile() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::Cell;
@@ -2082,7 +2082,7 @@ mod tests {
     /// released — scope first, then node (issue #356).
     #[test]
     fn a_displaced_item_state_is_parked_then_disposed_then_unmounted() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -2139,7 +2139,7 @@ mod tests {
     /// all, so this pins the initial-render site on its own.
     #[test]
     fn for_each_dom_deduplicates_hand_built_for_items() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use std::cell::RefCell;
 
@@ -2180,7 +2180,7 @@ mod tests {
     /// repaired the split: the next diff sees the key order it wanted.
     #[test]
     fn a_rotation_moves_the_row_to_the_slot_keys_order_records() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -2230,7 +2230,7 @@ mod tests {
     /// mount.
     #[test]
     fn moving_a_row_does_not_leave_it_listed_twice() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -2280,7 +2280,7 @@ mod tests {
     /// identical either way.
     #[test]
     fn a_removed_items_cleanup_that_reads_a_signal_does_not_subscribe_the_reconcile_effect() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::{Signal, on_cleanup};
         use std::cell::RefCell;
@@ -2366,7 +2366,7 @@ mod tests {
     /// each side, and carries a non-empty attribute.
     #[test]
     fn a_removed_rows_cleanup_sees_its_own_live_node() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -2407,7 +2407,7 @@ mod tests {
     /// old scope disposed while the old node is still mounted (issue #356).
     #[test]
     fn a_rerendered_rows_old_cleanup_sees_its_own_live_node() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -2458,7 +2458,7 @@ mod tests {
     /// the node the list is now showing.
     #[test]
     fn a_parked_release_leaves_a_node_the_same_pass_reused() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -2517,7 +2517,7 @@ mod tests {
     /// it whose cleanup must still run.
     #[test]
     fn a_panicking_row_cleanup_still_releases_every_departing_row() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
