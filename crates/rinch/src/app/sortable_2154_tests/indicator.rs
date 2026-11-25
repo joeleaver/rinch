@@ -152,6 +152,7 @@ fn a_sweep_in_the_sources_own_list_never_paints_one_card_over_another() {
             indicator: SortIndicator::Gap,
             source,
             preview: SortPreview::None,
+            apply: true,
         });
         grab(&mut f, "d", 0.5, 0.5);
         let (ax, ay, aw, _) = box_of(&f, item(&f, "a"));

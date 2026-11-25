@@ -98,6 +98,9 @@ const LIVE_STYLE: &str = "position: absolute; width: 1px; height: 1px; margin: -
 
 mod component;
 mod drag_state;
+mod focus;
+#[cfg(test)]
+mod focus_tests;
 mod ghost;
 mod keyboard;
 mod offer;
@@ -114,6 +117,7 @@ pub use types::{
 };
 
 use drag_state::*;
+use focus::*;
 use ghost::*;
 use keyboard::*;
 use offer::*;
@@ -130,8 +134,8 @@ rinch_core::doc_keyed! {
     /// goes when the document dies.
     static LISTS: rinch_core::DocList<(u64, u64, Rc<ListConfig>)> =
         rinch_core::DocList::new(|l| Some(l.1));
-    /// The item to focus once it is drawn: (document, group, key, the list it
-    /// was dropped in). Swept with its document (#2797).
+    /// The item to focus once it is drawn, and the lists watching for it
+    /// (`focus::request_focus`). Swept with its document (#2797).
     static PENDING_FOCUS: FocusSlot = FocusSlot(None);
     /// The items rinch made focusable to give them the focus (`focus_item`),
     /// as `(their document, the item, the key entry that takes the

@@ -142,29 +142,6 @@ pub(super) struct Active {
     pub(super) reflowing: Vec<NodeHandle>,
 }
 
-/// (document, group, key, the list it was dropped in).
-pub(super) type PendingFocus = (u64, String, String, Option<String>);
-
-/// The item to focus once it is drawn, if any: one slot for every document,
-/// the last request winning. Its own [`ForgetDoc`](rinch_core::ForgetDoc)
-/// because it is one slot, not a map: a document's sweep clears it when the
-/// request is that document's.
-pub(super) struct FocusSlot(pub(super) Option<PendingFocus>);
-
-impl rinch_core::ForgetDoc for FocusSlot {
-    fn take_doc(&mut self, doc: u64) -> rinch_core::Removed {
-        if self.0.as_ref().is_some_and(|p| p.0 == doc) {
-            vec![Box::new(self.0.take())]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn entries_for_doc(&self, doc: u64) -> usize {
-        usize::from(self.0.as_ref().is_some_and(|p| p.0 == doc))
-    }
-}
-
 thread_local! {
     pub(super) static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
     pub(super) static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };

@@ -44,17 +44,35 @@ pub fn adopt_late_children(
 ) {
     let doc = scope.doc_weak();
     let owner = scope.id();
-    let watched = root.clone();
     let root_id = root.node_id();
-    on_child_inserted(root, move |inserted| {
-        if crosses(inserted, &watched, boundary) {
-            return;
-        }
+    observe_late_children(root, boundary, move |inserted| {
         let Some(doc) = doc.upgrade() else {
             return;
         };
         let mut scope = RenderScope::with_parent(doc, root_id, Some(owner));
         patch(inserted, &mut scope);
+    });
+}
+
+/// Call `seen` on every subtree inserted beneath `root` from now on that is
+/// `root`'s by `boundary` (as [`adopt_late_children`] reads it): the same
+/// observer without a scope, for a container that registers one outside its
+/// render, for a while (`SortableList` watching for an item it is to focus,
+/// #3062).
+///
+/// The registration is released with the ambient owner, as
+/// [`on_child_inserted`]'s is: run this under a scope of the caller's own
+/// and dispose that scope to stop watching.
+pub fn observe_late_children(
+    root: &NodeHandle,
+    boundary: &'static [&'static str],
+    seen: impl Fn(&NodeHandle) + 'static,
+) {
+    let watched = root.clone();
+    on_child_inserted(root, move |inserted| {
+        if !crosses(inserted, &watched, boundary) {
+            seen(inserted);
+        }
     });
 }
 

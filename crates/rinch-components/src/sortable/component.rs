@@ -123,38 +123,38 @@ fn reason_node(scope: &mut RenderScope) -> NodeHandle {
     reason
 }
 
-/// The list has seen the items in `node`'s subtree: at its render, and again
-/// for every subtree that arrives later (`adopt_late_children`). An item
-/// renders before its list, and before the app's attributes on it (its root
-/// attributes, a `tabindex` among them) are written, so what depends on its
-/// list or on those attributes is done here, where both are known. A nested
-/// list's items are that list's.
+/// The list `seer` has seen the items in `node`'s subtree: at its render,
+/// and again for every subtree that arrives later. An item renders before
+/// its list, and before the app's attributes on it (its root attributes, a
+/// `tabindex` among them) are written, so what depends on its list or on
+/// those attributes is done here, where both are known. A nested list's
+/// items are that list's.
 ///
 /// In a [`SortableList::keyboard`] list an item is made a keyboard item
 /// (`offer_keyboard`). And the item a drop or a lift asked to focus
-/// (`PENDING_FOCUS`) takes the focus here, in any list: in one without
-/// `keyboard`, the `tabindex` it is lent to take it (`focus_item`) is lent
-/// only to an item the app wrote none on, which it cannot tell before now
-/// (#3062).
-fn see_items(node: &NodeHandle, keyboard: bool) {
+/// (`PENDING_FOCUS`) takes the focus here when the request names this list
+/// (its group, and its id when the request has one), which ends the
+/// request: in a list without `keyboard`, the `tabindex` it is lent to take
+/// it (`focus_item`) is lent only to an item the app wrote none on, which it
+/// cannot tell before now (#3062).
+///
+/// A `keyboard` list sees every late arrival (`adopt_late_children`); one
+/// without sees them only while a request names it (`request_focus`,
+/// `watch_if_named`), so an app's plain lists add no insertion observer.
+pub(super) fn see_items(node: &NodeHandle, seer: &Seer) {
     if node.get_attribute(LIST_ATTR).is_some() {
         return;
     }
     let Some(key) = node.get_attribute(KEY_ATTR) else {
         for child in node.children() {
-            see_items(&child, keyboard);
+            see_items(&child, seer);
         }
         return;
     };
-    if keyboard {
+    if seer.keyboard {
         offer_keyboard(node);
     }
-    let doc = node.doc_key();
-    let wanted = PENDING_FOCUS.with(|p| {
-        p.0.as_ref()
-            .is_some_and(|(d, _, k, _)| *d == doc && *k == key)
-    });
-    if wanted {
+    if take_request_for(node.doc_key(), seer, &key) {
         focus_item(node);
     }
 }
@@ -205,13 +205,26 @@ impl Component for SortableList {
         for child in children {
             list.append_child(child);
         }
-        let keyboard = self.keyboard;
-        for child in children {
-            see_items(child, keyboard);
-        }
-        crate::late_children::adopt_late_children(__scope, &list, NOT_MINE, move |inserted, _| {
-            see_items(inserted, keyboard)
+        let seer = Rc::new(Seer {
+            group: self.group.clone(),
+            id: self.id.clone(),
+            keyboard: self.keyboard,
         });
+        let doc = list.doc_key();
+        if self.keyboard || request_names(doc, &seer) {
+            for child in children {
+                see_items(child, &seer);
+            }
+        }
+        if self.keyboard {
+            let seer = seer.clone();
+            crate::late_children::adopt_late_children(
+                __scope,
+                &list,
+                NOT_MINE,
+                move |inserted, _| see_items(inserted, &seer),
+            );
+        }
         let reason = reason_node(__scope);
         list.append_child(&reason);
         let live = __scope.create_element("div");
@@ -243,9 +256,15 @@ impl Component for SortableList {
             reason,
             live,
         });
-        let doc = list.doc_key();
         LISTS.with_mut(|l| l.push((token, doc, cfg)));
+        // A list without `keyboard` drawn while a request names it (one
+        // re-rendered under a drop) watches for the item until it comes.
+        watch_if_named(&list, seer.clone());
+        let list_id = list.node_id();
         __scope.on_cleanup(move || {
+            // Its watch goes with it, and the request naming it unless a list
+            // it names is drawn again (`list_gone`).
+            list_gone(doc, list_id, &seer);
             // A drag goes on through a re-render of any list (a co-edited
             // board re-renders under it): lists are found again by id.
             // Dropped once the registry is let go.
@@ -376,8 +395,7 @@ fn adopt(item: &NodeHandle, key: &str) {
         });
         // Its list focuses it once it sees it (`see_items`), and the timer
         // if it is already there.
-        PENDING_FOCUS.with_mut(|p| p.0 = Some((doc, group.clone(), key.to_string(), None)));
-        rinch_core::unowned(|| set_timeout(0, try_pending_focus));
+        request_focus(doc, group.clone(), key.to_string(), None);
     }
 }
 

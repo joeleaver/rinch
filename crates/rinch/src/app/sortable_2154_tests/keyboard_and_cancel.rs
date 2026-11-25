@@ -12,6 +12,7 @@ fn a_keyboard_lift_moves_the_gap_and_escape_puts_everything_back() {
         preview: SortPreview::Clone,
         indicator: SortIndicator::Gap,
         source: SortSource::Collapse,
+        apply: true,
     });
     let at = point(&f, item(&f, "a"), 0.5, 0.5);
     press_at(&mut f, at);
@@ -55,6 +56,7 @@ fn escape_mid_pointer_drag_restores_every_option() {
         preview: SortPreview::Clone,
         indicator: SortIndicator::Both,
         source: SortSource::Collapse,
+        apply: true,
     });
     grab(&mut f, "a", 0.5, 0.5);
     let over = point(&f, item(&f, "e"), 0.5, 0.25);

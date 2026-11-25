@@ -1,0 +1,341 @@
+//! Giving the focus back to an item after a keyboard drop or a re-render
+//! during a lift: the pending request (`PENDING_FOCUS`), the lists that watch
+//! for its item, and the `tabindex` lent to an item that has none (#3062).
+
+use super::component::see_items;
+use super::*;
+use rinch_core::dom::NodeId;
+use rinch_core::reactive::Scope;
+
+/// The item to focus once it is drawn: `key` of `group` in document `doc`,
+/// in the list `list` (any list of the group when `None`).
+pub(super) struct FocusRequest {
+    pub(super) doc: u64,
+    pub(super) group: String,
+    pub(super) key: String,
+    pub(super) list: Option<String>,
+    /// Which request this is: a check scheduled for one request leaves a
+    /// later one alone.
+    serial: u64,
+    /// The observers that watch a list without `keyboard` for the item, by
+    /// the list's node (#3062). Such a list registers none of its own: an
+    /// insertion observer makes every insertion on the thread walk its
+    /// ancestors, so a list pays for one only while a request names it. A
+    /// `keyboard` list has its own for good (`offer_keyboard`).
+    watches: Vec<(NodeId, Watch)>,
+}
+
+impl FocusRequest {
+    /// Whether the request names the list `id` of `group` in `doc`.
+    fn targets(&self, doc: u64, group: &str, id: &str) -> bool {
+        self.doc == doc && self.group == group && self.list.as_ref().is_none_or(|l| l == id)
+    }
+}
+
+/// An observer registered under a scope of its own, released when dropped.
+struct Watch(Scope);
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.0.dispose();
+    }
+}
+
+/// The pending request, if any: one slot for every document, the last
+/// request winning. Its own [`ForgetDoc`](rinch_core::ForgetDoc) because it
+/// is one slot, not a map: a document's sweep clears it when the request is
+/// that document's.
+pub(super) struct FocusSlot(pub(super) Option<FocusRequest>);
+
+impl rinch_core::ForgetDoc for FocusSlot {
+    fn take_doc(&mut self, doc: u64) -> rinch_core::Removed {
+        if self.0.as_ref().is_some_and(|p| p.doc == doc) {
+            vec![Box::new(self.0.take())]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn entries_for_doc(&self, doc: u64) -> usize {
+        usize::from(self.0.as_ref().is_some_and(|p| p.doc == doc))
+    }
+}
+
+thread_local! {
+    static NEXT_SERIAL: Cell<u64> = const { Cell::new(0) };
+}
+
+/// What a list tells the items it sees about itself (`see_items`).
+pub(super) struct Seer {
+    pub(super) group: String,
+    pub(super) id: String,
+    pub(super) keyboard: bool,
+}
+
+/// Focus the item `key` of `group` once it is drawn in `list`: when a list
+/// the request names sees it (its render, or a later arrival in it), and on
+/// the next turn of the event loop (timers permitting) if it is already
+/// there. Replaces any earlier request; dropped once satisfied, at the next
+/// drag, and when no list it names is left.
+pub(super) fn request_focus(doc: u64, group: String, key: String, list: Option<String>) {
+    let serial = NEXT_SERIAL.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    let request = FocusRequest {
+        doc,
+        group: group.clone(),
+        key,
+        list,
+        serial,
+        watches: Vec::new(),
+    };
+    // Pending before the lists are read: reading them can flush the app's
+    // re-render (the drop's), and a list drawn then must see the request
+    // (`see_items` at its render, `watch_if_named`). The superseded request
+    // (and its watches) goes outside the borrow.
+    let old = PENDING_FOCUS.with_mut(|p| p.0.replace(request));
+    drop(old);
+    for cfg in lists_of_group(&group, doc) {
+        if !cfg.keyboard && still_drawn(&cfg) {
+            attach_watch(serial, &cfg.node, seer_of(&cfg));
+        }
+    }
+    // Unowned: the item that parked it is usually the node the re-render
+    // replaced, and a parked callback of a disposed owner is dropped. Where
+    // no timer runs, a list's seeing the item is the only place it is focused.
+    rinch_core::unowned(|| set_timeout(0, try_pending_focus));
+}
+
+fn seer_of(cfg: &ListConfig) -> Rc<Seer> {
+    Rc::new(Seer {
+        group: cfg.group.clone(),
+        id: cfg.id.clone(),
+        keyboard: cfg.keyboard,
+    })
+}
+
+/// Watch the list `node` for the items that arrive in it.
+fn watch(node: &NodeHandle, seer: Rc<Seer>) -> (NodeId, Watch) {
+    let scope = Scope::new();
+    scope.run(|| {
+        crate::late_children::observe_late_children(node, NOT_MINE, move |inserted| {
+            see_items(inserted, &seer)
+        })
+    });
+    (node.node_id(), Watch(scope))
+}
+
+/// Drop the pending request, if any (a drag starts).
+pub(super) fn cancel_pending_focus() {
+    let old = PENDING_FOCUS.with_mut(|p| p.0.take());
+    drop(old);
+}
+
+/// Take the pending request if it is for the item `key` of the list `seer`
+/// in `doc`: whether it was.
+pub(super) fn take_request_for(doc: u64, seer: &Seer, key: &str) -> bool {
+    let taken = PENDING_FOCUS.with_mut(|p| {
+        p.0.as_ref()
+            .is_some_and(|r| r.key == key && r.targets(doc, &seer.group, &seer.id))
+            .then(|| p.0.take())
+            .flatten()
+    });
+    taken.is_some()
+}
+
+/// Whether a request is pending for the list `seer` of `doc`.
+pub(super) fn request_names(doc: u64, seer: &Seer) -> bool {
+    PENDING_FOCUS.with(|p| {
+        p.0.as_ref()
+            .is_some_and(|r| r.targets(doc, &seer.group, &seer.id))
+    })
+}
+
+/// A list without `keyboard`, `node`, just drawn: watch it for the item when
+/// the pending request names it (a list re-rendered under a drop).
+pub(super) fn watch_if_named(node: &NodeHandle, seer: Rc<Seer>) {
+    if seer.keyboard {
+        return;
+    }
+    if let Some(serial) = PENDING_FOCUS.with(|p| p.0.as_ref().map(|r| r.serial)) {
+        attach_watch(serial, node, seer);
+    }
+}
+
+/// Whether the list `cfg` is still registered: one read before a flush that
+/// re-rendered it has gone since.
+fn still_drawn(cfg: &Rc<ListConfig>) -> bool {
+    LISTS.with(|l| l.iter().any(|e| Rc::ptr_eq(&e.2, cfg)))
+}
+
+/// Watch the list `node` (`seer`) for the request `serial`'s item, if that
+/// request is still pending, names the list, and has no watch on it yet.
+fn attach_watch(serial: u64, node: &NodeHandle, seer: Rc<Seer>) {
+    let id = node.node_id();
+    let doc = node.doc_key();
+    let wanted = PENDING_FOCUS.with(|p| {
+        p.0.as_ref().is_some_and(|r| {
+            r.serial == serial
+                && r.targets(doc, &seer.group, &seer.id)
+                && r.watches.iter().all(|(n, _)| *n != id)
+        })
+    });
+    if !wanted {
+        return;
+    }
+    let watched = watch(node, seer);
+    let unused = PENDING_FOCUS.with_mut(|p| match p.0.as_mut().filter(|r| r.serial == serial) {
+        Some(r) => {
+            r.watches.push(watched);
+            None
+        }
+        None => Some(watched),
+    });
+    drop(unused);
+}
+
+/// The list `node` (`seer`) of `doc` is going away: its watch goes, and the
+/// request goes too when no list it names is drawn by the next turn of the
+/// event loop. Not at once: a list re-rendered as a new node may go before
+/// its successor is drawn, and the request is for the successor (#3062).
+pub(super) fn list_gone(doc: u64, node: NodeId, seer: &Seer) {
+    let (watch, serial) = PENDING_FOCUS.with_mut(|p| {
+        let Some(r) = p.0.as_mut() else {
+            return (None, None);
+        };
+        let watch = r
+            .watches
+            .iter()
+            .position(|(n, _)| *n == node)
+            .map(|at| r.watches.swap_remove(at));
+        let serial = r.targets(doc, &seer.group, &seer.id).then_some(r.serial);
+        (watch, serial)
+    });
+    drop(watch);
+    if let Some(serial) = serial {
+        rinch_core::unowned(|| set_timeout(0, move || drop_if_orphaned(serial)));
+    }
+}
+
+/// Drop the request `serial`, if it is still pending, when no list it names
+/// is drawn.
+fn drop_if_orphaned(serial: u64) {
+    let orphaned = PENDING_FOCUS.with(|p| {
+        p.0.as_ref().filter(|r| r.serial == serial).map(|r| {
+            !lists_of_group(&r.group, r.doc)
+                .iter()
+                .any(|c| r.targets(r.doc, &c.group, &c.id))
+        })
+    });
+    if orphaned == Some(true) {
+        cancel_pending_focus();
+    }
+}
+
+pub(super) fn try_pending_focus() {
+    let Some((doc, group, key, list)) = PENDING_FOCUS.with(|p| {
+        p.0.as_ref()
+            .map(|r| (r.doc, r.group.clone(), r.key.clone(), r.list.clone()))
+    }) else {
+        return;
+    };
+    // Not yet where it was dropped (the app re-renders later): a list that
+    // sees it there focuses it.
+    for cfg in lists_of_group(&group, doc)
+        .into_iter()
+        .filter(|c| list.as_ref().is_none_or(|l| *l == c.id))
+    {
+        if let Some((node, _)) = items_of(&cfg.node).into_iter().find(|(_, k)| *k == key) {
+            cancel_pending_focus();
+            focus_item(&node);
+            return;
+        }
+    }
+}
+
+/// Give a keyboard lift's item the focus. An item is a Tab stop only in a
+/// [`SortableList::keyboard`] list (`offer_keyboard`); one dropped into a
+/// list without `keyboard` has no `tabindex` and is lent one
+/// (`lend_tabindex`).
+///
+/// Called only once the app's attributes on the item are written: by its
+/// list, when it sees the item (`see_items`), or later (`try_pending_focus`).
+/// Never from the item's own render, which comes before them: a `tabindex`
+/// the app writes on it would be written after the lend, and taken for the
+/// lend when the focus leaves (#3062).
+pub(super) fn focus_item(item: &NodeHandle) {
+    if item.get_attribute("tabindex").is_none() {
+        lend_tabindex(item);
+    }
+    item.focus();
+}
+
+/// Make `item` focusable for as long as it holds the focus, and no Tab stop:
+/// `tabindex="-1"`, removed once the focus is elsewhere (#3062). Removed
+/// while the item holds the focus, it would take the focus with it (Chrome
+/// blurs inside that write); kept after, the item would be a focusable stop
+/// in a list that offers none, until it is drawn again. A `keyboard` list
+/// that adopts the item makes it its own Tab stop instead (`take_lent`).
+///
+/// The record lives exactly as long as the item: its focus-leave entry is
+/// unowned (whatever render is running when the list sees the item is not
+/// the item's), and the item's cleanup forgets the record and drops the entry
+/// with it (`forget_lent`). So a node id the record names is never a node
+/// that took a removed item's place.
+fn lend_tabindex(item: &NodeHandle) {
+    item.set_attribute("tabindex", "-1");
+    let owner = item.clone();
+    let entry = rinch_core::unowned(|| {
+        rinch_core::push_key_handler(
+            item,
+            |_| false,
+            move || {
+                // A window blur calls this too, with the focus still here.
+                let mut at = owner.active_element();
+                while let Some(n) = at {
+                    if n.node_id() == owner.node_id() {
+                        return;
+                    }
+                    at = n.parent_node();
+                }
+                if take_lent(&owner) && owner.get_attribute("tabindex").as_deref() == Some("-1") {
+                    owner.remove_attribute("tabindex");
+                }
+            },
+        )
+    });
+    let doc = item.doc_key();
+    let stale = LENT_TABINDEX.with_mut(|l| {
+        // An item the document let go of by a route that ran no cleanup of
+        // its own (an ancestor's markup replaced) is forgotten here. Retired,
+        // not detached: an item taken out and put back (a branch hidden and
+        // shown again) is the same node, and still holds the lend, which its
+        // focus-leave entry takes back.
+        let (kept, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut **l)
+            .into_iter()
+            .partition(|(_, n, _)| !n.is_retired());
+        **l = kept;
+        l.push((doc, item.clone(), entry));
+        stale
+    });
+    drop(stale);
+}
+
+/// Forget the `tabindex` lent to `item`, if it was: whether it was.
+pub(super) fn take_lent(item: &NodeHandle) -> bool {
+    forget_lent(item.doc_key(), item.node_id())
+}
+
+/// Forget the `tabindex` lent to the item `id` of document `doc`, if it was
+/// (and drop its focus-leave entry): whether it was. The item's cleanup calls
+/// this, so the record goes with the item.
+pub(super) fn forget_lent(doc: u64, id: NodeId) -> bool {
+    let taken = LENT_TABINDEX.with_mut(|l| {
+        l.iter()
+            .position(|(d, n, _)| *d == doc && n.node_id() == id)
+            .map(|i| l.swap_remove(i))
+    });
+    // The entry is released outside the registry's borrow.
+    taken.is_some()
+}

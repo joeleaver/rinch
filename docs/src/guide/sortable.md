@@ -218,7 +218,10 @@ also gets an `aria-description` with the keys, unless you wrote one. A lift
 can land in any list of the group, `keyboard` or not. Dropped in a list without
 `keyboard`, an item that has no `tabindex` of yours is lent `tabindex="-1"` to
 take the focus back: focusable, no Tab stop, and the `tabindex` goes once the
-focus moves elsewhere (or the item goes). One with a `tabindex` you wrote
+focus moves elsewhere (or the item goes; an item taken out and put back keeps
+the lend until the focus leaves it). The item is focused when it is drawn in
+the list it was dropped in; the request is forgotten once it is, at the next
+drag, and when that list goes and is not drawn again. One with a `tabindex` you wrote
 keeps yours, whatever its value, `tabindex="-1"` included (`SortableItem {
 "tabindex": "-1", … }`): the list decides the lend when it sees the moved
 item, after the attributes you wrote on it, so it never lends over yours or

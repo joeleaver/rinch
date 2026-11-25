@@ -288,3 +288,127 @@ fn a_lent_tabindex_is_forgotten_with_its_item() {
     assert_ne!(z, gone, "a node id is never handed out again");
     assert_eq!(tabindex(&f, "z").as_deref(), Some("-1"));
 }
+
+/// Whether document `doc` has a pending focus request.
+fn pending_focus(doc: u64) -> usize {
+    const FOCUS: &str = "rinch_components::sortable::PENDING_FOCUS";
+    rinch_core::doc_entries(doc)
+        .into_iter()
+        .find(|(n, _)| *n == FOCUS)
+        .map_or(0, |(_, count)| count)
+}
+
+/// Fire the timers the manual backend has collected.
+fn fire_timers() {
+    let sched = SCHEDULED.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    for (id, _) in sched {
+        rinch_core::fire_timeout(id);
+    }
+}
+
+/// Lift `a` in c1 and drop it into c2 by keyboard, the app not moving it
+/// (`APPLY` off): the request for it waits on c2.
+fn drop_a_into_c2_unapplied(f: &mut Fixture) {
+    APPLY.with(|a| a.set(false));
+    focus_card(f, "a");
+    key(f, KeyCode::Space, Some(" "));
+    key(f, KeyCode::ArrowRight, None);
+    key(f, KeyCode::Enter, None);
+    assert_eq!(drops().len(), 1, "control: dropped");
+    assert_eq!(cards(f, "c2"), ["d"], "control: the app moved nothing");
+}
+
+/// #3062 review 3: c2 sees the dropped card arrive (the app moves it in the
+/// drop's batch) and gives it the focus, and that ends the request, before
+/// any timer: the watch of the plain list it named goes with it, so a plain
+/// list adds no insertion observer outside a request.
+#[test]
+fn a_satisfied_drop_leaves_no_request_and_no_observer() {
+    let mut f = fixture_with(Some("c2"), |_| None);
+    let doc = f.app.doc_key();
+    let base = rinch_core::dom::insert_observer_count();
+    let _guard = crate::app::timer_backend_lock();
+    rinch_core::set_timer_backend(manual_timers);
+    focus_card(&mut f, "a");
+    key(&mut f, KeyCode::Space, Some(" "));
+    key(&mut f, KeyCode::ArrowRight, None);
+    key(&mut f, KeyCode::Enter, None);
+    assert_eq!(
+        list_holding(&f, "a"),
+        list_holding(&f, "d"),
+        "control: moved"
+    );
+    assert_eq!(pending_focus(doc), 0, "a satisfied request lingers");
+    send(&mut f, PlatformEvent::AboutToWait);
+    assert_eq!(f.app.focus_target, FocusTarget::Node(item(&f, "a")));
+    assert_eq!(rinch_core::dom::insert_observer_count(), base);
+    fire_timers();
+}
+
+/// #3062 review 3: a request whose list goes, and is not drawn again, goes
+/// too, by the next turn of the event loop; the list's watch at once.
+#[test]
+fn a_request_goes_with_the_list_it_names() {
+    let mut f = fixture_with(Some("c2"), |_| None);
+    let doc = f.app.doc_key();
+    let base = rinch_core::dom::insert_observer_count();
+    let _guard = crate::app::timer_backend_lock();
+    rinch_core::set_timer_backend(manual_timers);
+    drop_a_into_c2_unapplied(&mut f);
+    fire_timers();
+    assert_eq!(pending_focus(doc), 1, "control: the request waits");
+    assert_eq!(
+        rinch_core::dom::insert_observer_count(),
+        base + 1,
+        "control: c2 watches for the card"
+    );
+    f.board.update(|b| b[0].cols.retain(|c| c.id != "c2"));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(
+        rinch_core::dom::insert_observer_count(),
+        base,
+        "the watch outlived c2"
+    );
+    fire_timers();
+    assert_eq!(
+        pending_focus(doc),
+        0,
+        "the request outlived the list it names"
+    );
+}
+
+/// The control: c2 drawn again as a new node (its lane re-keyed) keeps the
+/// request, the new node watches, and the card arriving there later takes
+/// the focus.
+#[test]
+fn a_request_survives_its_list_drawn_again() {
+    let mut f = fixture_with(Some("c2"), |_| None);
+    let doc = f.app.doc_key();
+    let base = rinch_core::dom::insert_observer_count();
+    let _guard = crate::app::timer_backend_lock();
+    rinch_core::set_timer_backend(manual_timers);
+    drop_a_into_c2_unapplied(&mut f);
+    fire_timers();
+    let old_c2 = list_holding(&f, "d");
+    f.board.update(|b| b[0].id = "l1-again".into());
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    assert_ne!(list_holding(&f, "d"), old_c2, "control: c2 was drawn again");
+    fire_timers();
+    assert_eq!(pending_focus(doc), 1, "the request went with the old c2");
+    assert_eq!(
+        rinch_core::dom::insert_observer_count(),
+        base + 1,
+        "the new c2 does not watch"
+    );
+    f.board.update(|b| {
+        b[0].cols[0].cards.retain(|k| k != "a");
+        b[0].cols[1].cards.insert(0, "a".into());
+    });
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    fire_timers();
+    send(&mut f, PlatformEvent::AboutToWait);
+    assert_eq!(list_holding(&f, "a"), list_holding(&f, "d"));
+    assert_eq!(f.app.focus_target, FocusTarget::Node(item(&f, "a")));
+    assert_eq!(pending_focus(doc), 0);
+    assert_eq!(rinch_core::dom::insert_observer_count(), base);
+}

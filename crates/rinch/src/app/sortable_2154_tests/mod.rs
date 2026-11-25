@@ -31,6 +31,9 @@ struct Options {
     preview: SortPreview,
     indicator: SortIndicator,
     source: SortSource,
+    /// Whether the app applies a drop to its board. Off, it records the drop
+    /// and draws nothing new, so a keyboard drop's focus request stays parked.
+    apply: bool,
 }
 
 /// The component's own defaults.
@@ -41,6 +44,7 @@ impl Default for Options {
             preview: list.preview,
             indicator: list.indicator,
             source: list.source,
+            apply: true,
         }
     }
 }
@@ -104,6 +108,7 @@ fn fixture(options: Options) -> Fixture {
             SEEN.with(|s| s.borrow_mut().push(state));
         });
         let o = OPTIONS.with(|o| o.borrow().clone());
+        let apply_drops = o.apply;
         rsx! {
             div { style: "display: flex; gap: 100px; width: 800px; height: 600px; padding: 20px",
                 for (id, cards) in board.get() {
@@ -115,7 +120,9 @@ fn fixture(options: Options) -> Fixture {
                         preview: o.preview.clone(), indicator: o.indicator, source: o.source,
                         ondrop: move |m: SortMove| {
                             DROPS.with(|d| d.borrow_mut().push(m.clone()));
-                            board.update(|b| apply(b, &m));
+                            if apply_drops {
+                                board.update(|b| apply(b, &m));
+                            }
                         },
                         for card in cards.clone() {
                             SortableItem {

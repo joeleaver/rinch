@@ -1,0 +1,212 @@
+//! The pending focus request and the lent `tabindex` (#3062 review 3), on the
+//! mock document: what a list registers, which list a request reaches, when
+//! the request ends, and a lend that survives a detach.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use rinch_core::Component;
+use rinch_core::dom::insert_observer_count;
+use rinch_core::dom::mock::MockDomDocument;
+use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::{NodeHandle, RenderScope};
+
+use super::*;
+
+fn doc_scope() -> RenderScope {
+    let doc = Rc::new(RefCell::new(MockDomDocument::new()));
+    let body = doc.borrow().body();
+    // The scope holds the document weakly; the test keeps it for good.
+    std::mem::forget(doc.clone());
+    RenderScope::new(doc, body)
+}
+
+fn item(scope: &mut RenderScope, key: &str) -> NodeHandle {
+    SortableItem {
+        value: key.into(),
+        ..Default::default()
+    }
+    .render(scope, &[])
+}
+
+fn list(
+    scope: &mut RenderScope,
+    group: &str,
+    id: &str,
+    keyboard: bool,
+    keys: &[&str],
+) -> NodeHandle {
+    let items: Vec<NodeHandle> = keys.iter().map(|k| item(scope, k)).collect();
+    let list = SortableList {
+        group: group.into(),
+        id: id.into(),
+        keyboard,
+        ..Default::default()
+    }
+    .render(scope, &items);
+    scope.body_handle().append_child(&list);
+    list
+}
+
+fn pending() -> Option<(String, Option<String>)> {
+    PENDING_FOCUS.with(|p| p.0.as_ref().map(|r| (r.key.clone(), r.list.clone())))
+}
+
+fn focused(node: &NodeHandle) -> bool {
+    node.active_element()
+        .is_some_and(|f| f.node_id() == node.node_id())
+}
+
+/// Finding 1: a list without `keyboard` registers no insertion observer, so
+/// an app's plain lists cost no insertion anywhere a walk of its ancestors.
+/// A `keyboard` list registers one (the control): it gives late items their
+/// `tabindex`.
+#[test]
+fn a_plain_list_registers_no_insertion_observer() {
+    let mut scope = doc_scope();
+    let base = insert_observer_count();
+    let _plain = list(&mut scope, "cards", "a", false, &["x", "y"]);
+    assert_eq!(
+        insert_observer_count(),
+        base,
+        "a plain list observes insertions"
+    );
+    let _keyed = list(&mut scope, "cards", "b", true, &["z"]);
+    assert_eq!(insert_observer_count(), base + 1);
+}
+
+/// Findings 1–3: a request watches the plain list it names, and only that
+/// list; the item arriving in another list of the group (a keyboard one,
+/// which sees every arrival) or in a list of the same id in another group
+/// does not take it; arriving where it was asked for, it takes the focus,
+/// and the request and its watch end.
+#[test]
+fn a_request_reaches_only_its_list_and_ends_when_satisfied() {
+    let mut scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let keyed = list(&mut scope, "cards", "a", true, &["x"]);
+    let plain = list(&mut scope, "cards", "b", false, &["y"]);
+    let other = list(&mut scope, "lanes", "b", true, &[]);
+    let base = insert_observer_count();
+    request_focus(doc, "cards".into(), "z".into(), Some("b".into()));
+    assert_eq!(
+        insert_observer_count(),
+        base + 1,
+        "the plain list it names watches"
+    );
+
+    for (at, what) in [
+        (&keyed, "another list of the group"),
+        (&other, "another group"),
+    ] {
+        let z = item(&mut scope, "z");
+        at.append_child(&z);
+        assert!(!focused(&z), "{what} took the request");
+        assert_eq!(pending(), Some(("z".into(), Some("b".into()))), "{what}");
+    }
+
+    let z = item(&mut scope, "z");
+    plain.append_child(&z);
+    assert!(focused(&z));
+    assert_eq!(z.get_attribute("tabindex").as_deref(), Some("-1"), "lent");
+    assert_eq!(pending(), None, "a satisfied request lingers");
+    assert_eq!(insert_observer_count(), base, "its watch outlived it");
+}
+
+/// Finding 3: a new request replaces the last one, its watches with it, and
+/// a drag that starts drops it.
+#[test]
+fn a_request_is_replaced_and_dropped_at_the_next_drag() {
+    let mut scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let keyed = list(&mut scope, "cards", "a", true, &["x"]);
+    let _b = list(&mut scope, "cards", "b", false, &[]);
+    let _c = list(&mut scope, "cards", "c", false, &[]);
+    let base = insert_observer_count();
+    request_focus(doc, "cards".into(), "z".into(), None);
+    assert_eq!(insert_observer_count(), base + 2, "both plain lists watch");
+    request_focus(doc, "cards".into(), "w".into(), Some("c".into()));
+    assert_eq!(
+        insert_observer_count(),
+        base + 1,
+        "the replaced request's watches stayed"
+    );
+    assert_eq!(pending(), Some(("w".into(), Some("c".into()))));
+
+    let x = items_of(&keyed)[0].0.clone();
+    assert!(begin(&x, "x", true));
+    assert_eq!(pending(), None, "a drag left the request");
+    assert_eq!(insert_observer_count(), base);
+    end_active();
+}
+
+/// Finding 3: a plain list named by the request watches while it is drawn,
+/// and its watch goes with it.
+#[test]
+fn a_named_list_drops_its_watch_when_it_goes() {
+    let scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let base = insert_observer_count();
+    request_focus(doc, "cards".into(), "z".into(), Some("b".into()));
+    let body = scope.body_handle();
+    let mut inner =
+        RenderScope::with_parent(scope.doc_weak().upgrade().unwrap(), body.node_id(), None);
+    let _b = list(&mut inner, "cards", "b", false, &[]);
+    assert_eq!(
+        insert_observer_count(),
+        base + 1,
+        "a list drawn under a request watches"
+    );
+    inner.dispose();
+    assert_eq!(insert_observer_count(), base, "the watch outlived its list");
+    cancel_pending_focus();
+}
+
+/// Finding 4: a lent `tabindex` survives its item's being taken out and put
+/// back (another lend sweeps the records in between), and is taken back
+/// when the focus leaves it.
+#[test]
+fn a_lend_survives_a_detach_and_goes_with_the_focus() {
+    let mut scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let plain = list(&mut scope, "cards", "b", false, &["a", "b"]);
+    let a = items_of(&plain)[0].0.clone();
+    let b = items_of(&plain)[1].0.clone();
+    focus_item(&a);
+    assert_eq!(a.get_attribute("tabindex").as_deref(), Some("-1"));
+    a.remove();
+    focus_item(&b);
+    plain.insert_before(&a, &b);
+    assert_eq!(lent_in(doc), 2, "the detached item's lend was swept");
+    rinch_core::notify_focus_moved(doc);
+    assert_eq!(
+        a.get_attribute("tabindex"),
+        None,
+        "the lend outlived the focus"
+    );
+    assert_eq!(
+        b.get_attribute("tabindex").as_deref(),
+        Some("-1"),
+        "b holds the focus"
+    );
+}
+
+/// The control for finding 4: an item the document let go of (discarded) is
+/// swept at the next lend.
+#[test]
+fn a_discarded_items_lend_is_swept() {
+    let mut scope = doc_scope();
+    let plain = list(&mut scope, "cards", "b", false, &["a", "b"]);
+    let a = items_of(&plain)[0].0.clone();
+    let b = items_of(&plain)[1].0.clone();
+    focus_item(&a);
+    a.discard();
+    focus_item(&b);
+    let doc = b.doc_key();
+    assert_eq!(lent_in(doc), 1, "a discarded item's lend outlived it");
+}
+
+/// How many lent `tabindex` records document `doc` has.
+fn lent_in(doc: u64) -> usize {
+    LENT_TABINDEX.with(|l| l.iter().filter(|(d, _, _)| *d == doc).count())
+}

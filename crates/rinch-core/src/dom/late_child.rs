@@ -260,6 +260,14 @@ fn bump(half: Half, delta: isize) {
     });
 }
 
+/// How many insertion observers are registered on this thread: once it is
+/// above zero, every insertion on the thread walks its parent's ancestors.
+/// What a test asserts a container leaves alone (#3062). Not part of the API.
+#[doc(hidden)]
+pub fn insert_observer_count() -> usize {
+    count_of(Half::Inserted)
+}
+
 /// Call `f` whenever a subtree is inserted anywhere beneath `root`.
 ///
 /// `f` is handed the newly inserted node — which may be an item, or a wrapper

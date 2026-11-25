@@ -386,7 +386,7 @@ fn keys_for(cfg: &ListConfig, key: &str) -> Vec<String> {
 /// or list.
 pub(super) fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
     end_active();
-    PENDING_FOCUS.with_mut(|p| p.0.take());
+    cancel_pending_focus();
     if item.get_attribute(DISABLED_ATTR).is_some() {
         return false;
     }

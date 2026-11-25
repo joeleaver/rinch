@@ -170,6 +170,34 @@ with no deferred queue and no drain site in any host — which is what the
 alternative would have needed, since `queue_main_callback` takes a `Send`
 closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
 
+**An insertion observer is a cost on every insertion of its thread**, not only
+beneath its root: once `INSERT_COUNT` is above zero, each `NodeHandle`
+insertion walks its parent's ancestors through the registry. So a container
+registers one only for a default it really has to give. `SortableList` (#3062)
+registers one for good only with `keyboard` (a late item becomes a Tab stop,
+`offer_keyboard`). A plain list registers one only while the pending focus
+request names it (`sortable/focus.rs`): a keyboard drop into it, or a lift
+re-rendered over it, asks for the moved item to be focused once it is drawn
+(`request_focus`), which watches every plain list of the request's group (and
+id, when it names one) under a `Scope` of its own, and a plain list drawn
+while a request names it (`watch_if_named`) watches too. The watch is released
+when the request is satisfied (the list sees the item, `see_items`, or the
+timer finds it, `try_pending_focus`), replaced by a newer request, dropped at
+the next drag (`begin`), or when its list unmounts (`list_gone`). A request
+whose lists have all gone goes on the next turn of the event loop, not at
+once: a list re-rendered as a new node may go before its successor is drawn,
+and the request is for the successor. `rinch_core::dom::insert_observer_count`
+(hidden) is what the tests count (`sortable/focus_tests.rs`,
+`rinch/src/app/sortable_2091_tests/keyboard.rs`).
+
+The `tabindex="-1"` lent to a focused item that has none (`lend_tabindex`) is
+recorded in `LENT_TABINDEX` with the focus-leave entry that takes it back. The
+item's cleanup forgets the record (`forget_lent`); a lend sweeps the records
+of items the document has **retired** (`NodeHandle::is_retired`: discarded,
+or freed by `set_inner_html`, by a route that ran no cleanup), never of items
+that are only detached: one taken out and put back is the same node and still
+holds the lend, which its entry takes back when the focus leaves.
+
 `Breadcrumbs` takes both halves too (#2193): its separators are real
 `aria-hidden` spans appended to every item but the last, so a crumb that arrives
 or leaves changes which item needs one. `settle_separators` is idempotent — it

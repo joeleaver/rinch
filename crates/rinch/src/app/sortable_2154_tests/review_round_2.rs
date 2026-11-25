@@ -63,6 +63,7 @@ fn the_gap_in_the_sources_list_survives_an_item_added_mid_drag() {
         indicator: SortIndicator::Gap,
         source: SortSource::Unchanged,
         preview: SortPreview::None,
+        apply: true,
     });
     grab(&mut f, "d", 0.5, 0.5);
     let over = point(&f, item(&f, "b"), 0.5, 0.2);
@@ -108,6 +109,7 @@ fn a_rerendered_source_at_home_does_not_take_back_a_withdrawn_place() {
         indicator: SortIndicator::Gap,
         source: SortSource::Unchanged,
         preview: SortPreview::None,
+        apply: true,
     });
     grab(&mut f, "d", 0.5, 0.5);
     let over = point(&f, item(&f, "a"), 0.5, 0.2);
@@ -152,10 +154,12 @@ fn a_dropped_apps_preview_wrapper_and_focus_request_are_forgotten() {
     const WRAPPERS: &str = "rinch_components::sortable::GHOST_WRAPPERS";
     const FOCUS: &str = "rinch_components::sortable::PENDING_FOCUS";
     let _guard = crate::app::timer_backend_lock();
-    // No timer runs, so the focus request stays parked.
+    // No timer runs, and the app applies no drop, so the moved card never
+    // arrives where the request waits for it: the request stays parked.
     rinch_core::set_timer_backend(|_, _| {});
     let mut f = fixture(Options {
         preview: SortPreview::Clone,
+        apply: false,
         ..Options::default()
     });
     let doc = f.app.doc_key();
