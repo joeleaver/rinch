@@ -7,22 +7,6 @@ use super::*;
 use rinch_core::dom::NodeId;
 use rinch_core::reactive::Scope;
 
-/// Where a keyboard drop put its item, so that a request can tell the moved
-/// item from the node it was lifted as (#3062 review 4). An app that applies
-/// the drop later (after an await, or a timer of its own) leaves that node
-/// where it was until then, holding the focus; taking it for the moved item
-/// would end the request, and the redraw that follows would send the focus
-/// to the document.
-#[derive(Clone, Copy)]
-pub(super) struct Landing {
-    /// The item's index in the list the drop names once it is moved there
-    /// (`SortPlace::index`).
-    pub(super) index: usize,
-    /// The node the item was in that list at the drop (a drop within one
-    /// list), if it was there.
-    pub(super) held: Option<NodeId>,
-}
-
 /// The item to focus once it is drawn: `key` of `group` in document `doc`,
 /// in the list `list` (any list of the group when `None`).
 pub(super) struct FocusRequest {
@@ -33,9 +17,10 @@ pub(super) struct FocusRequest {
     /// Which request this is: a check scheduled for one request leaves a
     /// later one alone.
     serial: u64,
-    /// Where a drop put the item; `None` for a request made when a lift's
-    /// item is drawn again, which any node of its key satisfies.
-    landing: Option<Landing>,
+    /// Where a drop put the item (`super::landing`); `None` for a request
+    /// made when a lift's item is drawn again, which any node of its key
+    /// satisfies.
+    landing: Option<Rc<Landing>>,
     /// Whether a check (`try_pending_focus`) is scheduled for the request.
     check_due: bool,
     /// The entry that drops a drop's request when the focus moves on from
@@ -105,12 +90,13 @@ pub(super) fn request_focus(doc: u64, group: String, key: String, list: Option<S
     park(doc, group, key, list, None);
 }
 
-/// [`request_focus`] for the item a keyboard drop moved: satisfied by the
-/// item where the drop put it (`landing`) or drawn again, never by the node
-/// it was lifted as while that is still where it was. Dropped too when the
-/// focus moves on from `holder`, the lifted item, to another element: the
-/// user went elsewhere, and an app that applies the drop later must not take
-/// the focus back from there.
+/// [`request_focus`] for the item a keyboard drop moved: satisfied by a node
+/// of its key only once its list shows the drop applied (`landing`, see
+/// `super::landing` for the rule), never by the node it was lifted as, or a
+/// node drawn at its old place, while the list is still in its order at the
+/// drop. Dropped too when the focus moves on from `holder`, the lifted item,
+/// while that is still drawn (`leave_entry`): the user went elsewhere, and an
+/// app that applies the drop later must not take the focus back from there.
 pub(super) fn request_drop_focus(
     doc: u64,
     group: String,
@@ -119,7 +105,7 @@ pub(super) fn request_drop_focus(
     landing: Landing,
     holder: &NodeHandle,
 ) {
-    let serial = park(doc, group, key, list, Some(landing));
+    let serial = park(doc, group, key, list, Some(Rc::new(landing)));
     // Satisfied already when the app moved the item in the drop's batch.
     if !is_pending(serial) {
         return;
@@ -141,7 +127,7 @@ fn park(
     group: String,
     key: String,
     list: Option<String>,
-    landing: Option<Landing>,
+    landing: Option<Rc<Landing>>,
 ) -> u64 {
     let serial = NEXT_SERIAL.with(|n| {
         n.set(n.get() + 1);
@@ -171,8 +157,16 @@ fn park(
         }
     }
     // Unowned: the item that parked it is usually the node the re-render
-    // replaced, and a parked callback of a disposed owner is dropped. Where
-    // no timer runs, a list's seeing the item is the only place it is focused.
+    // replaced, and a parked callback of a disposed owner is dropped.
+    //
+    // Where no timer backend is installed (`rinch_core::set_timer_backend`:
+    // an embedder that installs none), this check and every later one
+    // (`schedule_check`, `list_gone`'s orphan sweep) never run. A list's
+    // seeing a new node of the key in the applied order (`see_items`) is then
+    // the only place a drop's request is satisfied, so a drop the app applies
+    // by a keyed move, which keeps the item's node and draws no new one, is
+    // never checked: the item keeps the focus it held, and the request stays
+    // until the next drag, the focus leaving the item, or a document sweep.
     rinch_core::unowned(|| set_timeout(0, try_pending_focus));
     serial
 }
@@ -183,11 +177,12 @@ fn is_pending(serial: u64) -> bool {
 }
 
 /// The focus-leave entry on `holder` that drops the request `serial` when
-/// the focus goes to another element. Not when it falls to the document (no
-/// element, `<body>` or the root): that is what a redraw that takes the
-/// lifted node away does, and the request is for the node drawn in its
-/// place. Unowned, like the request: the render running at the drop is not
-/// the request's.
+/// the focus goes to another element, or falls to the document (no element,
+/// `<body>` or the root) while `holder` is still drawn: a click on blank
+/// space. Not when it falls to the document because `holder` was taken
+/// away: that is what a redraw that applies the drop does, and the request
+/// is for the node drawn in its place. Unowned, like the request: the render
+/// running at the drop is not the request's.
 fn leave_entry(holder: &NodeHandle, serial: u64) -> DismissHandle {
     let owner = holder.clone();
     rinch_core::unowned(|| {
@@ -195,15 +190,18 @@ fn leave_entry(holder: &NodeHandle, serial: u64) -> DismissHandle {
             holder,
             |_| false,
             move || {
-                let Some(focus) = owner.active_element() else {
+                let focus = owner.active_element().filter(|f| {
+                    !f.tag_name().is_some_and(|t| {
+                        t.eq_ignore_ascii_case("body") || t.eq_ignore_ascii_case("html")
+                    })
+                });
+                let Some(focus) = focus else {
+                    if owner.is_connected() {
+                        let old = take_request(serial);
+                        drop(old);
+                    }
                     return;
                 };
-                let root = focus.tag_name().is_some_and(|t| {
-                    t.eq_ignore_ascii_case("body") || t.eq_ignore_ascii_case("html")
-                });
-                if root {
-                    return;
-                }
                 // A window blur calls this too, with the focus still here.
                 let mut at = Some(focus);
                 while let Some(n) = at {
@@ -229,51 +227,6 @@ fn take_request(serial: u64) -> Option<FocusRequest> {
             .then(|| p.0.take())
             .flatten()
     })
-}
-
-/// What a request makes of an item of its key in a list it names.
-enum Claim {
-    /// The item it is for: focus it.
-    Take,
-    /// The node the item was lifted as, moved: where it landed is read once
-    /// the tree has settled (`schedule_check`).
-    Later,
-    /// Not yet the item it is for.
-    No,
-}
-
-/// What a request with `landing` makes of `node`, an item of its key in a
-/// list it names: any node but the one the item was lifted as is the item
-/// drawn again, and that one is the item once it sits where the drop put it.
-/// Its place is read only when the tree has `settled` (a scheduled check):
-/// mid-reconcile, a list redrawn row by row can pass the old node through
-/// the drop's index on its way out.
-fn claim(landing: Option<Landing>, node: &NodeHandle, settled: bool) -> Claim {
-    let Some(landing) = landing else {
-        return Claim::Take;
-    };
-    if landing.held != Some(node.node_id()) {
-        Claim::Take
-    } else if !settled {
-        Claim::Later
-    } else if index_in_list(node) == Some(landing.index) {
-        Claim::Take
-    } else {
-        Claim::No
-    }
-}
-
-/// `item`'s index among the items of the list it is in.
-fn index_in_list(item: &NodeHandle) -> Option<usize> {
-    let mut at = item.parent_node();
-    while let Some(node) = at {
-        if node.get_attribute(LIST_ATTR).is_some() {
-            let id = item.node_id();
-            return items_of(&node).iter().position(|(n, _)| n.node_id() == id);
-        }
-        at = node.parent_node();
-    }
-    None
 }
 
 /// Check the request `serial` once the tree has settled (the next turn of
@@ -334,17 +287,22 @@ pub(super) fn cancel_pending_focus() {
 }
 
 /// Take the pending request if it is for `node`, the item `key` of the list
-/// `seer` in `doc` (`claim`): whether it was. The node a drop's item was
-/// lifted as, moved, is checked once the tree has settled instead.
+/// `seer` in `doc` (`claim`): whether it was. A drop's request is taken here
+/// only by a new node in a list that shows the drop applied; anything else is
+/// checked once the tree has settled instead.
 pub(super) fn take_request_for(doc: u64, seer: &Seer, key: &str, node: &NodeHandle) -> bool {
     let Some((serial, landing)) = PENDING_FOCUS.with(|p| {
         p.0.as_ref()
             .filter(|r| r.key == key && r.targets(doc, &seer.group, &seer.id))
-            .map(|r| (r.serial, r.landing))
+            .map(|r| (r.serial, r.landing.clone()))
     }) else {
         return false;
     };
-    match claim(landing, node, false) {
+    let keys = match landing {
+        Some(_) => keys_of_list_of(node),
+        None => Vec::new(),
+    };
+    match claim(landing.as_deref(), node, &keys, false) {
         Claim::Take => take_request(serial).is_some(),
         Claim::Later => {
             schedule_check(serial);
@@ -444,7 +402,8 @@ fn drop_if_orphaned(serial: u64) {
 }
 
 /// The scheduled check: focus the item the pending request is for, if it is
-/// drawn where the request names (`claim`, the tree settled).
+/// drawn in a list the request names and, for a drop's, that list shows the
+/// drop applied (`claim`, the tree settled).
 pub(super) fn try_pending_focus() {
     let Some((serial, doc, group, key, list, landing)) = PENDING_FOCUS.with_mut(|p| {
         p.0.as_mut().map(|r| {
@@ -455,20 +414,22 @@ pub(super) fn try_pending_focus() {
                 r.group.clone(),
                 r.key.clone(),
                 r.list.clone(),
-                r.landing,
+                r.landing.clone(),
             )
         })
     }) else {
         return;
     };
-    // Not yet where it was dropped (the app applies the drop later): a list
-    // that sees it there focuses it.
+    // Not yet applied (the app applies the drop later): a list that sees the
+    // item drawn again, or the next check, focuses it.
     for cfg in lists_of_group(&group, doc)
         .into_iter()
         .filter(|c| list.as_ref().is_none_or(|l| *l == c.id))
     {
-        for (node, _) in items_of(&cfg.node).into_iter().filter(|(_, k)| *k == key) {
-            if matches!(claim(landing, &node, true), Claim::Take) {
+        let items = items_of(&cfg.node);
+        let keys: Vec<String> = items.iter().map(|(_, k)| k.clone()).collect();
+        for (node, _) in items.into_iter().filter(|(_, k)| *k == key) {
+            if matches!(claim(landing.as_deref(), &node, &keys, true), Claim::Take) {
                 if take_request(serial).is_some() {
                     focus_item(&node);
                 }

@@ -182,8 +182,11 @@ re-rendered over it, asks for the moved item to be focused once it is drawn
 id, when it names one) under a `Scope` of its own, and a plain list drawn
 while a request names it (`watch_if_named`) watches too. The watch is released
 when the request is satisfied (the list sees the item, `see_items`, or the
-timer finds it, `try_pending_focus`), replaced by a newer request, dropped at
-the next drag (`begin`), or when its list unmounts (`list_gone`). A request
+timer finds it, `try_pending_focus`; a drop's request only once the list's
+order shows the drop applied, `sortable/landing.rs`), replaced by a newer
+request, dropped at the next drag (`begin`), when the focus leaves the lifted
+item while it is still connected (`leave_entry`), or when its list unmounts
+(`list_gone`). A request
 whose lists have all gone goes on the next turn of the event loop, not at
 once: a list re-rendered as a new node may go before its successor is drawn,
 and the request is for the successor. `rinch_core::dom::insert_observer_count`

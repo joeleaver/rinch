@@ -219,14 +219,22 @@ can land in any list of the group, `keyboard` or not. Dropped in a list without
 `keyboard`, an item that has no `tabindex` of yours is lent `tabindex="-1"` to
 take the focus back: focusable, no Tab stop, and the `tabindex` goes once the
 focus moves elsewhere (or the item goes; an item taken out and put back keeps
-the lend until the focus leaves it). The item is focused when it is where the
-drop put it, in the list it was dropped in: drawn there as a new node (a
-`for` keyed by position, a list drawn again), or moved there by a keyed
-`for`. Until your `ondrop`'s change is drawn (it may apply it after an await
-or a timer of its own), the node you lifted stays where it was with the
-focus, and does not count. The request is forgotten once it is satisfied, at
-the next drag, when the focus moves from the lifted item to another element,
-and when that list goes and is not drawn again. One with a `tabindex` you wrote
+the lend until the focus leaves it). The item is focused once the list it was
+dropped in shows the drop applied: its items in the order the drop asks for,
+every carried item in place (a `drag_keys` drop carries several), comparing
+only the items the list and that order have in common, so an item you add or
+remove beside the move changes nothing. It may be drawn there as a new node (a
+`for` keyed by position, a list drawn again) or moved there by a keyed `for`.
+Until your `ondrop`'s change is drawn (it may apply it after an await or a
+timer of its own), the list is in its order at the drop, and neither the node
+you lifted nor a node your app draws again at the item's old place (a redraw
+for something else, a "saving" flag) counts. If your app applies the drop its
+own way (another place, or it sorts the list), the item is focused wherever
+you put it. The request is forgotten once it is satisfied, at the next drag,
+when the focus moves from the lifted item to another element or falls to blank
+space while that item is still drawn, and when that list goes and is not
+drawn again; a drop you never apply leaves it waiting until one of those.
+One with a `tabindex` you wrote
 keeps yours, whatever its value, `tabindex="-1"` included (`SortableItem {
 "tabindex": "-1", … }`): the list decides the lend when it sees the moved
 item, after the attributes you wrote on it, so it never lends over yours or
@@ -414,7 +422,10 @@ drives it. What such a host must also give the guest:
   document's active element, so a key typed in a field inside an item is not
   taken for the item's.
 - **Timers**, to give the focus back after a keyboard drop when the item is
-  already drawn; without them it is focused only at its next render.
+  already drawn; without them it is focused only when a new node of it is
+  drawn with the list in the drop's order. A drop applied by a keyed move
+  (the item keeps its node) is then never checked: the item keeps the focus
+  it held, and the request waits for the next drag or the focus leaving it.
 - **The drag ghost.** Lists carry `data-drag-ghost="false"` (all but a
   `preview: SortPreview::Snapshot` one): the component draws the drag itself,
   and a host that paints a ghost should read the attribute on the source or

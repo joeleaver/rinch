@@ -132,11 +132,18 @@ group.
   node re-rendered away) is not a leave. Moves between lists pick the nearest
   list of the group in the arrow's direction by `bounding_rect` centres
   (document order without boxes, `doc_path`). After a keyboard drop the item
-  is focused when it is drawn in the list it was dropped in: at every render of
-  it (`adopt`, which works without timers) and by an **unowned**
-  `set_timeout(0)` that finds it if it is already there (a parked callback of
-  a disposed owner is dropped, and the keydown's owner is usually the item the
-  re-render disposes). The request is forgotten at the next drag.
+  is focused once the list it was dropped in shows the drop applied
+  (`sortable/landing.rs`: the list's key order at the drop and the order the
+  drop asks for, every carried key in place, compared on the keys in common;
+  an order that is neither is the app applying it its own way and ends the
+  request on the item). A new node in the applied order is taken when its list
+  sees it (`see_items`, which works without timers); anything else waits for
+  an **unowned** `set_timeout(0)` check once the tree has settled (a parked
+  callback of a disposed owner is dropped, and the keydown's owner is usually
+  the item the re-render disposes). The request is forgotten at the next drag,
+  when the focus moves from the lifted item to another element or falls to the
+  document while that item is still connected (a redraw that detaches it
+  keeps the request), and when no list it names is left.
 - **Announcements** go to the source list's live region as drawn now
   (`aria-live="assertive"`, `aria-atomic="true"`, inline-hidden); a sentence
   equal to the region's current text gets a trailing no-break space, so a

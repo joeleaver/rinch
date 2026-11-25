@@ -278,25 +278,21 @@ fn drop_lift() {
         return;
     };
     let cfg_id = Some(cfg.id.clone());
-    // Read before the app's handler can redraw the list: the node the item is
-    // in the list it lands in, if it is there (a drop within one list). It
-    // stays where it was until the app moves it, which may be later.
-    let landing = Landing {
-        index: mv.place.index,
-        held: first.as_ref().and_then(|first| {
-            items_of(&cfg.node)
-                .into_iter()
-                .find(|(_, k)| k == first)
-                .map(|(n, _)| n.node_id())
-        }),
-    };
+    // Read before the app's handler can redraw the list: its order at the
+    // drop, the order the drop asks for (every carried key, not the first
+    // alone), and the node the item is in it, if it is there (a drop within
+    // one list). The list stays as it was until the app applies the drop,
+    // which may be later.
+    let landing = first
+        .as_ref()
+        .map(|first| Landing::at_drop(&cfg.node, &mv, first));
     if let Some(cb) = cfg.ondrop.clone() {
         cb.invoke(mv);
     }
     // The app re-renders from its data — in this handler's batch, or later —
     // and the moved item (a new node, when it changed lists or the app drew
-    // it again) takes the focus back once it is where the drop put it.
-    if let Some(first) = first {
+    // it again) takes the focus back once the list shows the drop applied.
+    if let (Some(first), Some(landing)) = (first, landing) {
         request_drop_focus(doc, group, first, cfg_id, landing, &holder);
     }
 }

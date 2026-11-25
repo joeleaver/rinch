@@ -154,7 +154,10 @@ a node or a registration token surviving:
 - without `bounding_rect`, over an item the drag passes it in the direction
   it is moving, and lists follow document order;
 - a key counts only when sent to the item itself (`KeyEventData::target`);
-- the dropped item is focused at its render in its new list (no timer needed);
+- the dropped item is focused at its render in its new list (no timer
+  needed) once the list's order shows the drop applied, every carried item in
+  place; a redraw in the order at the drop does not count, and another order
+  (the app placed it its own way) ends the request on the item;
 - styling is inherited custom properties (a guest's only lever), and the
   parts stay quiet without the stylesheet;
 - `data-drag-ghost="false"` lets a painting host hide its ghost (on the list
