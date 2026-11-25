@@ -4,7 +4,8 @@
 //! a trackpad pinch or Ctrl+wheel into `Pinch`.
 //!
 //! The runtime's half (winit's pointer source → `SurfacePointer`) is pinned in
-//! `shell/rinch_runtime/winit_input.rs`; the pinch arithmetic in `render_surface.rs`. What
+//! `shell/rinch_runtime/winit_input/pointer_source_tests.rs`; the pinch
+//! arithmetic in `render_surface.rs`. What
 //! is pinned here is the app's: which surface hears an event, in which
 //! coordinates, as which variant.
 

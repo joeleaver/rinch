@@ -1078,7 +1078,7 @@ front of the low surrogate that starts the next press's: the first press has
 no text, and the second has the whole character in `text` and
 `text_with_all_modifiers`. Any other press, or focus leaving, drops the held
 unit; a lone surrogate gives no text. Pins: the fork's `keyboard::tests`, the
-`winit_input.rs` `text_only_key_translation` tests and
+`winit_input/text_only_key_translation.rs` tests and
 `shell/rinch_runtime/text_only_key_2848_tests.rs`.
 
 **Read-only text selection** (desktop; #2229, #2240). `user-select` comes
