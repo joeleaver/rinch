@@ -169,10 +169,10 @@ impl RinchApp {
                         let id_ = rinch_core::dom::NodeId(id);
                         let port = match axis {
                             WheelAxis::Vertical => {
-                                rinch_core::dom::DomDocument::client_height(&*d, id_)
+                                rinch_core::dom::DomScroll::client_height(&*d, id_)
                             }
                             WheelAxis::Horizontal => {
-                                rinch_core::dom::DomDocument::client_width(&*d, id_)
+                                rinch_core::dom::DomScroll::client_width(&*d, id_)
                             }
                         };
                         let page = (port * PAGE_FRACTION).max(1.0);

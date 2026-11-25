@@ -466,7 +466,7 @@ fn review_a_locked_page_is_not_auto_scrolled() {
         let body = f.app.doc.as_ref().unwrap().borrow().tree.body_id;
         if locked {
             let mut d = f.app.doc.as_ref().unwrap().borrow_mut();
-            rinch_core::dom::DomDocument::set_scroll_locked(
+            rinch_core::dom::DomScroll::set_scroll_locked(
                 &mut *d,
                 true,
                 rinch_core::dom::NodeId(f.list),
@@ -636,7 +636,7 @@ fn r2_a_list_that_slid_away_is_not_scrolled_from_a_mid_slide_hit() {
     frame(&mut f.app);
     {
         let mut d = f.app.doc.as_ref().unwrap().borrow_mut();
-        rinch_core::dom::DomDocument::set_style(
+        rinch_core::dom::DomContent::set_style(
             &mut *d,
             rinch_core::dom::NodeId(f.list),
             "transform",
@@ -712,7 +712,7 @@ fn r2_the_reuse_is_dropped_by_scroll_resize_dpr_and_dom_writes() {
             "dom write from a timer",
             Box::new(|f: &mut Fixture| {
                 let mut d = f.app.doc.as_ref().unwrap().borrow_mut();
-                rinch_core::dom::DomDocument::set_style(
+                rinch_core::dom::DomContent::set_style(
                     &mut *d,
                     rinch_core::dom::NodeId(f.list),
                     "left",

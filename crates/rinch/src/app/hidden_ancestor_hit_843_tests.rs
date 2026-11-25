@@ -8,7 +8,7 @@
 //! the body nor `None`, and nothing sits at the viewport origin.
 
 use super::{find_scrollbar_hit, hit_test};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::VisibilityValue;
 

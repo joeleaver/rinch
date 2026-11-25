@@ -8,7 +8,7 @@
 //! names the box exactly where the software painter draws green.
 
 use super::hit_test;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

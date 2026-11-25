@@ -9,7 +9,7 @@
 //! Run with `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner`
 //! and a chromedriver matching the installed Chrome.
 #![cfg(target_arch = "wasm32")]
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope, on_child_removed};
+use rinch_core::dom::{DomDocument, DomTree, NodeHandle, NodeId, RenderScope, on_child_removed};
 use rinch_web::web_document::WebDocument;
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -49,7 +49,7 @@
 //! fixtures that hold that; every *other* `th` test here sits on the fixed
 //! point where the two spellings agree.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::values::{LengthPercentageAutoValue, TextAlignValue};
 

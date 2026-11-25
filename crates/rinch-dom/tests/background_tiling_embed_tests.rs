@@ -7,7 +7,7 @@
 //! one draw (its underlay). Run with `--no-default-features`.
 #![cfg(not(feature = "software-renderer"))]
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::vello_painter::VelloPainter;
 

@@ -3,7 +3,6 @@
 
 use super::hit_testing::hit_test;
 use super::*;
-use rinch_core::dom::DomDocument;
 
 const VP: (u32, u32) = (400, 300);
 

@@ -25,7 +25,7 @@
 //! keyword (`0px hanging`) and rinch resets both, as the property's initial
 //! value is.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{
     ComputedStyle, DisplayValue, LengthPercentageValue, OverflowWrapValue, WordBreakValue,

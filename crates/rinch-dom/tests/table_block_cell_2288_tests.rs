@@ -10,7 +10,7 @@
 //! Every expected number is Chrome 156's for the same markup, laid out at
 //! 720x800 with the CSS below. The boxes are sized divs, so no number here
 //! depends on the host's fonts.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const CSS: &str = "body { margin: 0; font-family: sans-serif; font-size: 16px; line-height: 20px; } \

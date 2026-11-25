@@ -5,7 +5,7 @@
 //! SAME viewport (what a frame does), and compares every `[data-m]` box with
 //! a fresh document built from the final markup (twin oracle).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 use std::collections::BTreeMap;

@@ -798,7 +798,7 @@ impl StyleProp {
 mod tests {
     use super::*;
     use crate::dom::mock::MockDomDocument;
-    use crate::dom::traits::DomDocument;
+    use crate::dom::traits::{DomDocument, DomTree};
     use std::cell::RefCell;
     use std::rc::Rc;
 

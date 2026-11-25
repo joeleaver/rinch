@@ -11,14 +11,14 @@
 //! listener, so the entry never heard the focus leave and the list stayed open.
 //!
 //! Every such verb now releases the focus first, with no borrow held
-//! (`DomDocument::release_focus_within`): the listeners run against a free
+//! (`DomFocus::release_focus_within`): the listeners run against a free
 //! document in which the node is still where it was, and then the node goes.
 //!
 //! Chrome also blurs the focused element inside three attribute writes
 //! (`hidden` on it; `tabindex` / `contenteditable` removed from an element
 //! focusable only through it). Only the browser knows which write is one, so
 //! for those names the browser write itself is made first, with no borrow held
-//! (`DomDocument::before_attribute_write`).
+//! (`DomFocus::before_attribute_write`).
 //!
 //! Firefox fires nothing when a focused node is removed. Because the release
 //! is rinch's own `blur()`, which fires `focusout` in every engine, the

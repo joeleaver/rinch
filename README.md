@@ -43,7 +43,7 @@ That `{|| ...}` closure is doing all the work. It creates an Effect that tracks 
 | "Reactivity requires re-rendering the whole component" | Signals -> Effects -> surgical node updates. Component runs once. |
 | "No component library" | 60+ components. Buttons, inputs, modals, tabs, accordions, color pickers, rich text editors. |
 | "Styling is painful" | Theme system with CSS variables, 14 color palettes, dark mode, spacing scales. Write `p: "md"` instead of `padding: var(--rinch-spacing-md)`. |
-| "I can't inspect anything" | F12 opens DevTools. Alt+I for inspect mode. There's an MCP server so Claude can screenshot your app and fix your CSS. |
+| "I can't inspect anything" | F12 opens DevTools (debug builds), with an Inspect button. There's an MCP server so Claude can screenshot your app and fix your CSS. |
 | "Text rendering is bad" | Parley for shaping, HarfBuzz under the hood. Ligatures, BiDi, the works. |
 | "No web target" | Compiles to WASM with a browser-native DOM backend — no canvas, just real DOM nodes. 3MB binary. |
 
@@ -99,7 +99,7 @@ rsx! {
 rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop", "components", "theme"] }
 ```
 
-Add `"gpu"` for GPU rendering, or leave it off for software rendering (no GPU required — works in CI, containers, SSH sessions, your grandma's laptop).
+GPU rendering (`"gpu"`) is a default feature: the window presents on the GPU and falls back to software rendering when the GPU will not start. For a software-only build (no GPU required, a smaller binary and a shorter build than the GPU one: 31.4 MB against 39.3 MB stripped and about 276 s less release build time for a hello-world window; works in CI, containers, SSH sessions, your grandma's laptop), add `default-features = false` and keep `"desktop"` in the list.
 
 No `[patch]` lines are needed at all: delete any old winit, dpi or wgpu-fork ones from your `[patch.crates-io]`. Use `rinch::wgpu` and `rinch::vello` instead of your own `wgpu`/`vello` dependencies; add `wgpu = "30"` only to turn on an extra feature.
 

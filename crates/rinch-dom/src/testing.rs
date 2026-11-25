@@ -367,7 +367,7 @@ pub fn deep_overflow_held(tree: &NodeTree) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use crate::RinchDocument;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     /// The MCP/debug serializers report each node's box twice: `layout` is
     /// parent-relative (== `node.layout`) and `absolute` is the on-screen box.

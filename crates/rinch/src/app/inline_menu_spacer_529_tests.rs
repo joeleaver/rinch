@@ -33,7 +33,7 @@ const VIEWPORT: (f32, f32) = (perf_expect::SIZE.0 as f32, perf_expect::SIZE.1 as
 const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
 /// Mount a `BorderlessWindow` in the inline-titlebar layout with these menu
-/// labels and title, the way `app_builder::run_desktop_in_app_bar` wires it.
+/// labels and title, the way `app_builder::menu_bar::run_desktop_in_app_bar` wires it.
 /// `estimate` is the `MenuBarContext::spacer_width` the shell hands in.
 fn mount_with(labels: &'static [&'static str], title: &'static str, estimate: u32) -> RinchApp {
     let mut app = build(labels, title, estimate, 0);
@@ -146,7 +146,7 @@ fn mount(labels: &'static [&'static str], title: &'static str) -> RinchApp {
     mount_with(
         labels,
         title,
-        crate::app_builder::inline_spacer_width(labels),
+        crate::app_builder::menu_bar::inline_spacer_width(labels),
     )
 }
 
@@ -449,7 +449,7 @@ fn the_first_frame_reserves_the_row_not_the_estimate() {
 #[test]
 fn a_narrow_titlebar_does_not_jump_by_the_estimate_error() {
     let labels: &'static [&'static str] = &["Файл", "Правка", "Вид", "Справка"];
-    let estimate = crate::app_builder::inline_spacer_width(labels);
+    let estimate = crate::app_builder::menu_bar::inline_spacer_width(labels);
     let mut app = build(labels, "", estimate, 40);
     // The helpers lay out at one viewport size, so the window is narrowed
     // itself, before its first frame.

@@ -20,7 +20,7 @@
 //! with an image's alt text, Chrome's cell is 16px wider than rinch's (its
 //! broken-image icon), and both cells fill their table.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

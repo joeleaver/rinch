@@ -13,7 +13,7 @@
 //! 128, and where Chrome is light (`.`) it must be over 128; an in-between
 //! pixel is not judged.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 #[path = "border_dashes_2371_chrome.rs"]

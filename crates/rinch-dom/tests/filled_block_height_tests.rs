@@ -9,7 +9,7 @@
 //! in every browser — and these stay as pins on the filled heights, with the
 //! empty one now asserting Chrome 153's 0.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 fn block(doc: &mut RinchDocument, style: &str) -> rinch_core::dom::NodeId {

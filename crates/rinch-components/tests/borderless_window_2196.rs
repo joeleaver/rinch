@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use rinch_components::borderless_window::{WindowControl, WindowControlsLayout};
 use rinch_components::{BorderlessWindow, SectionRenderer};
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::{Component, MenuBarContext, MenuBarLayout, MenuBarRenderer};
 

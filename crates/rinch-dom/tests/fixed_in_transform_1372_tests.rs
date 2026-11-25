@@ -14,7 +14,7 @@
 //! the wrong box (the viewport, the layout parent, the border box) cannot
 //! coincide with the right one.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

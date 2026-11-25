@@ -83,7 +83,7 @@
 //! no strut, so `a_nested_atomic_inline_is_measured_before_the_box_that_places_it`
 //! records Chrome's `54x34` and asserts rinch's width only. See its doc.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

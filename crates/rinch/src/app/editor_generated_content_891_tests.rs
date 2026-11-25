@@ -16,7 +16,7 @@
 
 use super::hit_testing::painted_element_box;
 use super::*;
-use rinch_core::dom::{CaretAffinity, DomDocument};
+use rinch_core::dom::CaretAffinity;
 use rinch_editor_core::{Pos, Selection};
 
 const VP: (u32, u32) = (1000, 600);

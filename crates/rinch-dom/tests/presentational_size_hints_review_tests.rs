@@ -4,7 +4,7 @@
 //! Every number is Chrome 153's (headless, standards mode, `body { margin: 0
 //! }`, the element inside a `width: 400px; height: 300px` div unless stated).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter;
 

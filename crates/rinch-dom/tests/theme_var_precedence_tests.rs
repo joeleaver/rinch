@@ -1,7 +1,7 @@
 //! Regression: app `:root` custom properties must keep winning over the theme
 //! sheet's `:root` after a runtime theme update (rinch/plotweb native bug).
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 // `--rinch-color-accent` is theme-only: the app never overrides it, so it must

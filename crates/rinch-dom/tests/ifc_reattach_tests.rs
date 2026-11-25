@@ -81,7 +81,7 @@
 //! `taffy_tree_violations` a root-reachability rule, which *can* see the mirror
 //! case — the old name described the validator's reach, not the tree.)
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

@@ -3,7 +3,7 @@
 //! by what the component paints.
 
 use rinch::prelude::*;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_core::dom::mock::MockDomDocument;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use std::cell::RefCell;

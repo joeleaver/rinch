@@ -1,6 +1,6 @@
 //! Review probe for PR #1494: incremental layout == fresh layout over random
 //! histories of documents holding out-of-flow boxes with static axes.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

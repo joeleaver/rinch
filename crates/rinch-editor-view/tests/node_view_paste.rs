@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{DomDocument, DomTree, NodeHandle, RenderScope};
 use rinch_editor_core::serialize::slice_from_pasted_html;
 use rinch_editor_core::{
     AttrValue, EditorState, Fragment, Node, PasteContent, Plugin, PluginKey, Pos, Schema,

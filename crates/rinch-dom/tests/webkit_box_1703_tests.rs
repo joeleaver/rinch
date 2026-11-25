@@ -10,7 +10,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::DisplayValue;
 

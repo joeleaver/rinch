@@ -16,7 +16,7 @@
 //! spelling kept, a mis-cased SVG name restored to it, an ordinary HTML tag
 //! lowercased).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

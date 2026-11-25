@@ -32,7 +32,7 @@
 //! # What the element carries
 //!
 //! The source rinch was given stays the element's identity: it is kept in
-//! [`LOGICAL_SRC_ATTR`], and [`DomDocument::get_attribute`]`("src")` answers it.
+//! [`LOGICAL_SRC_ATTR`], and [`DomContent::get_attribute`]`("src")` answers it.
 //! Only the browser's own `src` attribute holds the resolved URL (or is absent
 //! while the answer is "not yet", so the browser never tries to fetch a scheme
 //! it does not know). The rich-text editor's document is not derived from the
@@ -44,7 +44,7 @@
 //!
 //! [`rinch::image::register_image_scheme`]: rinch_core::image::register_image_scheme
 //! [`rinch::image::reload_image`]: rinch_core::image::reload_image
-//! [`DomDocument::get_attribute`]: rinch_core::dom::DomDocument::get_attribute
+//! [`DomContent::get_attribute`]: rinch_core::dom::DomContent::get_attribute
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};

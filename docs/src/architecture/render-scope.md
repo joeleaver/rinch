@@ -461,7 +461,7 @@ matched.
 Until #1796 both methods searched the **whole document** whatever node they
 were called on, and desktop took only one simple selector (`#id`, `.class`,
 `[attr]`, `[attr=value]`, a tag), answering nothing for anything else. The
-document-wide search is still `DomDocument::query_selector{,_all}`.
+document-wide search is still `DomTree::query_selector{,_all}`.
 
 ### Watching a subtree change
 
@@ -507,45 +507,64 @@ boundary rule a nested container of the same kind needs.
 
 `DomDocument` is the trait that abstracts DOM operations. The primary desktop implementation is `RinchDocument` which uses Taffy + Parley + Vello. The web implementation is `WebDocument` which uses browser-native DOM via `web_sys`.
 
+`DomDocument` has no methods of its own. It is five **supertraits**, one per
+responsibility (#2999), and a blanket impl makes every type that implements
+all five a `DomDocument`:
+
 ```rust
-pub trait DomDocument {
-    /// Create an element node
-    fn create_element(&mut self, tag: &str) -> NodeId;
+pub trait DomDocument: DomTree + DomContent + DomFocus + DomLayout + DomScroll {}
 
-    /// Create a text node
-    fn create_text(&mut self, content: &str) -> NodeId;
-
-    /// Create a comment node
-    fn create_comment(&mut self, content: &str) -> NodeId;
-
-    /// Set text content of a node
-    fn set_text_content(&mut self, node: NodeId, content: &str);
-
-    /// Set an attribute
-    fn set_attribute(&mut self, node: NodeId, name: &str, value: &str);
-
-    /// Remove an attribute
-    fn remove_attribute(&mut self, node: NodeId, name: &str);
-
-    /// Append a child to a parent
-    fn append_child(&mut self, parent: NodeId, child: NodeId);
-
-    /// Insert a node before a reference node
-    fn insert_before(&mut self, parent: NodeId, node: NodeId, reference: NodeId);
-
-    /// Remove a node from its parent
-    fn remove_child(&mut self, parent: NodeId, child: NodeId);
-
-    /// Get children of a node
-    fn get_children(&self, node: NodeId) -> Vec<NodeId>;
-
-    /// Get the body element
-    fn body(&self) -> NodeId;
-
-    /// Mark a node as needing re-layout
-    fn mark_dirty(&mut self, node: NodeId);
-}
+impl<T: DomTree + DomContent + DomFocus + DomLayout + DomScroll + ?Sized> DomDocument for T {}
 ```
+
+| Supertrait | What it holds |
+|---|---|
+| `DomTree` | the document's identity (`doc_key`), node creation (`create_element`, `create_text`, `create_comment`), tree mutation (`append_child`, `insert_before`, `remove_child`, `replace_node`, …), retiring nodes (`remove_node`, `discard_node`), dirty tracking, selectors, traversal (`get_children`, `parent_node`, `is_connected`, …), HTML parsing |
+| `DomContent` | what a node holds: `set_text_content`, attributes (`set_attribute`, `get_attribute`, …), inline styles (`set_style`, `set_styles`), `isolate_styles`, highlight overlays |
+| `DomFocus` | `focus_element`, text-control selection and caret, `active_element`, focus into and out of a subtree, the work deferred until the document's borrow is released. Its supertrait is `DomContent` (`select_text` reads `live_value`). |
+| `DomLayout` | `resolve_layout`, node boxes and sizes, insets, fonts and line boxes, and the caret, glyph and selection-rectangle queries the editor draws from |
+| `DomScroll` | scroll offsets and extents, programmatic scrolling, the scroll requests and clamps drained after layout, the page scroll lock |
+
+The rustdoc of each supertrait is the method reference.
+
+### Naming the trait
+
+Code that takes a document keeps naming `DomDocument`: `&dyn DomDocument`,
+`&mut dyn DomDocument`, `Rc<RefCell<dyn DomDocument>>` and a generic
+`D: DomDocument` all call every supertrait's method **without importing the
+supertrait**, because a trait object and a bound bring their supertraits'
+methods with them.
+
+Two kinds of call do need the supertrait in scope, as any trait method does:
+
+- a method call on a **concrete** document type, such as `RinchDocument` or
+  `MockDomDocument` (including through `Ref`/`RefMut` of a
+  `RefCell<RinchDocument>`): `use rinch_core::dom::{DomContent, DomTree};`
+- a call **by path**: `DomTree::body(&*doc)`, not `DomDocument::body(&*doc)`,
+  which no longer names a method.
+
+`rinch_core::dom`, the `rinch_core` root and `rinch::fine_grained` export all
+five supertraits next to `DomDocument`, so a glob import of any of them covers
+both cases.
+
+### Implementing a document
+
+An implementor writes one `impl` per supertrait and nothing for
+`DomDocument`:
+
+```rust
+impl DomTree for MyDocument { /* create_element, append_child, … */ }
+impl DomContent for MyDocument { /* set_attribute, set_text_content, … */ }
+impl DomFocus for MyDocument { /* focus_element */ }
+impl DomLayout for MyDocument { /* resolve_layout, query_node_layout, … */ }
+impl DomScroll for MyDocument { /* set_scroll_top */ }
+```
+
+Each supertrait has a few required methods (its rustdoc lists them) and
+defaults for the rest. Before #2999 the same
+methods were one `impl DomDocument for MyDocument` block; moving each method
+into the impl of the supertrait that declares it is the whole migration, and
+no signature changed.
 
 ## RinchDocument
 

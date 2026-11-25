@@ -1,6 +1,6 @@
 //! Review of #2008 (#843): cache-invalidation and shape probes.
 use super::{find_scrollbar_hit, hit_test};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::VisibilityValue;
 use rinch_dom::transition::TransitionProperty;

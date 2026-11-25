@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rinch_core::dom::{DomDocument, NodeId, RenderScope};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeId, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_dom::RinchDocument;
 

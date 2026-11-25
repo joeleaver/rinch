@@ -364,12 +364,18 @@ A CPU-based rasterizer, carried by every `desktop` (or `windowing`) build: the o
 Your `Cargo.toml` decides which backends the build carries:
 
 ```toml
-# GPU, with software as the fallback (recommended for most apps):
-rinch = { workspace = true, features = ["desktop", "gpu"] }
+# GPU, with software as the fallback (the default, recommended for most apps):
+rinch = { version = "…" }
+rinch = { workspace = true, features = ["desktop", "gpu"] }  # in this workspace
 
-# Software only (no GPU required, smaller build):
-rinch = { workspace = true, features = ["desktop"] }
+# Software only (no GPU required; a smaller binary and a shorter build than
+# the GPU one: 31.4 MB against 39.3 MB, about 276 s less release build time):
+rinch = { version = "…", default-features = false, features = ["desktop"] }
+rinch = { workspace = true, features = ["desktop"] }  # in this workspace
 ```
+
+`gpu` is one of `rinch`'s default features; the workspace dependency is
+declared `default-features = false`, so a member lists it.
 
 A `gpu` (or `gpu-renderer`) build then chooses when the window opens (`crates/rinch/src/shell/renderer.rs`): `App::renderer(Renderer::Auto)`, the default, tries the GPU and presents with software when it will not start; `Renderer::Gpu` panics instead; `Renderer::Software` skips the GPU. The `RINCH_RENDERER` environment variable (`auto`, `gpu`, `software`, `cpu`) overrides the app's choice. An app that configured the GPU device itself (`gpu_config` / `external_gpu`) always presents on the GPU. The details are in [Rendering Backends](../guide/windows.md#rendering-backends).
 
@@ -639,7 +645,7 @@ ends:
 - **A subtree that leaves the document loses the flag**, and any transition or
   animation running on it is cancelled (#699).
   `RinchDocument::detach_subtree_styles` does all three, for the whole removed
-  subtree. Five places in `dom_impl/dom_document_impl.rs` write `parent = None`
+  subtree. Five places in `dom_impl/` (`tree.rs`, `content.rs`) write `parent = None`
   and four call it: `remove_node`, `remove_child`, `replace_node`'s displaced
   `old`, and `set_text_content` on an element with children, which orphans every
   one of them without freeing the slab. The fifth, `set_inner_html`, is safe by
@@ -783,7 +789,7 @@ never animate again (issue #704). It also hid the detach reset: through one of
 those helpers, deleting `detach_subtree_styles` changed nothing observable. The
 method and all five call sites are gone. Every one of them was
 `clear_animations(); remove();` and `NodeHandle::remove` is
-`DomDocument::remove_node`, the first of the five routes listed above; on
+`DomTree::remove_node`, the first of the five routes listed above; on
 `rinch-web` the browser already cancels a removed element's transitions and
 treats re-insertion as a first style. **A removal path must not write styles**:
 the node outlives the removal, so anything stamped there is permanent.

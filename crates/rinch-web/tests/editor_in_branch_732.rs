@@ -2,7 +2,7 @@
 //! raw-minted block nodes must be discarded with the branch.
 #![cfg(target_arch = "wasm32")]
 use rinch_core::Component;
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{DomDocument, DomTree, NodeHandle, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_core::show_dom;
 use rinch_web::web_document::{__node_registry_len, WebDocument};

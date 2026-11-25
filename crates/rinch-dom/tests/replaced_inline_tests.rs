@@ -18,7 +18,7 @@
 //! what each fixture asserts — plus the 20x20 size, which is what the broken
 //! code got wrong (it reported `0x0`).
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::node::DisplayMode;
 

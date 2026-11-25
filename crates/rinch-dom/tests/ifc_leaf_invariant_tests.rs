@@ -19,7 +19,7 @@
 //! ([`RinchDocument::ifc_leaf_invariant_violations`]) or observes production
 //! state directly — nothing re-derives the check.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::{NodeContext, RinchDocument};
 
 const VW: f32 = 800.0;

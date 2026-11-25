@@ -13,7 +13,7 @@
 //! sequence's in-flow entries).
 
 use super::hit_test;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 
 const FACE: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 

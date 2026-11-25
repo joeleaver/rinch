@@ -10,7 +10,7 @@
 //! computed style is compared with the same rows built from scratch.
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const CSS: &str = "

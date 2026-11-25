@@ -7,7 +7,7 @@
 //! by 40px (measured headless).
 
 use super::hit_test;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FIXED: &str = "position: fixed; top: 90px; left: 0; width: 800px; height: 70px; \

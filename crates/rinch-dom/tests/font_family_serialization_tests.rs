@@ -21,7 +21,7 @@
 //! each run's face is told apart by blob id.
 
 use parley::fontique::{Blob, FontInfoOverride, GenericFamily};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const SANS: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-VariableFont_wght.ttf");

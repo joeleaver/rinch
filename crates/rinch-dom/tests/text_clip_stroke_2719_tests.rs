@@ -35,7 +35,7 @@
 #[path = "support/text_clip_stroke_2719.rs"]
 mod twin;
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use twin::*;

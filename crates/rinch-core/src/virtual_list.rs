@@ -409,7 +409,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::dom::traits::DomDocument;
+    use crate::dom::traits::DomTree;
     use crate::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
     use crate::reactive::{Owner, Signal, current_owner};
     use std::cell::RefCell;

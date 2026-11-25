@@ -180,7 +180,7 @@ impl<'a> Marker<'a> {
 mod tests {
     use super::Marker;
     use crate::RinchDocument;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomScroll, DomTree};
 
     /// A marking from the box the last one started from is folded into it,
     /// and still answers the container that one reached: a split inline's

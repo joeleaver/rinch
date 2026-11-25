@@ -14,7 +14,7 @@
 //!
 //! No text is laid out: every box has a declared size.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 fn lay_out(html: &str) -> RinchDocument {

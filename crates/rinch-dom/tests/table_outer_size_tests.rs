@@ -15,7 +15,7 @@
 //! rinch places boxes on whole pixels: `rowflex-w-shrink`'s 166.671875 is 167,
 //! so the comparison allows half a pixel (and the expectation is 166.67).
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const CSS: &str =

@@ -22,7 +22,7 @@
 //! one text-derived value (a span's font size) is read from the computed
 //! style, not from shaped text.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::DimensionValue;
 use rinch_dom::perf::Counter::*;

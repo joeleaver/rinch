@@ -16,7 +16,7 @@
 //!
 //! The content is sized `vertical-align: top` inline-blocks in 20px lines,
 //! so no number here depends on the host's fonts.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const CSS: &str =

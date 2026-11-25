@@ -366,7 +366,7 @@ fn s7_right_press_on_oncontextmenu_outside_releases() {
     {
         let doc = p.app.doc.clone().unwrap();
         let mut d = doc.borrow_mut();
-        rinch_core::dom::DomDocument::set_attribute(
+        rinch_core::dom::DomContent::set_attribute(
             &mut *d,
             rinch_core::dom::NodeId(p.plain),
             "data-oncontextmenu",
