@@ -435,7 +435,8 @@ pub(super) fn justify_content_from_stylo(
 
 /// Whether a property other than `transform` makes the element the containing
 /// block of its `position: fixed` descendants (`ComputedStyle::contains_fixed`,
-/// #1372).
+/// #1372). `will-change: contain` counts as `contain: paint` does (Chrome 158
+/// and Firefox 160 place a fixed child against such a box, #3065).
 pub(super) fn contains_fixed_from_stylo(
     box_style: &style::properties::style_structs::Box,
     effects: &style::properties::style_structs::Effects,
@@ -453,8 +454,20 @@ pub(super) fn contains_fixed_from_stylo(
         || box_style.will_change.bits.intersects(
             WillChangeBits::TRANSFORM
                 | WillChangeBits::PERSPECTIVE
+                | WillChangeBits::CONTAIN
                 | WillChangeBits::FIXPOS_CB_NON_SVG,
         )
+}
+
+/// `will-change: position` (`ComputedStyle::will_change_position`).
+pub(super) fn will_change_position_from_stylo(
+    box_style: &style::properties::style_structs::Box,
+) -> bool {
+    use style::values::specified::box_::WillChangeBits;
+    box_style
+        .will_change
+        .bits
+        .intersects(WillChangeBits::POSITION)
 }
 
 /// The part of [`contains_fixed_from_stylo`] that applies to a non-atomic

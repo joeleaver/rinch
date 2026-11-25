@@ -104,24 +104,35 @@ pub trait DomLayout {
     /// **`None` unless `container` is on `node`'s `offsetParent` chain**, on
     /// every host (CSSOM View's `offsetParent`, followed up): each step is
     /// the nearest ancestor that is a containing block for absolutely
-    /// positioned boxes (`position` other than `static`, a `transform`, a
-    /// `filter`; Chrome 157 and Firefox 160 both count a transform), the
-    /// `<body>`, or, for a box that is not positioned itself, a `td`, `th` or
-    /// `table`. So `None` when `container` is none of those (a list given
-    /// `position: static`), when `node` or a box between is `position:
-    /// fixed`, when `node` is not rendered (`display: none` on it or an
-    /// ancestor, `display: contents` on it), when there is no layout, and for
-    /// a host with no geometry (the default).
+    /// positioned boxes, the `<body>`, or, for a box that is not positioned
+    /// itself, a `td`, `th` or `table`. Chrome 158 and Firefox 160 agree on
+    /// what makes one: `position` other than `static`; a `transform`,
+    /// `filter`, `backdrop-filter` or `perspective` other than `none` (an
+    /// identity or `blur(0)` included); `contain: paint`, `layout`, `strict`
+    /// or `content`; and `will-change` naming `transform`, `filter`,
+    /// `backdrop-filter`, `perspective`, `contain` or `position`. Not
+    /// `contain: size`/`style`, `container-type`, `opacity`, `overflow`,
+    /// `isolation`, `clip-path`, `mix-blend-mode` or `z-index`. (The engines
+    /// also count `translate`, `rotate`, `scale`, `offset-path`,
+    /// `transform-style: preserve-3d` and `content-visibility`, which desktop
+    /// does not implement.) So `None` when `container` is none of those (a
+    /// list given `position: static`), when `node` or a box between is
+    /// `position: fixed`, when `node` is not rendered (`display: none` on it
+    /// or an ancestor, `display: contents` on it), when there is no layout,
+    /// and for a host with no geometry (the default).
     ///
-    /// **Whole pixels on both hosts.** Desktop's layout is rounded to the
-    /// pixel grid (Taffy rounds each box's edges where they fall in the
-    /// page), and the browser rounds `offsetLeft`, `offsetTop`,
-    /// `offsetWidth` and `offsetHeight`. A box at a fractional offset with a
-    /// fractional width answers the same on both (pinned in each host's
-    /// tests). The web rounds each `offsetParent` step on its own, so where
-    /// fractional positions round differently the two can differ by a pixel
-    /// (at most about one per step). No browser API gives the untransformed
-    /// box fractionally: `getBoundingClientRect` includes transforms.
+    /// **Whole pixels on both hosts**, rounded as the browser rounds
+    /// `offsetLeft`: each step's offset from its `offsetParent`'s padding
+    /// edge on its own, and the width and height their own lengths. Desktop
+    /// rounds from its unrounded layout, half up (`floor(x + 0.5)`), which is
+    /// Chrome's rounding; Firefox rounds a negative tie away from zero
+    /// (-8.5 to -9 where Chrome and desktop answer -8), so there the hosts
+    /// differ by a pixel. A box desktop places after its layout engine (an
+    /// absolute whose containing block is not its parent, an atomic inline)
+    /// or one with no layout node of its own (an inline element) is measured
+    /// from its laid-out, already-rounded box. No browser API gives the
+    /// untransformed box fractionally: `getBoundingClientRect` includes
+    /// transforms.
     fn layout_box_in(
         &self,
         _node: NodeId,

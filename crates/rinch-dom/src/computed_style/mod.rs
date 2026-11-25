@@ -101,6 +101,12 @@ pub struct ComputedStyle {
     /// `contain: paint` or `perspective`, against the viewport).
     #[serde(skip)]
     pub contains_fixed_inline: bool,
+    /// `will-change: position`: the element is a containing block for its
+    /// absolutely positioned descendants, as a positioned one is, but not for
+    /// fixed ones (Chrome 158, Firefox 160; #3065). Read only by
+    /// [`crate::node::Node::establishes_abs_containing_block`].
+    #[serde(skip)]
+    pub will_change_position: bool,
     /// The `-webkit-line-clamp` the element declares (#1703), `None` for
     /// `none`. Not inherited. It clamps only through [`Self::line_clamp`].
     #[serde(skip)]
@@ -541,6 +547,7 @@ impl Default for ComputedStyle {
             flow_root: false,
             contains_fixed: false,
             contains_fixed_inline: false,
+            will_change_position: false,
             webkit_line_clamp: None,
             webkit_box_vertical: false,
             line_clamp: None,

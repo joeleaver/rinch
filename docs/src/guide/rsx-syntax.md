@@ -1053,14 +1053,24 @@ this says where. On the web it sums `offsetLeft`/`offsetTop` up the
 It is `None` unless the container is on the element's `offsetParent` chain,
 on both hosts alike: the container must be positioned (`relative`,
 `absolute`, `sticky`, `fixed`), or a containing block for absolutes another
-way (a `transform` or `filter` makes one, in Chrome and Firefox as here), or
-the `<body>`, or a `<td>`/`<th>`/`<table>` around a static element. It is
+way, or the `<body>`, or a `<td>`/`<th>`/`<table>` around a static element.
+The other ways, as Chrome and Firefox both answer them and rinch too: a
+`transform`, `filter`, `backdrop-filter` or `perspective` other than `none`
+(an identity transform and `filter: blur(0)` included), `contain: paint`,
+`layout`, `strict` or `content`, and a `will-change` naming `transform`,
+`filter`, `perspective`, `backdrop-filter`, `contain` or `position`.
+`opacity`, `isolation`, `clip-path`, `overflow`, `z-index`, `container-type`
+and `contain: size` do not make one. The browsers also count `translate`,
+`rotate`, `scale`, `offset-path`, `transform-style: preserve-3d` and
+`content-visibility`, which rinch does not implement. It is
 also `None` for an element that is `position: fixed` itself (its offset
 parent is none), one not rendered (`display: none` on it or an ancestor,
 `display: contents`), and one with no layout yet. The values are **whole
-pixels** on both hosts: desktop's layout is rounded to the pixel grid, and a
-browser rounds its `offset*` values, so a box at 8.25px answers 8. Where the
-pixel grid matters to more than layout, use `bounding_rect()`.
+pixels** on both hosts, each step up the chain rounded on its own as a
+browser rounds `offsetLeft`: half up, so a box 8.25px in answers 8 and one
+8.5px in answers 9 (a box 0.5px left of its parent answers 0 in Chrome and
+on desktop, -1 in Firefox, which rounds a negative half away from zero).
+Where the pixel grid matters to more than layout, use `bounding_rect()`.
 
 ## Fragments
 

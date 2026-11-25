@@ -5,45 +5,23 @@ use rinch_core::dom::{CaretAffinity, DomContent, DomLayout, DomTree, NodeId};
 
 use super::RinchDocument;
 
+mod offset;
+
 impl DomLayout for RinchDocument {
     fn layout_size(&self, node: NodeId) -> Option<(f32, f32)> {
         let n = self.tree.nodes.get(node.0)?;
         Some((n.layout.width, n.layout.height))
     }
 
-    /// The parent-relative layout origins summed from `node` up to
-    /// `container` (layouts are untransformed and unscrolled), less
-    /// `container`'s border: an absolute child's insets start at its padding
-    /// box ([`Self::content_origin_inset`]).
-    ///
-    /// `None` wherever the web's `offsetParent` chain would not reach
-    /// `container` (`offset_chain_reaches`), so both hosts answer the same
-    /// question.
+    /// The `offsetParent` chain from `node` to `container` and the offsets
+    /// along it, from the layout (`dom_impl/layout/offset.rs`), so both hosts
+    /// answer the same question the same way.
     fn layout_box_in(
         &self,
         node: NodeId,
         container: NodeId,
     ) -> Option<rinch_core::reactive::ElementBounds> {
-        let n = self.tree.nodes.get(node.0)?;
-        let (width, height) = (n.layout.width, n.layout.height);
-        if !offset_chain_reaches(&self.tree, node.0, container.0) {
-            return None;
-        }
-        let (mut x, mut y) = (0.0, 0.0);
-        let mut at = node.0;
-        while at != container.0 {
-            let n = self.tree.nodes.get(at)?;
-            x += n.layout.x;
-            y += n.layout.y;
-            at = n.parent?;
-        }
-        let (ix, iy) = self.content_origin_inset(container.0);
-        Some(rinch_core::reactive::ElementBounds {
-            x: x - ix,
-            y: y - iy,
-            width,
-            height,
-        })
+        offset::layout_box_in(&self.tree, node.0, container.0)
     }
 
     /// The inline formatting context lays a `<br>` out as `"\n"`
@@ -551,60 +529,4 @@ impl DomLayout for RinchDocument {
             side(cs.padding_bottom.to_px(), cs.border_bottom_width.to_px()),
         )
     }
-}
-
-/// The web's `offsetParent` of `id` (CSSOM View, `HTMLElement.offsetParent`),
-/// from the computed styles: `None` for the body, the root, a `position:
-/// fixed` box, and a box not rendered (`display: none` on it or an ancestor,
-/// or `display: contents` on it); otherwise the nearest ancestor that is a
-/// containing block for absolutely positioned boxes (positioned, or
-/// transformed, or filtered: [`crate::Node::establishes_abs_containing_block`],
-/// as Chrome 157 and Firefox 160 answer it), or the body, or (for a box that
-/// is not positioned itself) a `td`, `th` or `table`.
-fn offset_parent(tree: &crate::node::NodeTree, id: u64) -> Option<u64> {
-    use crate::computed_style::{DisplayValue, PositionValue};
-    let n = tree.nodes.get(id)?;
-    let cs = &n.computed_style;
-    if id == tree.body_id
-        || n.parent.is_none()
-        || matches!(cs.position, PositionValue::Fixed)
-        || matches!(cs.display, DisplayValue::Contents)
-    {
-        return None;
-    }
-    let mut at = Some(id);
-    while let Some(a) = at {
-        let an = tree.nodes.get(a)?;
-        if matches!(an.computed_style.display, DisplayValue::None) {
-            return None;
-        }
-        at = an.parent;
-    }
-    let statically = matches!(cs.position, PositionValue::Static);
-    let mut at = n.parent;
-    while let Some(a) = at {
-        let an = tree.nodes.get(a)?;
-        if a == tree.body_id
-            || an.establishes_abs_containing_block()
-            || (statically && matches!(an.tag(), Some("td" | "th" | "table")))
-        {
-            return Some(a);
-        }
-        at = an.parent;
-    }
-    None
-}
-
-/// Whether `container` is on `node`'s `offsetParent` chain
-/// ([`offset_parent`] followed up): where the web's `layout_box_in` can
-/// measure `node` against it.
-fn offset_chain_reaches(tree: &crate::node::NodeTree, node: u64, container: u64) -> bool {
-    let mut at = node;
-    while let Some(p) = offset_parent(tree, at) {
-        if p == container {
-            return true;
-        }
-        at = p;
-    }
-    false
 }

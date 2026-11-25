@@ -555,11 +555,14 @@ box.
 
 `slot_at` places `At` from the items' **laid-out** boxes, read with
 `NodeHandle::layout_box_in(list)` (`DomLayout::layout_box_in`: the untransformed
-border box in the container's padding-box frame; desktop sums Taffy's
-parent-relative layouts less `content_origin_inset`, web sums
+border box in the container's padding-box frame; web sums
 `offsetLeft/Top` up the `offsetParent` chain with each intermediate
-`clientLeft/Top`; both `None` unless the list is on the item's offsetParent
-chain, so the list must stay positioned or transformed). `bounding_rect` would
+`clientLeft/Top`, and desktop computes the same chain
+(`rinch-dom/src/dom_impl/layout/offset.rs`), each step from Taffy's unrounded
+layout rounded half up on its own as Chrome rounds `offsetLeft`; both `None`
+unless the list is on the item's offsetParent chain, so the list must stay
+positioned or otherwise a containing block for absolutes, the set the trait
+doc lists as measured in Chrome 158 and Firefox 160). `bounding_rect` would
 not do: on the web it includes the shift transforms. The flow direction comes
 from the geometry (`flows_forward`, the first two items on one line), so
 right-to-left and `*-reverse` rows work.

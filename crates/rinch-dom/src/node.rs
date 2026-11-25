@@ -3315,7 +3315,9 @@ impl Node {
     /// `display: inline` span is not transformable, so `span { transform: … }`
     /// contains nothing while `span { position: relative }` does (issue #1080,
     /// measured in Chrome 153 — the absolute's `offsetParent` is `BODY` in the
-    /// first case and the span in the second).
+    /// first case and the span in the second). A `filter`, every box that
+    /// contains fixed descendants ([`Self::establishes_fixed_containing_block`])
+    /// and `will-change: position` are containing blocks too (#2719, #3065).
     /// Overflow deliberately does not count. It never established a containing
     /// block; it used to form a *stacking context*, and this line used to cite
     /// that as the reason the two questions are separate. Since #324 stage B it
@@ -3363,6 +3365,13 @@ impl Node {
             // A filter makes one too (Filter Effects 1 §5, #2719; Chrome 157:
             // an `inset: 0` absolute under a `filter: blur(0)` box fills it).
             || self.has_filter()
+            // So does whatever contains fixed boxes (`contain: paint` or
+            // `layout`, `perspective`, `backdrop-filter`, a `will-change`
+            // naming one), and `will-change: position`: Chrome 158 and
+            // Firefox 160 place an absolute child against such a box, and
+            // make it the `offsetParent` (#3065).
+            || self.establishes_fixed_containing_block()
+            || self.computed_style.will_change_position
     }
 
     /// Whether this box is the containing block of a `position: fixed`

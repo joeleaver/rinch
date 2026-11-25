@@ -19,6 +19,9 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "support/engine.rs"]
+mod engine;
+
 const HOST_MARKER: &str = "data-layout-box-in-3065-host";
 
 const CSS: &str = ":where([data-layout-box-in-3065-host]) div { margin: 0; padding: 0; border: 0 } \
@@ -171,4 +174,162 @@ fn a_fractional_box_answers_whole_pixels() {
     let f = Fixture::mount();
     assert_eq!(f.box_in("lb-frac", "lb-c"), rect(8.0, 84.0, 21.0, 10.0));
     f.teardown();
+}
+
+/// What makes a box an `offsetParent`, in both engines (Chrome 158, Firefox
+/// 160), the twin of desktop's list (`rinch-dom/tests/layout_box_in_tests.rs`).
+const OFFSET_PARENTS: &[&str] = &[
+    "position: relative",
+    "transform: translateX(1px)",
+    "filter: blur(0px)",
+    "filter: opacity(1)",
+    "backdrop-filter: blur(1px)",
+    "perspective: 100px",
+    "contain: paint",
+    "contain: layout",
+    "contain: strict",
+    "contain: content",
+    "will-change: transform",
+    "will-change: filter",
+    "will-change: backdrop-filter",
+    "will-change: perspective",
+    "will-change: contain",
+    "will-change: position",
+];
+
+/// What makes neither.
+const NOT_OFFSET_PARENTS: &[&str] = &[
+    "",
+    "transform: none",
+    "filter: none",
+    "backdrop-filter: none",
+    "perspective: none",
+    "contain: size",
+    "contain: style",
+    "contain: inline-size",
+    "container-type: size",
+    "clip-path: inset(0)",
+    "isolation: isolate",
+    "mix-blend-mode: multiply",
+    "opacity: 0.5",
+    "overflow: hidden",
+    "z-index: 1",
+    "will-change: opacity",
+    "will-change: left",
+];
+
+/// For each declaration, a box 30px into the page holding a box 4px into it:
+/// the inner box's box in the outer one.
+fn offset_parent_answers(decls: &[&str]) -> Vec<(String, Option<ElementBounds>)> {
+    let host = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let pairs = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let out = pairs.clone();
+    let decls: Vec<String> = decls.iter().map(|d| d.to_string()).collect();
+    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope| {
+        let wrap = scope.create_element("div");
+        for decl in &decls {
+            let c = scope.create_element("div");
+            c.set_attribute(
+                "style",
+                &format!("margin: 0 0 0 30px; width: 200px; height: 20px; {decl}"),
+            );
+            let k = scope.create_element("div");
+            k.set_attribute("style", "margin: 0 0 0 4px; width: 10px; height: 10px");
+            c.append_child(&k);
+            wrap.append_child(&c);
+            out.borrow_mut().push((decl.clone(), c, k));
+        }
+        wrap
+    });
+    let answers = pairs
+        .borrow()
+        .iter()
+        .map(|(decl, c, k)| (decl.clone(), k.layout_box_in(c)))
+        .collect();
+    root.unmount();
+    host.remove();
+    answers
+}
+
+/// Each declaration the engines count makes an offset parent (#3065 review:
+/// desktop counted only `position`, `transform` and `filter`).
+#[wasm_bindgen_test]
+fn every_declaration_the_engines_count_makes_an_offset_parent() {
+    let wrong: Vec<_> = offset_parent_answers(OFFSET_PARENTS)
+        .into_iter()
+        .filter(|(_, b)| *b != rect(4.0, 0.0, 10.0, 10.0))
+        .collect();
+    assert!(wrong.is_empty(), "not an offset parent: {wrong:?}");
+}
+
+/// And none of the others does.
+#[wasm_bindgen_test]
+fn no_other_declaration_makes_an_offset_parent() {
+    let wrong: Vec<_> = offset_parent_answers(NOT_OFFSET_PARENTS)
+        .into_iter()
+        .filter(|(_, b)| b.is_some())
+        .collect();
+    assert!(wrong.is_empty(), "an offset parent: {wrong:?}");
+}
+
+/// A box at `margin-left: inner`, `width` wide, inside a positioned box at
+/// `left: outer` (all px): its box in the positioned one.
+fn rounded_in(outer: f32, inner: f32, width: f32) -> Option<ElementBounds> {
+    let host = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&host).unwrap();
+    let pair = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let out = pair.clone();
+    let root = rinch_web::mount_into(&host, ThemeProviderProps::default(), move |scope| {
+        let c = scope.create_element("div");
+        c.set_attribute(
+            "style",
+            &format!("position: relative; left: {outer}px; margin: 0; width: 100px; height: 10px"),
+        );
+        let k = scope.create_element("div");
+        k.set_attribute(
+            "style",
+            &format!("margin: 0 0 0 {inner}px; width: {width}px; height: 5px"),
+        );
+        c.append_child(&k);
+        *out.borrow_mut() = Some((c.clone(), k));
+        c
+    });
+    let (c, k) = pair.borrow_mut().take().unwrap();
+    let answer = k.layout_box_in(&c);
+    root.unmount();
+    host.remove();
+    answer
+}
+
+/// Each offset rounded on its own: half up in Chrome, as desktop rounds; a
+/// negative tie away from zero in Firefox. Every other row is both engines'
+/// answer, and desktop's (`offsets_round_half_up_each_on_its_own`).
+#[wasm_bindgen_test]
+fn offsets_round_each_on_its_own() {
+    let x = |outer, inner| rounded_in(outer, inner, 10.0).map(|b| b.x);
+    // A negative tie: Chrome (and desktop) half up, Firefox away from zero.
+    let tie = |chrome: f32| {
+        Some(if engine::is_gecko() {
+            chrome - 1.0
+        } else {
+            chrome
+        })
+    };
+    assert_eq!(x(0.0, 0.5), Some(1.0));
+    assert_eq!(x(0.0, 2.5), Some(3.0));
+    assert_eq!(x(0.0, -0.5), tie(0.0));
+    assert_eq!(x(0.0, -1.5), tie(-1.0));
+    assert_eq!(x(0.0, -8.5), tie(-8.0));
+    assert_eq!(x(0.0, -0.75), Some(-1.0));
+    assert_eq!(x(0.0, 0.25), Some(0.0));
+    assert_eq!(x(0.5, -0.5), tie(0.0));
+    assert_eq!(x(0.5, 0.5), Some(1.0));
+    assert_eq!(x(0.5, -8.5), tie(-8.0));
+    assert_eq!(x(0.25, 0.25), Some(0.0));
+    let w = |inner, width| rounded_in(0.0, inner, width).map(|b| b.width);
+    assert_eq!(w(0.5, 20.5), Some(21.0));
+    assert_eq!(w(0.5, 20.25), Some(20.0));
+    assert_eq!(w(-0.5, 20.5), Some(21.0));
+    assert_eq!(w(0.25, 20.5), Some(21.0));
 }
