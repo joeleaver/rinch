@@ -75,14 +75,15 @@ fn separator() -> NodeHandle {
     rsx! { div { class: "toolbar-separator" } }
 }
 
-/// A toolbar button wrapping an ActionIcon.
+/// A toolbar button wrapping an ActionIcon, `tooltip` its `title`.
 #[component]
 fn toolbar_button(icon: TablerIcon, tooltip: &str, on_click: impl Fn() + 'static) -> NodeHandle {
-    let _ = tooltip; // TODO: tooltip support
+    let tooltip = tooltip.to_string();
     rsx! {
         ActionIcon {
             variant: "subtle",
             size: "sm",
+            title: tooltip,
             onclick: on_click,
             {render_tabler_icon(__scope, icon, TablerIconStyle::Outline)}
         }
@@ -118,11 +119,11 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
     rsx! {
         div { class: "toolbar",
             // Inline marks
-            {toolbar_button(__scope, TablerIcon::Bold, "Bold (Ctrl+B)", move || { ed_bold.command("toggleBold"); })}
-            {toolbar_button(__scope, TablerIcon::Italic, "Italic (Ctrl+I)", move || { ed_italic.command("toggleItalic"); })}
-            {toolbar_button(__scope, TablerIcon::Underline, "Underline (Ctrl+U)", move || { ed_under.command("toggleUnderline"); })}
-            {toolbar_button(__scope, TablerIcon::Strikethrough, "Strikethrough", move || { ed_strike.command("toggleStrike"); })}
-            {toolbar_button(__scope, TablerIcon::Code, "Inline code", move || { ed_code.command("toggleCode"); })}
+            {toolbar_button(__scope, TablerIcon::Bold, &tip("Bold", "Mod-b"), move || { ed_bold.command("toggleBold"); })}
+            {toolbar_button(__scope, TablerIcon::Italic, &tip("Italic", "Mod-i"), move || { ed_italic.command("toggleItalic"); })}
+            {toolbar_button(__scope, TablerIcon::Underline, &tip("Underline", "Mod-u"), move || { ed_under.command("toggleUnderline"); })}
+            {toolbar_button(__scope, TablerIcon::Strikethrough, &tip("Strikethrough", "Mod-Shift-s"), move || { ed_strike.command("toggleStrike"); })}
+            {toolbar_button(__scope, TablerIcon::Code, &tip("Inline code", "Mod-e"), move || { ed_code.command("toggleCode"); })}
             // Links take a runtime href, so they can't go through command("...") —
             // toggle_link is the dedicated imperative method (mirrors insert_image).
             // A real app would prompt for the URL (and could pre-fill an edit dialog
@@ -133,18 +134,18 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
             {separator(__scope)}
 
             // Block types
-            {toolbar_button(__scope, TablerIcon::H1, "Heading 1", move || { ed_h1.command("setHeading1"); })}
-            {toolbar_button(__scope, TablerIcon::H2, "Heading 2", move || { ed_h2.command("setHeading2"); })}
-            {toolbar_button(__scope, TablerIcon::H3, "Heading 3", move || { ed_h3.command("setHeading3"); })}
-            {toolbar_button(__scope, TablerIcon::Pilcrow, "Paragraph", move || { ed_p.command("setParagraph"); })}
+            {toolbar_button(__scope, TablerIcon::H1, &tip("Heading 1", "Mod-Alt-1"), move || { ed_h1.command("setHeading1"); })}
+            {toolbar_button(__scope, TablerIcon::H2, &tip("Heading 2", "Mod-Alt-2"), move || { ed_h2.command("setHeading2"); })}
+            {toolbar_button(__scope, TablerIcon::H3, &tip("Heading 3", "Mod-Alt-3"), move || { ed_h3.command("setHeading3"); })}
+            {toolbar_button(__scope, TablerIcon::Pilcrow, &tip("Paragraph", "Mod-Alt-0"), move || { ed_p.command("setParagraph"); })}
 
             {separator(__scope)}
 
             // Block containers
-            {toolbar_button(__scope, TablerIcon::Blockquote, "Blockquote", move || { ed_quote.command("wrapInBlockquote"); })}
-            {toolbar_button(__scope, TablerIcon::List, "Bullet list", move || { ed_ul.command("toggleBulletList"); })}
-            {toolbar_button(__scope, TablerIcon::ListNumbers, "Ordered list", move || { ed_ol.command("toggleOrderedList"); })}
-            {toolbar_button(__scope, TablerIcon::ListCheck, "Task list", move || { ed_tasks.command("toggleTaskList"); })}
+            {toolbar_button(__scope, TablerIcon::Blockquote, &tip("Blockquote", "Mod-Shift-b"), move || { ed_quote.command("wrapInBlockquote"); })}
+            {toolbar_button(__scope, TablerIcon::List, &tip("Bullet list", "Mod-Shift-8"), move || { ed_ul.command("toggleBulletList"); })}
+            {toolbar_button(__scope, TablerIcon::ListNumbers, &tip("Ordered list", "Mod-Shift-7"), move || { ed_ol.command("toggleOrderedList"); })}
+            {toolbar_button(__scope, TablerIcon::ListCheck, &tip("Task list", "Mod-Shift-9"), move || { ed_tasks.command("toggleTaskList"); })}
 
             {separator(__scope)}
 
@@ -161,8 +162,8 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
             {separator(__scope)}
 
             // History
-            {toolbar_button(__scope, TablerIcon::ArrowBackUp, "Undo (Ctrl+Z)", move || { ed_undo.command("undo"); })}
-            {toolbar_button(__scope, TablerIcon::ArrowForwardUp, "Redo (Ctrl+Shift+Z)", move || { ed_redo.command("redo"); })}
+            {toolbar_button(__scope, TablerIcon::ArrowBackUp, &tip("Undo", "Mod-z"), move || { ed_undo.command("undo"); })}
+            {toolbar_button(__scope, TablerIcon::ArrowForwardUp, &tip("Redo", "Mod-Shift-z"), move || { ed_redo.command("redo"); })}
         }
     }
 }
@@ -172,7 +173,8 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
 const STARTER: &str = "<h1>Welcome to the Markdown Editor</h1>\
     <p>This is a <strong>rich-text editor</strong> built on rinch's \
     <em>ProseMirror-style</em> editor. Select text and use the toolbar, or type \
-    with <strong>Ctrl+B</strong> / <em>Ctrl+I</em>.</p>\
+    with <strong>Ctrl+B</strong> / <em>Ctrl+I</em> (<strong>⌘B</strong> / \
+    <em>⌘I</em> on a Mac).</p>\
     <h2>Features</h2>\
     <ul>\
     <li><p>Inline marks: <strong>bold</strong>, <em>italic</em>, <u>underline</u>, \
@@ -189,12 +191,44 @@ const STARTER: &str = "<h1>Welcome to the Markdown Editor</h1>\
     is always a pure projection of the editor state.</p></blockquote>\
     <p>Happy editing!</p>";
 
+/// A toolbar tooltip: `label` and the chord that does the same, as the
+/// platform spells it (`"Bold (⌘B)"` on macOS, `"Bold (Ctrl+B)"` elsewhere).
+fn tip(label: &str, chord: &str) -> String {
+    let chord = rinch::editor::KeyBinding::parse(chord).expect("a chord");
+    format!("{label} ({})", chord.label(rinch::editor::host_is_macos()))
+}
+
+/// The chords this app binds through [`EditorHandle::bind_key`]; each
+/// toolbar tooltip names its own. `Mod` is Ctrl, or Cmd on macOS.
+const APP_KEYS: [(&str, &str); 10] = [
+    ("Mod-Shift-s", "toggleStrike"),
+    ("Mod-e", "toggleCode"),
+    ("Mod-Alt-1", "setHeading1"),
+    ("Mod-Alt-2", "setHeading2"),
+    ("Mod-Alt-3", "setHeading3"),
+    ("Mod-Alt-0", "setParagraph"),
+    ("Mod-Shift-b", "wrapInBlockquote"),
+    ("Mod-Shift-8", "toggleBulletList"),
+    ("Mod-Shift-7", "toggleOrderedList"),
+    ("Mod-Shift-9", "toggleTaskList"),
+];
+
 /// Main app component.
 #[component]
 fn app() -> NodeHandle {
     let editor = create_editor();
     // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
     editor.set_markdown_shortcuts(true);
+    // The editor binds only the keys Chrome's `contenteditable` has (#3062):
+    // Ctrl/Cmd+B/I/U, undo and redo. An app that wants more says so. This one
+    // binds a chord for each toolbar block action, and lets Tab nest list
+    // items and move between table cells.
+    editor.set_tab_behavior(rinch::editor::TabBehavior::IndentInListsAndTables);
+    for (chord, command) in APP_KEYS {
+        editor
+            .bind_key(chord, command)
+            .expect("every APP_KEYS command is the editor's");
+    }
 
     rsx! {
         Fragment {

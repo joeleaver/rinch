@@ -20,6 +20,18 @@ impl EditorHandle {
         }
     }
 
+    /// Whether an IME composition (preedit) is being shown: the input method
+    /// owns the keyboard until it commits or cancels, so the platform runtime
+    /// offers a key to no app hook meanwhile ([`offer_key`](Self::offer_key)
+    /// answers `false`, and the app-wide key listeners are not asked). `false`
+    /// before mount.
+    pub fn is_composing(&self) -> bool {
+        self.core()
+            .view
+            .as_ref()
+            .is_some_and(RinchDomEditorView::is_composing)
+    }
+
     /// Clear the IME composition overlay without inserting anything (composition
     /// cancelled / disabled). A no-op before mount.
     pub fn ime_clear_preedit(&self) {

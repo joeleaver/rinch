@@ -317,3 +317,39 @@ fn a_still_contact_is_a_tap_and_a_swipe_is_not() {
     assert!(!is_tap((100.0, 200.0), (100.0, 140.0)));
     assert!(!is_tap((100.0, 200.0), (160.0, 200.0)));
 }
+
+// ── The keymap's `Mod`: Cmd on every Apple platform (#3062) ─────────────────
+
+/// macOS, iOS and iPadOS all take Cmd as `Mod` (ProseMirror's
+/// `/Mac|iP(hone|[oa]d)/`); Windows, Linux, Android and ChromeOS take Ctrl.
+#[test]
+fn every_apple_platform_takes_cmd_as_mod() {
+    for platform in [
+        "MacIntel",
+        "iPhone",
+        "iPad",
+        "iPod touch",
+        "iPhone Simulator",
+    ] {
+        assert!(apple_platform(platform, ""), "{platform}");
+    }
+    for platform in ["Win32", "Linux x86_64", "Linux armv8l", "X11"] {
+        assert!(!apple_platform(platform, ""), "{platform}");
+    }
+}
+
+/// An empty `navigator.platform` falls back to the user agent; a platform
+/// that is there decides alone.
+#[test]
+fn an_empty_platform_falls_back_to_the_user_agent() {
+    let ipad = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
+    let iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)";
+    let android = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36";
+    assert!(apple_platform("", ipad));
+    assert!(apple_platform("", iphone));
+    assert!(!apple_platform("", android));
+    assert!(
+        !apple_platform("Linux armv8l", ipad),
+        "the platform decides"
+    );
+}
