@@ -398,3 +398,7 @@ backend), `rinch-web/tests/menu_sub_2214.rs` (Chrome and Firefox),
 ## Keyboard Shortcuts (built-in)
 
 - `F12` - Toggle DevTools window (debug builds by default; `App::devtools`, `RINCH_DEVTOOLS`). The only app-level shortcut rinch claims for itself; inspect mode is the DevTools window's Inspect button (`Alt + I` was removed in #3062)
+
+Every other key rinch handles itself (field and editor keys, popups,
+components, the web backend), with its precedence against an app's handlers,
+is inventoried in `docs/design/keyboard-shortcuts-audit.md` (2026-11-24).
