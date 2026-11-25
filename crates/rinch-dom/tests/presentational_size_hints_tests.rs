@@ -16,7 +16,7 @@
 //! 100x50 on both axes and in ratio (4:3 against 2:1), so an answer taken from
 //! the wrong source is a different number.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter;

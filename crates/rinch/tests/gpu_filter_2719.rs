@@ -16,7 +16,7 @@ mod pixels;
 mod chrome;
 
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::vello_painter::VelloPainter;
 

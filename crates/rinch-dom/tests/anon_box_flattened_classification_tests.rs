@@ -96,7 +96,7 @@
 //! in it at all. A kill is not automatically evidence for the half of a fixture
 //! you are reading; only `adoption` exercises the insert.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

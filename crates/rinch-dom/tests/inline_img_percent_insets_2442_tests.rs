@@ -10,7 +10,7 @@
 //! with `getBoundingClientRect`. Only sizes are compared: an atomic inline's
 //! horizontal margins do not offset it on its line yet (#1405), so a
 //! picture with margins sits at x = 0 where Chrome puts it at its margin.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// An 800x400 PNG.

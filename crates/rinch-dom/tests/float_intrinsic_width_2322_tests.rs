@@ -19,7 +19,7 @@
 //! The content is sized boxes (inline-blocks for text), so no width here
 //! depends on the host's fonts; a `y` is read only for a box at the top of
 //! its line.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const CSS: &str =

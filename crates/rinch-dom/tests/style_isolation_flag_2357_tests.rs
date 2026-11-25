@@ -3,7 +3,7 @@
 //! From the review of PR #2366 (round 3), where a subtree re-inserted while
 //! the document had no isolated node kept a stale `true`, and a theme class
 //! rule then failed to match it once another view existed.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// Theme-like author rules; `letter-spacing` marks which rules matched.

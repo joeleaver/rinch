@@ -98,7 +98,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope, clear_render_scope, set_render_scope};
+use rinch_core::dom::{
+    DomDocument, DomTree, NodeHandle, RenderScope, clear_render_scope, set_render_scope,
+};
 use rinch_core::element::ThemeProviderProps;
 use rinch_core::events;
 

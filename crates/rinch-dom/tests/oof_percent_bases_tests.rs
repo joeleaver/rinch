@@ -22,7 +22,7 @@
 //! 0 }`), `getBoundingClientRect` in the viewport: `mark=x,y,width,height`. No
 //! row holds text.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

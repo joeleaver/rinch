@@ -13,7 +13,7 @@
 
 use rinch::prelude::*;
 use rinch::reactive::Effect;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_core::dom::mock::MockDomDocument;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

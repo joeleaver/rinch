@@ -12,7 +12,7 @@
 //! Each fixture passes before and after #1260; what they are for is the
 //! mutants of the fold, named on each.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VP: (f32, f32) = (800.0, 600.0);

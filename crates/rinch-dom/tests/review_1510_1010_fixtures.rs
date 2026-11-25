@@ -2,7 +2,7 @@
 //! Chrome numbers are Chrome 155.0.8059.39 (same harness as the PR's 153
 //! table: `--headless=new`, standards mode, `* { box-sizing: border-box }`,
 //! 800x600, the bundled Inter as `ProbeFace`, `16px/20px`).
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

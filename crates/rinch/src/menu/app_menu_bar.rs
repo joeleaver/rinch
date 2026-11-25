@@ -673,7 +673,7 @@ fn build_menu_entries_with_flyouts(
 mod tests {
     use super::{MENU_BAR_HEIGHT, render_inline_overlay, render_menu_items_inline};
     use crate::menu::{Menu, MenuItem};
-    use rinch_core::dom::{DomDocument, RenderScope};
+    use rinch_core::dom::{DomContent, DomDocument, DomTree, RenderScope};
     use rinch_core::reactive::Signal;
     use rinch_dom::RinchDocument;
     use std::cell::RefCell;

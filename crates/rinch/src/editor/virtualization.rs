@@ -15,7 +15,7 @@
 //! node-outline / placeholder overlays are container siblings and must never be
 //! collapsed (`CeVirtualWindow::new_filtered(.., true)`).
 
-use rinch_core::dom::DomDocument; // take_dirty_nodes / resolve_layout trait methods
+use rinch_core::dom::DomTree; // take_dirty_nodes / resolve_layout trait methods
 use rinch_dom::RinchDocument;
 
 use rinch_editor_view::EditorHandle;

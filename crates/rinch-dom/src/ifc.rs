@@ -2174,11 +2174,11 @@ fn offset_map_note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
 ///
 /// Preserved text takes [`PRESERVED_SUBSTITUTES`], which is also what the
 /// rich-text editor's caret map is told
-/// ([`DomDocument::substituted_char_flat_bytes`]), so the two count the same
+/// ([`DomLayout::substituted_char_flat_bytes`]), so the two count the same
 /// flat bytes for each.
 ///
 /// [`InlineLayout::measured_width`]: crate::node::InlineLayout::measured_width
-/// [`DomDocument::substituted_char_flat_bytes`]: rinch_core::dom::DomDocument::substituted_char_flat_bytes
+/// [`DomLayout::substituted_char_flat_bytes`]: rinch_core::dom::DomLayout::substituted_char_flat_bytes
 fn laid_out_as(c: char, preserved: bool) -> Option<&'static str> {
     if !preserved && c == '\u{c}' {
         return None;
@@ -10071,7 +10071,7 @@ impl RinchDocument {
     /// dirty a measure without dirtying the IFC structure — a restyle that
     /// changed something, and `set_text_content` — which between them are five
     /// call sites (`dom_impl/mod.rs` twice, `style_resolution/mod.rs`,
-    /// `dom_document_impl.rs`, `layout_engine.rs`). A *structural* mutation
+    /// `dom_impl/content.rs`, `layout_engine.rs`). A *structural* mutation
     /// seeds a structural pass instead (`crate::ifc_scope`), which sizes what
     /// it placed and calls this itself for every container it set up (the
     /// atomic inlines around a changed container are outside its scope, and
@@ -12554,9 +12554,18 @@ impl RinchDocument {
         let mut hang = HangStats::default();
         let mut float_drop: f32;
         let mut builds = 0u32;
+        // The controls rinch wrote for `unicode-bidi` (#2588). parley reopens
+        // those still open at a forced break after it, as Blink reopens an
+        // element's bidi context, where controls typed in the text end there
+        // (UAX #9 X8, #2962).
+        let reopened_controls: Vec<std::ops::Range<usize>> = bidi_control_ranges
+            .iter()
+            .map(|&(start, end, _)| start..end)
+            .collect();
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
             builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
+            builder.set_reopened_bidi_controls(&reopened_controls);
             // A block's paragraph runs in the block's `direction` whatever
             // its text (parley 0.12 takes a base direction): an rtl one's
             // trailing spaces are at its visual left, inside the box (Chrome
@@ -14775,7 +14784,7 @@ impl TabStops {
 #[cfg(test)]
 mod atomic_leaf_layout_tests {
     use crate::RinchDocument;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     /// The keying rule of `NodeTree::atomic_leaf_layouts` (#904): each layout
     /// the atomic compute's text measure builds is filed under the width it

@@ -405,7 +405,7 @@ fn test_apply_value_background_color() {
 /// given `@keyframes` body, laid out once.
 /// The body's `color` is `rgb(7, 8, 9)`, the div's own `rgb(10, 20, 30)`.
 fn animated_div(keyframes: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     let mut doc = rinch_dom::RinchDocument::new();
     doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
@@ -513,7 +513,7 @@ fn painted_x(doc: &rinch_dom::RinchDocument, id: rinch_core::dom::NodeId) -> f64
 
 /// A `<div class="slider">` under `css`, laid out once with transitions armed.
 fn transitioning_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     let mut doc = rinch_dom::RinchDocument::new();
     doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
@@ -539,7 +539,7 @@ fn start_transform_transition(
     div: rinch_core::dom::NodeId,
     class: &str,
 ) -> f64 {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     doc.set_attribute(div, "class", class);
     doc.resolve_layout(800.0, 600.0);
@@ -681,7 +681,7 @@ fn transform_interpolation_carries_the_percentage_coefficients() {
 /// every frame (#403).
 #[test]
 fn an_animation_that_ignores_transform_keeps_the_base_percentage_translate() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     let mut doc = rinch_dom::RinchDocument::new();
     doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
@@ -1135,7 +1135,7 @@ fn keyframes_values_needing_more_than_a_font_size_are_declined() {
 /// sets `layout_dirty` by itself and would make this pass either way.
 #[test]
 fn a_finished_width_transition_reaches_the_layout() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     let (mut doc, div) = transitioning_div(
         ".slider { width: 100px; height: 40px; transition: width 150ms linear; } \
@@ -1176,7 +1176,7 @@ fn a_finished_width_transition_reaches_the_layout() {
 /// Separate from [`animated_div`], which hard-codes a colour
 /// animation on a 10x10 box.
 fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     let mut doc = rinch_dom::RinchDocument::new();
     doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
@@ -1246,7 +1246,7 @@ fn a_finished_width_animation_reaches_the_layout() {
 /// A `<div class="{class}">` holding a paragraph of text, under `css`, laid out
 /// once with transitions armed.
 fn texted_div(css: &str, class: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId) {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     let mut doc = rinch_dom::RinchDocument::new();
     doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
@@ -1282,7 +1282,7 @@ fn texted_div(css: &str, class: &str) -> (rinch_dom::RinchDocument, rinch_core::
 /// fonts the machine happens to have, and CI's differ from a developer's.
 #[test]
 fn a_finished_font_size_transition_reaches_the_inline_layout() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     const CSS: &str = ".t { width: 200px; font-size: 10px; line-height: 1.5; \
                        transition: font-size 150ms linear; } \
@@ -1380,7 +1380,7 @@ fn running_width_transition(
     css: &str,
     elapsed_ms: f64,
 ) -> (rinch_dom::RinchDocument, rinch_core::dom::NodeId, f64) {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     let (mut doc, div) = transitioning_div(css);
     doc.set_attribute(div, "class", "slider wide");
@@ -1479,7 +1479,7 @@ fn running(
 /// against the after-change value.
 #[test]
 fn an_unrelated_restyle_leaves_a_running_transition_alone() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     let (mut doc, div, start) = running_width_transition(LINEAR_20_TO_30, 50.0);
 
@@ -1519,7 +1519,7 @@ fn an_unrelated_restyle_leaves_a_running_transition_alone() {
 /// which is what the issue's own fix sketch proposed.
 #[test]
 fn the_leave_alone_path_keeps_the_interpolated_value_in_the_computed_style() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     let (mut doc, div, _start) = running_width_transition(LINEAR_20_TO_30_SECONDS, 50_000.0);
 
@@ -1546,7 +1546,7 @@ fn the_leave_alone_path_keeps_the_interpolated_value_in_the_computed_style() {
 /// still ~27.8px at t=150.
 #[test]
 fn repeated_restyles_do_not_extend_a_transitions_declared_duration() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     let (mut doc, div, start) = running_width_transition(LINEAR_20_TO_30, 50.0);
 
@@ -1583,7 +1583,7 @@ fn repeated_restyles_do_not_extend_a_transitions_declared_duration() {
 /// the shape of the curve: both assertions are about *when* it finishes.
 #[test]
 fn repeated_restyles_do_not_extend_an_ease_transition_either() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     let (mut doc, div, start) = running_width_transition(
         ".slider { width: 20px; height: 40px; transition: all 150ms ease; } \
@@ -1622,7 +1622,7 @@ fn repeated_restyles_do_not_extend_an_ease_transition_either() {
 /// its start value, because the restarted delay had not run out.
 #[test]
 fn an_unrelated_restyle_during_a_transitions_delay_does_not_restart_it() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     let (mut doc, div, start) = running_width_transition(
         ".slider { width: 20px; height: 40px; \
@@ -2000,7 +2000,7 @@ fn a_reversal_does_shorten_a_negative_delay() {
 /// that the reversal happened where the fixture meant it to.
 #[test]
 fn a_reversals_delay_still_holds_the_box_still() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::DomContent;
 
     let (mut doc, div, start) = running_width_transition(
         ".slider { width: 20px; height: 40px; \

@@ -442,7 +442,7 @@ pub(super) fn notify_vacated(vacated: Option<&NodeHandle>, landed_in: &NodeHandl
 ///
 /// `None` when nothing on the thread watches for removals, during a dispatch,
 /// for a text node (what every reactive `{|| …}` in `rsx!` writes to — asked
-/// through [`DomDocument::is_text_node`](super::traits::DomDocument::is_text_node),
+/// through [`DomTree::is_text_node`](super::traits::DomTree::is_text_node),
 /// with no child list read), and for an element with no children. So a write
 /// nobody could be told about costs the `Cell` read and no document call.
 pub(super) fn children_at_stake(node: &NodeHandle) -> Option<Vec<NodeId>> {
@@ -555,7 +555,7 @@ fn notify(parent: &NodeHandle, subject: &NodeHandle, half: Half) {
 mod tests {
     use super::*;
     use crate::dom::mock::MockDomDocument;
-    use crate::dom::traits::DomDocument;
+    use crate::dom::traits::{DomDocument, DomTree};
 
     /// A document and the handles a test needs from it.
     fn doc() -> (Rc<RefCell<MockDomDocument>>, NodeHandle) {

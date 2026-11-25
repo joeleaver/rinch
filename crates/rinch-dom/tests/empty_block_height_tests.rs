@@ -16,7 +16,7 @@
 //! box-sizing: border-box; margin: 0 }`, `line-height: 20px` on the container),
 //! and each fixture sits off the floor's own value: every one was 20 before.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// A 10x1 PNG. Its natural height (1) is under a line, which is the shape the

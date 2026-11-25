@@ -80,7 +80,7 @@ fn box_edges_and_clips_are_on_device_pixels_at_150_percent() {
 /// edges blend (191 at 1.25x, 127 at 1.5x) a pixel past Chrome's.
 #[test]
 fn a_box_shadow_is_drawn_from_the_snapped_box() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
     const PAGE: &str = "<div style=\"position:absolute;left:13px;top:9px;width:40px;\
                         height:30px;box-shadow:4px 4px 0 #000\"></div>";
     // (scale, first pixel of the row and column, Chrome's pixels from it).

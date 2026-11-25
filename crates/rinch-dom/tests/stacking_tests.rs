@@ -6,7 +6,7 @@
 //! node for the reverse one.
 
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::computed_style::PositionValue;
 use rinch_dom::node::{NodeTree, RawNodeId};
 use rinch_dom::stacking::{PaintEntry, PaintKind, paints_at_stacking_root, stacking_paint_order};

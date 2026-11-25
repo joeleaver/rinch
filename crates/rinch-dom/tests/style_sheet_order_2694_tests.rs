@@ -25,7 +25,7 @@
 //!
 //! Geometry is box widths set by the rules themselves.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter::*;
 

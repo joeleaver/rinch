@@ -10,7 +10,7 @@
 //! last **byte**, which belongs to a child when the span starts or ends with
 //! a shifted child.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

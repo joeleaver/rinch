@@ -20,7 +20,7 @@
 //! "the stylesheet never reached this element" is distinguishable from "the
 //! type selector did not match".
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

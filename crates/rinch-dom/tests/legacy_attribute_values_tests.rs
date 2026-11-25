@@ -25,7 +25,7 @@
 //!
 //! Every expected number is Chrome 156's for the same markup at 720x800. The
 //! boxes are sized empty cells and images, so no number depends on fonts.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const CSS: &str = "body { margin: 0; font-size: 10px; line-height: 0; }";

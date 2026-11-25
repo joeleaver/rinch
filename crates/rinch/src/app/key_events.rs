@@ -339,8 +339,8 @@ impl RinchApp {
                         // paragraph ran the keymap's `sinkListItem`,
                         // which did nothing, and the matched binding was
                         // consumed anyway: a keyboard trap.
-                        if !handle.tab_key(shift) {
-                            self.handle_tab(shift);
+                        if !handle.tab_key(shift) && !self.handle_tab(shift) {
+                            self.key_down_unused = true;
                         }
                     } else {
                         self.dispatch_new_editor_key(
@@ -368,6 +368,7 @@ impl RinchApp {
                     // silently swallowed.
                     self.focus_target = FocusTarget::None;
                     self.sync_keyboard_editor();
+                    self.key_down_unused = true;
                 }
             }
             FocusTarget::Surface(surface_id) => {
@@ -430,16 +431,18 @@ impl RinchApp {
                     );
                 }
             }
-            // An open native <select> popup took its keys in step 1; one
-            // with no popup state left has nothing to do with a key.
-            FocusTarget::Select(_) => {}
+            // An open native <select> popup took its keys in step 1; a key
+            // it did not take, or one with no popup state left, is unused
+            // (#3062, `key_down_unused`).
+            FocusTarget::Select(_) => {
+                self.key_down_unused = true;
+            }
             // No widget owns the key, a plain `<input>` does (its editing
             // commands live in the global handlers, gated internally on
             // `focused_input_state`), or a generic focusable node does
             // (Enter/Space activate it below; everything else falls
             // through so Tab keeps moving). Falls through to DevTools /
-            // inspect / Tab navigation / read-only text-selection caret
-            // motion.
+            // Tab navigation / read-only text-selection caret motion.
             FocusTarget::Input(_) | FocusTarget::None | FocusTarget::Node(_) => {
                 if self.offer_registered_node_key(
                     key,

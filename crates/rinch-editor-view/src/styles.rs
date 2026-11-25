@@ -255,7 +255,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 "#;
 
 rinch_core::doc_keyed! {
-    /// The [`doc_key`](rinch_core::dom::DomDocument::doc_key)s of documents that
+    /// The [`doc_key`](rinch_core::dom::DomTree::doc_key)s of documents that
     /// already carry [`DEFAULT_EDITOR_CSS`]. Keyed **per document**, not per
     /// thread: two documents on one thread (e.g. two embedded `RinchContext`s,
     /// issue #134) each need their own copy of the stylesheet — a thread-wide

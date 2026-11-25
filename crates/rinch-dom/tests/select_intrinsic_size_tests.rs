@@ -41,7 +41,7 @@
 //! (the UA `min-width: 60px` beside an estimated label width) and `8px` tall —
 //! its vertical padding alone — so its label painted over its own bounds.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

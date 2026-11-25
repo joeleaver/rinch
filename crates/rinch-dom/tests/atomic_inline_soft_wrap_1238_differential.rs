@@ -16,7 +16,7 @@
 //! the test fails when they change. If they now match Chrome, clear the
 //! column (a fix); if they differ in a new way, explain the move.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

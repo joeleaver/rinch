@@ -14,7 +14,7 @@
 //! `* { margin-bottom: 17px }` is the positive control, matching the issue's
 //! own measured table exactly.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

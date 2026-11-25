@@ -22,7 +22,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_dom::RinchDocument;
 

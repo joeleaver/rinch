@@ -36,7 +36,7 @@
 //! other scroller and on the other axis — what the web backend does by setting
 //! that scroller's `scrollTop` and then calling `scrollIntoView`.
 use peniko::kurbo::Rect;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomScroll, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::PositionValue;
 

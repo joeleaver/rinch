@@ -227,7 +227,7 @@ applies `autofocus` natively.
 **`NodeHandle::selection_range()` / `caret_rect()` / `caret_rect_at(offset)`**
 (#1678), the read half of the paragraph below: `(start, end,
 SelectionDirection)` in UTF-16 units, `start <= end`
-(`DomDocument::text_selection_range`; web: the element's properties; desktop:
+(`DomFocus::text_selection_range`; web: the element's properties; desktop:
 a posted request (`peek_pending_text_selection_request`), else the focused
 field's `data-selection-start`/`data-cursor-pos` bytes, else
 `NodeTree::text_selections` — written at blur by `clear_input_focus_attrs` and
@@ -238,7 +238,7 @@ Forward)`, Chrome 155's answer for a parsed or default value; a `None`
 direction reads `Forward` (Chrome on Linux/Windows; macOS unmeasured); a
 programmatic or Tab focus shows exactly this selection (`try_focus_input`);
 a posted request is cancelled by such a value write; `None` for a non-text control and, as Chrome, for
-`email`/`number`/date types). The caret rect (`DomDocument::text_caret_rect`,
+`email`/`number`/date types). The caret rect (`DomFocus::text_caret_rect`,
 `None` unless rendered) is width 0 in logical window px on desktop
 (`form_control::painted_caret_rect`, shaped by the builder paint draws with,
 `form_control::field_text_layout`, at the origin paint uses,
@@ -260,7 +260,7 @@ stashed for the next time it gains it, the same thing a browser's own
 `setSelectionRange()`/`select()` does on an unfocused control — so
 `focus()` and `select()` posted together from one effect do not need to run
 in either particular order. Desktop posts both through a channel keyed
-**per node** (`DomDocument::set_selection_range`,
+**per node** (`DomFocus::set_selection_range`,
 `rinch_core::post_text_selection_request`/`take_pending_text_selection_requests`) —
 **separate** from `FocusRequest`'s own single slot, since folding the two
 together would let a `select()` posted right after a `focus()` silently
@@ -285,7 +285,7 @@ any stash for that node too, not only consult-and-clear it — otherwise a
 stale pre-click stash reappears on the *next* programmatic/Tab focus
 (review of #1325, finding 1). A stash entry for a node that is removed
 before ever being focused is pruned by connectivity
-(`DomDocument::is_connected`, not slab presence — `discard()`/`remove()`
+(`DomTree::is_connected`, not slab presence — `discard()`/`remove()`
 are both a detach on desktop today, #723) on every drain, which does not
 close the #304 recycled-slab-id hazard for a node-keyed registry: a freed
 id handed to an unrelated new node before the next prune would inherit a
@@ -544,7 +544,7 @@ connected**, and otherwise releases the claim rather than focusing into a
 detached subtree; focus the user moved outside the overlay is left alone. The
 memory is per-overlay, which is the whole of nesting: the inner remembers what
 the outer focused. `rinch-components`' `overlay_focus::arm_overlay_focus` is the
-policy and it is the *only* copy; what it rests on is three `DomDocument`
+policy and it is the *only* copy; what it rests on is three `DomFocus`
 methods — `active_element`, `focus_into`, `restore_focus` — reachable on any
 `NodeHandle` and defaulted so `MockDomDocument` keeps compiling. There is no
 bare `blur()`: releasing the keyboard is only ever the fallback half of a
@@ -563,7 +563,7 @@ above), so a fixture that wants a parked move left unapplied drops it
 (`trap_focus_tests::settle`). `rinch-web` answers on the
 spot and lets the browser refuse what it should refuse — after `NodeHandle`
 has released its document borrow and before the call returns
-(`DomDocument::take_after_borrow`), because a browser `focus()`/`blur()` runs
+(`DomFocus::take_after_borrow`), because a browser `focus()`/`blur()` runs
 every focus listener synchronously and rinch's own listeners touch the document
 (an editor's caret on `blur`, the key entries on `focusin`); under the borrow
 they panicked "RefCell already borrowed" inside the listener, which aborted it.
@@ -572,7 +572,7 @@ focus go first** (#1478): Chrome fires `focusout`/`blur`/`change` inside
 `removeChild`, a move, `innerHTML =` and `textContent =` over a focused node,
 so `remove`, `discard`, `remove_child`, `replace_with`, `set_inner_html`,
 `set_text` and the insertion verbs (for a child that is already somewhere) ask
-`DomDocument::release_focus_within(node, children_only)` with no borrow held
+`DomFocus::release_focus_within(node, children_only)` with no borrow held
 (`rinch_core::dom::release_focus_within`, up to `FOCUS_RELEASE_ROUNDS` times,
 since a listener may focus something else in there) and `rinch-web` answers a
 `blur()` of the focused element inside the part that goes; then the verb
@@ -597,7 +597,7 @@ own state, keyed by node): `WebDocument::append_child` / `insert_before` /
 (the method exists, looked up once per page; child and parent both connected,
 one document; the parent an element, the child an element or character data),
 and the `NodeHandle` insertion verbs ask the same predicate through
-`DomDocument::moves_keeping_focus` (default `false`) and release nothing — the
+`DomFocus::moves_keeping_focus` (default `false`) and release nothing — the
 two must stay one predicate, or the old call runs listeners under the borrow.
 Measured in Chrome 153, and in CI's Firefox 157: no `blur`/`focusout`,
 selection kept, an open `Select`'s list and key entry live, an `<iframe>` not
@@ -624,7 +624,7 @@ element focusable only through it (measured in 153; `disabled`, `inert`,
 `display: none` and any of them on an ancestor fire nothing inside the write)
 — and only the browser knows which write is one, so for those names
 (`is_focus_revoking_attribute`) `NodeHandle::set_attribute` /
-`remove_attribute` first run `DomDocument::before_attribute_write`, which on
+`remove_attribute` first run `DomFocus::before_attribute_write`, which on
 the web is the literal browser write made outside the borrow; the write under
 the borrow repeats it and changes nothing. `RootHandle::unmount` releases the
 focus itself (`NodeHandle::release_focus_before_detach`). **A direct
@@ -848,7 +848,7 @@ register_focus_target(
   behind it (measured, Chrome 150), which rinch does not model.
 - **`lock_scroll` gates the gesture on desktop and the style on web** (#474).
   `Modal`/`Drawer`'s prop reaches
-  `DomDocument::set_scroll_locked(locked, root)` through
+  `DomScroll::set_scroll_locked(locked, root)` through
   `NodeHandle::set_scroll_locked`; it takes the overlay's **root node**, not
   just a bool, because desktop has to know which subtree may still scroll.
   Desktop records the locking roots on `NodeTree` and refuses a container
@@ -993,7 +993,7 @@ beside it:
   the menu at the new point on a field (GTK, Chrome) or opens whatever context
   menu is there; other presses outside are still swallowed.
 - **A field disabled under its open menu closes it** (`text_menu_target_is_live`).
-- F12 / Alt+I, Tab and every other key stay swallowed while a popup is open.
+- F12, Tab and every other key stay swallowed while a popup is open.
 Pins: `app/runtime_popup_822_tests.rs`.
 
 **Key auto-repeat: the press says so** (#463). Enter/Space on a focused
@@ -1034,6 +1034,46 @@ track held keys by `k.code`. But a second event can be swallowed too; a fact car
 press being judged** cannot. `RinchApp::press_is_fresh` is the one place that
 decides, and `Fresh` is authoritative *over* the latch — that is the repair, not
 a tie-break.
+
+**What Android is told about each key** (#3062). android-activity asks the
+input callback for an `InputStatus` per event, and the shell used to answer
+`Handled` for everything, so the system's default for a key never ran: the
+volume and media keys did nothing, and Back never left the app. Now
+`android_runtime/input.rs` dispatches each key **inside** that callback and
+answers from `shell/android_key_status.rs` (`KeyAnswers`, host-compiled and
+unit-tested):
+
+- A key the translator drops (no rinch `KeyCode` and no character) and an
+  action rinch does not read (`ACTION_MULTIPLE`) are `Unhandled`. A dead key
+  is not dropped in that sense: the translator keeps its accent, so it stays
+  `Handled`.
+- Back reaches the app as Escape, so a dismiss entry, an app key listener or a
+  handler takes it first, the way Chrome on Android closes the top popup
+  before it goes back. The press is `Unhandled` when
+  `RinchApp::key_down_unused` says nothing used it, and the release follows
+  its press: the system goes back on the release, and only for a press it saw
+  unhandled.
+- Every other delivered key stays `Handled`, used or not. That includes a
+  hardware Escape, because Android's generic key map turns an unhandled
+  Escape into a Back.
+
+`RinchApp::key_down_unused` is set only where key handling ends with nothing
+done: the unclaimed-key fallback when its default action did nothing, a focused
+editor that had no binding or text for the key (or a Tab that neither the
+editor nor `handle_tab` used), a `<select>` claim with no popup open, and an
+unmounted editor. In the fallback each default action answers whether it acted
+(PR #3072's review): `handle_tab` (moved the focus, or a `trap_focus` overlay
+kept it; nothing focusable and no trap is unused), `handle_text_key` (extended
+the read-only selection, or a live field holds the keyboard and the keymap
+gives the key an action), `handle_enter` (fired change or submit, or inserted a
+line break in an editable `<textarea>`), a focused node's Enter/Space
+(`press_is_fresh`: an auto-repeat is unused), a keyboard scroll, and text typed
+into a field. The clipboard, select-all and undo chords count as used whatever
+they found. A focused `RenderSurface` uses a key only by claiming it with
+`set_key_handler`; an unclaimed one goes through the fallback like any other,
+so Back can leave a game. It is reset by every `KeyDown`, and a `KeyUp` leaves
+it alone. Tests are in `app/key_down_unused_3062_tests.rs` and
+`app/key_down_unused_review_3072_tests.rs`. Not checked on a device.
 
 Not carried to `KeyEventData`, so a registered node's `on_key` still cannot tell
 a repeat from a press: the honest field is the same three-state one, and

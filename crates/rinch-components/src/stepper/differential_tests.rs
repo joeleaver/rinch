@@ -8,7 +8,7 @@
 
 use super::*;
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::{DomDocument, DomTree};
 use std::cell::RefCell;
 use std::collections::HashMap;
 

@@ -2,7 +2,7 @@
 //! boundary next to one (#1903, #1711), and on the logical side of one in
 //! right-to-left text (#1835).
 
-use rinch_core::dom::{CaretAffinity, DomDocument, NodeId};
+use rinch_core::dom::{CaretAffinity, DomContent, DomLayout, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

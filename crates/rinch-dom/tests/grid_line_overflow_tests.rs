@@ -13,7 +13,7 @@
 //! Every size here is declared (`height: 10px` items, declared container
 //! sizes), and no item holds text, so nothing pins the local font set.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

@@ -22,7 +22,7 @@
 //! mutant N9), which r15 can no longer see once S3 is fixed.
 mod style_twin;
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use style_twin::{assert_twin, assert_twin_opts};
 

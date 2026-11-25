@@ -17,7 +17,7 @@
 //! ancestor's padding box (#1372; until then they were pinned here as known
 //! gaps, placed against the viewport with no margins).
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

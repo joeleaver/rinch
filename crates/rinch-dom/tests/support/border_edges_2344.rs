@@ -7,7 +7,7 @@
 //! solid two-pixel lines. The boxes sit at odd positions with odd sizes, so
 //! no edge is on the origin, on an even pixel or on another box's column.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 pub const W: u32 = 200;

@@ -3575,7 +3575,7 @@ fn compose_transform_parts(
 /// branch hands `parent_transform` straight down to the children rather than
 /// composing anything for it — a transform declared on such a node has no box
 /// to apply about and is simply not drawn. Hit testing makes the same exception
-/// (`local_point`, `crates/rinch/src/app/hit_testing.rs`); a forward walk that
+/// (`local_point`, `crates/rinch/src/app/hit_testing/walk.rs`); a forward walk that
 /// composed it anyway would place the node's descendants somewhere paint never
 /// puts them.
 fn compose_transform_step(
@@ -5298,7 +5298,7 @@ fn paint_layered_span(
 
 /// A highlight box held back from its place in a stacking sequence until the
 /// box whose content it highlights is painted (#2666,
-/// [`rinch_core::dom::DomDocument::set_highlight_owner`]): what
+/// [`rinch_core::dom::DomContent::set_highlight_owner`]): what
 /// [`paint_sequence_entry`] would have drawn it with.
 #[derive(Clone, Copy)]
 struct HeldHighlight {
@@ -7514,7 +7514,7 @@ fn paint_text_leaf(
 mod tests {
     use crate::RinchDocument;
     use peniko::kurbo::Affine;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     // The correctness criterion for every test here: `painted_border_box`
     // returns the box the node is *painted* in. So the expected rects are

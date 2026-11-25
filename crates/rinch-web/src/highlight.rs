@@ -6,11 +6,11 @@
 //! every in-flow background of that context, so a code block, a table header,
 //! an inline `code` or `mark` with an opaque background hid the selection
 //! whole. rinch-dom paints each box with the block it covers
-//! (`DomDocument::set_highlight_owner`, #2666); the browser has no such order,
+//! (`DomContent::set_highlight_owner`, #2666); the browser has no such order,
 //! so this document paints the selection on what it covers instead, and hides
 //! the box:
 //!
-//! - **a line of text** ([`DomDocument::set_highlight_text`]) as a CSS Custom
+//! - **a line of text** ([`DomContent::set_highlight_text`]) as a CSS Custom
 //!   Highlight: the range is added to a `Highlight` registered in
 //!   `CSS.highlights`, styled by a `::highlight()` rule with the box's computed
 //!   `background-color` and nothing else, so it is painted over the text's
@@ -26,7 +26,7 @@
 //! rule on both backends: `[data-pm-editor] [data-pm-selection] {
 //! background-color: … !important }`.
 //!
-//! [`DomDocument::set_highlight_text`]: rinch_core::dom::DomDocument::set_highlight_text
+//! [`DomContent::set_highlight_text`]: rinch_core::dom::DomContent::set_highlight_text
 
 use std::collections::HashMap;
 

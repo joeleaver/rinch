@@ -7,7 +7,7 @@
 //! parent's scrollable overflow exactly as if the wrapper were not there.
 //! `paint::scrollbar::content_extents` walked only the container's **direct**
 //! DOM children, found the wrapper's own `0x0` box, and decided the content fit:
-//! no bar, and — through `DomDocument::scroll_height`, a second copy of the
+//! no bar, and — through `DomScroll::scroll_height`, a second copy of the
 //! same walk — a wheel that moved nothing. `rsx!` emits one such wrapper per
 //! reactive text, `if`, `match`, `for` and embedded `Vec<NodeHandle>`, so an
 //! `overflow: auto` region whose rows come from a `for` did not scroll at all.
@@ -26,7 +26,7 @@
 //! | `padding: 20px`, `contents` > 160x260 | 200x300 |
 //! | `fixed` inset 0 child, 100x50 child (no wrapper) | 200x100 |
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::{Scrollbars, content_extents, scrollbars};
 

@@ -20,7 +20,7 @@ use rinch_components::number_input::NumberInput;
 use rinch_components::password_input::PasswordInput;
 use rinch_components::text_input::TextInput;
 use rinch_components::textarea::Textarea;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::dispatch_event;
 use rinch_core::{Callback, Component, IntoEventHandler, Signal};

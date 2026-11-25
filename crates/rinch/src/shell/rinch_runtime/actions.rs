@@ -85,9 +85,6 @@ impl RinchRuntime {
                 AppAction::ToggleDevTools => {
                     self.toggle_devtools(event_loop);
                 }
-                AppAction::ToggleInspectMode => {
-                    self.toggle_inspect_mode();
-                }
                 // Desktop keeps the runtime's DOM menu (issue #813): this is
                 // only ever emitted under a presentation the desktop shell
                 // never asks for.

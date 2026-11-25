@@ -145,7 +145,7 @@ pub(crate) struct PendingFocusWork {
 
 impl RinchApp {
     /// Mirror an editor claim into the document's `keyboard_editor` (issue
-    /// #1126), which `DomDocument::active_element` answers: an editor takes no
+    /// #1126), which `DomFocus::active_element` answers: an editor takes no
     /// CSS `:focus`, so `focused_node` never names it, and an overlay opened
     /// from it remembered no opener. Called wherever `focus_target` is written.
     pub(crate) fn sync_keyboard_editor(&self) {
@@ -275,11 +275,10 @@ impl RinchApp {
         };
         let (new, blur, focusout, focus, focusin) = {
             let d = doc.borrow();
-            let connected = |id: u64| {
-                rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(id))
-            };
+            let connected =
+                |id: u64| rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(id));
             let new = if self.window_focused {
-                rinch_core::dom::DomDocument::active_element(&*d)
+                rinch_core::dom::DomFocus::active_element(&*d)
                     .map(|n| n.0)
                     .filter(|&id| connected(id))
             } else {

@@ -9,7 +9,7 @@
 //!    a `"\n"` answers that newline's own box (the end of the line it closes),
 //!    as the PR measured in Firefox 155/157. Pins the new branch in Chrome.
 
-use rinch_core::dom::{CaretAffinity, DomDocument, RenderScope};
+use rinch_core::dom::{CaretAffinity, DomContent, DomLayout, DomTree, RenderScope};
 use rinch_core::element::ThemeProviderProps;
 use rinch_editor_core::Pos;
 use rinch_web::{EditorHandle, RootHandle, WebDocument, create_editor};

@@ -6,7 +6,7 @@
 //! (`testing::deep_overflow_held`, `deep_overflow_walks`,
 //! `deep_overflow_measured`, `deep_overflow_forget_steps`.)
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::{
     deep_overflow_forget_steps, deep_overflow_held, deep_overflow_measured, deep_overflow_walks,

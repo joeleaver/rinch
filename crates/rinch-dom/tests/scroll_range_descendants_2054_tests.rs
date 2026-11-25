@@ -4,7 +4,7 @@
 //! `geometry_queries_2257_tests.rs`; the kept walk's own rules are pinned in
 //! `deep_overflow_kept_2054_tests.rs`.)
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomScroll, DomTree};
 use rinch_dom::RinchDocument;
 
 // ── #2054: a scroll container's range counts its descendants' overflow ─────

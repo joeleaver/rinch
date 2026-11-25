@@ -1,6 +1,6 @@
 //! Layout tests for Taffy integration in rinch-dom.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomScroll, DomTree};
 use rinch_dom::RinchDocument;
 
 #[test]

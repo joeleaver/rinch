@@ -19,7 +19,7 @@
 //! class. Where the interesting claim is "this text is drawn at all", the
 //! assertion is on ink, not on a layout number.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

@@ -38,7 +38,7 @@
 //! fixed points a broken and a fixed reader agree, and "present means on" is only
 //! evidence about a reader if "absent means off" is checked beside it.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// `:checked` matches on presence — including the `"false"` the old writer

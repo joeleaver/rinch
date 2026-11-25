@@ -14,7 +14,7 @@
 //! the pure-length reading, the pure-percentage reading, *and* the broken
 //! (zero / 50%) reading.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::LengthPercentageValue;
 

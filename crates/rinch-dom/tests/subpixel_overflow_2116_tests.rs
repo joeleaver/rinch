@@ -27,7 +27,7 @@
 //! `clientHeight` are what the fixtures below compare, at three scales and ten
 //! positions — off the fixed point, since a box on a whole pixel rounds nothing.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::{ScrollbarAxis, can_scroll_toward, overflows, scrollbars};
 

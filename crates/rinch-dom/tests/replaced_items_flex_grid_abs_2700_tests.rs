@@ -19,7 +19,7 @@
 //! with `getBoundingClientRect` relative to the container. rinch lays out in
 //! whole pixels, so a size may be off by its rounding (0.6), and a size whose
 //! two edges both round by more by up to one pixel (`close_edges`).
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// An 800x400 PNG.

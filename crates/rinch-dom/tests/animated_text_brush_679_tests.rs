@@ -17,7 +17,7 @@
 //! All text is the bundled Inter at a declared size and line height.
 
 use peniko::Brush;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::perf::Counter;

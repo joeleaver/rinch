@@ -18,7 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId, RenderScope};
 use rinch_core::reactive::{Effect, Signal, on_cleanup};
 use rinch_core::show_dom;
 use rinch_editor_core::{

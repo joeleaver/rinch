@@ -1,7 +1,7 @@
 //! #1181: U+2028, U+2029, U+0085 and U+000C in an editor textblock. rinch-dom
 //! lays them out as substitutes of another length (NBSP + ZWSP, ZWSP, and
 //! nothing), so the editor view's caret map must count the host's bytes for
-//! each (`DomDocument::substituted_char_flat_bytes`) or every caret, highlight
+//! each (`DomLayout::substituted_char_flat_bytes`) or every caret, highlight
 //! and press after one is off (found by #1269's review). Each is checked
 //! against an oracle page holding the same glyphs: `a<NBSP>bc` for a
 //! separator, `abc` for the zero-width two. Bundled Inter, declared 24px lines.

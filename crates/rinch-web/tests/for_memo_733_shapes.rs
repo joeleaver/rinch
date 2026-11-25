@@ -2,7 +2,7 @@
 //! Chrome — from the review of PR #1452. The first file is `for_memo_733.rs`.
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{__retired_insertions, DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{__retired_insertions, DomDocument, DomTree, NodeHandle, RenderScope};
 use rinch_core::{Signal, for_each_dom_typed, show_dom};
 use rinch_web::web_document::{__node_registry_len, WebDocument};
 use std::cell::RefCell;

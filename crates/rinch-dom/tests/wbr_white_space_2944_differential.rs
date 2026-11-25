@@ -30,7 +30,7 @@
 //! "Parley Fork"). Where rinch is not Chrome yet, [`KNOWN`] holds rinch's
 //! answer.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

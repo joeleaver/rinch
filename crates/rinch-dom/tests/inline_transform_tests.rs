@@ -32,7 +32,7 @@
 //! (an atomic inline, or a positioned span) proving the same markup does
 //! respond when the property applies.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::{content_extents, scrollbars};
 

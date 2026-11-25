@@ -25,7 +25,7 @@
 //! fixed point where the container's corner, its content corner and the
 //! viewport's coincide. Line boxes are the declared 20px.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter;
 use rinch_dom::testing::query_selector;

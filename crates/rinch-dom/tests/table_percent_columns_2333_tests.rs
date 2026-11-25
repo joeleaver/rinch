@@ -13,7 +13,7 @@
 //! No text: a cell holds 40px inline-blocks at `font-size: 0`. Every fixture
 //! has a `border-spacing` that is not zero, so the two bases differ.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const VP: (f32, f32) = (1000.0, 800.0);

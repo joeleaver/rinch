@@ -46,22 +46,34 @@ The fine-grained reactive rendering system is built on three core types that abs
 
 ### `DomDocument` Trait
 
-The backend abstraction. All DOM operations go through this trait:
+The backend abstraction. All DOM operations go through this trait, which is
+five supertraits, one per responsibility (#2999):
 
 ```rust
-pub trait DomDocument {
-    fn create_element(&self, tag: &str) -> NodeId;
-    fn create_text(&self, content: &str) -> NodeId;
-    fn set_attribute(&self, node: NodeId, name: &str, value: &str);
-    fn remove_attribute(&self, node: NodeId, name: &str);
-    fn set_text(&self, node: NodeId, content: &str);
-    fn append_child(&self, parent: NodeId, child: NodeId);
-    fn insert_before(&self, parent: NodeId, child: NodeId, reference: NodeId);
-    fn remove_child(&self, parent: NodeId, child: NodeId);
-    fn register_handler(&self, handler: Box<dyn Fn()>) -> HandlerId;
+pub trait DomDocument: DomTree + DomContent + DomFocus + DomLayout + DomScroll {}
+
+pub trait DomTree {        // identity, creation, tree mutation, traversal
+    fn create_element(&mut self, tag: &str) -> NodeId;
+    fn create_text(&mut self, text: &str) -> NodeId;
+    fn append_child(&mut self, parent: NodeId, child: NodeId);
+    fn insert_before(&mut self, parent: NodeId, child: NodeId, reference: NodeId);
+    fn remove_child(&mut self, parent: NodeId, child: NodeId);
     // ... and more
 }
+pub trait DomContent {     // text, attributes, inline styles
+    fn set_text_content(&mut self, node: NodeId, text: &str);
+    fn set_attribute(&mut self, node: NodeId, name: &str, value: &str);
+    fn remove_attribute(&mut self, node: NodeId, name: &str);
+    // ... and more
+}
+// DomFocus, DomLayout, DomScroll: focus and selection, layout and text
+// geometry, scrolling.
 ```
+
+`&dyn DomDocument` and `D: DomDocument` call every supertrait's methods
+without importing them; see
+[RenderScope and NodeHandle](../architecture/render-scope.md#naming-the-trait)
+for when an import is needed and how an implementor writes the impls.
 
 ### `RenderScope`
 

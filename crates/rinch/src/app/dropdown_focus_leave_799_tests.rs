@@ -42,7 +42,7 @@ fn key(app: &mut RinchApp, key: KeyCode, modifiers: Modifiers) {
 
 fn focused(app: &RinchApp) -> Option<u64> {
     let d = app.doc.as_ref().unwrap().borrow();
-    rinch_core::dom::DomDocument::active_element(&*d).map(|n| n.0)
+    rinch_core::dom::DomFocus::active_element(&*d).map(|n| n.0)
 }
 
 struct Fixture {

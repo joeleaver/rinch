@@ -13,7 +13,7 @@
 
 use rinch::prelude::*;
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

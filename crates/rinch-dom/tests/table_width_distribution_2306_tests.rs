@@ -24,7 +24,7 @@
 //! and `border-spacing` that are not zero, so no expected width sits on a
 //! fixed point of the old algorithm.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const VP: (f32, f32) = (1000.0, 800.0);

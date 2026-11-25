@@ -9,7 +9,7 @@
 //! the last 16px of the scroller's width; the presses are 8px in from the right
 //! edge.
 use super::{find_scroll_container_at_point, find_scrollbar_hit, hit_test};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter;
 

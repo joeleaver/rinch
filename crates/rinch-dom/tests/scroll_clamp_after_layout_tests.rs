@@ -8,7 +8,7 @@
 //! bottom-pinned text scroller snapped from its bottom to 0 when text was
 //! appended, and widening it left an offset past the new end.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const CSS: &str = "* { box-sizing: border-box; border-width: 0; } body { margin: 0; font-size: 16px; line-height: 20px; }";
