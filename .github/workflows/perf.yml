@@ -209,7 +209,10 @@ jobs:
           # A file, not a pipe: under `pipefail` a `grep -q` that exits early
           # can fail its writer with SIGPIPE and turn a match into a miss.
           list="$RUNNER_TEMP/changed-paths.txt"
-          git diff --name-only HEAD^1 HEAD > "$list"
+          # `--no-renames`: a rename lists only its new path, so moving a
+          # source file to `docs/x.md` would read as docs-only. Without rename
+          # detection the deleted source path is listed too.
+          git diff --name-only --no-renames HEAD^1 HEAD > "$list"
           cat "$list"
           # Any path that is neither under `docs/` nor a `.md` file.
           if grep -qvE '^docs/|\.md$' "$list"; then
