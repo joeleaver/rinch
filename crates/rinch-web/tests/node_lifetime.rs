@@ -2,7 +2,9 @@
 //! host half, on the mock, is `rinch_core::node_lifetime_tests`.
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{__retired_insertions, Cached, DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{
+    __retired_insertions, Cached, DomDocument, DomTree, NodeHandle, RenderScope,
+};
 use rinch_core::{Signal, for_each_dom_typed, show_dom};
 use rinch_web::web_document::{__node_registry_len, WebDocument};
 use std::cell::RefCell;

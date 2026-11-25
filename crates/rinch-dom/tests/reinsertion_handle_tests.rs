@@ -5,7 +5,7 @@
 //!
 //! #719 was a **backend divergence**: `rinch-dom` left a removed node in the
 //! slab on purpose ("Don't remove from slab yet — caller may still reference
-//! it", `dom_impl/dom_document_impl.rs`), while `rinch-web` pruned it from both
+//! it", `dom_impl/tree.rs`), while `rinch-web` pruned it from both
 //! node maps, so the same reactive `if` that toggled a captured `NodeHandle`
 //! worked on desktop and silently lost its subtree in a browser.
 //!
@@ -27,7 +27,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// `font-size` and `line-height` are declared so nothing below is derived from

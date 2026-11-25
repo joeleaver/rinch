@@ -20,7 +20,7 @@
 
 use peniko::Brush;
 use peniko::kurbo::Rect;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::perf::Counter;

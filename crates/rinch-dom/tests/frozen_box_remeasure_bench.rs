@@ -33,7 +33,7 @@
 
 use std::time::Instant;
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const CSS: &str = "

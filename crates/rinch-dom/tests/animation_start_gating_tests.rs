@@ -74,7 +74,7 @@
 //! failure) and `reinsertion_transition_tests` (7), where it is already
 //! covered.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::animation::AnimationResult;
 use rinch_dom::transition::AnimatableValue;

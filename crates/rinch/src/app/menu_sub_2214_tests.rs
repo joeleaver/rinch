@@ -281,7 +281,7 @@ fn key(app: &mut RinchApp, key: KeyCode, text: Option<&str>) {
 
 fn focused(app: &RinchApp) -> Option<u64> {
     let d = app.doc.as_ref().unwrap().borrow();
-    rinch_core::dom::DomDocument::active_element(&*d).map(|n| n.0)
+    rinch_core::dom::DomFocus::active_element(&*d).map(|n| n.0)
 }
 
 /// Hover opens after Chrome's 400 ms, not before; the flyout overlaps the

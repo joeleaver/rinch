@@ -19,7 +19,7 @@
 //! **detach**, and the node stays in both maps so a handle can put it back —
 //! the post-condition desktop always had, and the one a reactive branch
 //! re-showing a *captured* handle rests on (issue #719). What releases is
-//! [`DomDocument::discard_node`], which every caller that throws a subtree away
+//! [`DomTree::discard_node`], which every caller that throws a subtree away
 //! calls instead.
 //!
 //! So this file now tests a **pair** at each site: `discard_node` prunes and
@@ -43,7 +43,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use rinch::prelude::*;
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::dom::{DomDocument, DomTree, NodeHandle, NodeId, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_core::{for_each_dom_typed, match_dom, show_dom};
 use rinch_web::web_document::{__node_registry_contains, __node_registry_len, WebDocument};

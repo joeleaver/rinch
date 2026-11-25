@@ -22,9 +22,23 @@ Signal.set() → Effect runs → NodeHandle.set_text() → Minimal re-layout
 |-----------|----------|---------|
 | `NodeHandle` | `rinch-core/src/dom/` | Stable reference to a DOM node for surgical updates |
 | `RenderScope` | `rinch-core/src/dom/` | Context for building DOM trees with effect tracking |
-| `DomDocument` | `rinch-core/src/dom/` | Trait abstracting DOM mutation operations |
+| `DomDocument` | `rinch-core/src/dom/traits/` | Trait abstracting DOM operations: the five supertraits `DomTree`, `DomContent`, `DomFocus`, `DomLayout`, `DomScroll` |
 | `RinchDocument` | `rinch-dom/src/lib.rs` | DOM implementation using Taffy + Parley + Vello |
 | `rsx!` | `rinch-macros/src/lib.rs` | Macro generating DOM construction code |
+
+**`DomDocument` is five supertraits** (#2999). It declares no methods: each
+lives in the supertrait for its responsibility, one file each under
+`rinch-core/src/dom/traits/` (`tree.rs`, `content.rs`, `focus.rs`,
+`layout.rs`, `scroll.rs`), and a blanket impl makes any type that implements
+all five a `DomDocument`. The implementors follow the same seams, one `impl`
+per supertrait in one file each: `rinch-core/src/dom/mock/`,
+`rinch-dom/src/dom_impl/` (where `create.rs`, `attach.rs`, `inline_style.rs`
+and `window_rects.rs` hold the helpers those impls call) and
+`rinch-web/src/web_document/`. A new method goes in the supertrait whose file
+names its responsibility, and in the matching impl file of each backend.
+`dyn DomDocument` and `D: DomDocument` reach every method without imports; a
+call on a concrete document, or by path, imports the supertrait
+(`docs/src/architecture/render-scope.md`, "Naming the trait").
 
 ### Taking a node out: `remove()` vs `discard()`
 
@@ -346,7 +360,7 @@ warning is emitted for it** (#1456; before, only the node a helper closure
 *returned* was asked). `NodeHandle::append_child`, `insert_before`,
 `insert_after` (asked before it looks for the anchor's parent, so a cached row
 after a retired one is still seen) and `replace_with` call
-`render_scope::note_retired_insertion`, which asks `DomDocument::is_retired`,
+`render_scope::note_retired_insertion`, which asks `DomTree::is_retired`,
 bumps a per-thread counter (`dom::__retired_insertions() -> (insertions,
 warnings)`) and logs one `tracing::warn!` per node, for at most 32 nodes **per
 document** — the set lives in the document's `Ancestry` and goes with it; a
@@ -409,7 +423,7 @@ with the board green.
 This divergence is what #719 was. `rinch-web`'s `remove_node` used to prune both
 maps, so on that backend alone the first hide retired the id and every later show
 inserted nothing — reproduced in Chrome 150, silent, no error anywhere.
-`crates/rinch-core/src/dom/mock.rs` is the host-runnable oracle for both verbs
+`crates/rinch-core/src/dom/mock/` is the host-runnable oracle for both verbs
 (it retires a discard and keeps a remove), which is why a `remove`/`discard`
 mistake now fails `cargo test` rather than only a browser.
 
@@ -618,7 +632,7 @@ duration to expire, and the desktop shell keeps asking for frames while
 `tree.active_animations` holds a running (not paused) animation, so a removed
 `Loader` kept an app rendering forever.
 
-**Five places in `dom_impl/dom_document_impl.rs` write `parent = None`; four
+**Five places in `dom_impl/` (`tree.rs`, `content.rs`) write `parent = None`; four
 call the helper.** `remove_node` (every reactive removal funnels through
 `NodeHandle::remove`), `remove_child`, `replace_node`'s displaced `old`, and —
 least obviously — **`set_text_content` on an element with children**, which
@@ -888,7 +902,7 @@ fixtures drive the `DomDocument` API directly.
 
 Deleting the method was safe because every one of the five call sites was
 `clear_animations(); remove();`, and `NodeHandle::remove` is
-`DomDocument::remove_node` — the first of the five routes listed above. The cheapest
+`DomTree::remove_node` — the first of the five routes listed above. The cheapest
 evidence was already in the tree: `for_each_dom_typed`'s **`Changed` arm** never
 called it, and had no defect. On `rinch-web` the browser cancels a removed
 element's transitions itself and treats a re-insertion as a first style, so the

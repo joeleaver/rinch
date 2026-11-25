@@ -16,7 +16,7 @@ use rinch_components::{
     Avatar, IconSet, NavLink, Pagination, SectionRenderer, Stepper, Tabs, icons,
 };
 use rinch_core::Component;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_tabler_icons::TablerIcon;
 

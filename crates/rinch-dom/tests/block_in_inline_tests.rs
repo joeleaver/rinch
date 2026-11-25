@@ -92,7 +92,7 @@
 //! `nested`, whose block child inherits a different font weight), the difference
 //! is declared away at the site and the measurement is recorded there.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

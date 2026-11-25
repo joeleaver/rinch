@@ -1,6 +1,6 @@
 //! Review 2 of PR #1488 (#1476) — fixtures for the round-2 findings.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

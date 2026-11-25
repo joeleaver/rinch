@@ -5,7 +5,7 @@
 //! that must outlive a branch is built with `RenderScope::new`, never with the
 //! branch's scope as parent.
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{DomDocument, DomTree, NodeHandle, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_core::show_dom;
 use std::cell::RefCell;

@@ -50,7 +50,7 @@
 //! branch nobody writes to has no pending entry, so the cascade was never
 //! reached at either revision and nothing here applies to it.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const ROWS: usize = 500;

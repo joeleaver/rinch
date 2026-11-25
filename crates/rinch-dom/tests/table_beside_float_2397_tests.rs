@@ -54,7 +54,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const T40: &str = r#"<table class="t" cellspacing="0" cellpadding="0"><tr><td style="padding:0"><div style="width:40px;height:10px"></div></td></tr></table>"#;

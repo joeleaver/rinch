@@ -16,7 +16,7 @@
 
 #![allow(dead_code)]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::DecodedImage;
 

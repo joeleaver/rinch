@@ -21,7 +21,7 @@
 //! | `dir=rtl` `abc אב`: caret at 0, hit at x 10 | 399 (the line's right), end |
 //! | `dir=rtl` `אב abc`: caret at the end, hit at x 399 | the line's left, 0 |
 
-use rinch_core::dom::{CaretAffinity, DomDocument, NodeId};
+use rinch_core::dom::{CaretAffinity, DomContent, DomLayout, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

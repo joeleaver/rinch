@@ -6,7 +6,7 @@
 //! cancel (q5, real clock).
 
 #![cfg(feature = "software-renderer")]
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::VisibilityValue as V;
 use rinch_dom::transition::TransitionProperty as TP;

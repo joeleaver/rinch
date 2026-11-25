@@ -16,7 +16,7 @@
 //! tall where it has a height, so a percentage of either axis, the content
 //! height (20) and the containing block's own size are different answers.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

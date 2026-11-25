@@ -66,7 +66,7 @@ fn an_imgs_new_shadow_and_outline_are_damaged() {
     // What the painted frame drew, recorded as a frame records it.
     doc.tree.consume_paint_dirty();
     for (style, what) in [(decorated, "added"), (plain, "removed")] {
-        rinch_core::dom::DomDocument::set_attribute(&mut doc, ids[0], "style", style);
+        rinch_core::dom::DomContent::set_attribute(&mut doc, ids[0], "style", style);
         doc.resolve_layout(W as f32, H as f32);
         let region = rinch_dom::paint::compute_dirty_region(&doc.tree, 1.0, W as f64, H as f64)
             .unwrap_or_else(|| panic!("{what}: no damage"));

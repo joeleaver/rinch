@@ -22,7 +22,7 @@
 //! the reason `underline_offset_tests.rs` gives: an absolute row or an ink count
 //! is a pin on the font set, not on the declaration.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::TextDecorationStyleValue;
 

@@ -26,7 +26,7 @@
 //! there are the designed guards (`block_wrapper_toggled_to_contents_splices`
 //! and the two plain twins) and say so in their own docs.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

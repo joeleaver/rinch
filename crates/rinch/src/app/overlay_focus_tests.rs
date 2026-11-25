@@ -269,7 +269,7 @@ fn closing_a_modal_restores_the_opener() {
 /// liveness test rather than an identity one: a slot freed (desktop frees ids
 /// through `NodeTree::remove_subtree`) and handed to a different *attached*
 /// node would still be focused. That is pre-existing and named in
-/// `DomDocument::is_connected`.
+/// `DomTree::is_connected`.
 #[test]
 fn an_opener_removed_while_the_modal_was_open_is_not_restored() {
     let open = Signal::new(false);
@@ -1237,6 +1237,8 @@ fn an_editor_inside_releases_and_the_editor_opener_gets_the_keyboard() {
 #[test]
 #[cfg(feature = "windowing")]
 fn an_unmounted_editor_is_not_where_the_focus_is() {
+    use rinch_core::dom::DomFocus;
+
     let shown = Signal::new(true);
     let h = crate::editor::create_editor();
     assert!(h.load_html("<p>x</p>"));

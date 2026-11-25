@@ -51,7 +51,7 @@
 //! 23 tall here where Chrome's is 24 — the #1098 difference, asserted within
 //! a pixel. A height an author property sets is asserted exactly.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

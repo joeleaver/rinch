@@ -2202,7 +2202,7 @@ mod sampling_tests {
     #[cfg(feature = "software-renderer")]
     #[test]
     fn a_background_at_a_fractional_position_keeps_it_on_the_gpu() {
-        use rinch_core::dom::DomDocument;
+        use rinch_core::dom::{DomContent, DomTree};
         let mut doc = crate::RinchDocument::new();
         doc.load_css("html, body { margin: 0; }");
         let body = doc.body();

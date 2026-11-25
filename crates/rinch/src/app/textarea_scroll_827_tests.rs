@@ -360,7 +360,7 @@ fn a_shrunk_textarea_clamps_its_scroll() {
         before > 100.0,
         "positive control: scrolled to the end, {before}"
     );
-    rinch_core::dom::DomDocument::set_attribute(
+    rinch_core::dom::DomContent::set_attribute(
         &mut *app.doc.as_ref().unwrap().borrow_mut(),
         rinch_core::dom::NodeId(id),
         "style",
@@ -374,8 +374,8 @@ fn a_shrunk_textarea_clamps_its_scroll() {
         let d = app.doc.as_ref().unwrap().borrow();
         let nid = rinch_core::dom::NodeId(id);
         (
-            rinch_core::dom::DomDocument::scroll_height(&*d, nid),
-            rinch_core::dom::DomDocument::client_height(&*d, nid),
+            rinch_core::dom::DomScroll::scroll_height(&*d, nid),
+            rinch_core::dom::DomScroll::client_height(&*d, nid),
         )
     };
     let max = height - client;
@@ -656,8 +656,8 @@ fn heights(app: &RinchApp, id: u64) -> (f64, f64) {
     let d = app.doc.as_ref().unwrap().borrow();
     let nid = rinch_core::dom::NodeId(id);
     (
-        rinch_core::dom::DomDocument::scroll_height(&*d, nid),
-        rinch_core::dom::DomDocument::client_height(&*d, nid),
+        rinch_core::dom::DomScroll::scroll_height(&*d, nid),
+        rinch_core::dom::DomScroll::client_height(&*d, nid),
     )
 }
 
@@ -751,7 +751,7 @@ fn scroll_height_follows_a_value_write_at_the_resolve() {
 fn a_width_change_rewraps_the_scroll_range() {
     let (mut app, id, _field) = area(TEN);
     let (h0, _) = heights(&app, id);
-    rinch_core::dom::DomDocument::set_attribute(
+    rinch_core::dom::DomContent::set_attribute(
         &mut *app.doc.as_ref().unwrap().borrow_mut(),
         rinch_core::dom::NodeId(id),
         "style",

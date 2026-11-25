@@ -53,7 +53,7 @@
 //! the re-attached subtree still reachable when Taffy's compute runs that
 //! pass over it.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::{LayoutResult, RinchDocument};
 
 const VW: f32 = 800.0;

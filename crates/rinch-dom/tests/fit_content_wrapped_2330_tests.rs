@@ -13,7 +13,7 @@
 //! Most content is two `vertical-align: top` inline-blocks with a space
 //! between them, wider together than the room, so the line breaks at the
 //! space and no width depends on a font; the text cases use the bundled Inter.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

@@ -38,7 +38,7 @@
 //! three and leaves the flex one green, reproducing #224's reported box to the
 //! pixel. Keep a test on each side of that split.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painted_border_box;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;

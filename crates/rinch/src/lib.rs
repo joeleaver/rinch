@@ -308,9 +308,9 @@ pub mod fine_grained {
     #[cfg(feature = "theme")]
     pub use crate::update_theme;
     pub use rinch_core::dom::{
-        Cached, DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, ScopeId, UpdateBatch,
-        clear_render_scope, has_render_scope, set_render_scope, try_with_render_scope,
-        with_render_scope,
+        Cached, DomContent, DomDocument, DomFocus, DomLayout, DomScroll, DomTree, DomUpdate,
+        NodeHandle, NodeId, RenderScope, ScopeId, UpdateBatch, clear_render_scope,
+        has_render_scope, set_render_scope, try_with_render_scope, with_render_scope,
     };
 }
 

@@ -349,13 +349,13 @@ fn set_attr(app: &mut RinchApp, id: u64, name: &str, value: Option<&str>) {
     {
         let mut d = app.doc.as_ref().unwrap().borrow_mut();
         match value {
-            Some(v) => rinch_core::dom::DomDocument::set_attribute(
+            Some(v) => rinch_core::dom::DomContent::set_attribute(
                 &mut *d,
                 rinch_core::dom::NodeId(id),
                 name,
                 v,
             ),
-            None => rinch_core::dom::DomDocument::remove_attribute(
+            None => rinch_core::dom::DomContent::remove_attribute(
                 &mut *d,
                 rinch_core::dom::NodeId(id),
                 name,
@@ -464,7 +464,7 @@ fn a_removed_field_is_forgotten() {
         .unwrap();
     {
         let mut d = app.doc.as_ref().unwrap().borrow_mut();
-        rinch_core::dom::DomDocument::remove_child(
+        rinch_core::dom::DomTree::remove_child(
             &mut *d,
             rinch_core::dom::NodeId(parent),
             rinch_core::dom::NodeId(field),

@@ -6,7 +6,7 @@
 //! `wasm32` (no load threads) nothing was asked at all. Only `<img>` had the
 //! in-place `data:` decode. A `data:` URL is never offered to any loader now.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
 use std::sync::Arc;

@@ -3,7 +3,7 @@
 //! change costs it (`testing::deep_overflow_walks`, `deep_overflow_measured`).
 //! Random sequences of edits are in `deep_overflow_kept_fuzz_2054_tests.rs`.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomScroll, DomTree};
 use rinch_dom::RinchDocument;
 
 // ── The kept walk against a fresh document (#2054 review) ─────────────────

@@ -22,7 +22,7 @@
 //! `ProbeFace`, `16px/25px`, each line read as the x of its first character
 //! from the container's left edge.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
@@ -309,7 +309,7 @@ fn a_collapsible_space_after_a_pre_word_breaks_only_after_an_overflow() {
 /// Main had `mmmmm` at 17.92. Pinned so a change shows.
 #[test]
 fn known_difference_split_word_after_a_box() {
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
     let (mut d, c) = lay_out(
         "width:88px;text-align:right;white-space:normal",
         "<b style=\"display:inline-block;width:12px;height:10px\"></b>mmmmm \

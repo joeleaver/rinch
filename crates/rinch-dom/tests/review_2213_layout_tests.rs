@@ -1,6 +1,6 @@
 //! The layout review of #2213: each history compared with a fresh layout of
 //! the final document, and the shapes Chrome was measured on (Chrome 153).
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const CSS: &str =

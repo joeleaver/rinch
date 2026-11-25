@@ -40,7 +40,7 @@
 //! - `overflow: clip` on an input is indistinguishable from `clip
 //!   !important` until the author declares another value.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::ComputedStyle;
 use rinch_dom::computed_style::values::{

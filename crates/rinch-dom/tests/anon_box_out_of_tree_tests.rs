@@ -32,7 +32,7 @@
 //! That is the whole of the fix, because every defect above came from the
 //! *downward* edge, the one the author's tree is read through.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;
@@ -247,7 +247,7 @@ fn inserting_before_a_node_in_a_run_inserts() {
     );
 }
 
-/// `DomDocument::next_sibling` answers with the author's next sibling, not the
+/// `DomTree::next_sibling` answers with the author's next sibling, not the
 /// box's. This is the public mechanism behind the `insert_after` failure.
 #[test]
 fn next_sibling_skips_no_one_and_invents_no_one() {

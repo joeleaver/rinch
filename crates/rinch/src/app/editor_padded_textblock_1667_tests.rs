@@ -4,7 +4,7 @@
 //! Every code block has padding (`padding: 0.85em 1em` in the editor's
 //! stylesheet). The view places the caret at the block's border-box origin
 //! (summed from `query_node_layout`) plus the block-local caret
-//! `DomDocument::query_caret_position_with_affinity` answers. rinch-web
+//! `DomLayout::query_caret_position_with_affinity` answers. rinch-web
 //! answers that relative to the block's `getBoundingClientRect` — its border
 //! box — and rinch-dom answered it relative to the block's **content** box,
 //! where Parley lays the text out, so on desktop the caret in a code block

@@ -1,5 +1,5 @@
 //! #1181: the web keeps U+2028, U+2029 and U+0085 as the one character
-//! the browser lays out (`DomDocument::substituted_char_flat_bytes` is empty
+//! the browser lays out (`DomLayout::substituted_char_flat_bytes` is empty
 //! there), so every caret sits at the boundary Chrome's own `Range` puts
 //! there, and a press after the character lands after it. From the review of
 //! #1269 (round 2), which measured it in Chrome 153; with the desktop table

@@ -15,7 +15,7 @@
 //! of the eight values (where the stored row 0 and column 0 are to be drawn),
 //! not from the code under test.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::{DecodedImage, decode_image_bytes};

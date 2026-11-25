@@ -20,7 +20,7 @@
 //! `getAttribute("value")` answers `v` unchanged in every row. A `<textarea>`
 //! keeps its line breaks.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::form_control::control_value;
 

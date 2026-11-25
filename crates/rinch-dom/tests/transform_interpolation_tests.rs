@@ -27,7 +27,7 @@
 // kept verbatim rather than respelled as `FRAC_1_SQRT_2`.
 #![allow(clippy::approx_constant)]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::transition::{AnimatableValue, TransformOp, TransitionProperty};
 

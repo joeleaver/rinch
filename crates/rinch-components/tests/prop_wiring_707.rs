@@ -41,7 +41,7 @@ use rinch_components::list::{List, ListItem};
 use rinch_components::radio::{Radio, RadioGroup};
 use rinch_components::stepper::{Stepper, StepperStep};
 use rinch_components::switch::Switch;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event};
 use rinch_core::{Component, Signal};

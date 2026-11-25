@@ -333,7 +333,7 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
     U+000C as nothing (`ifc::laid_out_as`, #1181; the offset map records the length
     change; `letter-spacing`/`word-spacing` on the substitutes still differ from Chrome's).
     The rich-text editor's caret map counts the same bytes for each through
-    `DomDocument::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
+    `DomLayout::substituted_char_flat_bytes`, answered from the table `laid_out_as` reads
     (`ifc::PRESERVED_SUBSTITUTES`) — as it counts a tab through `tab_flat_bytes` (#1109; 1 since #1122).
     **A flex or grid item's own text (a text leaf) goes through the same functions** (#1279,
     #1672): `ifc::LeafText` collapses it with `IfcText` by its element's `white-space`
@@ -1024,8 +1024,12 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`73e8afa10c482d69be6763efd1a85b1ca04a448f`, branch `rinch-patch`, with fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17), #15 (item 18), #16 (items 19 and 20, rinch #2940 and #2950) and #18 (item 21, rinch #2944) merged): commits on parley's
+(`909eb3bf8ab37247a6ad79df816bd7a2f2f7502b`, branch `fix-2962`: fork PR joeleaver/parley-fork#17
+(item 22, rinch #2962, open against `rinch-patch`), on the current `rinch-patch`). `rinch-patch`
+has fork PRs joeleaver/parley-fork#6 and #8 (items 7 and 8), #7 (item 9), #9 (item 10), #10
+(items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16
+and 17), #15 (item 18), #16 (items 19 and 20, rinch #2940 and #2950) and #18 (item 21, rinch
+#2944) merged. All of them are commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1390,11 +1394,8 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `plaintext`) in `build_parley_layout` (a `<textarea>`, select labels, image placeholders), a
     flex or grid text leaf (`TextMeasure::base_direction`) and the paint fallback; a tooltip takes
     its first strong character's (review of #2969: an `ltr` textarea's Hebrew-led second line had
-    gone right to left). An explicit direction still makes the text one
-    paragraph with every embedding running across a separator, as before; Chrome resolves each
-    paragraph on its own there too (reopening the bidi controls after a forced break), so in a
-    `dir=rtl` block a neutral that starts a paragraph after a Latin one (`abc<br><img>abc`) takes
-    the Latin's direction here and the paragraph's in Chrome (known difference, #2962). Pinned by
+    gone right to left). An explicit direction's paragraphs are split too since item 22.
+    Pinned by
     the fork's `test_plaintext_paragraphs.rs` and `auto_resolves_each_paragraph_on_its_own`, and
     `crates/rinch-dom/tests/plaintext_paragraphs_2940_tests.rs` (Chrome 158).
 
@@ -1470,6 +1471,36 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     (`<nowrap>aaaa</nowrap><nowrap>bbbb</nowrap>` is two lines in 1px, with or without a
     `<wbr>` between). These rows, and the other base-level differences, are pinned in that
     test's `KNOWN` (#2996).
+
+22. **An explicit direction's paragraphs are resolved on their own, and an element's bidi
+    controls are reopened after a separator** (`80462346`, `a1c8b70b`, `b99a085d`, `909eb3bf`,
+    `parley_engine/src/bidi/paragraphs.rs`; #2962; fork PR joeleaver/parley-fork#17). UAX #9 P1
+    and X8 apply whatever the base direction. Each paragraph is resolved at the block's level, so
+    a neutral that starts one takes the block's direction, not that of the strong text before
+    the break. Chrome 158 puts the image in `<div dir=rtl>abc<br><img>abc` at the right; rinch
+    had it left of the second `abc`. Before, item 19 split paragraphs only under `Auto`, and an
+    explicit direction made the block one paragraph.
+
+    X8 ends every explicit control at a separator. Blink reopens an element's own bidi context
+    after a forced break, so an element's `unicode-bidi` (and a block's override) still runs
+    across a `<br>`, while a control the author typed into the text ends there. rinch writes
+    `unicode-bidi` as control characters in the text (`ifc::inline_bidi_controls`), so it tells
+    parley which ones are its own: `TreeBuilder::set_reopened_bidi_controls` takes
+    `InlineLayout::bidi_control_ranges`. Only those still open at a separator (nested by X6a and
+    X7) are reopened at the next paragraph's start, under `Auto` too. Under `Auto` a line
+    after a forced break takes its direction (its alignment, the side its spaces hang on) from
+    the paragraph's first strong character inside an isolate too, while its levels are still
+    resolved at P2's, which skips isolates. Blink does this with `ubidi_getBaseDirection` after
+    a forced break: Chrome 158 lays out `x<br><span dir=ltr>abc</span> <img> א` as a
+    left-to-right line holding `א <img> abc`, and an element's isolate carried across a `<br>`
+    counts the same way. The resolver streams each
+    paragraph into its resolution, so text with no separator is resolved in one pass, with no
+    copy. Pinned by the fork's `test_plaintext_paragraphs.rs`
+    (`an_explicit_directions_paragraphs_are_resolved_on_their_own`,
+    `an_elements_embedding_runs_across_a_separator`, `the_texts_own_controls_end_at_a_separator`)
+    and `crates/rinch-dom/tests/explicit_direction_paragraphs_2962_tests.rs` (Chrome 158: the
+    reopened embedding, isolate and override, three paragraphs, an element closed between two
+    breaks, an isolate in a `plaintext` block, and the text's own controls).
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has

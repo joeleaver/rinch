@@ -9,7 +9,7 @@
 //! a URL cascaded while no loader was installed, and a URL shared by two nodes
 //! (started once).
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
 use std::sync::Arc;

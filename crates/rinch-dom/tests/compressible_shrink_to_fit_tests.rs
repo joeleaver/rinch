@@ -15,7 +15,7 @@
 //!
 //! Every expected number is Chrome 157's for the same markup in a 696px
 //! viewport (the picture is an 800x400 PNG).
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// An 800x400 PNG.

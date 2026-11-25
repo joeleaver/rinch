@@ -12,7 +12,7 @@
 //! range, color, file, image) still do not.
 
 use super::*;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::NodeId;
 use std::cell::Cell;
 
 /// One field, with no handler of any kind, and a second bare `<input>` after

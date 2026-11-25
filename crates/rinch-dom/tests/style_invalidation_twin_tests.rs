@@ -38,7 +38,7 @@ mod style_twin;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use style_twin::{assert_twin, assert_twin_opts};
 

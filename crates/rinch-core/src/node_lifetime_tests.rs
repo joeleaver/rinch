@@ -11,7 +11,7 @@
 use crate::dom::mock::MockDomDocument;
 use crate::dom::{
     __filed_orphans, __minted_by_len, __retired_insertions, __scope_parents_len, Cached,
-    DomDocument, NodeHandle, NodeId, RenderScope,
+    DomContent, DomTree, NodeHandle, NodeId, RenderScope,
 };
 use crate::reactive::Signal;
 use crate::{for_each_dom_typed, show_dom};

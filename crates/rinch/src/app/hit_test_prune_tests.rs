@@ -18,7 +18,7 @@
 //! the old geometry.
 
 use super::{Frame, descend, hit_test};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::stacking::{paints_at_stacking_root, stacking_paint_order};
 

@@ -1465,21 +1465,21 @@ pub struct UpdateBatch {
 /// verbs of the same names (`replace_with` for the last).
 #[derive(Debug)]
 pub enum DomUpdate {
-    /// [`DomDocument::set_text_content`]. On an **element** that replaces its
+    /// [`DomContent::set_text_content`](crate::dom::DomContent::set_text_content). On an **element** that replaces its
     /// children with one text node, as `NodeHandle::set_text` does — the one
     /// write here that can change a child list. `NodeHandle::set_text` tells a
     /// removal observer the children left; this route does not (issue #1440,
     /// see [`UpdateBatch::apply`]). Target a text node.
     SetText { node: NodeId, text: String },
-    /// [`DomDocument::set_attribute`]: the literal write.
+    /// [`DomContent::set_attribute`](crate::dom::DomContent::set_attribute): the literal write.
     SetAttribute {
         node: NodeId,
         name: String,
         value: String,
     },
-    /// [`DomDocument::remove_attribute`].
+    /// [`DomContent::remove_attribute`](crate::dom::DomContent::remove_attribute).
     RemoveAttribute { node: NodeId, name: String },
-    /// [`DomDocument::set_style`]: one inline declaration, merged.
+    /// [`DomContent::set_style`](crate::dom::DomContent::set_style): one inline declaration, merged.
     SetStyle {
         node: NodeId,
         property: String,

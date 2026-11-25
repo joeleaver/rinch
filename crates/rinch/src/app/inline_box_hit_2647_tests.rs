@@ -22,7 +22,7 @@
 //! 1 and 2px away on either axis do not all agree in Chrome (not compared).
 
 use super::{event_target_at, hit_test};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 
 const FACE: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 

@@ -10,7 +10,7 @@
 //!   `square`, so an `ol` counts as a level (Chrome 153, measured with
 //!   `getComputedStyle`: `ol > li > ul` circle, `ul ol ul` square).
 //! - Two Chrome cases rinch does not reach yet (#1370) are pinned `#[ignore]`d.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::DisplayValue;
 use rinch_dom::testing::get_text_content;

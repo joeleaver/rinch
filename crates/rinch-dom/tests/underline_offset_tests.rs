@@ -65,7 +65,7 @@
 //! declaration. One assertion per fixture carries both facts, since a difference
 //! of `+12` is false if the sign is inverted as well as if the magnitude is.
 //!
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 400.0;

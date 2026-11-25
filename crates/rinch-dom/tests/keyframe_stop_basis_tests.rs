@@ -35,7 +35,7 @@
 //! `getAnimations()` lists only the `CSSAnimation` (no transition starts), and
 //! the colour is `rgb(0, 77, 179)` — the implicit `from` is the new base.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// A `div` with inline style `base` and `animation: k <timing>`, under

@@ -24,7 +24,7 @@
 //! parent's border box, whose border is 5px left and 7px top, so `x = 5 + left`
 //! and `y = 7 + top`.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const PARENT: &str = "position: relative; width: 300px; height: 200px; \

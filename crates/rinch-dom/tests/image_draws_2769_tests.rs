@@ -11,7 +11,7 @@
 
 use peniko::Brush;
 use peniko::kurbo::Rect;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
 use rinch_dom::paint::vello_painter::VelloPainter;

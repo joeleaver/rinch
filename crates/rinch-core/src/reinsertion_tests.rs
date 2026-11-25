@@ -41,7 +41,7 @@
 //! gave signals and effects, applied to nodes.
 
 use crate::dom::mock::MockDomDocument;
-use crate::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use crate::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId, RenderScope};
 use crate::reactive::Signal;
 use crate::{for_each_dom_typed, match_dom, show_dom};
 use std::cell::RefCell;

@@ -1,6 +1,7 @@
 //! The scroll gate: when a caret change scrolls the caret into view.
 
 use super::*;
+use rinch_core::dom::DomContent;
 
 /// The handle→request plumbing: `update_caret` must *fulfil* the view's
 /// `ScrollSelectionIntoView` by calling `scroll_into_view()` on the caret

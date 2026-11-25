@@ -16,7 +16,7 @@
 //! an indent of 0 or a percentage of 0 is where a broken implementation and a
 //! correct one agree. `Supercalifragilistic` is 139.70 wide, `alpha` 41.11,
 //! `beta` 33.42, `gamma` 55.81, `alpha beta` 79.03.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

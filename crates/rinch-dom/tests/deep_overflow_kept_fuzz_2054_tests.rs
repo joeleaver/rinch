@@ -15,7 +15,7 @@
 //! The sequence is reproducible from its seed: a failure prints it and the
 //! edits made. `RINCH_KEPT_FUZZ_SEEDS=<n>` runs more seeds.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const START: &str = concat!(

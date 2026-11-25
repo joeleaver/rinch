@@ -7,7 +7,7 @@
 //! hard-coded 16px initial. Every fixture here uses a root font-size where
 //! correct and broken code disagree.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 fn width(doc: &RinchDocument, node: NodeId) -> f32 {

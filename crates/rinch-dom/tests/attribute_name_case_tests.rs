@@ -20,7 +20,7 @@
 //! for every element in a freshly built `<svg>`. See `dom_impl`'s
 //! `is_svg_content_tag` for the list and its ambiguous-tag caveat.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;
@@ -342,7 +342,7 @@ fn only_the_name_folds_never_the_value() {
 }
 
 /// The `Element::Html` writer. `create_node_from_parsed` funnels through
-/// `DomDocument::set_attribute` exactly as `rsx!` does, and this is what says
+/// `DomContent::set_attribute` exactly as `rsx!` does, and this is what says
 /// so — and it is the writer whose ordering the tag-keyed design turns on,
 /// since it too sets every attribute before appending the element.
 #[test]

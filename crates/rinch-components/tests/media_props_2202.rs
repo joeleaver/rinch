@@ -12,7 +12,7 @@ use std::rc::Rc;
 use rinch_components::anchor::Anchor;
 use rinch_components::avatar::Avatar;
 use rinch_components::image::Image;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event};
 use rinch_core::{Callback, Component};

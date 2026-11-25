@@ -21,7 +21,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch_components::stepper::{Stepper, StepperStep};
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, NodeId, RenderScope, mock::MockDomDocument};
 use rinch_core::element::Component;
 use rinch_tabler_icons::TablerIcon;
