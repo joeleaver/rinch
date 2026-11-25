@@ -1862,8 +1862,10 @@ fn reflow() {
 /// carried ones), `size` long, `spacing` from the item after it: drawn by
 /// that item, before itself; at the end of the list (an empty list included)
 /// by the list, after its items and in their flow, so the list grows to hold
-/// it. A list holding only what is carried (its own place, the carried items
-/// still taking their space) draws none.
+/// it, unless the carried items are still in the list's flow (its own list,
+/// collapsed): then the room is there already and the last item draws it
+/// after itself. A list holding only what is carried (its own place, the
+/// carried items still taking their space) draws none.
 fn slot_at(
     cfg: &ListConfig,
     rest: &[(NodeHandle, String)],
@@ -1882,13 +1884,39 @@ fn slot_at(
             size,
         });
     }
-    (!rest.is_empty() || items_of(&cfg.node).is_empty()).then(|| Slot {
-        node: cfg.node.clone(),
-        into: true,
-        horizontal,
-        start: 0.0,
-        size,
-    })
+    let held = items_of(&cfg.node).len();
+    match rest.last() {
+        // The carried items are still in this list's flow (collapsed, they
+        // only stop showing and the items after them slide over their
+        // space), so the room at the end is already there, past the last
+        // item's shifted place: the last item draws the slot after itself,
+        // riding its shift.
+        Some((last, _)) if held > rest.len() => {
+            let (w, h) = size_of(last)?;
+            let len = if horizontal { w } else { h };
+            Some(Slot {
+                node: last.clone(),
+                into: false,
+                horizontal,
+                start: len + spacing,
+                size,
+            })
+        }
+        Some(_) => Some(Slot {
+            node: cfg.node.clone(),
+            into: true,
+            horizontal,
+            start: 0.0,
+            size,
+        }),
+        None => (held == 0).then(|| Slot {
+            node: cfg.node.clone(),
+            into: true,
+            horizontal,
+            start: 0.0,
+            size,
+        }),
+    }
 }
 
 // =============================================================================

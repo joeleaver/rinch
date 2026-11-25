@@ -930,6 +930,40 @@ fn empty_list(f: &Fixture) -> u64 {
         .unwrap()
 }
 
+/// Collapsed in its own list, a card still takes its space there (the cards
+/// after it slide over it), so at the end of that list the room is already
+/// there: the last card draws the slot after its shifted self, where the card
+/// lands, and the list draws none (it would sit a card too low).
+#[test]
+fn at_the_end_of_its_own_list_a_collapsed_card_lands_in_the_room_it_left() {
+    let mut f = fixture(Options {
+        source: SortSource::Collapse,
+        indicator: SortIndicator::Gap,
+        ..Options::default()
+    });
+    grab(&mut f, "b", 0.5, 0.5);
+    let c1 = list(&f, "c1");
+    let keys = cards(&f, "c1");
+    let last = item(&f, keys.last().unwrap());
+    let over = point(&f, last, 0.5, 0.8);
+    move_to(&mut f, over);
+    assert!(!classes(&f, c1).contains("rinch-sortable--slot-into"));
+    assert_eq!(carrying(&f, "rinch-sortable__item--slot"), vec![last]);
+    assert_eq!(slot_of(&f, last), Some((30.0 + 10.0, 30.0)));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let (_, ly, _, lh) = box_of(&f, last);
+    let (_, sy, _, sh) = before_box(&f, last).expect("the slot is drawn");
+    assert!(
+        (sy - (ly + lh + 10.0)).abs() < 0.5,
+        "slot at {sy}, the last card ends at {}",
+        ly + lh
+    );
+    assert_eq!(sh, 30.0);
+    release_at(&mut f, over);
+    assert_eq!(cards(&f, "c1").last().map(String::as_str), Some("b"));
+    assert_clean(&f);
+}
+
 /// An empty list draws the slot inside itself, where the first card goes.
 #[test]
 fn an_empty_list_draws_the_slot_inside_itself() {
