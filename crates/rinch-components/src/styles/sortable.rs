@@ -59,10 +59,11 @@ pub fn styles() -> String {
         var(--rinch-sortable-reflow-easing, ease);
 }
 /* SortIndicator::Gap: the slot, a box the size of what is carried in the
-   gap the drop lands in. The item after the gap draws it before itself (the
-   last item after itself) at the --rinch-sortable-slot-start / -size the
-   component writes, so it rides the item's shift; an empty list draws it
-   inside itself. It shows only as the app styles it:
+   gap the drop lands in. The item after the gap draws it before itself at the
+   --rinch-sortable-slot-start / -size the component writes, so it rides the
+   item's shift and moves nothing; at the end of a list (an empty one
+   included) the list draws it after its items, in their flow, so the list
+   grows to hold it. It shows only as the app styles it:
    --rinch-sortable-slot-background, -border, -radius. */
 .rinch-sortable__item--slot::before {
     content: "";
@@ -80,17 +81,18 @@ pub fn styles() -> String {
     left: var(--rinch-sortable-slot-start, 0px);
     width: var(--rinch-sortable-slot-size, 0px);
 }
-.rinch-sortable--slot-into::before {
+.rinch-sortable--slot-into::after {
     content: "";
     flex: none;
+    align-self: stretch;
     height: var(--rinch-sortable-slot-size, 0px);
 }
-.rinch-sortable--horizontal.rinch-sortable--slot-into::before {
+.rinch-sortable--horizontal.rinch-sortable--slot-into::after {
     height: auto;
     width: var(--rinch-sortable-slot-size, 0px);
 }
 .rinch-sortable__item--slot::before,
-.rinch-sortable--slot-into::before {
+.rinch-sortable--slot-into::after {
     box-sizing: border-box;
     pointer-events: none;
     background: var(--rinch-sortable-slot-background, transparent);

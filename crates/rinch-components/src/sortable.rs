@@ -481,12 +481,12 @@ struct Active {
 /// Where the open gap's slot is drawn ([`SortIndicator::Gap`]): a box the
 /// size of what is carried, in the gap, painted only as the app styles it
 /// (`--rinch-sortable-slot-*`). The item after the gap draws it before
-/// itself, the last item after itself, an empty list inside itself; an
-/// item's slot rides its shift.
+/// itself and it rides that item's shift; at the end of a list (an empty
+/// one included) the list draws it after its items, in their flow.
 #[derive(Clone)]
 struct Slot {
     node: NodeHandle,
-    /// Drawn by an empty list rather than an item.
+    /// Drawn by the list, at its end, rather than by an item.
     into: bool,
     horizontal: bool,
     /// From the item's own start along the axis, in its own units.
@@ -1859,10 +1859,11 @@ fn reflow() {
 }
 
 /// The slot of a gap opened at `slot` of `rest` (the list's items less the
-/// carried ones), `size` long, `spacing` from the items beside it: drawn by
-/// the item after it, else by the last item, else by the list when it holds
-/// no item at all. A list holding only what is carried (its own place, the
-/// carried items still taking their space) draws none.
+/// carried ones), `size` long, `spacing` from the item after it: drawn by
+/// that item, before itself; at the end of the list (an empty list included)
+/// by the list, after its items and in their flow, so the list grows to hold
+/// it. A list holding only what is carried (its own place, the carried items
+/// still taking their space) draws none.
 fn slot_at(
     cfg: &ListConfig,
     rest: &[(NodeHandle, String)],
@@ -1881,18 +1882,7 @@ fn slot_at(
             size,
         });
     }
-    if let Some((last, _)) = rest.last() {
-        let (w, h) = size_of(last)?;
-        let len = if horizontal { w } else { h };
-        return Some(Slot {
-            node: last.clone(),
-            into: false,
-            horizontal,
-            start: len + spacing,
-            size,
-        });
-    }
-    items_of(&cfg.node).is_empty().then(|| Slot {
+    (!rest.is_empty() || items_of(&cfg.node).is_empty()).then(|| Slot {
         node: cfg.node.clone(),
         into: true,
         horizontal,

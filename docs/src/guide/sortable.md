@@ -299,13 +299,15 @@ SortableList {
   what is carried, exactly where the drop lands, drawn only as the app styles
   it with `--rinch-sortable-slot-background`, `--rinch-sortable-slot-border`
   and `--rinch-sortable-slot-radius` (on the list or an ancestor; all off by
-  default). It is the `::before` of the item after the gap (the last item's
-  when the place is at the end), positioned at `--rinch-sortable-slot-start`
-  and sized by `--rinch-sortable-slot-size`, which the component writes, so it
-  rides that item's shift and moves nothing. An empty list draws it inside
-  itself. A list holding only what is carried, and a gap in the source's own
-  list that does not collapse (where the source is drawn at the place), draw
-  none. An item's own `::before` is taken while it holds the slot.
+  default). Between items it is the `::before` of the item after the gap,
+  positioned at `--rinch-sortable-slot-start` and sized by
+  `--rinch-sortable-slot-size`, which the component writes, so it rides that
+  item's shift and moves nothing. At the end of a list (an empty one
+  included) it is the list's own `::after`, after its items and in their
+  flow, so the list grows to hold it. A list holding only what is carried,
+  and a gap in the source's own list that does not collapse (where the
+  source is drawn at the place), draw none. An item's own `::before`, and a
+  list's own `::after`, are taken while they hold the slot.
 - **In the source's own list**, unless it collapses, a gap is the list laid out
   again in the order the drop would give: the items between the place and the
   source make room and the source itself is drawn at the place, so nothing is

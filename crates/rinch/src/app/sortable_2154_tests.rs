@@ -810,6 +810,17 @@ fn before_box(f: &Fixture, id: u64) -> Option<(f32, f32, f32, f32)> {
     Some(hit_testing::painted_element_box(&d.tree, first))
 }
 
+/// The painted box of an element's `::after` (a list's slot), if it has one.
+fn after_box(f: &Fixture, id: u64) -> Option<(f32, f32, f32, f32)> {
+    let doc = f.app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    let last = *d.tree.nodes[id].children.last()?;
+    if !d.tree.nodes[last].is_pseudo_element {
+        return None;
+    }
+    Some(hit_testing::painted_element_box(&d.tree, last))
+}
+
 /// The slot an element draws: its `(start, size)` custom properties.
 fn slot_of(f: &Fixture, id: u64) -> Option<(f32, f32)> {
     let doc = f.app.doc.as_ref().unwrap();
@@ -829,8 +840,8 @@ fn slot_of(f: &Fixture, id: u64) -> Option<(f32, f32)> {
 }
 
 /// The gap holds a slot the size of the card, where the drop lands: the item
-/// after the gap draws it, the last item after itself, and it follows the
-/// place. It is painted in the gap, between the cards around it.
+/// after the gap draws it, the list at its end, and it follows the place. It
+/// is painted in the gap, between the cards around it.
 #[test]
 fn a_gap_holds_a_slot_the_size_of_the_card_where_it_lands() {
     let mut f = fixture(Options {
@@ -860,15 +871,32 @@ fn a_gap_holds_a_slot_the_size_of_the_card_where_it_lands() {
         sy + sh
     );
     assert_eq!((sx, sw, sh), (fx, fw, 30.0));
-    // After f, the last: f draws it below itself; one slot at a time.
+    // After f, the last: the list draws it after its items, in their flow,
+    // and grows to hold it; one slot at a time.
+    let c2 = list(&f, "c2");
     let over = point(&f, fid, 0.5, 0.8);
     move_to(&mut f, over);
-    assert_eq!(slot_of(&f, fid), Some((30.0 + 10.0, 30.0)));
-    assert_eq!(carrying(&f, "rinch-sortable__item--slot"), vec![fid]);
+    assert!(carrying(&f, "rinch-sortable__item--slot").is_empty());
+    assert!(classes(&f, c2).contains("rinch-sortable--slot-into"));
+    assert_eq!(slot_of(&f, c2).map(|s| s.1), Some(30.0));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let (_, fy, _, fh) = box_of(&f, fid);
+    let (sx, sy, sw, sh) = after_box(&f, c2).expect("the slot is drawn");
+    assert!(
+        (sy - (fy + fh + 10.0)).abs() < 0.5,
+        "slot at {sy}, f ends at {}",
+        fy + fh
+    );
+    assert_eq!((sx, sw, sh), (fx, fw, 30.0));
+    // In the list's flow (the fixture stretches its lists, so it is inside).
+    let (_, ly, _, lh) = box_of(&f, c2);
+    assert!(ly + lh >= sy + sh, "the list holds its slot");
     // Off every list: no slot.
     move_to(&mut f, (790.0, 590.0));
     assert!(carrying(&f, "rinch-sortable__item--slot").is_empty());
+    assert!(carrying(&f, "rinch-sortable--slot-into").is_empty());
     assert_eq!(slot_of(&f, fid), None);
+    assert_eq!(slot_of(&f, c2), None);
     // Back into c2 before e, and dropped: nothing is left.
     let over = point(&f, item(&f, "e"), 0.5, 0.2);
     move_to(&mut f, over);
@@ -920,7 +948,7 @@ fn an_empty_list_draws_the_slot_inside_itself() {
     assert_eq!(slot_of(&f, c2).map(|s| s.1), Some(30.0));
     f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
     let (_, ly, _, _) = box_of(&f, c2);
-    let (_, sy, _, sh) = before_box(&f, c2).expect("the slot is drawn");
+    let (_, sy, _, sh) = after_box(&f, c2).expect("the slot is drawn");
     assert_eq!((sy, sh), (ly, 30.0));
     release_at(&mut f, over);
     assert_eq!(cards(&f, "c2"), ["a"]);
