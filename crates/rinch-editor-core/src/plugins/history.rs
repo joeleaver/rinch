@@ -961,6 +961,9 @@ impl Plugin for HistoryPlugin {
         vec![("undo", undo()), ("redo", redo())]
     }
 
+    /// Chrome's: Mod-z undoes, Mod-Shift-z redoes, and Mod-y redoes too off
+    /// macOS (Ctrl+Y on Windows and Linux) — see
+    /// [`keys_not_on_macos`](Plugin::keys_not_on_macos).
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
         [
             ("Mod-z", "undo"),
@@ -970,6 +973,12 @@ impl Plugin for HistoryPlugin {
         .into_iter()
         .filter_map(|(b, c)| KeyBinding::parse(b).map(|kb| (kb, c)))
         .collect()
+    }
+
+    /// Mod-y is not a macOS chord: Cmd+Y opens History in Chrome there, and
+    /// redo is Cmd+Shift+Z only (#3062).
+    fn keys_not_on_macos(&self) -> Vec<KeyBinding> {
+        KeyBinding::parse("Mod-y").into_iter().collect()
     }
 
     fn init_state(&self, _doc: &Node) -> Option<Rc<dyn Any>> {

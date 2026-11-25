@@ -9,8 +9,8 @@
 //! ## Which keys a binding consumes
 //!
 //! A binding consumes its key whether or not its command applies: the platform
-//! never passes on a chord the editor advertises (Ctrl+Shift+R on a paragraph
-//! that is already right-aligned must not reach the browser's hard reload). A
+//! never passes on a chord the editor advertises (Mod-z with nothing to undo
+//! still never reaches the browser's own undo). A
 //! binding can instead be declared **fall-through** ([`Keymap::add_fall_through`],
 //! [`Plugin::fall_through_keys`](crate::Plugin::fall_through_keys)), ProseMirror's
 //! keymap semantics: where its command does not apply, its key goes on to the
@@ -25,8 +25,40 @@
 //! Ctrl/Cmd/Meta/Mod into a single [`Modifiers::primary`] flag; the platform view
 //! decides which physical modifier maps to `primary` for the host OS. This keeps
 //! one binding table correct on every platform.
+//!
+//! ## Bindings that are not macOS's
+//!
+//! A few chords are one platform's convention only: Mod-y is redo on Windows and
+//! Linux, while Cmd+Y opens History in Chrome on macOS, where redo is
+//! Cmd+Shift+Z (#3062). A binding marked with [`Keymap::exclude_on_macos`]
+//! (a plugin lists it in [`Plugin::keys_not_on_macos`](crate::Plugin::keys_not_on_macos))
+//! is looked up as unbound while [`host_is_macos`] answers `true`. The answer is
+//! read at lookup time, not when the keymap is built: native builds answer by
+//! the target OS, and rinch-web sets it from `navigator.platform` on each key it
+//! offers the editor, before an editor created ahead of the first mount could
+//! have been built with a wrong one.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+
+thread_local! {
+    static HOST_MACOS: Cell<bool> = const { Cell::new(cfg!(target_os = "macos")) };
+}
+
+/// Whether keys on this thread arrive under macOS's conventions, which turns
+/// off the bindings marked [`Keymap::exclude_on_macos`] (the module docs,
+/// "Bindings that are not macOS's"). Native builds answer by the target OS;
+/// rinch-web sets it from `navigator.platform`.
+pub fn host_is_macos() -> bool {
+    HOST_MACOS.with(Cell::get)
+}
+
+/// Set [`host_is_macos`] for this thread: the web backend's platform answer,
+/// and tests of the macOS half on other hosts. Not app API.
+#[doc(hidden)]
+pub fn set_host_is_macos(macos: bool) {
+    HOST_MACOS.with(|c| c.set(macos));
+}
 
 /// An abstract key — a named editing key or a printable character (lower-cased;
 /// case is carried by [`Modifiers::shift`]).
@@ -168,6 +200,8 @@ impl KeyBinding {
 pub struct Keymap {
     map: HashMap<KeyBinding, String>,
     fall_through: HashSet<KeyBinding>,
+    /// Bindings looked up as unbound while [`host_is_macos`] is `true`.
+    not_on_macos: HashSet<KeyBinding>,
 }
 
 impl Keymap {
@@ -183,15 +217,35 @@ impl Keymap {
     pub fn add(&mut self, binding: KeyBinding, command: impl Into<String>) {
         self.map.insert(binding, command.into());
         self.fall_through.remove(&binding);
+        self.not_on_macos.remove(&binding);
     }
 
     /// Bind `binding` to the command named `command`, a binding that consumes
     /// its key only when the command applies, and otherwise leaves it to the
     /// page (Mod-Enter's `exitCode` outside a code block). Overrides an earlier
-    /// binding of the same key.
+    /// binding of the same key, its macOS exclusion included.
     pub fn add_fall_through(&mut self, binding: KeyBinding, command: impl Into<String>) {
         self.map.insert(binding, command.into());
         self.fall_through.insert(binding);
+        self.not_on_macos.remove(&binding);
+    }
+
+    /// Remove `binding`, so the key is unbound again: it goes on as a key the
+    /// editor has no binding for (on the web, to the page's `keydown` listeners
+    /// and the browser's default). Answers the command it was bound to, `None`
+    /// if it was unbound. A later [`add`](Self::add) binds it afresh.
+    pub fn remove(&mut self, binding: &KeyBinding) -> Option<String> {
+        self.fall_through.remove(binding);
+        self.not_on_macos.remove(binding);
+        self.map.remove(binding)
+    }
+
+    /// Mark the existing binding of `binding` as not macOS's: it is looked up
+    /// as unbound while [`host_is_macos`] answers `true` (Mod-y's redo, where
+    /// Cmd+Y is Chrome's History). A later [`add`](Self::add) of the same key
+    /// clears the mark, and so does a [`remove`](Self::remove).
+    pub fn exclude_on_macos(&mut self, binding: KeyBinding) {
+        self.not_on_macos.insert(binding);
     }
 
     /// Whether `binding` leaves its key alone when its command does not apply
@@ -208,12 +262,17 @@ impl Keymap {
         }
     }
 
-    /// The command name bound to `binding`, if any.
+    /// The command name bound to `binding`, if any. A binding marked
+    /// [`exclude_on_macos`](Self::exclude_on_macos) answers `None` while
+    /// [`host_is_macos`] is `true`.
     pub fn command_for(&self, binding: &KeyBinding) -> Option<&str> {
+        if self.not_on_macos.contains(binding) && host_is_macos() {
+            return None;
+        }
         self.map.get(binding).map(String::as_str)
     }
 
-    /// Number of bindings.
+    /// Number of bindings, whatever the platform.
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -289,5 +348,45 @@ mod tests {
             "a plain rebinding consumes its key again"
         );
         assert!(!km.falls_through_when_inapplicable(&KeyBinding::parse("q").unwrap()));
+    }
+
+    #[test]
+    fn remove_unbinds_a_key_and_its_declarations() {
+        let enter = KeyBinding::parse("Mod-Enter").unwrap();
+        let bold = KeyBinding::parse("Mod-b").unwrap();
+        let mut km = Keymap::new();
+        km.add_fall_through(enter, "exitCode");
+        km.add(bold, "toggleBold");
+        assert_eq!(km.remove(&enter), Some("exitCode".to_string()));
+        assert_eq!(km.command_for(&enter), None);
+        assert!(!km.falls_through_when_inapplicable(&enter));
+        assert_eq!(km.command_for(&bold), Some("toggleBold"), "others stay");
+        assert_eq!(km.len(), 1);
+        assert_eq!(km.remove(&enter), None, "already unbound");
+        km.add(enter, "exitCode");
+        assert!(
+            !km.falls_through_when_inapplicable(&enter),
+            "a rebinding after a removal starts from nothing"
+        );
+    }
+
+    #[test]
+    fn a_binding_excluded_on_macos_is_unbound_only_there() {
+        let y = KeyBinding::parse("Mod-y").unwrap();
+        let mut km = Keymap::new();
+        km.add(y, "redo");
+        km.exclude_on_macos(y);
+        let was = host_is_macos();
+        set_host_is_macos(false);
+        assert_eq!(km.command_for(&y), Some("redo"), "Windows and Linux");
+        set_host_is_macos(true);
+        assert_eq!(km.command_for(&y), None, "macOS");
+        km.add(y, "custom");
+        assert_eq!(
+            km.command_for(&y),
+            Some("custom"),
+            "a rebinding is everyone's"
+        );
+        set_host_is_macos(was);
     }
 }

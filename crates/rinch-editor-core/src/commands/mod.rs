@@ -1698,6 +1698,17 @@ impl Plugin for BaseCommandsPlugin {
         vec!["selectAll"]
     }
 
+    /// The keys a Chrome `contenteditable` has, and nothing more (#3062): select
+    /// all, bold / italic / underline, Enter and Shift+Enter, the deletes, and
+    /// Tab / Shift+Tab for lists (offered through `EditorHandle::tab_key`, which
+    /// by default moves the focus instead, as Chrome does). Mod-Enter
+    /// (`exitCode`) is the one addition: nothing else leaves a code block that
+    /// ends the document, and it falls through everywhere else.
+    ///
+    /// Every other command (strikethrough, inline code, the lists, blockquote,
+    /// paragraph, alignment, headings) has no default key: Chrome has none, and
+    /// each chord hid a browser or app shortcut. An app binds the ones it wants
+    /// in its own keymap (`EditorHandle::bind_key`, or a plugin's `keymap`).
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
         [
             // NOTE: never bind a clipboard key (Mod-c/x/v) here — the web keydown
@@ -1707,8 +1718,6 @@ impl Plugin for BaseCommandsPlugin {
             ("Mod-b", "toggleBold"),
             ("Mod-i", "toggleItalic"),
             ("Mod-u", "toggleUnderline"),
-            ("Mod-Shift-s", "toggleStrike"),
-            ("Mod-e", "toggleCode"),
             ("Enter", "enter"),
             ("Shift-Enter", "insertLineBreak"),
             ("Mod-Enter", "exitCode"),
@@ -1716,22 +1725,6 @@ impl Plugin for BaseCommandsPlugin {
             ("Delete", "deleteCharForward"),
             ("Tab", "sinkListItem"),
             ("Shift-Tab", "liftListItem"),
-            ("Mod-Shift-7", "toggleTaskList"),
-            ("Mod-Shift-8", "toggleBulletList"),
-            ("Mod-Shift-9", "toggleOrderedList"),
-            ("Mod-Shift-b", "wrapInBlockquote"),
-            ("Mod-Shift-0", "setParagraph"),
-            // Text alignment, following the Google Docs convention.
-            ("Mod-Shift-l", "setTextAlignLeft"),
-            ("Mod-Shift-e", "setTextAlignCenter"),
-            ("Mod-Shift-r", "setTextAlignRight"),
-            ("Mod-Shift-j", "setTextAlignJustify"),
-            ("Mod-Alt-1", "setHeading1"),
-            ("Mod-Alt-2", "setHeading2"),
-            ("Mod-Alt-3", "setHeading3"),
-            ("Mod-Alt-4", "setHeading4"),
-            ("Mod-Alt-5", "setHeading5"),
-            ("Mod-Alt-6", "setHeading6"),
         ]
         .into_iter()
         .chain(word_delete_bindings())
@@ -1744,8 +1737,8 @@ impl Plugin for BaseCommandsPlugin {
     /// app (its interceptor, the page's `keydown` listeners), so an app's
     /// Ctrl/Cmd+Enter "send" chord works in an editor (#2993). Every other
     /// binding consumes its key wherever the caret is: an editor that advertises a
-    /// chord owns it, or Ctrl+Shift+R on an already right-aligned paragraph would
-    /// hard-reload the page on the web, and Mod-e would focus the address bar.
+    /// chord owns it, so Delete at the end of the document, which deletes
+    /// nothing, is still the editor's.
     fn fall_through_keys(&self) -> Vec<KeyBinding> {
         KeyBinding::parse("Mod-Enter").into_iter().collect()
     }
@@ -1761,7 +1754,7 @@ impl Plugin for BaseCommandsPlugin {
 /// the browser already resolves the platform's chord into a `beforeinput`
 /// `deleteWordBackward` / `deleteWordForward`, which `rinch-web` maps onto these
 /// commands by name. Binding `Mod-Backspace` there would take Cmd+Backspace on a
-/// Mac (the web glue's `primary` is Ctrl *or* Meta) away from the browser's line
+/// Mac (the web glue's `primary` is Cmd there) away from the browser's line
 /// delete.
 fn word_delete_bindings() -> Vec<(&'static str, &'static str)> {
     if cfg!(target_arch = "wasm32") {

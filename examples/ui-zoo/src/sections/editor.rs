@@ -55,7 +55,7 @@ pub fn editor_section() -> NodeHandle {
             // ── Keyboard Shortcuts ──────────────────────────────────
             Title { order: 3, "Keyboard Shortcuts" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Built-in shortcuts handled by the editor." }
+            Text { color: "dimmed", size: "sm", "The editor's keys (Chrome's), and the ones this showcase adds with bind_key and set_tab_behavior." }
             Space { h: "md" }
 
             Paper { p: "xl", radius: "md", with_border: true,
@@ -66,7 +66,9 @@ pub fn editor_section() -> NodeHandle {
                     {render_shortcut_row(__scope, "Ctrl+Z", "Undo")}
                     {render_shortcut_row(__scope, "Ctrl+Shift+Z / Ctrl+Y", "Redo")}
                     {render_shortcut_row(__scope, "Enter", "Split block / new list item")}
-                    {render_shortcut_row(__scope, "Tab / Shift+Tab", "Move between table cells")}
+                    {render_shortcut_row(__scope, "Ctrl+Shift+S", "Strikethrough (bound by the showcase)")}
+                    {render_shortcut_row(__scope, "Ctrl+E", "Inline code (bound by the showcase)")}
+                    {render_shortcut_row(__scope, "Tab / Shift+Tab", "Nest list items, move between table cells (opted into)")}
                     {render_shortcut_row(__scope, "Backspace / Delete", "Delete backward / forward")}
                 }
             }
@@ -80,6 +82,12 @@ fn editor_body(__scope: &mut RenderScope) -> NodeHandle {
     let editor = create_editor();
     // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
     editor.set_markdown_shortcuts(true);
+    // The editor binds only the keys Chrome's `contenteditable` has (#3062);
+    // a showcase opts into the rest. Tab nests list items and moves between
+    // table cells, and two chords reach the toolbar's strike and code.
+    editor.set_tab_behavior(rinch::editor::TabBehavior::IndentInListsAndTables);
+    editor.bind_key("Mod-Shift-s", "toggleStrike");
+    editor.bind_key("Mod-e", "toggleCode");
 
     // One handle clone per toolbar action (EditorHandle is cheap to clone).
     let ed_bold = editor.clone();

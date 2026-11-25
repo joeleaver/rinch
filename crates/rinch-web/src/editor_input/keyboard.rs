@@ -19,7 +19,7 @@ use super::*;
 /// — on Dvorak/AZERTY the key that types `b` fires bold, not the physical QWERTY-B
 /// position. **Digits, symbols, and named keys resolve PHYSICALLY** (`event.code()`),
 /// because the logical key for e.g. `Shift+8` is `"*"`, not `"8"` — the physical
-/// `Digit8` is what the keymap's `Mod-Shift-8` binding needs. `None` for keys with no
+/// `Digit8` is what an app's `Mod-Shift-8` binding needs. `None` for keys with no
 /// bindable identity (they fall through to text insertion / native clipboard).
 ///
 /// (Desktop keys everything physically off the platform `KeyCode`; unifying that for
@@ -248,6 +248,19 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     let ctrl = event.ctrl_key() || event.meta_key();
     let shift = event.shift_key();
     let alt = event.alt_key();
+    // The keymap's `Mod` (#3062, E21): Cmd on macOS, Ctrl elsewhere, as
+    // ProseMirror reads `navigator.platform`. The other one (Ctrl on a Mac,
+    // where Ctrl+A/E/B are Cocoa's caret keys; the Windows key elsewhere)
+    // matches no binding, so its chords stay the browser's. The core's
+    // not-on-macOS bindings (Mod-y) are told the same platform, per key, as
+    // the wheel's sideways rule is.
+    let mac = is_mac();
+    rinch_editor_core::keymap::set_host_is_macos(mac);
+    let (mod_key, other_mod) = if mac {
+        (event.meta_key(), event.ctrl_key())
+    } else {
+        (event.ctrl_key(), event.meta_key())
+    };
 
     // The goal column survives a run of Up / Down and Page Up / Down.
     if !matches!(
@@ -373,11 +386,12 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
             // 3. THE KEYMAP — the single source of truth for every command key. Letters
             //    resolve logically (`key`, layout-correct), digits/symbols physically
             //    (`code`). A matched binding is consumed even if its command no-op'd
-            //    here (Ctrl+Shift+R on a right-aligned paragraph must not reload the
-            //    page), except a fall-through one (`Plugin::fall_through_keys`: the
+            //    here (Mod+Z with nothing to undo must not reach the browser's undo
+            //    stack), except a fall-through one (`Plugin::fall_through_keys`: the
             //    base keymap's Mod+Enter in a paragraph), which is left unconsumed so
             //    the page's `keydown` listeners hear it (#2993).
-            if let Some(binding) = editor_key_binding(&key, &code, ctrl, shift, alt)
+            if !other_mod
+                && let Some(binding) = editor_key_binding(&key, &code, mod_key, shift, alt)
                 && handle.dispatch_key(binding).is_some()
             {
                 true

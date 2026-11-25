@@ -2789,7 +2789,10 @@ impl RinchApp {
             // The clipboard and select-all chords (Cmd on macOS — `ctrl` is
             // `Modifiers::primary`), and undo / redo on a focused
             // `<input>`/`<textarea>` (issue #288), the browser's chords:
-            // Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y. None of them with Alt: Windows
+            // Ctrl+Z, Ctrl+Shift+Z and, off macOS, Ctrl+Y (on macOS Cmd+Y is
+            // Chrome's History, and redo is Cmd+Shift+Z only; #3062, keyed on
+            // the app's text keymap so a Linux test can ask for macOS's).
+            // None of them with Alt: Windows
             // reports AltGr as Ctrl+Alt, and AltGr+C, +X, +A, +Z type
             // characters on some layouts (Polish `ć`, `ź`, `ą`, `ż`; #934) —
             // the `_` arm below inserts them.
@@ -2801,7 +2804,9 @@ impl RinchApp {
             KeyCode::KeyX if ctrl && !alt => self.handle_cut(),
             KeyCode::KeyZ if ctrl && !alt && shift => self.handle_redo(),
             KeyCode::KeyZ if ctrl && !alt => self.handle_undo(),
-            KeyCode::KeyY if ctrl && !alt => self.handle_redo(),
+            KeyCode::KeyY if ctrl && !alt && self.text_keymap != TextKeymap::MacOs => {
+                self.handle_redo()
+            }
             KeyCode::Enter | KeyCode::Space
                 if !ctrl && matches!(self.focus_target, FocusTarget::Node(_)) =>
             {

@@ -1160,8 +1160,9 @@ open (issue #701). The runtime's native `<select>` popup, which it appends to
 ## Undo and redo in a text field
 
 A focused `<input>` or `<textarea>` undoes with **Ctrl+Z** and redoes with
-**Ctrl+Shift+Z** or **Ctrl+Y** (`Cmd` on macOS) on desktop, as a browser field
-does on the web (issue #288).
+**Ctrl+Shift+Z** or **Ctrl+Y** on desktop, as a browser field does on the web
+(issue #288). On macOS they are **Cmd+Z** and **Cmd+Shift+Z**: Cmd+Y is not redo
+there (it is Chrome's History), and since #3062 a field does not take it either.
 
 - **`oninput` fires with the restored text**, exactly as for a keystroke, so a
   controlled field's signal follows the undo. The eventual `onchange` compares

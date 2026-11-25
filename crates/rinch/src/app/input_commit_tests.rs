@@ -1130,6 +1130,9 @@ fn mount_uppercasing_field() -> (RinchApp, u64, Rc<RefCell<Vec<String>>>) {
 #[test]
 fn ctrl_z_undoes_and_ctrl_y_and_ctrl_shift_z_redo() {
     let (mut app, a_id, b_id, _div_id, log) = mount_fixture();
+    // Windows' and Linux's chords, on every host: macOS has no Cmd+Y redo
+    // (`cmd_y_is_not_redo_on_macos`).
+    app.text_keymap = TextKeymap::Standard;
 
     click_center(&mut app, a_id);
     type_str(&mut app, "abc");
@@ -1166,6 +1169,22 @@ fn ctrl_z_undoes_and_ctrl_y_and_ctrl_shift_z_redo() {
         ["a-change:ab"],
         "the commit carries the undone text"
     );
+}
+
+/// On macOS, Cmd+Y opens History in Chrome, and redo is Cmd+Shift+Z only
+/// (#3062): the primary chord with Y neither redoes nor types a "y".
+#[test]
+fn cmd_y_is_not_redo_on_macos() {
+    let (mut app, a_id, _b_id, _div_id, _log) = mount_fixture();
+    app.text_keymap = TextKeymap::MacOs;
+    click_center(&mut app, a_id);
+    type_str(&mut app, "abc");
+    undo(&mut app);
+    assert_eq!(engine(&app).0, "ab");
+    chord(&mut app, KeyCode::KeyY, "y", false);
+    assert_eq!(engine(&app).0, "ab", "Cmd+Y does nothing");
+    chord(&mut app, KeyCode::KeyZ, "Z", true);
+    assert_eq!(engine(&app).0, "abc", "Cmd+Shift+Z redoes");
 }
 
 /// Undo past the start of the stack, and redo with nothing to redo, change

@@ -13,6 +13,8 @@
 //! (key/pointer/IME → commands) lives in each runtime crate (`rinch` for desktop,
 //! `rinch-web` for the browser), not here.
 
+#[cfg(test)]
+mod app_keymap_3062_tests;
 mod blink;
 mod clock;
 #[cfg(feature = "collaboration")]

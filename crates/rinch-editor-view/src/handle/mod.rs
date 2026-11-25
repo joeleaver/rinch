@@ -49,6 +49,7 @@ use super::registry;
 use super::view::RinchDomEditorView;
 
 mod anchors;
+mod app_keymap;
 mod callbacks;
 #[cfg(feature = "collaboration")]
 mod collaboration;
@@ -180,6 +181,9 @@ struct EditorCore {
     placeholder: Option<PlaceholderPlugin>,
     /// What Tab does — see [`EditorHandle::set_tab_behavior`].
     tab_behavior: TabBehavior,
+    /// The app's key bindings over the plugins' keymap — see
+    /// [`EditorHandle::bind_key`] and [`EditorHandle::unbind_key`].
+    app_keys: app_keymap::AppKeymap,
     /// Whether the caret owes a scroll into view — see [`ScrollGate`]. Armed by
     /// a local edit or selection move ([`Self::commit`] with
     /// [`Scroll::IfChanged`]); fulfilled and cleared by

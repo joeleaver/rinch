@@ -108,8 +108,8 @@ pub trait Plugin {
     ///
     /// A binding consumes its key whether or not its command applies: the
     /// editor owns every chord it advertises (Tab at the top level sinks no list
-    /// item and still never moves the focus; Ctrl+Shift+R on a right-aligned
-    /// paragraph never reaches the browser's reload). Name a binding in
+    /// item and still never moves the focus; Mod-z with nothing to undo never
+    /// reaches the browser's own undo). Name a binding in
     /// [`fall_through_keys`](Self::fall_through_keys) to leave its key alone where
     /// the command answers `false`.
     fn keymap(&self) -> Vec<(KeyBinding, &'static str)> {
@@ -127,6 +127,19 @@ pub trait Plugin {
     /// plugin that binds the same key replaces it with its own declaration, so a
     /// rebinding consumes its key unless that plugin lists it here too.
     fn fall_through_keys(&self) -> Vec<KeyBinding> {
+        Vec::new()
+    }
+
+    /// The bindings of this plugin's [`keymap`](Self::keymap) that are not
+    /// macOS's ([`Keymap::exclude_on_macos`](crate::keymap::Keymap::exclude_on_macos)):
+    /// while [`host_is_macos`](crate::keymap::host_is_macos) answers `true` they
+    /// are looked up as unbound, so the key goes on as if this plugin had no
+    /// binding for it. The history's Mod-y (redo on Windows and Linux; Cmd+Y
+    /// opens History in Chrome on macOS). As with
+    /// [`fall_through_keys`](Self::fall_through_keys), a key this plugin's
+    /// keymap does not bind is ignored, and a later plugin's binding of the same
+    /// key replaces the declaration.
+    fn keys_not_on_macos(&self) -> Vec<KeyBinding> {
         Vec::new()
     }
 

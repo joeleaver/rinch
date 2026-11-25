@@ -121,8 +121,8 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
             {toolbar_button(__scope, TablerIcon::Bold, "Bold (Ctrl+B)", move || { ed_bold.command("toggleBold"); })}
             {toolbar_button(__scope, TablerIcon::Italic, "Italic (Ctrl+I)", move || { ed_italic.command("toggleItalic"); })}
             {toolbar_button(__scope, TablerIcon::Underline, "Underline (Ctrl+U)", move || { ed_under.command("toggleUnderline"); })}
-            {toolbar_button(__scope, TablerIcon::Strikethrough, "Strikethrough", move || { ed_strike.command("toggleStrike"); })}
-            {toolbar_button(__scope, TablerIcon::Code, "Inline code", move || { ed_code.command("toggleCode"); })}
+            {toolbar_button(__scope, TablerIcon::Strikethrough, "Strikethrough (Ctrl+Shift+S)", move || { ed_strike.command("toggleStrike"); })}
+            {toolbar_button(__scope, TablerIcon::Code, "Inline code (Ctrl+E)", move || { ed_code.command("toggleCode"); })}
             // Links take a runtime href, so they can't go through command("...") —
             // toggle_link is the dedicated imperative method (mirrors insert_image).
             // A real app would prompt for the URL (and could pre-fill an edit dialog
@@ -133,18 +133,18 @@ fn editor_toolbar(editor: EditorHandle) -> NodeHandle {
             {separator(__scope)}
 
             // Block types
-            {toolbar_button(__scope, TablerIcon::H1, "Heading 1", move || { ed_h1.command("setHeading1"); })}
-            {toolbar_button(__scope, TablerIcon::H2, "Heading 2", move || { ed_h2.command("setHeading2"); })}
-            {toolbar_button(__scope, TablerIcon::H3, "Heading 3", move || { ed_h3.command("setHeading3"); })}
-            {toolbar_button(__scope, TablerIcon::Pilcrow, "Paragraph", move || { ed_p.command("setParagraph"); })}
+            {toolbar_button(__scope, TablerIcon::H1, "Heading 1 (Ctrl+Alt+1)", move || { ed_h1.command("setHeading1"); })}
+            {toolbar_button(__scope, TablerIcon::H2, "Heading 2 (Ctrl+Alt+2)", move || { ed_h2.command("setHeading2"); })}
+            {toolbar_button(__scope, TablerIcon::H3, "Heading 3 (Ctrl+Alt+3)", move || { ed_h3.command("setHeading3"); })}
+            {toolbar_button(__scope, TablerIcon::Pilcrow, "Paragraph (Ctrl+Alt+0)", move || { ed_p.command("setParagraph"); })}
 
             {separator(__scope)}
 
             // Block containers
-            {toolbar_button(__scope, TablerIcon::Blockquote, "Blockquote", move || { ed_quote.command("wrapInBlockquote"); })}
-            {toolbar_button(__scope, TablerIcon::List, "Bullet list", move || { ed_ul.command("toggleBulletList"); })}
-            {toolbar_button(__scope, TablerIcon::ListNumbers, "Ordered list", move || { ed_ol.command("toggleOrderedList"); })}
-            {toolbar_button(__scope, TablerIcon::ListCheck, "Task list", move || { ed_tasks.command("toggleTaskList"); })}
+            {toolbar_button(__scope, TablerIcon::Blockquote, "Blockquote (Ctrl+Shift+B)", move || { ed_quote.command("wrapInBlockquote"); })}
+            {toolbar_button(__scope, TablerIcon::List, "Bullet list (Ctrl+Shift+8)", move || { ed_ul.command("toggleBulletList"); })}
+            {toolbar_button(__scope, TablerIcon::ListNumbers, "Ordered list (Ctrl+Shift+7)", move || { ed_ol.command("toggleOrderedList"); })}
+            {toolbar_button(__scope, TablerIcon::ListCheck, "Task list (Ctrl+Shift+9)", move || { ed_tasks.command("toggleTaskList"); })}
 
             {separator(__scope)}
 
@@ -189,12 +189,35 @@ const STARTER: &str = "<h1>Welcome to the Markdown Editor</h1>\
     is always a pure projection of the editor state.</p></blockquote>\
     <p>Happy editing!</p>";
 
+/// The chords this app binds through [`EditorHandle::bind_key`]; each
+/// toolbar tooltip names its own. `Mod` is Ctrl, or Cmd on macOS.
+const APP_KEYS: [(&str, &str); 10] = [
+    ("Mod-Shift-s", "toggleStrike"),
+    ("Mod-e", "toggleCode"),
+    ("Mod-Alt-1", "setHeading1"),
+    ("Mod-Alt-2", "setHeading2"),
+    ("Mod-Alt-3", "setHeading3"),
+    ("Mod-Alt-0", "setParagraph"),
+    ("Mod-Shift-b", "wrapInBlockquote"),
+    ("Mod-Shift-8", "toggleBulletList"),
+    ("Mod-Shift-7", "toggleOrderedList"),
+    ("Mod-Shift-9", "toggleTaskList"),
+];
+
 /// Main app component.
 #[component]
 fn app() -> NodeHandle {
     let editor = create_editor();
     // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
     editor.set_markdown_shortcuts(true);
+    // The editor binds only the keys Chrome's `contenteditable` has (#3062):
+    // Ctrl/Cmd+B/I/U, undo and redo. An app that wants more says so. This one
+    // binds a chord for each toolbar block action, and lets Tab nest list
+    // items and move between table cells.
+    editor.set_tab_behavior(rinch::editor::TabBehavior::IndentInListsAndTables);
+    for (chord, command) in APP_KEYS {
+        editor.bind_key(chord, command);
+    }
 
     rsx! {
         Fragment {
