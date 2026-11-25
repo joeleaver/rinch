@@ -231,9 +231,14 @@ you lifted nor a node your app draws again at the item's old place (a redraw
 for something else, a "saving" flag) counts. If your app applies the drop its
 own way (another place, or it sorts the list), the item is focused wherever
 you put it. The request is forgotten once it is satisfied, at the next drag,
-when the focus moves from the lifted item to another element or falls to blank
-space while that item is still drawn, and when that list goes and is not
-drawn again; a drop you never apply leaves it waiting until one of those.
+when the focus moves from the lifted item to another element, when it falls
+to blank space and the lifted item is still drawn once the page has settled
+(a browser blurs an item your redraw removes or moves before the redraw
+draws anything, so the fall itself decides nothing), and when that list goes
+and is not drawn again; a drop you never apply leaves it waiting until one of
+those. Keys are meant to be unique: if your list draws one key twice, the
+order the drop asks for holds it once, so the first item of that key gets the
+focus once anything moves, wherever you put the copy that was lifted.
 One with a `tabindex` you wrote
 keeps yours, whatever its value, `tabindex="-1"` included (`SortableItem {
 "tabindex": "-1", … }`): the list decides the lend when it sees the moved

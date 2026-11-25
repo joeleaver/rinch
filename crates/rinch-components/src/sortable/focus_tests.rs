@@ -249,21 +249,57 @@ fn the_focus_falling_to_the_body_drops_a_drop_request() {
     let _ = drop_request(&mut scope);
     scope.body_handle().focus();
     rinch_core::notify_focus_moved(doc);
+    // Decided once the tree has settled (the scheduled check).
+    try_pending_focus();
     assert_eq!(pending(), None, "the request outlived the blur");
 }
 
 /// The control: the focus falling to the document because a redraw took the
-/// lifted item away keeps the request, for the node drawn in its place.
+/// lifted item away keeps the request, for the node drawn in its place. In
+/// both orders: desktop lets the focus go once the item is detached; the web
+/// blurs it first, while it is still in place (#3071 review 6), and the
+/// browser's `focusout` reaches the request before the redraw detaches it.
 #[test]
 fn the_focus_falling_with_its_item_keeps_a_drop_request() {
+    for web_order in [false, true] {
+        let mut scope = doc_scope();
+        let doc = scope.body_handle().doc_key();
+        let (_plain, a) = drop_request(&mut scope);
+        if web_order {
+            scope.body_handle().focus();
+            rinch_core::notify_focus_moved(doc);
+            a.remove();
+        } else {
+            a.remove();
+            scope.body_handle().focus();
+            rinch_core::notify_focus_moved(doc);
+        }
+        try_pending_focus();
+        assert_eq!(
+            pending(),
+            Some(("a".into(), Some("b".into()))),
+            "web order: {web_order}"
+        );
+        cancel_pending_focus();
+    }
+}
+
+/// The web's order for a keyed redraw that applies the drop (#3071 review
+/// 6): the lifted item is blurred before it is moved, and is still drawn,
+/// now where the drop put it. The settled check gives it the focus back.
+#[test]
+fn a_keyed_move_after_the_web_blur_focuses_the_item() {
     let mut scope = doc_scope();
     let doc = scope.body_handle().doc_key();
-    let (_plain, a) = drop_request(&mut scope);
-    a.remove();
+    let (plain, a) = drop_request(&mut scope);
     scope.body_handle().focus();
     rinch_core::notify_focus_moved(doc);
-    assert_eq!(pending(), Some(("a".into(), Some("b".into()))));
-    cancel_pending_focus();
+    let c = items_of(&plain)[2].0.clone();
+    plain.insert_before(&a, &c);
+    assert_eq!(keys_of(&plain), ["b", "a", "c", "d"], "control: applied");
+    try_pending_focus();
+    assert_eq!(pending(), None, "the request outlived the keyed move");
+    assert!(focused(&a), "the moved item lost the focus");
 }
 
 /// How many lent `tabindex` records document `doc` has.

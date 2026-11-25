@@ -141,9 +141,19 @@ group.
   an **unowned** `set_timeout(0)` check once the tree has settled (a parked
   callback of a disposed owner is dropped, and the keydown's owner is usually
   the item the re-render disposes). The request is forgotten at the next drag,
-  when the focus moves from the lifted item to another element or falls to the
-  document while that item is still connected (a redraw that detaches it
-  keeps the request), and when no list it names is left.
+  when the focus moves from the lifted item to another element, and when no
+  list it names is left. The focus falling to the document (no element,
+  `<body>`, the root) decides nothing at once: rinch-web blurs a focused node
+  before it removes or moves it (`release_focus_within`), so the browser's
+  `focusout` arrives with the lifted item still connected and nothing redrawn
+  yet, while desktop lets the focus go after the detach. The leave entry marks
+  the request (`FocusRequest::fell`) and schedules the settled check, which
+  first tries to satisfy it and then, if the lifted item is still connected
+  with the focus still on the document, ends it (a click on blank space). With
+  no timer backend a fall to the document ends nothing. A key drawn twice is
+  one key to the landing rule (`moved` keeps one copy), so the request ends on
+  its first node (`Order::Other`) once anything moves. The order checks are
+  linear: `Landing` holds its key sets, and a check builds one for the list.
 - **Announcements** go to the source list's live region as drawn now
   (`aria-live="assertive"`, `aria-atomic="true"`, inline-hidden); a sentence
   equal to the region's current text gets a trailing no-break space, so a

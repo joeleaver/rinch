@@ -26,6 +26,12 @@ pub(super) struct FocusRequest {
     /// The entry that drops a drop's request when the focus moves on from
     /// the lifted item to another element (`leave_entry`).
     leave: Option<DismissHandle>,
+    /// The lifted item a drop's request was parked from (`leave_entry`).
+    holder: Option<NodeHandle>,
+    /// Whether the focus fell from `holder` to the document (no element,
+    /// `<body>` or the root) since the last check: that check decides
+    /// whether it ends the request (`try_pending_focus`).
+    fell: bool,
     /// The observers that watch a list without `keyboard` for the item, by
     /// the list's node (#3062). Such a list registers none of its own: an
     /// insertion observer makes every insertion on the thread walk its
@@ -95,8 +101,10 @@ pub(super) fn request_focus(doc: u64, group: String, key: String, list: Option<S
 /// `super::landing` for the rule), never by the node it was lifted as, or a
 /// node drawn at its old place, while the list is still in its order at the
 /// drop. Dropped too when the focus moves on from `holder`, the lifted item,
-/// while that is still drawn (`leave_entry`): the user went elsewhere, and an
-/// app that applies the drop later must not take the focus back from there.
+/// to another element, or falls to the document while `holder` is still
+/// drawn once the tree has settled (`leave_entry`): the user went elsewhere,
+/// and an app that applies the drop later must not take the focus back from
+/// there.
 pub(super) fn request_drop_focus(
     doc: u64,
     group: String,
@@ -114,6 +122,7 @@ pub(super) fn request_drop_focus(
     let unused = PENDING_FOCUS.with_mut(|p| match p.0.as_mut().filter(|r| r.serial == serial) {
         Some(r) => {
             r.leave = Some(leave);
+            r.holder = Some(holder.clone());
             None
         }
         None => Some(leave),
@@ -143,6 +152,8 @@ fn park(
         // The check scheduled below.
         check_due: true,
         leave: None,
+        holder: None,
+        fell: false,
         watches: Vec::new(),
     };
     // Pending before the lists are read: reading them can flush the app's
@@ -166,7 +177,9 @@ fn park(
     // the only place a drop's request is satisfied, so a drop the app applies
     // by a keyed move, which keeps the item's node and draws no new one, is
     // never checked: the item keeps the focus it held, and the request stays
-    // until the next drag, the focus leaving the item, or a document sweep.
+    // until the next drag, the focus moving from the item to another element,
+    // or a document sweep. The focus falling to the document is decided by
+    // a check too (`leave_entry`), so without timers it ends nothing.
     rinch_core::unowned(|| set_timeout(0, try_pending_focus));
     serial
 }
@@ -177,12 +190,22 @@ fn is_pending(serial: u64) -> bool {
 }
 
 /// The focus-leave entry on `holder` that drops the request `serial` when
-/// the focus goes to another element, or falls to the document (no element,
-/// `<body>` or the root) while `holder` is still drawn: a click on blank
-/// space. Not when it falls to the document because `holder` was taken
-/// away: that is what a redraw that applies the drop does, and the request
-/// is for the node drawn in its place. Unowned, like the request: the render
-/// running at the drop is not the request's.
+/// the focus goes to another element.
+///
+/// When the focus falls to the document instead (no element, `<body>` or
+/// the root), nothing is decided here: the request is marked
+/// (`FocusRequest::fell`) and the check once the tree has settled decides
+/// (`try_pending_focus`). A click on blank space does that, and so does a
+/// redraw that applies the drop: rinch-web blurs a focused node before it
+/// removes or moves it, while the node is still in place
+/// (`DomDocument::release_focus_within`), so the browser's `focusout` reaches
+/// this entry before the redraw has drawn anything; desktop lets the focus
+/// go once the node is detached. Settled, the redraw has satisfied the
+/// request, or the lifted item is still drawn with the focus still on the
+/// document (a click on blank space), which ends it.
+///
+/// Unowned, like the request: the render running at the drop is not the
+/// request's.
 fn leave_entry(holder: &NodeHandle, serial: u64) -> DismissHandle {
     let owner = holder.clone();
     rinch_core::unowned(|| {
@@ -190,15 +213,15 @@ fn leave_entry(holder: &NodeHandle, serial: u64) -> DismissHandle {
             holder,
             |_| false,
             move || {
-                let focus = owner.active_element().filter(|f| {
-                    !f.tag_name().is_some_and(|t| {
-                        t.eq_ignore_ascii_case("body") || t.eq_ignore_ascii_case("html")
-                    })
-                });
-                let Some(focus) = focus else {
-                    if owner.is_connected() {
-                        let old = take_request(serial);
-                        drop(old);
+                let Some(focus) = focused_element(&owner) else {
+                    let marked = PENDING_FOCUS.with_mut(|p| {
+                        p.0.as_mut()
+                            .filter(|r| r.serial == serial)
+                            .map(|r| r.fell = true)
+                            .is_some()
+                    });
+                    if marked {
+                        schedule_check(serial);
                     }
                     return;
                 };
@@ -214,6 +237,15 @@ fn leave_entry(holder: &NodeHandle, serial: u64) -> DismissHandle {
                 drop(old);
             },
         )
+    })
+}
+
+/// The element holding the focus in `node`'s document, unless the focus is
+/// on the document itself (no element, `<body>` or the root).
+fn focused_element(node: &NodeHandle) -> Option<NodeHandle> {
+    node.active_element().filter(|f| {
+        !f.tag_name()
+            .is_some_and(|t| t.eq_ignore_ascii_case("body") || t.eq_ignore_ascii_case("html"))
     })
 }
 
@@ -403,7 +435,11 @@ fn drop_if_orphaned(serial: u64) {
 
 /// The scheduled check: focus the item the pending request is for, if it is
 /// drawn in a list the request names and, for a drop's, that list shows the
-/// drop applied (`claim`, the tree settled).
+/// drop applied (`claim`, the tree settled). Otherwise, when the focus fell
+/// to the document since the last check (`FocusRequest::fell`, see
+/// `leave_entry`) and the lifted item is still drawn with the focus still on
+/// the document, the request ends: no redraw took the item away, the user
+/// clicked blank space. An item taken away (detached) keeps it.
 pub(super) fn try_pending_focus() {
     let Some((serial, doc, group, key, list, landing)) = PENDING_FOCUS.with_mut(|p| {
         p.0.as_mut().map(|r| {
@@ -436,6 +472,21 @@ pub(super) fn try_pending_focus() {
                 return;
             }
         }
+    }
+    let fell_from = PENDING_FOCUS.with_mut(|p| {
+        let r = p.0.as_mut().filter(|r| r.serial == serial)?;
+        if std::mem::take(&mut r.fell) {
+            r.holder.clone()
+        } else {
+            None
+        }
+    });
+    if let Some(holder) = fell_from
+        && holder.is_connected()
+        && focused_element(&holder).is_none()
+    {
+        let old = take_request(serial);
+        drop(old);
     }
 }
 

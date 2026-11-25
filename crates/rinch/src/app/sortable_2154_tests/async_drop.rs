@@ -340,14 +340,17 @@ fn a_drop_applied_another_way_ends_the_request_on_the_card() {
     assert_eq!(pending_focus(doc), 0, "the request outlived another order");
 }
 
-/// The focus falling to blank space (#3071 review 5) while the lifted card
-/// is still drawn drops the request, as the focus moving to another element
-/// does: the drop applied after that must not take the focus back. (Desktop
-/// makes the clicked element the document's active element; the focus
-/// falling to `<body>`, a browser's answer, is `focus_tests.rs`'s
-/// `the_focus_falling_to_the_body_drops_a_drop_request`.)
+/// A click on blank space (#3071 review 5) while the lifted card is still
+/// drawn drops the request: the drop applied after that must not take the
+/// focus back. Desktop makes the clicked element (here the page's `div`,
+/// which covers the window) the document's active element, so this is the
+/// focus moving to another element, not falling to the document: desktop
+/// has no press that leaves the focus on `<body>` here. The fall to the
+/// document is `focus_tests.rs`'s `the_focus_falling_to_the_body_drops_a_drop_request`
+/// (mock document) and rinch-web's `sortable_async_focus_3071`
+/// `a_blur_to_the_body_ends_the_request` (a real browser).
 #[test]
-fn the_focus_falling_to_blank_space_drops_the_request() {
+fn a_click_on_blank_space_drops_the_request() {
     let _guard = crate::app::timer_backend_lock();
     manual_timer_setup();
     let mut f = list_fixture(Rows::ByIndex);

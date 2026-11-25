@@ -22,13 +22,27 @@
 //!   place, or sorted the list), so the request ends on the item, wherever it
 //!   is, rather than wait for an order that will never come.
 //!
+//! A key the list draws more than once at the drop (the app's keys are not
+//! unique) is one key to the rule: the order the drop asks for holds it once,
+//! where the drop put it (`moved` takes every copy out and puts the carried
+//! key back once). So a list that still draws it twice is in neither order
+//! once anything moves, and the request ends on the first node of that key
+//! (`Other`), wherever the app put the copy the user lifted. Copies of one
+//! key cannot be told apart by key, so no rule could follow the lifted one;
+//! keys are meant to be unique (`SortableItem::key`).
+//!
 //! An app that never applies the drop (it refused it) leaves the request
 //! waiting; it ends at the next drag, when the focus moves on from the lifted
 //! item while that is still drawn, or when no list it names is left
 //! (`super::focus`).
+//!
+//! Each check reads the list's keys once into a set and compares in one pass
+//! (`same_order`), against sets the landing built once at the drop: linear in
+//! the list's length, as an item arriving in a long list runs one.
 
 use super::*;
 use rinch_core::dom::NodeId;
+use std::collections::HashSet;
 
 /// The list a keyboard drop names, at the drop and once the drop is applied.
 pub(super) struct Landing {
@@ -38,8 +52,11 @@ pub(super) struct Landing {
     /// carried keys, with all of them put back, in the order carried, at the
     /// drop's index (`SortPlace::index`).
     after: Vec<String>,
+    /// The keys of `before`, and of `after`.
+    before_set: HashSet<String>,
+    after_set: HashSet<String>,
     /// The keys carried (`SortMove::keys`).
-    carried: Vec<String>,
+    carried: HashSet<String>,
     /// The node the focused item was in that list at the drop (a drop within
     /// one list), if it was there.
     held: Option<NodeId>,
@@ -55,22 +72,33 @@ impl Landing {
             .find(|(_, k)| k == first)
             .map(|(n, _)| n.node_id());
         let before: Vec<String> = items.into_iter().map(|(_, k)| k).collect();
+        Landing::new(before, &mv.keys, mv.place.index, held)
+    }
+
+    /// The landing of the keys `carried` put at `index` of a list in the
+    /// order `before`.
+    fn new(before: Vec<String>, carried: &[String], index: usize, held: Option<NodeId>) -> Landing {
+        let carried_set: HashSet<String> = carried.iter().cloned().collect();
+        let after = moved(&before, carried, &carried_set, index);
         Landing {
-            after: moved(&before, &mv.keys, mv.place.index),
+            before_set: before.iter().cloned().collect(),
+            after_set: after.iter().cloned().collect(),
             before,
-            carried: mv.keys.clone(),
+            after,
+            carried: carried_set,
             held,
         }
     }
 
     /// What the list's order `keys` says of the drop.
     fn order(&self, keys: &[String]) -> Order {
-        if same_order(keys, &self.after) {
+        let drawn: HashSet<&str> = keys.iter().map(String::as_str).collect();
+        if same_order(keys, &drawn, &self.after, &self.after_set) {
             Order::Applied
-        } else if same_order(keys, &self.before)
+        } else if same_order(keys, &drawn, &self.before, &self.before_set)
             && keys
                 .iter()
-                .all(|k| !self.carried.contains(k) || self.before.contains(k))
+                .all(|k| !self.carried.contains(k) || self.before_set.contains(k))
         {
             Order::Untouched
         } else {
@@ -79,11 +107,17 @@ impl Landing {
     }
 }
 
-/// `before` with the `carried` keys taken out and put back at `index`.
-fn moved(before: &[String], carried: &[String], index: usize) -> Vec<String> {
+/// `before` with every copy of the `carried` keys (`carried_set`) taken out
+/// and the carried keys put back, once each, at `index`.
+fn moved(
+    before: &[String],
+    carried: &[String],
+    carried_set: &HashSet<String>,
+    index: usize,
+) -> Vec<String> {
     let mut out: Vec<String> = before
         .iter()
-        .filter(|k| !carried.contains(k))
+        .filter(|k| !carried_set.contains(*k))
         .cloned()
         .collect();
     let at = index.min(out.len());
@@ -91,12 +125,18 @@ fn moved(before: &[String], carried: &[String], index: usize) -> Vec<String> {
     out
 }
 
-/// Whether `keys` and `reference` agree on the order of the keys they have
-/// in common. A key drawn twice (mid-redraw, the old row and the new) never
-/// agrees.
-fn same_order(keys: &[String], reference: &[String]) -> bool {
-    let ours = keys.iter().filter(|k| reference.contains(k));
-    let theirs = reference.iter().filter(|k| keys.contains(k));
+/// Whether `keys` (whose keys are `drawn`) and `reference` (whose keys are
+/// `reference_set`) agree on the order of the keys they have in common. A
+/// key drawn twice (mid-redraw, the old row and the new) never agrees with a
+/// reference that holds it once.
+fn same_order(
+    keys: &[String],
+    drawn: &HashSet<&str>,
+    reference: &[String],
+    reference_set: &HashSet<String>,
+) -> bool {
+    let ours = keys.iter().filter(|k| reference_set.contains(*k));
+    let theirs = reference.iter().filter(|k| drawn.contains(k.as_str()));
     ours.eq(theirs)
 }
 
@@ -167,14 +207,19 @@ mod tests {
     }
 
     fn landing(before: &str, carried: &str, index: usize) -> Landing {
-        let before = keys(before);
-        let carried = keys(carried);
-        Landing {
-            after: moved(&before, &carried, index),
-            before,
-            carried,
-            held: None,
-        }
+        Landing::new(keys(before), &keys(carried), index, None)
+    }
+
+    /// A key drawn twice at the drop (#3071 review 6): the order asked for
+    /// holds it once, so the app moving one copy is neither order, and the
+    /// request ends on the first node of the key. Untouched, it waits.
+    #[test]
+    fn a_duplicate_key_is_one_key_to_the_rule() {
+        let l = landing("a b a c", "a", 1);
+        assert_eq!(l.after, keys("b a c"));
+        assert!(matches!(l.order(&keys("a b a c")), Order::Untouched));
+        assert!(matches!(l.order(&keys("b a a c")), Order::Other));
+        assert!(matches!(l.order(&keys("b a c")), Order::Applied));
     }
 
     /// [a b c d], a and c carried to slot 0: [a c b d], though a is at 0
