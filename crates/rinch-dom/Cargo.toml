@@ -176,6 +176,11 @@ filter-raster = ["tiny-skia", "glyph-atlas"]
 # an outline. The embed build turns it on without the software painter.
 glyph-atlas = ["swash"]
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# `mincore(2)`, for the test that `TinySkiaPainter::try_new`'s buffer is not
+# made resident to be zeroed (`paint/skia_painter/try_new.rs`, #3065).
+libc = "0.2"
+
 [dev-dependencies]
 # The `#[ignore]`d GPU probes of `background_tiling_embed_tests.rs` (#1158)
 # block on wgpu's adapter request. Already in the lock through `rinch`.

@@ -39,12 +39,20 @@ fn try_pixmap(width: u32, height: u32) -> Option<Pixmap> {
 ///
 /// Asked of the allocator as zeroed memory ([`std::alloc::alloc_zeroed`]),
 /// not reserved and then written. A large zeroed allocation is a fresh
-/// mapping the kernel already gives as zeros, so nothing is written to it
-/// here, and a size it will not map is the allocator's null: `None`. A
-/// buffer reserved with `Vec::try_reserve_exact` and then filled with
-/// `resize(len, 0)` wrote every page; with Linux overcommit the reservation
-/// succeeds past what the machine has, and the fill is what the OOM killer
-/// answers, killing the process rather than failing.
+/// mapping the kernel already gives as zeros, so allocating it commits none
+/// of its pages, and a size it will not map is the allocator's null: `None`.
+/// (A small one may come from the heap and be cleared there, which costs no
+/// more than its size.) A buffer reserved with `Vec::try_reserve_exact` and
+/// then filled with `resize(len, 0)` wrote every page at once, pages the
+/// ghost may never paint.
+///
+/// What this does not do is make the pages safe to use. Each page becomes
+/// resident when it is first written, so a ghost that paints its whole
+/// pixmap (a shadow covering its reach) still commits all of it while it is
+/// painted, and under Linux overcommit, where the allocation succeeded past
+/// what the machine can back, that paint can still be OOM-killed rather than
+/// fail. The bound on that is the pixmap's size (`ghost_pixmap_rect`: at most
+/// twice the surface each way), not this function.
 fn try_zeroed(len: usize) -> Option<Vec<u8>> {
     use std::alloc::{Layout, alloc_zeroed};
     if len == 0 {
@@ -81,31 +89,45 @@ mod tests {
         assert!(TinySkiaPainter::try_new(i32::MAX as u32 / 4, u32::MAX).is_none());
     }
 
-    /// The buffer is had as zeroed memory, not written: 512 MiB of it adds
-    /// next to nothing to what the process holds resident. Filled after a
-    /// reservation, every page of it was resident, and past what the machine
-    /// has that fill is an OOM kill rather than a `None`.
+    /// The buffer is had as zeroed memory, not written: allocating 512 MiB
+    /// of it makes next to none of its own pages resident. Filled after a
+    /// reservation, every page of it was.
+    ///
+    /// Counted with `mincore(2)` over the buffer's own pages, so what other
+    /// tests in this process allocate meanwhile does not count; a page
+    /// written afterwards is counted, which shows the count sees a page
+    /// becoming resident at all.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_buffer_is_not_written_to_be_zeroed() {
-        /// Resident memory, bytes (`/proc/self/status`'s `VmRSS`, in kB).
-        fn resident() -> usize {
-            let status = std::fs::read_to_string("/proc/self/status").expect("status");
-            let line = status
-                .lines()
-                .find(|l| l.starts_with("VmRSS:"))
-                .expect("VmRSS");
-            let kb: usize = line.split_whitespace().nth(1).unwrap().parse().unwrap();
-            kb * 1024
+        /// How many of `buf`'s pages are resident.
+        fn resident_pages(buf: &[u8]) -> usize {
+            // SAFETY: `sysconf` reads a constant; no memory is touched.
+            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+            // `mincore` wants a page-aligned start: the page holding the
+            // first byte, through the page holding the last.
+            let start = buf.as_ptr() as usize & !(page - 1);
+            let len = buf.as_ptr() as usize + buf.len() - start;
+            let mut vec = vec![0u8; len.div_ceil(page)];
+            // SAFETY: `[start, start + len)` covers only pages `buf` lies in,
+            // all of them mapped while `buf` lives, and `vec` has one byte
+            // for each of those pages, which is what `mincore` writes.
+            let rc = unsafe { libc::mincore(start as *mut libc::c_void, len, vec.as_mut_ptr()) };
+            assert_eq!(rc, 0, "mincore: {}", std::io::Error::last_os_error());
+            vec.iter().filter(|b| *b & 1 != 0).count()
         }
         const LEN: usize = 512 << 20;
-        let before = resident();
-        let buf = try_zeroed(LEN).expect("512 MiB of address space");
-        let grew = resident().saturating_sub(before);
+        let mut buf = try_zeroed(LEN).expect("512 MiB of address space");
         assert_eq!(buf.len(), LEN);
-        // Other tests in this process allocate meanwhile: well under LEN.
-        assert!(grew < LEN / 4, "{grew} bytes became resident");
-        // Spot-read a few pages: zeros (reading maps the zero page).
+        // At most the allocator's own header page(s) at the start, out of
+        // 131,072 (4 KiB pages).
+        let resident = resident_pages(&buf);
+        assert!(resident <= 2, "{resident} pages became resident");
+        // The count sees a page that is written.
+        buf[LEN / 2] = 1;
+        assert_eq!(resident_pages(&buf), resident + 1, "the written page");
+        // Spot-read a few pages: zeros.
+        buf[LEN / 2] = 0;
         assert!((0..LEN).step_by(LEN / 8).all(|i| buf[i] == 0));
     }
 
