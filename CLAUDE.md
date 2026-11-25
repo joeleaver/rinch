@@ -372,7 +372,7 @@ itself in `untracked_handler` as well (#948). Deliberately **not** untracked: th
 `EditorHandle::update` `build` closure, the caller's own code — `dispatch_inner`
 lifts the suspension for that closure alone, so plugin code *it* calls
 (`update(|s| { s.apply(..); … })`) is tracked as the caller's. The guard type
-`TrackingSuspended` is `!Send`/`!Sync`: the stack it restores is thread-local.
+`TrackingSuspended` is `!Send`/`!Sync`: the tracking state it releases is thread-local.
 
 ## Component Props
 
