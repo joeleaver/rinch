@@ -181,17 +181,32 @@ const NOT_OFFSET_PARENTS: &[&str] = &[
     "will-change: left",
 ];
 
+/// What rinch answers for one declaration (`offset_parent_answers`).
+#[derive(Debug)]
+struct Answer {
+    decl: String,
+    /// The static child's box in the declaring box.
+    static_box: Option<ElementBounds>,
+    /// How far the absolute child is painted from the box's left edge.
+    absolute: f32,
+    /// How far the fixed child is painted from the box's left edge.
+    fixed: f32,
+}
+
 /// For each declaration, a box 30px into the page holding a static child 4px
-/// into it and an absolute child at `left: 5px`: the static child's box in
-/// it, and how far the absolute child is painted from the box's left edge
-/// (5 where the box contains it, -25 where the page does).
-fn offset_parent_answers(decls: &[&str]) -> Vec<(String, Option<ElementBounds>, f32)> {
+/// into it, an absolute child at `left: 5px` and a fixed child at `left: 7px`:
+/// the static child's box in it, and how far each positioned child is painted
+/// from the box's left edge (5 and 7 where the box contains it, -25 where the
+/// page contains the absolute one and -23 where the viewport contains the
+/// fixed one).
+fn offset_parent_answers(decls: &[&str]) -> Vec<Answer> {
     let mut doc = RinchDocument::new();
     doc.load_css(
         "body { margin: 0 } div { margin: 0; padding: 0; border: 0 } \
          .op-c { margin-left: 30px; width: 200px; height: 20px } \
          .op-k { margin-left: 4px; width: 10px; height: 10px } \
-         .op-a { position: absolute; left: 5px; top: 0; width: 1px; height: 1px }",
+         .op-a { position: absolute; left: 5px; top: 0; width: 1px; height: 1px } \
+         .op-f { position: fixed; left: 7px; top: 0; width: 1px; height: 1px }",
     );
     let body = doc.body();
     let mut made = Vec::new();
@@ -206,14 +221,22 @@ fn offset_parent_answers(decls: &[&str]) -> Vec<(String, Option<ElementBounds>, 
         let a = doc.create_element("div");
         doc.set_attribute(a, "class", "op-a");
         doc.append_child(c, a);
-        made.push((decl.to_string(), c, k, a));
+        let f = doc.create_element("div");
+        doc.set_attribute(f, "class", "op-f");
+        doc.append_child(c, f);
+        made.push((decl.to_string(), c, k, a, f));
     }
     doc.resolve_layout(800.0, 2000.0);
     made.into_iter()
-        .map(|(decl, c, k, a)| {
+        .map(|(decl, c, k, a, f)| {
             let at = |doc: &mut RinchDocument, n| doc.bounding_rect(n).map_or(f32::NAN, |r| r.x);
-            let placed = at(&mut doc, a) - at(&mut doc, c);
-            (decl, doc.layout_box_in(k, c), placed)
+            let left = at(&mut doc, c);
+            Answer {
+                decl,
+                static_box: doc.layout_box_in(k, c),
+                absolute: at(&mut doc, a) - left,
+                fixed: at(&mut doc, f) - left,
+            }
         })
         .collect()
 }
@@ -225,7 +248,7 @@ fn offset_parent_answers(decls: &[&str]) -> Vec<(String, Option<ElementBounds>, 
 fn every_declaration_the_engines_count_makes_an_offset_parent() {
     let wrong: Vec<_> = offset_parent_answers(OFFSET_PARENTS)
         .into_iter()
-        .filter(|(_, b, placed)| *b != rect(4.0, 0.0, 10.0, 10.0) || *placed != 5.0)
+        .filter(|a| a.static_box != rect(4.0, 0.0, 10.0, 10.0) || a.absolute != 5.0)
         .collect();
     assert!(wrong.is_empty(), "not an offset parent here: {wrong:?}");
 }
@@ -236,9 +259,33 @@ fn every_declaration_the_engines_count_makes_an_offset_parent() {
 fn no_other_declaration_makes_an_offset_parent() {
     let wrong: Vec<_> = offset_parent_answers(NOT_OFFSET_PARENTS)
         .into_iter()
-        .filter(|(_, b, placed)| b.is_some() || *placed != -25.0)
+        .filter(|a| a.static_box.is_some() || a.absolute != -25.0)
         .collect();
     assert!(wrong.is_empty(), "an offset parent here: {wrong:?}");
+}
+
+/// The offset parents that do not contain a `position: fixed` child, which is
+/// placed against the viewport as with no declaration at all. Measured in
+/// Chrome 158: every other row of [`OFFSET_PARENTS`] contains it, and no row
+/// of [`NOT_OFFSET_PARENTS`] does.
+const NOT_FIXED_CONTAINERS: &[&str] = &["position: relative", "will-change: position"];
+
+/// Where a fixed child lands, for every declaration of both lists: against the
+/// box wherever it contains fixed descendants (`will-change: contain` among
+/// them, #3065), against the viewport otherwise (`will-change: position`
+/// contains absolutes only; `contain: size` and `opacity` contain neither).
+#[test]
+fn a_fixed_child_is_placed_against_the_box_that_contains_it() {
+    let both = [OFFSET_PARENTS, NOT_OFFSET_PARENTS].concat();
+    let wrong: Vec<_> = offset_parent_answers(&both)
+        .into_iter()
+        .filter(|a| {
+            let decl = a.decl.as_str();
+            let contains = OFFSET_PARENTS.contains(&decl) && !NOT_FIXED_CONTAINERS.contains(&decl);
+            a.fixed != if contains { 7.0 } else { -23.0 }
+        })
+        .collect();
+    assert!(wrong.is_empty(), "a fixed child placed wrong: {wrong:?}");
 }
 
 /// A box at `margin-left: inner`, `width` wide, inside a positioned box at
