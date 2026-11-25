@@ -314,10 +314,15 @@ pub(super) fn try_pending_focus() {
 }
 
 /// Give a keyboard lift's item the focus. An item is a Tab stop only in a
-/// [`SortableList::keyboard`] list, and only once the list has seen it
-/// (`offer_keyboard`): the item drawn again in the middle of a lift (its
-/// render comes before its list's), and one dropped into a list without
-/// `keyboard`, have no `tabindex` and are lent one (`lend_tabindex`).
+/// [`SortableList::keyboard`] list (`offer_keyboard`); one dropped into a
+/// list without `keyboard` has no `tabindex` and is lent one
+/// (`lend_tabindex`).
+///
+/// Called only once the app's attributes on the item are written: by its
+/// list, when it sees the item (`see_items`), or later (`try_pending_focus`).
+/// Never from the item's own render, which comes before them: a `tabindex`
+/// the app writes on it would be written after the lend, and taken for the
+/// lend when the focus leaves (#3062).
 pub(super) fn focus_item(item: &NodeHandle) {
     if item.get_attribute("tabindex").is_none() {
         lend_tabindex(item);
@@ -331,30 +336,38 @@ pub(super) fn focus_item(item: &NodeHandle) {
 /// blurs inside that write); kept after, the item would be a focusable stop
 /// in a list that offers none, until it is drawn again. A `keyboard` list
 /// that adopts the item makes it its own Tab stop instead (`take_lent`).
+///
+/// The record lives exactly as long as the item: its focus-leave entry is
+/// unowned (whatever render is running when the list sees the item is not
+/// the item's), and the item's cleanup forgets the record and drops the entry
+/// with it (`forget_lent`). So a node id the record names is never a node
+/// that took a removed item's place.
 fn lend_tabindex(item: &NodeHandle) {
     item.set_attribute("tabindex", "-1");
     let owner = item.clone();
-    let entry = rinch_core::push_key_handler(
-        item,
-        |_| false,
-        move || {
-            // A window blur calls this too, with the focus still here.
-            let mut at = owner.active_element();
-            while let Some(n) = at {
-                if n.node_id() == owner.node_id() {
-                    return;
+    let entry = rinch_core::unowned(|| {
+        rinch_core::push_key_handler(
+            item,
+            |_| false,
+            move || {
+                // A window blur calls this too, with the focus still here.
+                let mut at = owner.active_element();
+                while let Some(n) = at {
+                    if n.node_id() == owner.node_id() {
+                        return;
+                    }
+                    at = n.parent_node();
                 }
-                at = n.parent_node();
-            }
-            if take_lent(&owner) && owner.get_attribute("tabindex").as_deref() == Some("-1") {
-                owner.remove_attribute("tabindex");
-            }
-        },
-    );
+                if take_lent(&owner) && owner.get_attribute("tabindex").as_deref() == Some("-1") {
+                    owner.remove_attribute("tabindex");
+                }
+            },
+        )
+    });
     let doc = item.doc_key();
     let stale = LENT_TABINDEX.with_mut(|l| {
-        // An item that left its document without the focus leaving it
-        // first (its owner gone, its entry never called) is forgotten here.
+        // An item that left its document by a route that ran no cleanup of
+        // its own (an ancestor's markup replaced) is forgotten here.
         let (kept, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut **l)
             .into_iter()
             .partition(|(_, n, _)| n.is_connected());
@@ -367,10 +380,16 @@ fn lend_tabindex(item: &NodeHandle) {
 
 /// Forget the `tabindex` lent to `item`, if it was: whether it was.
 pub(super) fn take_lent(item: &NodeHandle) -> bool {
-    let doc = item.doc_key();
+    forget_lent(item.doc_key(), item.node_id())
+}
+
+/// Forget the `tabindex` lent to the item `id` of document `doc`, if it was
+/// (and drop its focus-leave entry): whether it was. The item's cleanup calls
+/// this, so the record goes with the item.
+pub(super) fn forget_lent(doc: u64, id: rinch_core::dom::NodeId) -> bool {
     let taken = LENT_TABINDEX.with_mut(|l| {
         l.iter()
-            .position(|(d, n, _)| *d == doc && n.node_id() == item.node_id())
+            .position(|(d, n, _)| *d == doc && n.node_id() == id)
             .map(|i| l.swap_remove(i))
     });
     // The entry is released outside the registry's borrow.

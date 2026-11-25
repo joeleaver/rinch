@@ -172,12 +172,16 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    fixture_with(None, false)
+    fixture_with(None, |_| None)
 }
 
-/// The board with the card column `plain` not a `keyboard` list, and with
-/// `tabindex="0"` written by the app on every card when `card_tabindex`.
-fn fixture_with(plain: Option<&'static str>, card_tabindex: bool) -> Fixture {
+/// The board with the card column `plain` not a `keyboard` list, and with the
+/// `tabindex` `card_tabindex` names for a card written on it by the app (a
+/// root attribute, written after the card's render).
+fn fixture_with(
+    plain: Option<&'static str>,
+    card_tabindex: fn(&str) -> Option<&'static str>,
+) -> Fixture {
     DROPS.with(|d| d.borrow_mut().clear());
     OFFERS.with(|d| d.borrow_mut().clear());
     SELECTION.with(|d| d.borrow_mut().clear());
@@ -227,11 +231,11 @@ fn fixture_with(plain: Option<&'static str>, card_tabindex: bool) -> Fixture {
                     // longer the default).
                     source: SortSource::Dim,
                                             for card in c.cards.clone() {
-                                                if card_tabindex {
+                                                if card_tabindex(&card).is_some() {
                                                     SortableItem {
                                                         key: card.clone(), value: card.clone(),
                                                         style: "height: 30px; flex-shrink: 0",
-                                                        "tabindex": "0",
+                                                        "tabindex": card_tabindex(&card).unwrap_or_default(),
                                                     }
                                                 } else {
                                                     SortableItem {

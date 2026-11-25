@@ -209,7 +209,7 @@ fn tabindex(f: &Fixture, k: &str) -> Option<String> {
 /// holds the focus (`-1`), nor after (the `tabindex` goes with the focus).
 #[test]
 fn a_card_dropped_into_a_plain_list_is_no_tab_stop_there() {
-    let mut f = fixture_with(Some("c2"), false);
+    let mut f = fixture_with(Some("c2"), |_| None);
     assert_eq!(tabindex(&f, "d"), None, "c2 offers no Tab stops");
     drop_a_into_c2(&mut f);
     assert_eq!(tabindex(&f, "a").as_deref(), Some("-1"));
@@ -224,27 +224,67 @@ fn a_card_dropped_into_a_plain_list_is_no_tab_stop_there() {
 /// leaves it.
 #[test]
 fn a_tabindex_the_app_wrote_stays_after_the_drop() {
-    let mut f = fixture_with(Some("c2"), true);
+    let mut f = fixture_with(Some("c2"), |_| Some("0"));
     drop_a_into_c2(&mut f);
     assert_eq!(tabindex(&f, "a").as_deref(), Some("0"));
     focus_card(&mut f, "b");
     assert_eq!(tabindex(&f, "a").as_deref(), Some("0"));
 }
 
+/// #3062 review 2: the same for an app's `tabindex="-1"`, the value rinch
+/// lends. The lend is decided once the app's attributes are written (by the
+/// list that sees the card), so it is never lent over the app's, and never
+/// taken away as rinch's when the focus leaves.
+#[test]
+fn an_app_written_minus_one_tabindex_stays_after_the_drop() {
+    let mut f = fixture_with(Some("c2"), |_| Some("-1"));
+    let doc = f.app.doc_key();
+    drop_a_into_c2(&mut f);
+    assert_eq!(tabindex(&f, "a").as_deref(), Some("-1"));
+    assert_eq!(lent(doc), 0, "the app's tabindex was taken for a lend");
+    focus_card(&mut f, "b");
+    assert_eq!(tabindex(&f, "a").as_deref(), Some("-1"));
+}
+
+/// How many lent `tabindex` records document `doc` has.
+fn lent(doc: u64) -> usize {
+    const LENT: &str = "rinch_components::sortable::LENT_TABINDEX";
+    rinch_core::doc_entries(doc)
+        .into_iter()
+        .find(|(n, _)| *n == LENT)
+        .map_or(0, |(_, count)| count)
+}
+
 /// A lent `tabindex` the focus never left goes with its document (#2797).
 #[test]
 fn a_lent_tabindex_is_forgotten_with_its_document() {
-    const LENT: &str = "rinch_components::sortable::LENT_TABINDEX";
-    let lent = |doc: u64| {
-        rinch_core::doc_entries(doc)
-            .into_iter()
-            .find(|(n, _)| *n == LENT)
-            .map_or(0, |(_, count)| count)
-    };
-    let mut f = fixture_with(Some("c2"), false);
+    let mut f = fixture_with(Some("c2"), |_| None);
     let doc = f.app.doc_key();
     drop_a_into_c2(&mut f);
     assert_eq!(lent(doc), 1, "control: the dropped card's tabindex is lent");
     drop(f);
     assert_eq!(lent(doc), 0, "the lent tabindex outlived its document");
+}
+
+/// #3062 review 2: a lent `tabindex` goes with its item. The card is deleted
+/// while it holds the lend (its focus-leave never runs), and a new card, with
+/// the app's own `tabindex="-1"`, is then added to a keyboard list: the
+/// record of the deleted card must neither linger nor be taken for the new
+/// card's, which `offer_keyboard` would then make `"0"`.
+#[test]
+fn a_lent_tabindex_is_forgotten_with_its_item() {
+    let mut f = fixture_with(Some("c2"), |k| (k == "z").then_some("-1"));
+    let doc = f.app.doc_key();
+    drop_a_into_c2(&mut f);
+    assert_eq!(lent(doc), 1, "control: the dropped card's tabindex is lent");
+    let gone = item(&f, "a");
+    f.board.update(|b| b[0].cols[1].cards.retain(|k| k != "a"));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    assert_eq!(cards(&f, "c2"), ["d"]);
+    assert_eq!(lent(doc), 0, "the lent tabindex outlived its item");
+    f.board.update(|b| b[0].cols[0].cards.push("z".into()));
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let z = item(&f, "z");
+    assert_ne!(z, gone, "a node id is never handed out again");
+    assert_eq!(tabindex(&f, "z").as_deref(), Some("-1"));
 }

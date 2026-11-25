@@ -123,23 +123,46 @@ fn reason_node(scope: &mut RenderScope) -> NodeHandle {
     reason
 }
 
-/// Make the items in `node`'s subtree that belong to a
-/// [`SortableList::keyboard`] list keyboard items: a Tab stop each, and the
-/// keys in the description of every one that drags. An item renders before
-/// its list, so it cannot know; the list does this at its render and again
-/// for every item that arrives later (`adopt_late_children`). A nested list's
-/// items are that list's. What the app wrote on the item (a `tabindex`, an
-/// `aria-description`, #433) is kept.
-fn offer_keyboard(node: &NodeHandle) {
+/// The list has seen the items in `node`'s subtree: at its render, and again
+/// for every subtree that arrives later (`adopt_late_children`). An item
+/// renders before its list, and before the app's attributes on it (its root
+/// attributes, a `tabindex` among them) are written, so what depends on its
+/// list or on those attributes is done here, where both are known. A nested
+/// list's items are that list's.
+///
+/// In a [`SortableList::keyboard`] list an item is made a keyboard item
+/// (`offer_keyboard`). And the item a drop or a lift asked to focus
+/// (`PENDING_FOCUS`) takes the focus here, in any list: in one without
+/// `keyboard`, the `tabindex` it is lent to take it (`focus_item`) is lent
+/// only to an item the app wrote none on, which it cannot tell before now
+/// (#3062).
+fn see_items(node: &NodeHandle, keyboard: bool) {
     if node.get_attribute(LIST_ATTR).is_some() {
         return;
     }
-    if node.get_attribute(KEY_ATTR).is_none() {
+    let Some(key) = node.get_attribute(KEY_ATTR) else {
         for child in node.children() {
-            offer_keyboard(&child);
+            see_items(&child, keyboard);
         }
         return;
+    };
+    if keyboard {
+        offer_keyboard(node);
     }
+    let doc = node.doc_key();
+    let wanted = PENDING_FOCUS.with(|p| {
+        p.0.as_ref()
+            .is_some_and(|(d, _, k, _)| *d == doc && *k == key)
+    });
+    if wanted {
+        focus_item(node);
+    }
+}
+
+/// Make the item `node` of a [`SortableList::keyboard`] list a keyboard item:
+/// a Tab stop, and the keys in its description when it drags. What the app
+/// wrote on the item (a `tabindex`, an `aria-description`, #433) is kept.
+fn offer_keyboard(node: &NodeHandle) {
     // A `tabindex` lent to take the focus (`focus_item`) becomes the list's.
     if take_lent(node) || node.get_attribute("tabindex").is_none() {
         node.set_attribute("tabindex", "0");
@@ -182,14 +205,13 @@ impl Component for SortableList {
         for child in children {
             list.append_child(child);
         }
-        if self.keyboard {
-            for child in children {
-                offer_keyboard(child);
-            }
-            crate::late_children::adopt_late_children(__scope, &list, NOT_MINE, |inserted, _| {
-                offer_keyboard(inserted)
-            });
+        let keyboard = self.keyboard;
+        for child in children {
+            see_items(child, keyboard);
         }
+        crate::late_children::adopt_late_children(__scope, &list, NOT_MINE, move |inserted, _| {
+            see_items(inserted, keyboard)
+        });
         let reason = reason_node(__scope);
         list.append_child(&reason);
         let live = __scope.create_element("div");
@@ -301,8 +323,10 @@ impl Component for SortableItem {
 
         adopt(&item, &self.value);
 
-        let id = item.node_id();
+        let (doc, id) = (item.doc_key(), item.node_id());
         __scope.on_cleanup(move || {
+            // A `tabindex` lent to it is forgotten with it (#3062).
+            forget_lent(doc, id);
             // The dragged item went away (deleted, or re-rendered as a new
             // node, which `adopt` takes up). The runtime's moves for a pointer
             // drag go to the gone node; its end still comes (`on_drag_end`).
@@ -320,8 +344,9 @@ impl Component for SortableItem {
 
 /// A freshly drawn item `key` of a drag in progress (a re-render mid-drag):
 /// dim or ring it as the carried items are, and when it is the lifted item,
-/// make it the lift's source, holding the keyboard. And focus it if a drop
-/// asked for it.
+/// make it the lift's source, holding the keyboard. A drop's or a lift's
+/// item is focused by its list, which sees it after the app's attributes on
+/// it are written (`see_items`).
 fn adopt(item: &NodeHandle, key: &str) {
     let doc = item.doc_key();
     let lifted = ACTIVE.with(|a| {
@@ -349,16 +374,10 @@ fn adopt(item: &NodeHandle, key: &str) {
                 lift._keys = Some(entry);
             }
         });
+        // Its list focuses it once it sees it (`see_items`), and the timer
+        // if it is already there.
         PENDING_FOCUS.with_mut(|p| p.0 = Some((doc, group.clone(), key.to_string(), None)));
-        focus_item(item);
         rinch_core::unowned(|| set_timeout(0, try_pending_focus));
-    }
-    let wanted = PENDING_FOCUS.with(|p| {
-        p.0.as_ref()
-            .is_some_and(|(d, _, k, _)| *d == doc && k == key)
-    });
-    if wanted && lifted.is_none() {
-        focus_item(item);
     }
 }
 

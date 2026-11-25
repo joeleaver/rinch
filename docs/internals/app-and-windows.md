@@ -849,13 +849,15 @@ document (#2789), from its mount to its close:
   in `rinch-editor-view`, the registry's `EDITORS`, `DRAG`, `LINK_HOVER`,
   `IMAGE_HOVER` and `OVERLAY_PASSES_OWED`, the stylesheet guard `INJECTED`
   and the blink `CLOCKS`; in `rinch-components`, `dropdown_menu_sub`'s `SUBS`
-  and sortable's `LISTS`, `GHOST_WRAPPERS` and `PENDING_FOCUS` (one slot, its
+  and sortable's `LISTS`, `GHOST_WRAPPERS`, `LENT_TABINDEX` and `PENDING_FOCUS` (one slot, its
   own `ForgetDoc`). An entry whose document is otherwise read from a node
   (`SUBS`, `LISTS`) stores the key when it is made: once the document is gone
   a node's `doc_key()` reads 0, and the sweep runs after the disposal has
   dropped it. Pins: `doc_forget_tests.rs` (every kind, many windows, the
   editor view's lookups) and `sortable_2154_tests/review_round_2.rs`
-  (`a_dropped_apps_preview_wrapper_and_focus_request_are_forgotten`).
+  (`a_dropped_apps_preview_wrapper_and_focus_request_are_forgotten`), and
+  `sortable_2091_tests/keyboard.rs` for `LENT_TABINDEX`
+  (`a_lent_tabindex_is_forgotten_with_its_document`, `..._with_its_item`).
   `rinch_core::doc_entries(doc)` (hidden) counts a document's entries in
   each, by name (its static's path, such as
   `rinch_core::events::app_key::LISTENERS`), for the tests that pin the
