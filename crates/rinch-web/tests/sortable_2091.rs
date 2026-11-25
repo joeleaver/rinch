@@ -1,6 +1,6 @@
 //! Sortable lists (#2091) in a real browser: rinch-web's pointer-driven drag
 //! suite and key delegation drive `SortableList` the way desktop's event path
-//! does (`crates/rinch/src/app/sortable_2091_tests.rs`). A horizontal row of
+//! does (`crates/rinch/src/app/sortable_2091_tests/`). A horizontal row of
 //! three 150px columns in a 300px `overflow-x: auto` strip; each column a
 //! 90px `overflow-y: auto` list of 30px cards: c1 [a b c d], c2 [e], c3 [].
 //! c2 refuses a second card.

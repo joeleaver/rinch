@@ -3,7 +3,7 @@
 Drag items within and between ordered lists — a kanban's cards across
 columns, the columns themselves, lanes of columns — with a judge that can
 refuse a drop (and say why) before the release, an insertion caret, edge
-auto-scroll on both axes, and a keyboard flow. `rinch-components/src/sortable.rs`.
+auto-scroll on both axes, and a keyboard flow. `rinch-components/src/sortable/`.
 
 ## Requirements from the kanban use
 

@@ -854,7 +854,7 @@ document (#2789), from its mount to its close:
   (`SUBS`, `LISTS`) stores the key when it is made: once the document is gone
   a node's `doc_key()` reads 0, and the sweep runs after the disposal has
   dropped it. Pins: `doc_forget_tests.rs` (every kind, many windows, the
-  editor view's lookups) and `sortable_2154_tests.rs`
+  editor view's lookups) and `sortable_2154_tests/review_round_2.rs`
   (`a_dropped_apps_preview_wrapper_and_focus_request_are_forgotten`).
   `rinch_core::doc_entries(doc)` (hidden) counts a document's entries in
   each, by name (its static's path, such as
