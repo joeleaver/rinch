@@ -1038,6 +1038,30 @@ something on screen (desktop: the last layout's; web:
 already out of date: `true` on desktop after a write the next layout has not
 seen, always `false` in a browser.
 
+### Where an element is laid out: `layout_box_in(container)`
+
+`NodeHandle::layout_box_in(&container)` answers an element's border box as
+**laid out**, before any `transform` on it or its ancestors, in the
+container's padding-box frame (`(0, 0)` is the container's padding edge, so
+its border does not count, nor does how far it is scrolled). It is the question
+`bounding_rect()` cannot answer once something is drawn moved: a list whose
+items are shifted by a `translate` still lays them out where they were, and
+this says where. On the web it sums `offsetLeft`/`offsetTop` up the
+`offsetParent` chain (adding each intermediate parent's border,
+`clientLeft`/`clientTop`), and desktop answers the same from its layout.
+
+It is `None` unless the container is on the element's `offsetParent` chain,
+on both hosts alike: the container must be positioned (`relative`,
+`absolute`, `sticky`, `fixed`), or a containing block for absolutes another
+way (a `transform` or `filter` makes one, in Chrome and Firefox as here), or
+the `<body>`, or a `<td>`/`<th>`/`<table>` around a static element. It is
+also `None` for an element that is `position: fixed` itself (its offset
+parent is none), one not rendered (`display: none` on it or an ancestor,
+`display: contents`), and one with no layout yet. The values are **whole
+pixels** on both hosts: desktop's layout is rounded to the pixel grid, and a
+browser rounds its `offset*` values, so a box at 8.25px answers 8. Where the
+pixel grid matters to more than layout, use `bounding_rect()`.
+
 ## Fragments
 
 Use empty braces to group multiple elements without a wrapper:

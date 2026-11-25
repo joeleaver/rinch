@@ -558,19 +558,27 @@ box.
 border box in the container's padding-box frame; desktop sums Taffy's
 parent-relative layouts less `content_origin_inset`, web sums
 `offsetLeft/Top` up the `offsetParent` chain with each intermediate
-`clientLeft/Top`). `bounding_rect` would not do: on the web it includes the
-shift transforms. The flow direction comes from the geometry (`flows_forward`,
-the first two items on one line), so right-to-left and `*-reverse` rows work.
+`clientLeft/Top`; both `None` unless the list is on the item's offsetParent
+chain, so the list must stay positioned or transformed). `bounding_rect` would
+not do: on the web it includes the shift transforms. The flow direction comes
+from the geometry (`flows_forward`, the first two items on one line), so
+right-to-left and `*-reverse` rows work.
 The rule: the box of the item after the gap, plus its collapse shift, at its
 leading edge; if that falls before every line's start (a gap at a line break
 in the source's own collapsed list, where the items before it slid back a
 line), the item before the gap's shifted trailing edge plus the spacing
-instead. A collapse shift is read **along the flow**: the plan counts it that
-way but writes it as a translate toward larger coordinates, so in a backward
-list it is negated before it moves a box (the items themselves are still drawn
-shifted the forward way there). The spacing a gap opens by
-(`carried_extent`) is measured between the facing edges of the pressed item
-and its neighbour, whichever way the list runs; measured one way only, it came
-out negative in a right-to-left row and so zero. Pins: `crates/rinch/src/app/sortable_slot_tests.rs`, each placement
+instead. Every shift is written **along the flow** (`reflow` negates it in a
+backward list, `runs_forward`), so in a right-to-left or reversed row the
+items make room toward the flow's end and none is drawn over the slot (#3065
+review: they were shifted toward larger x there, over it); `slot_at` adds the
+translate as written. The pointer's mapping to a place is still forward-only
+(#3084). The spacing a gap opens by (`carried_extent`, `spacing_beside`) is
+measured between the facing edges of the pressed item and a neighbour **on
+its own line**: the next item, else the previous one, else (alone on its
+line) the first two items sharing any line, else 0. Measured against the next
+item in DOM order, a wrap or a grid took the distance across the line break
+(#3065 review), and measured one way only it came out negative in a
+right-to-left row. Pins: `crates/rinch/src/app/sortable_slot_tests.rs`, each placement
 checked as "the slot's painted box is where the dropped card then is" (column,
-wrap, grid, RTL, clipping card, both ends, empty list, off by default).
+wrap, grid, RTL, clipping card, both ends, empty list, off by default), and
+the spacing on the grabbed item's line (wrap, grid, alone on its line).

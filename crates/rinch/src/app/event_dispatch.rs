@@ -4418,27 +4418,37 @@ impl RinchApp {
         // What the ghost covers around its origin, in device pixels, measured
         // once for the whole drag (#173): what its subtree paints, or `None`
         // where that cannot be bounded (a `fixed` or `sticky` descendant).
-        // Such a ghost is drawn clipped to its own box, as the software
-        // ghost's pixmap always is, so its damage is that box rather than
-        // the whole surface on every frame (#3065).
+        // Such a ghost is drawn clipped to its own box as drawn (through its
+        // own transform; the software pixmap is the untransformed box, inside
+        // it), so its damage is that box rather than the whole surface on
+        // every frame (#3065).
         #[cfg(any(
             feature = "gpu-renderer",
             feature = "android-gpu",
             feature = "embed",
             software_shell
         ))]
-        let (ghost_box, ghost_reach) = {
+        let (ghost_box, ghost_clip, ghost_reach) = {
             let d = doc.borrow();
-            let (w, h) = d.tree.get(node_id).map_or((1.0, 1.0), |n| {
+            let node = d.tree.get(node_id);
+            let (w, h) = node.map_or((1.0, 1.0), |n| {
                 (
                     (n.layout.width as f64 * scale_factor).ceil().max(1.0),
                     (n.layout.height as f64 * scale_factor).ceil().max(1.0),
                 )
             });
-            (
-                peniko::kurbo::Rect::new(0.0, 0.0, w, h),
-                rinch_dom::paint::paint_subtree_bounds(&d.tree, node_id, scale_factor),
-            )
+            let ghost_box = peniko::kurbo::Rect::new(0.0, 0.0, w, h);
+            // The box as `paint_subtree` draws it, through the root's own
+            // transform: an unbounded ghost is clipped to that, not to the
+            // untransformed box, which cut a rotated or scaled one short.
+            let ghost_clip = node.map_or(ghost_box, |n| {
+                let identity = peniko::kurbo::Affine::IDENTITY;
+                rinch_dom::paint::compose_node_transform(n, 0.0, 0.0, scale_factor, identity)
+                    .transform_rect_bbox(ghost_box)
+                    .expand()
+            });
+            let reach = rinch_dom::paint::paint_subtree_bounds(&d.tree, node_id, scale_factor);
+            (ghost_box, ghost_clip, reach)
         };
 
         #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
@@ -4462,7 +4472,7 @@ impl RinchApp {
                 painter.push_clip(
                     peniko::Fill::NonZero,
                     peniko::kurbo::Affine::IDENTITY,
-                    &rinch_dom::paint::painter::PaintShape::Rect(ghost_box),
+                    &rinch_dom::paint::painter::PaintShape::Rect(ghost_clip),
                 );
             }
             rinch_dom::paint::paint_subtree(
@@ -4505,7 +4515,7 @@ impl RinchApp {
         };
         // What the ghost covers wherever it is drawn: its damage (#173).
         #[cfg(software_shell)]
-        let snapshot_bounds = ghost_reach.unwrap_or(ghost_box);
+        let snapshot_bounds = ghost_reach.unwrap_or(ghost_clip);
 
         self.active_dnd = Some(ActiveDrag {
             node_id,

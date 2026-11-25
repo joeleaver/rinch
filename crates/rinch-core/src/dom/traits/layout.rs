@@ -93,17 +93,35 @@ pub trait DomLayout {
     /// `top`, `width` and `height` that put an absolutely positioned child of
     /// `container` (a positioned box, so its containing block) over it. In
     /// logical pixels, unscrolled: an absolute child of a box that scrolls is
-    /// placed against its scrolled content, as `node` is. The web's
-    /// `offsetLeft`/`offsetTop` summed up the `offsetParent` chain to
-    /// `container`.
+    /// placed against its scrolled content, as `node` is. Desktop sums the
+    /// layout; the web sums `offsetLeft`/`offsetTop` up the `offsetParent`
+    /// chain to `container`.
     ///
     /// A sortable list places the slot of an open gap with it (#2154): the
     /// items around the gap carry a sliding `transform`, which a painted box
     /// ([`Self::bounding_rect`]) includes mid-slide and this does not.
     ///
-    /// `None` when `container` is not an ancestor of `node` (on the web: not
-    /// on its `offsetParent` chain, as when it is not positioned), when there
-    /// is no layout, and for a host with no geometry (the default).
+    /// **`None` unless `container` is on `node`'s `offsetParent` chain**, on
+    /// every host (CSSOM View's `offsetParent`, followed up): each step is
+    /// the nearest ancestor that is a containing block for absolutely
+    /// positioned boxes (`position` other than `static`, a `transform`, a
+    /// `filter`; Chrome 157 and Firefox 160 both count a transform), the
+    /// `<body>`, or, for a box that is not positioned itself, a `td`, `th` or
+    /// `table`. So `None` when `container` is none of those (a list given
+    /// `position: static`), when `node` or a box between is `position:
+    /// fixed`, when `node` is not rendered (`display: none` on it or an
+    /// ancestor, `display: contents` on it), when there is no layout, and for
+    /// a host with no geometry (the default).
+    ///
+    /// **Whole pixels on both hosts.** Desktop's layout is rounded to the
+    /// pixel grid (Taffy rounds each box's edges where they fall in the
+    /// page), and the browser rounds `offsetLeft`, `offsetTop`,
+    /// `offsetWidth` and `offsetHeight`. A box at a fractional offset with a
+    /// fractional width answers the same on both (pinned in each host's
+    /// tests). The web rounds each `offsetParent` step on its own, so where
+    /// fractional positions round differently the two can differ by a pixel
+    /// (at most about one per step). No browser API gives the untransformed
+    /// box fractionally: `getBoundingClientRect` includes transforms.
     fn layout_box_in(
         &self,
         _node: NodeId,

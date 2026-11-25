@@ -47,7 +47,7 @@ use std::rc::Rc;
 
 use rinch_core::Component;
 use rinch_core::DismissHandle;
-use rinch_core::dom::{NodeHandle, RenderScope};
+use rinch_core::dom::{NodeHandle, NodeId, RenderScope};
 use rinch_core::element::ValueCallback;
 use rinch_core::events::KeyEventData;
 use rinch_core::get_click_context;
@@ -1275,8 +1275,9 @@ fn carried_class(keyboard: bool, source: SortSource) -> Option<&'static str> {
 }
 
 /// The carried items' extent along x and y, each with the list's spacing
-/// after it (measured between the pressed item and its neighbour along the
-/// list's axis): what a gap opens by. Zero where the host has no boxes.
+/// after it (measured beside the pressed item on its line,
+/// [`spacing_beside`]): what a gap opens by. Zero where the host has no
+/// boxes.
 fn carried_extent(
     cfg: &ListConfig,
     item: &NodeHandle,
@@ -1296,20 +1297,11 @@ fn carried_extent(
         })
         .filter(|f| *f > 0.0)
         .unwrap_or(1.0);
-    // Between the facing edges, whichever way the list runs: a right-to-left
-    // or reversed row has its next item at smaller coordinates, and measured
-    // one way only its spacing came out negative, so zero (#3065).
-    let between =
-        |(a, alen): (f32, f32), (b, blen): (f32, f32)| (b - (a + alen)).max(a - (b + blen));
-    let spacing = at
-        .and_then(|i| {
-            let here = span(&item.bounding_rect()?, cfg.axis);
-            let (other, _) = all.get(i + 1).or_else(|| all.get(i.checked_sub(1)?))?;
-            Some(between(here, span(&other.bounding_rect()?, cfg.axis)))
-        })
-        .unwrap_or(0.0)
-        .max(0.0)
-        / fit;
+    let boxes: Vec<Option<AxisBox>> = all
+        .iter()
+        .map(|(n, _)| Some(AxisBox::of(&n.bounding_rect()?, cfg.axis)))
+        .collect();
+    let spacing = at.map_or(0.0, |i| spacing_beside(&boxes, i)) / fit;
     let (mut w, mut h) = (0.0, 0.0);
     for node in carried {
         if let Some((nw, nh)) = size_of(node) {
@@ -1752,10 +1744,24 @@ fn reflow() {
         return;
     };
     let mut want: Vec<(NodeHandle, NodeHandle, f32, f32)> = Vec::new();
-    let add = |want: &mut Vec<(NodeHandle, NodeHandle, f32, f32)>,
-               cfg: &ListConfig,
-               node: &NodeHandle,
-               d: f32| {
+    // Each list's direction, read once: a shift `d` is counted along the
+    // flow, and drawn toward smaller coordinates in a list that runs backward
+    // (right to left, `*-reverse`).
+    let mut forward: Vec<(NodeId, bool)> = Vec::new();
+    let mut add = |want: &mut Vec<(NodeHandle, NodeHandle, f32, f32)>,
+                   cfg: &ListConfig,
+                   node: &NodeHandle,
+                   d: f32| {
+        let id = cfg.node.node_id();
+        let ahead = match forward.iter().find(|f| f.0 == id) {
+            Some(f) => f.1,
+            None => {
+                let f = runs_forward(cfg);
+                forward.push((id, f));
+                f
+            }
+        };
+        let d = if ahead { d } else { -d };
         let (dx, dy) = match cfg.axis {
             SortAxis::Vertical => (0.0, d),
             SortAxis::Horizontal => (d, 0.0),
@@ -1927,6 +1933,41 @@ impl AxisBox {
     fn same_line(&self, other: &AxisBox) -> bool {
         self.cross < other.cross + other.cross_len && other.cross < self.cross + self.cross_len
     }
+
+    /// The room between this box's and `other`'s facing edges along the
+    /// axis, whichever comes first: a right-to-left or reversed row has its
+    /// next item at smaller coordinates, and measured one way only its
+    /// spacing came out negative, so zero (#3065).
+    fn between(&self, other: &AxisBox) -> f32 {
+        (other.at - (self.at + self.len)).max(self.at - (other.at + other.len))
+    }
+}
+
+/// The list's spacing along its axis beside item `i` of `boxes` (`None` for
+/// an item with no box): the room between its facing edges and a
+/// neighbour's **on its line**, the next item's, else the previous one's. In
+/// a wrapping row or a grid the next item in order can start the next line,
+/// and measured against it the spacing took in the line's length (#3065).
+/// An item alone on its line takes the first two neighbours that share one
+/// anywhere in the list. Zero when none do, or `i` has no box.
+fn spacing_beside(boxes: &[Option<AxisBox>], i: usize) -> f32 {
+    let Some(here) = boxes.get(i).copied().flatten() else {
+        return 0.0;
+    };
+    let beside = |j: Option<usize>| {
+        let other = boxes.get(j?).copied().flatten()?;
+        here.same_line(&other).then(|| here.between(&other))
+    };
+    beside(Some(i + 1))
+        .or_else(|| beside(i.checked_sub(1)))
+        .or_else(|| {
+            boxes.windows(2).find_map(|w| match (w[0], w[1]) {
+                (Some(a), Some(b)) if a.same_line(&b) => Some(a.between(&b)),
+                _ => None,
+            })
+        })
+        .unwrap_or(0.0)
+        .max(0.0)
 }
 
 /// Whether a list's items run toward larger coordinates along its axis, as
@@ -1938,6 +1979,17 @@ fn flows_forward(boxes: &[AxisBox]) -> bool {
         .windows(2)
         .find(|w| w[0].same_line(&w[1]) && (w[1].at - w[0].at).abs() > 0.5)
         .is_none_or(|w| w[1].at > w[0].at)
+}
+
+/// [`flows_forward`] for `cfg`'s items as laid out in it
+/// ([`NodeHandle::layout_box_in`]). Forward where the host has no layout to
+/// tell by, or the list is not positioned.
+fn runs_forward(cfg: &ListConfig) -> bool {
+    items_of(&cfg.node)
+        .iter()
+        .map(|(n, _)| Some(AxisBox::of(&n.layout_box_in(&cfg.node)?, cfg.axis)))
+        .collect::<Option<Vec<_>>>()
+        .is_none_or(|boxes| flows_forward(&boxes))
 }
 
 /// The slot of a gap opened at `slot` of `rest` (the list's items less the
@@ -1996,12 +2048,7 @@ fn slot_at(
         .collect::<Option<Vec<_>>>()?;
     let forward = flows_forward(&boxes);
     // Where `node` would be without the gap: its box moved by its collapse
-    // shift. The plan counts that shift along the flow (minus one item for
-    // each collapsed item before it), but it is written as a translate
-    // toward larger coordinates whatever the direction, so in a list that
-    // runs backward (right to left, `*-reverse`) it is drawn the wrong way.
-    // The drop lands where the flow puts the item, so the slot reads the
-    // shift along the flow.
+    // shift, a translate already drawn the way the list runs.
     let shifted = |node: &NodeHandle| {
         let i = held
             .iter()
@@ -2012,7 +2059,7 @@ fn slot_at(
             SortAxis::Vertical => dy,
             SortAxis::Horizontal => dx,
         };
-        b.at += if forward { along } else { -along };
+        b.at += along;
         Some(b)
     };
     let sized = |b: AxisBox, at: f32| AxisBox { at, len: size, ..b };

@@ -119,17 +119,22 @@ fn a_ghost_at_a_fractional_place_damages_its_edges_and_outline() {
 
 /// A page with one draggable box at (400, 20), 60 x 30, holding `inner`.
 fn app_holding(inner: &str) -> RinchApp {
+    app_holding_styled("", inner)
+}
+
+/// [`app_holding`], the box also styled `style`.
+fn app_holding_styled(style: &str, inner: &str) -> RinchApp {
     let inner = inner.to_string();
+    let style = format!(
+        "position: absolute; left: 400px; top: 20px; width: 60px; height: 30px; \
+         background: rgb(40, 40, 40); {style}"
+    );
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let root = scope.create_element("div");
         root.set_attribute("style", "position: relative; width: 600px; height: 400px");
         let src = scope.create_element("div");
         src.set_attribute("draggable", "true");
-        src.set_attribute(
-            "style",
-            "position: absolute; left: 400px; top: 20px; width: 60px; height: 30px; \
-             background: rgb(40, 40, 40)",
-        );
+        src.set_attribute("style", &style);
         src.set_inner_html(&inner);
         root.append_child(&src);
         root
@@ -204,6 +209,36 @@ fn a_ghost_with_a_fixed_descendant_damages_only_its_box() {
     );
     let (ghost, moved) = drag_away(&mut app);
     assert_eq!(ghost, Rect::new(220.0, 185.0, 280.0, 215.0));
+    assert!(
+        area(&moved) < (W * H) as f64 / 4.0,
+        "moving the ghost repaints around it, not the surface: {moved:?}"
+    );
+}
+
+/// The same box scaled 2x about its centre, holding a `position: sticky`
+/// box (a transformed root contains a `fixed` one, so the walk places that;
+/// a sticky one it cannot bound): the ghost is drawn scaled, so it is clipped
+/// to, and damages, its box as drawn, 120 x 60 about the same centre, not the
+/// 60 x 30 untransformed box (#3065 review: the scaled ghost was cut to its
+/// middle quarter, and its edges left behind).
+#[test]
+fn a_transformed_unbounded_ghost_damages_its_box_as_drawn() {
+    let mut app = app_holding_styled(
+        "transform: scale(2)",
+        "<div style=\"position: sticky; top: 0; width: 20px; height: 10px; \
+         background: rgb(200, 0, 0)\"></div>",
+    );
+    let (ghost, moved) = drag_away(&mut app);
+    let (w, h) = (ghost.width(), ghost.height());
+    assert!(
+        (120.0..122.0).contains(&w) && (60.0..62.0).contains(&h),
+        "{ghost:?}"
+    );
+    // Drawn 120 x 60 about the untransformed box's centre.
+    let c = ghost.center();
+    let drawn = Rect::new(c.x - 60.0, c.y - 30.0, c.x + 60.0, c.y + 30.0);
+    assert!(ghost.contains_rect(drawn), "{ghost:?} holds {drawn:?}");
+    assert!(covers(&moved, drawn), "{moved:?} repaints {drawn:?}");
     assert!(
         area(&moved) < (W * H) as f64 / 4.0,
         "moving the ghost repaints around it, not the surface: {moved:?}"

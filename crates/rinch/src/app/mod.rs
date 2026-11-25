@@ -981,8 +981,9 @@ pub(crate) struct ActiveDrag {
     /// measured once when the drag starts
     /// (`rinch_dom::paint::paint_subtree_bounds`): the box, and whatever its
     /// subtree draws past it. A subtree that cannot be bounded (a `fixed` or
-    /// `sticky` descendant) is drawn clipped to its box, as the software
-    /// pixmap is, and this is that box (#3065).
+    /// `sticky` descendant) is drawn clipped to its box through its own
+    /// transform (the bounding box of the box as drawn), and this is that
+    /// box (#3065).
     #[cfg(software_shell)]
     pub snapshot_bounds: peniko::kurbo::Rect,
     /// Offset within the element where the grab happened, relative to its

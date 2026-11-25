@@ -495,3 +495,83 @@ fn right_to_left_a_collapsed_card_lands_in_its_slot() {
     lands_in_its_slot(&mut f, "a", over);
     assert_eq!(cards(&f, "c1"), ["b", "c", "a", "d"]);
 }
+
+/// Right to left, a card carried in from the other list and one collapsed in
+/// its own list: the cards make room the way the row runs, so none is drawn
+/// over the slot (#3065 review: the shifts were drawn toward larger x, and
+/// the card after the gap slid onto it).
+#[test]
+fn right_to_left_no_card_is_drawn_over_the_slot() {
+    let overlaps = |a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)| {
+        a.0 < b.0 + b.2 - 0.5 && b.0 < a.0 + a.2 - 0.5
+    };
+    let mut f = fixture(Setup::row("width: 190px; direction: rtl"));
+    for (k, over) in [("e", "b"), ("a", "c")] {
+        grab(&mut f, k);
+        let over = point(&f, item(&f, over), 0.5, 0.5);
+        move_to(&mut f, over);
+        f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+        let (_, at) = slot(&f);
+        for key in cards(&f, "c1").iter().filter(|c| *c != k) {
+            let b = box_of(&f, item(&f, key));
+            assert!(!overlaps(at, b), "{key} at {b:?} is over the slot {at:?}");
+        }
+        lands_in_its_slot(&mut f, k, over);
+    }
+}
+
+/// Grab `k` and carry it over `g`, the other list's one card, near its start:
+/// how far its own list's `next` (collapsing toward it) and `g` (opening the
+/// gap) move along x. Each is the carried card's 30px and the 10px spacing.
+fn gap_of(f: &mut Fixture, k: &str, next: &str) -> (f32, f32) {
+    let (next_was, g_was) = (box_of(f, item(f, next)).0, box_of(f, item(f, "g")).0);
+    grab(f, k);
+    let over = point(f, item(f, "g"), 0.2, 0.5);
+    move_to(f, over);
+    f.app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    let moved = (
+        box_of(f, item(f, next)).0 - next_was,
+        box_of(f, item(f, "g")).0 - g_was,
+    );
+    release_at(f, over);
+    moved
+}
+
+/// A wrapping row, three cards a line. `c` is its line's last, and the next
+/// card, `d`, starts the next line: the spacing is measured against `b`, on
+/// `c`'s line, not `d` (#3065: against `d` it took in the line's length, 50px,
+/// and the gap opened by 80px).
+#[test]
+fn a_wrapping_row_measures_the_spacing_on_the_grabbed_cards_line() {
+    let mut f = fixture(Setup {
+        c1: &["a", "b", "c", "d", "e"],
+        c2: &["g"],
+        ..Setup::row("width: 110px; flex-wrap: wrap")
+    });
+    assert_eq!(gap_of(&mut f, "c", "d"), (-40.0, 40.0));
+}
+
+/// The same in a grid of three columns: `c` ends its row.
+#[test]
+fn a_grid_measures_the_spacing_in_the_grabbed_cards_row() {
+    let mut f = fixture(Setup {
+        c1: &["a", "b", "c", "d", "e"],
+        c2: &["g"],
+        ..Setup::row("width: 110px; display: grid; grid-template-columns: repeat(3, 30px)")
+    });
+    assert_eq!(gap_of(&mut f, "c", "d"), (-40.0, 40.0));
+}
+
+/// `a b c / d e f / h`: `h` is alone on its line, so it has no neighbour
+/// there, and the one before it, `f`, ends the line above. The spacing is the
+/// list's, measured between two cards that share a line, not against `f`
+/// (#3065: 50px, and the gap opened by 80px).
+#[test]
+fn a_card_alone_on_its_line_takes_the_lists_spacing() {
+    let mut f = fixture(Setup {
+        c1: &["a", "b", "c", "d", "e", "f", "h"],
+        c2: &["g"],
+        ..Setup::row("width: 110px; flex-wrap: wrap")
+    });
+    assert_eq!(gap_of(&mut f, "h", "a"), (0.0, 40.0));
+}

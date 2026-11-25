@@ -1514,11 +1514,15 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   the real fractional translate, rounded out. Those bounds are measured once
   when the drag starts, without the per-frame visit budget
   (`layer_bounds::unbudgeted_subtree_bounds`; `MAX_DEPTH` still applies), so
-  a ghost of more than 512 nodes is bounded. One still unbounded (a `fixed` or
-  `sticky` descendant, or deeper than `MAX_DEPTH`) has its Vello snapshot
-  recorded inside a clip to its box, as the software pixmap always was, and
-  its bounds are that box: it used to damage the whole surface on every frame
-  of the drag (#3065). Until the earlier fix the GPU frame damaged only the truncated box, so the
+  a ghost of more than 512 nodes is bounded. One still unbounded (a `fixed`
+  descendant the ghost's root does not contain, a `sticky` one, or deeper
+  than `MAX_DEPTH`) has its Vello snapshot recorded inside a clip to its box
+  as drawn — the bounding box of the border box through the root's own
+  transform (`compose_node_transform(..).transform_rect_bbox`), so a scaled
+  or rotated ghost is not cut to its untransformed box — and its bounds are
+  that clip: it used to damage the whole surface on every frame of the drag
+  (#3065). The software pixmap is still the untransformed box. A transformed
+  root contains its `fixed` descendants, so their reach is measured. Until the earlier fix the GPU frame damaged only the truncated box, so the
   right column and bottom row of every place a bordered ghost passed stayed
   painted after the drag. Pins: `gpu_drag_ghost_damage_tests`,
   `drag_ghost_dirty_region_tests`.

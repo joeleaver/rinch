@@ -315,7 +315,11 @@ SortableList {
   gap in the source's own list that does not collapse (where the source is
   drawn at the place), draw none. The list's own `::before` and `::after` are
   taken while a slot is on, and the list must stay `position: relative` (the
-  stylesheet's default) for the `::before` to be placed against it.
+  stylesheet's default) for the `::before` to be placed against it and for the
+  items to be measured in it (`layout_box_in`). In a right-to-left or reversed
+  row the items make room toward the row's end, so none is drawn over the
+  slot; which place the pointer picks there is still worked out as if the row
+  ran left to right (#3084).
 - **In the source's own list**, unless it collapses, a gap is the list laid out
   again in the order the drop would give: the items between the place and the
   source make room and the source itself is drawn at the place, so nothing is
