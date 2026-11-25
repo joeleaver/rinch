@@ -48,6 +48,8 @@ struct Mods {
     alt_graph: bool,
     /// `getModifierState("CapsLock")`.
     caps_lock: bool,
+    /// `isComposing`: an input method owns the press.
+    composing: bool,
 }
 
 const CTRL: Mods = Mods {
@@ -57,6 +59,7 @@ const CTRL: Mods = Mods {
     alt: false,
     alt_graph: false,
     caps_lock: false,
+    composing: false,
 };
 const META: Mods = Mods {
     ctrl: false,
@@ -65,6 +68,7 @@ const META: Mods = Mods {
     alt: false,
     alt_graph: false,
     caps_lock: false,
+    composing: false,
 };
 
 fn mouse(kind: &str, x: f32, y: f32) {
@@ -165,6 +169,7 @@ impl Fixture {
         init.set_alt_key(mods.alt);
         init.set_modifier_alt_graph(mods.alt_graph);
         init.set_modifier_caps_lock(mods.caps_lock);
+        init.set_is_composing(mods.composing);
         let ev =
             web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
         self.capture().dispatch_event(&ev).unwrap();
@@ -342,6 +347,7 @@ const ALT_GR: Mods = Mods {
     alt: true,
     alt_graph: true,
     caps_lock: false,
+    composing: false,
 };
 
 /// An AltGr press that types nothing new is the chord, as on desktop
@@ -547,4 +553,35 @@ fn a_press_with_caps_lock_on_teaches_nothing() {
     f.teardown();
     assert_eq!(learned_with_caps_lock, None, "CapsLock on: nothing learned");
     assert_eq!(learned.as_deref(), Some("1"), "CapsLock off: learned");
+}
+
+/// On Firefox and macOS a dead key starts a composition, so the press that
+/// ends it is a composing one. On a page with an editor and no menu bar (the
+/// bar's listener notes every press) the editor returned on the composition
+/// before noting that press, the dead key stayed pending, and the next plain
+/// press was taken for the composed character and taught nothing. The
+/// composing press teaches nothing itself; the plain press after it teaches.
+#[wasm_bindgen_test]
+fn a_composing_press_ends_a_pending_dead_key_with_no_menu_bar() {
+    rinch_web::__forget_key_layout();
+    let f = Fixture::focused(false);
+    f.key("Dead", "Quote", Mods::default());
+    f.key(
+        "e",
+        "KeyE",
+        Mods {
+            composing: true,
+            ..Mods::default()
+        },
+    );
+    let learned_composing = rinch_web::__known_unmodified_key("KeyE");
+    f.key("q", "KeyQ", Mods::default());
+    let learned_plain = rinch_web::__known_unmodified_key("KeyQ");
+    f.teardown();
+    assert_eq!(learned_composing, None, "a composing press teaches nothing");
+    assert_eq!(
+        learned_plain.as_deref(),
+        Some("q"),
+        "the plain press after the composition teaches"
+    );
 }

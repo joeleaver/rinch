@@ -208,14 +208,20 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     if !on_capture {
         return false;
     }
+    // What a plain press types, for the AltGr question below. Before the
+    // composition check: `learn` rejects a composing press (its `key` is the
+    // input method's), but it still has to see it. On Firefox and macOS a dead
+    // key starts a composition, so the press that ends the dead key is a
+    // composing one; returning before noting it left the dead key pending on
+    // a page with no menu bar (whose listener notes every press), and the
+    // next plain press was then taken for the composed character and taught
+    // nothing.
+    crate::key_layout::note_press(event);
     // During an IME composition, yield every key to the textarea + IME — the composed
     // text arrives via the composition events, so inserting here would double up.
     if event.is_composing() || COMPOSING.with(|c| c.get()) {
         return false;
     }
-    // What a plain press types, for the AltGr question below. After the
-    // composition check: a composing press's `key` is the input method's.
-    crate::key_layout::note_press(event);
     let Some((container_nid, handle)) = focused_handle() else {
         return false;
     };
