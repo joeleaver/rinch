@@ -1528,19 +1528,26 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   (`drag_ghost_software::ghost_pixmap_rect`): a `box-shadow` spread 9999px
   is at most twice the surface each way, not the shadow's reach. Its buffer
   is allocated fallibly, as zeroed memory, not written
-  (`TinySkiaPainter::try_new`: a fill would commit every page, and under
-  Linux overcommit be OOM-killed rather than fail); where it cannot be had,
-  the box alone is tried, and then no ghost at all, never a panic. An empty
+  (`TinySkiaPainter::try_new`): allocating it commits none of the pages the
+  ghost never paints, where a fill committed them all (a small buffer may
+  still be cleared by the allocator). It does not make the pages safe: a
+  ghost whose shadow covers its reach writes every page as it paints, and
+  under Linux overcommit that paint can still be OOM-killed; the pixmap's
+  size bound above is what limits it. Where the buffer cannot be had at
+  all, the box alone is tried, and then no ghost at all, never a panic. An empty
   pixmap draws and damages nothing on a software frame, and does not touch
   a GPU frame, which draws the scene. The pixmap is painted only for a
   window that presents with software: `RinchApp::presents_gpu_frames`
-  records which builder made the last frame (`build_gpu_frame` or
-  `build_pixels`), and a drag that starts after a GPU frame owes its pixmap
-  (`drag_ghost_software::SoftwareSnapshot::Owed`), so a desktop build
-  carrying both renderers no longer allocates and paints up to four
-  surfaces at every drag start for nothing. Should software take over
-  mid-drag (a lost GPU falling back), its first frame paints the owed
-  pixmap from the document as it then is. A transformed root contains its
+  records which builder made the last frame (`build_gpu_frame`, or
+  `build_scene`, which an embedded `RinchContext` presents through, against
+  `build_pixels`; `RinchApp::note_gpu_frame`), and a drag that starts after
+  a GPU frame owes its pixmap (`drag_ghost_software::SoftwareSnapshot`, its
+  `ghost` `None`), so a build carrying both renderers (`gpu`, or
+  `windowing` + `embed`) no longer allocates and paints up to four surfaces
+  at every drag start for nothing. A GPU frame also drops a pixmap a
+  software frame painted earlier in the drag, owing it again. Should
+  software take over mid-drag (a lost GPU falling back), its first frame
+  paints the owed pixmap from the document as it then is. A transformed root contains its
   `fixed` descendants, so their reach is measured. Until the earlier fix
   the GPU frame damaged only the truncated box, so the
   right column and bottom row of every place a bordered ghost passed stayed

@@ -29,36 +29,62 @@ use rinch_dom::paint::skia_painter::TinySkiaPainter;
 ///
 /// A drag paints it when it starts if the window's last frame was a software
 /// one, or there has been none (`RinchApp::presents_gpu_frames`). Where the
-/// GPU presented that frame it is [`Self::Owed`]: nothing is allocated, and
-/// the GPU frames draw the recorded scene. Should the window present with
-/// software before the drag ends (its GPU renderer lost, and the software
-/// one taking over), that frame paints it first (`RinchApp::build_pixels`),
-/// from the document as it is then rather than as it was when the drag
-/// started: the picture of the press was never taken, and the dragged box as
-/// it now stands is the closest there is.
-pub(crate) enum SoftwareSnapshot {
-    /// Not painted yet: what to paint when a software frame needs it.
-    Owed(GhostRequest),
-    /// Painted; empty where no pixmap could be had.
-    Painted(SoftwareGhost),
+/// GPU presented that frame it is owed (`ghost` is `None`): nothing is
+/// allocated, and the GPU frames draw the recorded scene. Should the window
+/// present with software before the drag ends (its GPU renderer lost, and
+/// the software one taking over), that frame paints it first
+/// (`RinchApp::build_pixels`), from the document as it is then rather than
+/// as it was when the drag started: the picture of the press was never
+/// taken, and the dragged box as it now stands is the closest there is.
+///
+/// A frame built for the GPU drops a painted pixmap again
+/// (`RinchApp::note_gpu_frame`): no GPU frame draws it, and it can be
+/// several surfaces of memory, otherwise held to the drag's end for nothing.
+pub(crate) struct SoftwareSnapshot {
+    /// What it is painted from, kept for as long as the drag lasts.
+    pub(crate) request: GhostRequest,
+    /// The pixmap; `None` while it is owed, and empty (0 x 0) where none
+    /// could be had.
+    pub(crate) ghost: Option<SoftwareGhost>,
 }
 
 impl SoftwareSnapshot {
+    /// A ghost owed, not painted yet.
+    pub(crate) fn owed(request: GhostRequest) -> Self {
+        Self {
+            request,
+            ghost: None,
+        }
+    }
+
     /// Paint the ghost if it is owed, for a software frame to blit: whether
     /// it was.
     pub(crate) fn paint_owed(&mut self, doc: &RefCell<RinchDocument>) -> bool {
-        let Self::Owed(request) = self else {
+        if self.ghost.is_some() {
             return false;
-        };
-        *self = Self::Painted(request.paint(doc));
+        }
+        self.ghost = Some(self.request.paint(doc));
         true
     }
 
     /// The painted ghost; `None` while it is owed.
     pub(crate) fn painted(&self) -> Option<&SoftwareGhost> {
-        match self {
-            Self::Painted(ghost) => Some(ghost),
-            Self::Owed(_) => None,
+        self.ghost.as_ref()
+    }
+}
+
+// Only a build with a GPU frame builder has a GPU frame to note.
+#[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
+impl super::RinchApp {
+    /// Note that a frame is being built for the GPU (`gpu_frame_kind`, and
+    /// `build_scene_with`, which an embedded `RinchContext` presents through
+    /// too), so the window presents GPU frames: a drag that starts now owes
+    /// its software ghost rather than painting it, and a drag's painted
+    /// pixmap is dropped, owed again, as no GPU frame draws it (#3065).
+    pub(super) fn note_gpu_frame(&mut self) {
+        self.presents_gpu_frames = true;
+        if let Some(drag) = &mut self.active_dnd {
+            drag.snapshot_software.ghost = None;
         }
     }
 }

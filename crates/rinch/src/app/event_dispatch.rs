@@ -4513,11 +4513,11 @@ impl RinchApp {
                     anchor.1 as f64 * scale_factor,
                 ),
             };
-            if self.presents_gpu_frames {
-                SoftwareSnapshot::Owed(request)
-            } else {
-                SoftwareSnapshot::Painted(request.paint(doc))
+            let mut snapshot = SoftwareSnapshot::owed(request);
+            if !self.presents_gpu_frames {
+                snapshot.paint_owed(doc);
             }
+            snapshot
         };
 
         self.active_dnd = Some(ActiveDrag {

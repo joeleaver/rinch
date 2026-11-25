@@ -1373,7 +1373,8 @@ pub struct RinchApp {
     /// Whether we have a previous frame's pixels for dirty region caching.
     #[cfg(software_shell)]
     pub(crate) has_previous_frame: bool,
-    /// Whether the last frame was built for the GPU (`build_gpu_frame`)
+    /// Whether the last frame was built for the GPU (`build_gpu_frame`, or
+    /// `build_scene` for an embedded context; `note_gpu_frame`)
     /// rather than the software renderer (`build_pixels`): which one presents
     /// the window, so a drag paints the software ghost only for the second.
     #[cfg(software_shell)]
@@ -2909,6 +2910,8 @@ impl RinchApp {
         sliced: bool,
     ) -> Option<Vec<rinch_dom::paint::slicing::SurfaceSlice>> {
         use rinch_dom::perf::{Counter, FullRepaintReason};
+        #[cfg(software_shell)]
+        self.note_gpu_frame();
         if !self.scene_dirty && self.scene_is_full && self.scene_sliced == sliced {
             self.perf_add(Counter::PaintCachedFrames, 1);
             return None;
@@ -3194,7 +3197,7 @@ impl RinchApp {
         target: Option<rinch_dom::perf::FullRepaintReason>,
     ) -> GpuFrameKind {
         use rinch_dom::perf::Counter;
-        self.presents_gpu_frames = true;
+        self.note_gpu_frame();
         if !self.scene_dirty && target.is_none() {
             self.perf_add(Counter::PaintCachedFrames, 1);
             return GpuFrameKind::Unchanged;

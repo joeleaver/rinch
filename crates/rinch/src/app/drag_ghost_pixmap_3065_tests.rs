@@ -292,8 +292,8 @@ fn the_pixmap_rect_is_reach_within_a_surface_of_the_grab_point() {
 }
 
 /// A ghost that could not be had: what a software frame would blit is empty.
-fn no_ghost() -> SoftwareSnapshot {
-    SoftwareSnapshot::Painted(SoftwareGhost {
+fn no_ghost() -> Option<SoftwareGhost> {
+    Some(SoftwareGhost {
         pixels: Vec::new(),
         width: 0,
         height: 0,
@@ -329,7 +329,7 @@ fn a_window_the_gpu_presents_paints_no_software_ghost() {
 fn a_gpu_frame_draws_the_ghost_where_no_pixmap_could_be_had() {
     let mut app = page(1.0, "", "");
     app.start_drag((250.0, 200.0));
-    *app.software() = no_ghost();
+    app.software().ghost = no_ghost();
     app.gpu_frame();
     assert_eq!(
         app.app.last_ghost_rect,
@@ -351,13 +351,69 @@ fn a_drag_started_on_the_gpu_gets_its_ghost_when_software_takes_over() {
     assert_eq!(app.pixmap_size(), (60, 30));
 }
 
+/// A drag whose ghost was painted on a software frame, the window then
+/// presenting on the GPU: the GPU frame drops the pixmap, which no GPU frame
+/// draws (#3065 review: it stayed in memory, ignored, until the drag ended),
+/// and a software frame after it paints the ghost again.
+#[cfg(feature = "gpu-renderer")]
+#[test]
+fn a_gpu_frame_drops_a_painted_software_ghost() {
+    let mut app = page(1.0, "", "");
+    app.drag();
+    assert_eq!(app.pixmap_size(), (60, 30), "painted on software");
+    app.gpu_frame();
+    assert!(
+        app.software().painted().is_none(),
+        "the GPU frame dropped it"
+    );
+    assert_eq!(app.pixel(230, 200), GHOST);
+    assert_eq!(app.pixmap_size(), (60, 30), "software painted it again");
+}
+
+/// A `RinchContext` presents through `build_scene` (`RinchContext::scene`,
+/// `embed.rs`), and on a `windowing` + `embed` build its app carries the
+/// software ghost too (#3065 review: `build_scene` never noted a GPU frame,
+/// so every drag in an embedded context allocated a pixmap no frame draws).
+/// A drag that starts before the first scene paints its ghost, as for a
+/// window with no frame yet, and the scene drops it; a drag that starts
+/// after a scene paints none.
+///
+/// Driven on the app, through the call `RinchContext::scene` makes, not
+/// through a `RinchContext`: `RinchContext::new` registers its thread as
+/// the process's main thread, which fails every other test in this binary
+/// that writes a signal from its own thread.
+#[cfg(any(feature = "embed", feature = "gpu-renderer"))]
+#[test]
+fn a_scene_built_for_an_embedded_context_paints_no_software_ghost() {
+    let mut app = page(1.0, "box-shadow: 0 0 0 9999px rgba(0, 0, 200, 0.5)", "");
+    // No GPU frame yet, as a context before its first scene.
+    assert!(!app.app.presents_gpu_frames);
+    app.start_drag((250.0, 200.0));
+    assert_eq!(app.pixmap_size(), (1200, 800), "painted with no frame yet");
+    let _ = app.app.build_scene(1.0, (W, H));
+    assert!(app.software().painted().is_none(), "the scene dropped it");
+
+    app.event(PlatformEvent::MouseUp {
+        x: 250.0,
+        y: 200.0,
+        button: MouseButton::Left,
+    });
+    assert!(app.app.active_dnd.is_none(), "the drag ended");
+    let _ = app.app.build_scene(1.0, (W, H));
+    app.start_drag((250.0, 200.0));
+    assert!(
+        app.software().painted().is_none(),
+        "a drag after a scene paints no pixmap"
+    );
+}
+
 /// On a software frame, an empty ghost (no pixmap could be had) draws
 /// nothing and names no damage.
 #[test]
 fn a_software_frame_draws_no_ghost_where_no_pixmap_could_be_had() {
     let mut app = page(1.0, "", "");
     app.start_drag((250.0, 200.0));
-    *app.software() = no_ghost();
+    app.software().ghost = no_ghost();
     assert_eq!(app.pixel(230, 200), PAGE);
     assert_eq!(app.app.last_ghost_rect, None);
 }
@@ -369,13 +425,12 @@ fn a_software_frame_draws_no_ghost_where_no_pixmap_could_be_had() {
 fn a_pixmap_that_cannot_be_had_falls_back_to_the_box_then_to_none() {
     use rinch_dom::paint::skia_painter::TinySkiaPainter;
     let mut app = page(1.0, "box-shadow: 0 0 0 40px rgb(0, 0, 200)", "");
-    // Owed, so the request it would paint from can be had.
+    // Owed, so the request is all there is.
     app.app.presents_gpu_frames = true;
     app.start_drag((250.0, 200.0));
-    let SoftwareSnapshot::Owed(request) = &app.app.active_dnd.as_ref().unwrap().snapshot_software
-    else {
-        panic!("the ghost is owed");
-    };
+    let snapshot = &app.app.active_dnd.as_ref().unwrap().snapshot_software;
+    assert!(snapshot.painted().is_none(), "the ghost is owed");
+    let request = &snapshot.request;
     let doc = app.app.doc.as_ref().unwrap();
     let summary = |g: &SoftwareGhost| (g.width, g.height, g.origin, g.pixels.len());
     let centre = |g: &SoftwareGhost, x: i32, y: i32| {
