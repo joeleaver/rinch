@@ -109,6 +109,8 @@ mod devtools_keys;
 mod devtools_keys_2689_tests;
 #[cfg(all(test, software_shell))]
 mod drag_ghost_pixmap_3065_tests;
+#[cfg(software_shell)]
+mod drag_ghost_software;
 #[cfg(all(test, feature = "windowing"))]
 mod img_error_2202_tests;
 #[cfg(test)]
@@ -981,9 +983,10 @@ pub(crate) struct ActiveDrag {
     pub snapshot_height: u32,
     /// Where the pixmap's top-left pixel sits around the snapshot's origin
     /// (the box's top-left), in physical pixels: the pixmap is
-    /// `snapshot_bounds` out to whole pixels, so this is negative where an
-    /// outline, a shadow or a scaled-up transform reaches left of or above
-    /// the box (#3065).
+    /// `snapshot_bounds` out to whole pixels, within a surface's width and
+    /// height of the grab point (`drag_ghost_software::ghost_pixmap_rect`),
+    /// so this is negative where an outline, a shadow or a scaled-up
+    /// transform reaches left of or above the box (#3065).
     #[cfg(software_shell)]
     pub snapshot_origin: (i32, i32),
     /// Where the snapshot paints, in physical pixels around its origin,

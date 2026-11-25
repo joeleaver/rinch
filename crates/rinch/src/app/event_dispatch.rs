@@ -4489,61 +4489,45 @@ impl RinchApp {
         };
 
         // What the ghost covers wherever it is drawn: its damage (#173), and
-        // the software pixmap's extent.
+        // what the software pixmap holds as much of as the window can show.
         #[cfg(software_shell)]
         let snapshot_bounds = ghost_reach.unwrap_or(ghost_clip);
 
+        // The software pixmap holds everything the ghost draws, as the GPU
+        // scene does (an outline or a shadow past the box, a scaled-up
+        // transform), within a surface's width and height of the grab point
+        // (#3065; `drag_ghost_software`).
         #[cfg(software_shell)]
-        let (snapshot_pixels, snapshot_width, snapshot_height, snapshot_origin) = {
+        let super::drag_ghost_software::SoftwareGhost {
+            pixels: snapshot_pixels,
+            width: snapshot_width,
+            height: snapshot_height,
+            origin: snapshot_origin,
+        } = {
             let mut d = doc.borrow_mut();
             let d = &mut *d;
-
-            // The pixmap holds everything the ghost draws, as the GPU scene
-            // does: an outline or a shadow past the box, a scaled-up
-            // transform (#3065). It was the untransformed box, which cut
-            // those off. Whole pixels, and no further from the box than the
-            // surface is wide and tall, so a far-reaching shadow cannot ask
-            // for an unbounded pixmap.
-            let (vw, vh) = (
-                d.tree.viewport.width as f64 * scale_factor,
-                d.tree.viewport.height as f64 * scale_factor,
-            );
-            let pix = snapshot_bounds
-                .intersect(ghost_clip.inflate(vw, vh))
-                .expand();
-            let (sw, sh) = (pix.width().max(1.0) as u32, pix.height().max(1.0) as u32);
-            // Where the subtree's origin lands in the pixmap.
-            let at = (-pix.x0, -pix.y0);
-
-            let mut painter = TinySkiaPainter::new(sw, sh);
-            painter.fill_transparent();
-            // Grey text, as the GPU ghost (#2286 stage 3): drawn at the
-            // pointer, off the subpixel grid.
-            painter.set_subpixel_text(false);
-
-            if ghost_reach.is_none() {
-                painter.push_clip(
-                    peniko::Fill::NonZero,
-                    peniko::kurbo::Affine::IDENTITY,
-                    &rinch_dom::paint::painter::PaintShape::Rect(
-                        ghost_clip + peniko::kurbo::Vec2::new(at.0, at.1),
-                    ),
-                );
-            }
-            rinch_dom::paint::paint_subtree_at(
-                &d.tree,
-                &mut painter,
+            let ghost = super::drag_ghost_software::GhostPaint {
+                tree: &d.tree,
                 node_id,
-                scale_factor,
-                at,
+                scale: scale_factor,
+                reach: ghost_reach,
+                clip: ghost_clip,
+                // The grab point, logical, in the snapshot's device pixels
+                // (`ActiveDrag::ghost_translate`).
+                anchor: (
+                    anchor.0 as f64 * scale_factor,
+                    anchor.1 as f64 * scale_factor,
+                ),
+                surface: (
+                    d.tree.viewport.width as f64 * scale_factor,
+                    d.tree.viewport.height as f64 * scale_factor,
+                ),
+            };
+            super::drag_ghost_software::paint_software_ghost(
+                &ghost,
                 &mut d.font_cx,
                 &mut d.layout_cx,
-            );
-            if ghost_reach.is_none() {
-                painter.pop_layer();
-            }
-            let origin = (pix.x0 as i32, pix.y0 as i32);
-            (painter.pixels().to_vec(), sw, sh, origin)
+            )
         };
 
         self.active_dnd = Some(ActiveDrag {

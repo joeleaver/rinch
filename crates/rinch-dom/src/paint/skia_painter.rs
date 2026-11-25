@@ -16,6 +16,8 @@ use super::glyph_atlas::{
 };
 use super::painter::{BlendMode, GlyphSynthesis, PaintGlyph, PaintImage, PaintShape, Painter};
 
+mod try_new;
+
 // ── Conversion helpers ────────────────────────────────────────────────────
 
 /// Convert a kurbo `Affine` to a tiny-skia `Transform`.

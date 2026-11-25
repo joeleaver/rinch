@@ -1521,7 +1521,14 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   transform (`compose_node_transform(..).transform_rect_bbox`), so a scaled
   or rotated ghost is not cut to its untransformed box — and its bounds are
   that clip: it used to damage the whole surface on every frame of the drag
-  (#3065). The software pixmap is still the untransformed box. A transformed
+  (#3065). The software pixmap holds those bounds (the clip, for an
+  unbounded ghost), cut to a surface's width and height either side of the
+  grab point, the most the window can show with the pointer over it
+  (`drag_ghost_software::ghost_pixmap_rect`): a `box-shadow` spread 9999px
+  is at most twice the surface each way, not the shadow's reach. Its buffer
+  is reserved fallibly (`TinySkiaPainter::try_new`); where it cannot be
+  had, the box alone is tried, and then no ghost at all, never a panic. A
+  transformed
   root contains its `fixed` descendants, so their reach is measured. Until the earlier fix the GPU frame damaged only the truncated box, so the
   right column and bottom row of every place a bordered ghost passed stayed
   painted after the drag. Pins: `gpu_drag_ghost_damage_tests`,
