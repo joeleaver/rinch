@@ -172,6 +172,12 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(None, false)
+}
+
+/// The board with the card column `plain` not a `keyboard` list, and with
+/// `tabindex="0"` written by the app on every card when `card_tabindex`.
+fn fixture_with(plain: Option<&'static str>, card_tabindex: bool) -> Fixture {
     DROPS.with(|d| d.borrow_mut().clear());
     OFFERS.with(|d| d.borrow_mut().clear());
     SELECTION.with(|d| d.borrow_mut().clear());
@@ -210,7 +216,7 @@ fn fixture() -> Fixture {
                                         style: "width: 200px; flex-shrink: 0",
                                         SortableHandle { style: "height: 20px" }
                                         SortableList {
-                                            keyboard: true,
+                                            keyboard: plain != Some(c.id.as_str()),
                                             group: "cards", id: c.id.clone(), label: c.id.clone(),
                                             style: "--rinch-sortable-gap: 0px; height: 120px; overflow-y: auto; padding-top: 6px",
                                             judge: Some(Rc::new(judge_cards) as SortJudge),
@@ -221,9 +227,17 @@ fn fixture() -> Fixture {
                     // longer the default).
                     source: SortSource::Dim,
                                             for card in c.cards.clone() {
-                                                SortableItem {
-                                                    key: card.clone(), value: card.clone(),
-                                                    style: "height: 30px; flex-shrink: 0",
+                                                if card_tabindex {
+                                                    SortableItem {
+                                                        key: card.clone(), value: card.clone(),
+                                                        style: "height: 30px; flex-shrink: 0",
+                                                        "tabindex": "0",
+                                                    }
+                                                } else {
+                                                    SortableItem {
+                                                        key: card.clone(), value: card.clone(),
+                                                        style: "height: 30px; flex-shrink: 0",
+                                                    }
                                                 }
                                             }
                                         }

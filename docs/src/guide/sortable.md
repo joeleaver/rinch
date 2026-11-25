@@ -215,8 +215,10 @@ drawn now, with the list's `label` and the item's `label` (their ids when
 empty); the same sentence twice in a row is still announced. Items carry
 `aria-roledescription="sortable item"`; in a `keyboard` list an enabled item
 also gets an `aria-description` with the keys, unless you wrote one. A lift
-can land in any list of the group, `keyboard` or not; the dropped item is made
-focusable to take the focus back.
+can land in any list of the group, `keyboard` or not. Dropped in a list without
+`keyboard`, an item that has no `tabindex` of yours is lent `tabindex="-1"` to
+take the focus back: focusable, no Tab stop, and the `tabindex` goes once the
+focus moves elsewhere. One with a `tabindex` you wrote keeps yours.
 
 ## Read-only
 

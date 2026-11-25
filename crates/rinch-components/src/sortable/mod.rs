@@ -133,6 +133,11 @@ rinch_core::doc_keyed! {
     /// The item to focus once it is drawn: (document, group, key, the list it
     /// was dropped in). Swept with its document (#2797).
     static PENDING_FOCUS: FocusSlot = FocusSlot(None);
+    /// The items rinch made focusable to give them the focus (`focus_item`),
+    /// as `(their document, the item, the key entry that takes the
+    /// `tabindex` back when the focus leaves)`. Swept with its document.
+    static LENT_TABINDEX: rinch_core::DocList<(u64, NodeHandle, DismissHandle)> =
+        rinch_core::DocList::new(|l| Some(l.0));
 }
 
 rinch_core::doc_keyed! {

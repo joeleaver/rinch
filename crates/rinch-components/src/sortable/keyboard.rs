@@ -317,13 +317,64 @@ pub(super) fn try_pending_focus() {
 /// [`SortableList::keyboard`] list, and only once the list has seen it
 /// (`offer_keyboard`): the item drawn again in the middle of a lift (its
 /// render comes before its list's), and one dropped into a list without
-/// `keyboard`, are made focusable first, as the item that holds the
-/// keyboard has to be.
+/// `keyboard`, have no `tabindex` and are lent one (`lend_tabindex`).
 pub(super) fn focus_item(item: &NodeHandle) {
     if item.get_attribute("tabindex").is_none() {
-        item.set_attribute("tabindex", "0");
+        lend_tabindex(item);
     }
     item.focus();
+}
+
+/// Make `item` focusable for as long as it holds the focus, and no Tab stop:
+/// `tabindex="-1"`, removed once the focus is elsewhere (#3062). Removed
+/// while the item holds the focus, it would take the focus with it (Chrome
+/// blurs inside that write); kept after, the item would be a focusable stop
+/// in a list that offers none, until it is drawn again. A `keyboard` list
+/// that adopts the item makes it its own Tab stop instead (`take_lent`).
+fn lend_tabindex(item: &NodeHandle) {
+    item.set_attribute("tabindex", "-1");
+    let owner = item.clone();
+    let entry = rinch_core::push_key_handler(
+        item,
+        |_| false,
+        move || {
+            // A window blur calls this too, with the focus still here.
+            let mut at = owner.active_element();
+            while let Some(n) = at {
+                if n.node_id() == owner.node_id() {
+                    return;
+                }
+                at = n.parent_node();
+            }
+            if take_lent(&owner) && owner.get_attribute("tabindex").as_deref() == Some("-1") {
+                owner.remove_attribute("tabindex");
+            }
+        },
+    );
+    let doc = item.doc_key();
+    let stale = LENT_TABINDEX.with_mut(|l| {
+        // An item that left its document without the focus leaving it
+        // first (its owner gone, its entry never called) is forgotten here.
+        let (kept, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut **l)
+            .into_iter()
+            .partition(|(_, n, _)| n.is_connected());
+        **l = kept;
+        l.push((doc, item.clone(), entry));
+        stale
+    });
+    drop(stale);
+}
+
+/// Forget the `tabindex` lent to `item`, if it was: whether it was.
+pub(super) fn take_lent(item: &NodeHandle) -> bool {
+    let doc = item.doc_key();
+    let taken = LENT_TABINDEX.with_mut(|l| {
+        l.iter()
+            .position(|(d, n, _)| *d == doc && n.node_id() == item.node_id())
+            .map(|i| l.swap_remove(i))
+    });
+    // The entry is released outside the registry's borrow.
+    taken.is_some()
 }
 
 /// Cancel a keyboard lift (`focus_left`: the focus moved away).

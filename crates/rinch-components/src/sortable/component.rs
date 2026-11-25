@@ -140,7 +140,8 @@ fn offer_keyboard(node: &NodeHandle) {
         }
         return;
     }
-    if node.get_attribute("tabindex").is_none() {
+    // A `tabindex` lent to take the focus (`focus_item`) becomes the list's.
+    if take_lent(node) || node.get_attribute("tabindex").is_none() {
         node.set_attribute("tabindex", "0");
     }
     if node.get_attribute(DISABLED_ATTR).is_none()

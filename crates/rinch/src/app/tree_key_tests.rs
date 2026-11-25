@@ -266,17 +266,29 @@ fn the_app_sees_keys_first_and_moves_rows_with_them() {
 
 type Log<T> = Rc<RefCell<Vec<T>>>;
 
-/// A tree with `multiple` selection: a, b, c, d at the top level.
+/// The key a log records: `Ctrl+a` for a chord.
+fn chord(ctrl: bool, key: &str) -> String {
+    if ctrl {
+        format!("Ctrl+{key}")
+    } else {
+        key.to_string()
+    }
+}
+
+/// A tree with `multiple` selection: a, b, c, d at the top level. Its
+/// `seen` log records each key the app's `handle_key` is offered (it takes
+/// none).
 fn multi_fixture() -> (Fixture, Log<Vec<String>>, Log<String>) {
     let changes: Log<Vec<String>> = Rc::default();
     let opened: Log<String> = Rc::default();
+    let seen: Log<String> = Rc::default();
     let state = UseTreeReturn::new(UseTreeOptions {
         multiple: true,
         ..Default::default()
     });
-    let (c, o) = (changes.clone(), opened.clone());
+    let (c, o, s) = (changes.clone(), opened.clone(), seen.clone());
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
-        let (c, o) = (c.clone(), o.clone());
+        let (c, o, s) = (c.clone(), o.clone(), s.clone());
         let tree = Tree {
             data: ["a", "b", "c", "d"]
                 .iter()
@@ -290,6 +302,10 @@ fn multi_fixture() -> (Fixture, Log<Vec<String>>, Log<String>) {
             onselect: Some(ValueCallback::new(move |v| o.borrow_mut().push(v))),
             onselectionchange: Some(ValueCallback::new(move |values| {
                 c.borrow_mut().push(values)
+            })),
+            handle_key: Some(Rc::new(move |key: &TreeKey| {
+                s.borrow_mut().push(chord(key.ctrl, &key.key));
+                false
             })),
             ..Default::default()
         }
@@ -316,7 +332,7 @@ fn multi_fixture() -> (Fixture, Log<Vec<String>>, Log<String>) {
             state,
             rested: Rc::default(),
             moves: Rc::default(),
-            seen: Rc::default(),
+            seen,
         },
         changes,
         opened,
@@ -423,7 +439,9 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
         },
     );
     assert_eq!(selection(&f), ["b", "c"], "a run from b, where Space was");
-    // Ctrl+A is not the tree's (#3062): the selection stays.
+    // Ctrl+A is not the tree's (#3062): it reaches the app's `handle_key`
+    // (which binds select-all if the app wants one), and the selection stays.
+    f.seen.borrow_mut().clear();
     press(
         &mut f,
         KeyCode::KeyA,
@@ -434,6 +452,7 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
         },
     );
     assert_eq!(selection(&f), ["b", "c"]);
+    assert_eq!(*f.seen.borrow(), ["Ctrl+a"]);
 }
 
 /// #3062: PageUp and PageDown are not in the WAI-ARIA tree pattern. They

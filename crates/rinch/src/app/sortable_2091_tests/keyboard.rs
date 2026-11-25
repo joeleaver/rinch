@@ -177,3 +177,74 @@ fn columns_move_with_left_and_right() {
     let order: Vec<String> = f.board.get()[0].cols.iter().map(|c| c.id.clone()).collect();
     assert_eq!(order, ["c2", "c1", "c3", "c4"]);
 }
+
+/// Drop `a`, lifted in c1, into c2 by keyboard, and let the moved card (a new
+/// node in c2) take the focus back.
+fn drop_a_into_c2(f: &mut Fixture) {
+    let _guard = crate::app::timer_backend_lock();
+    rinch_core::set_timer_backend(manual_timers);
+    focus_card(f, "a");
+    key(f, KeyCode::Space, Some(" "));
+    key(f, KeyCode::ArrowRight, None);
+    SCHEDULED.with(|s| s.borrow_mut().clear());
+    key(f, KeyCode::Enter, None);
+    assert_eq!(cards(f, "c2"), ["a", "d"]);
+    let sched = SCHEDULED.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    for (id, _) in sched {
+        rinch_core::fire_timeout(id);
+    }
+    send(f, PlatformEvent::AboutToWait);
+    send(f, PlatformEvent::AboutToWait);
+    assert_eq!(f.app.focus_target, FocusTarget::Node(item(f, "a")));
+}
+
+fn tabindex(f: &Fixture, k: &str) -> Option<String> {
+    let doc = f.app.doc.as_ref().unwrap();
+    let d = doc.borrow();
+    d.tree.nodes[item(f, k)].attributes.get("tabindex").cloned()
+}
+
+/// #3062 review: a card dropped by keyboard into a list without `keyboard` is
+/// made focusable to take the focus, and is no Tab stop there — not while it
+/// holds the focus (`-1`), nor after (the `tabindex` goes with the focus).
+#[test]
+fn a_card_dropped_into_a_plain_list_is_no_tab_stop_there() {
+    let mut f = fixture_with(Some("c2"), false);
+    assert_eq!(tabindex(&f, "d"), None, "c2 offers no Tab stops");
+    drop_a_into_c2(&mut f);
+    assert_eq!(tabindex(&f, "a").as_deref(), Some("-1"));
+    // The focus moves on (to b, in keyboard column c1).
+    focus_card(&mut f, "b");
+    assert_eq!(tabindex(&f, "a"), None);
+    assert_eq!(tabindex(&f, "b").as_deref(), Some("0"));
+}
+
+/// The control: a `tabindex` the app wrote on the card (its root attribute,
+/// written after the card's render) is the app's, and stays when the focus
+/// leaves it.
+#[test]
+fn a_tabindex_the_app_wrote_stays_after_the_drop() {
+    let mut f = fixture_with(Some("c2"), true);
+    drop_a_into_c2(&mut f);
+    assert_eq!(tabindex(&f, "a").as_deref(), Some("0"));
+    focus_card(&mut f, "b");
+    assert_eq!(tabindex(&f, "a").as_deref(), Some("0"));
+}
+
+/// A lent `tabindex` the focus never left goes with its document (#2797).
+#[test]
+fn a_lent_tabindex_is_forgotten_with_its_document() {
+    const LENT: &str = "rinch_components::sortable::LENT_TABINDEX";
+    let lent = |doc: u64| {
+        rinch_core::doc_entries(doc)
+            .into_iter()
+            .find(|(n, _)| *n == LENT)
+            .map_or(0, |(_, count)| count)
+    };
+    let mut f = fixture_with(Some("c2"), false);
+    let doc = f.app.doc_key();
+    drop_a_into_c2(&mut f);
+    assert_eq!(lent(doc), 1, "control: the dropped card's tabindex is lent");
+    drop(f);
+    assert_eq!(lent(doc), 0, "the lent tabindex outlived its document");
+}
