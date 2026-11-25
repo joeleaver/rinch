@@ -330,6 +330,31 @@ SortableList {
   threshold away from the pointer, so a slow sweep changes the place once
   each way. Over its own place a collapsed item's list opens the gap there
   again (with a gap indicator).
+- **The slot** (`slot: true` on the list; off by default, and then a drag
+  writes nothing of it and the list's layout never changes). The room a gap
+  opens can be lit: it holds a box the size of what is carried, exactly where
+  the drop lands, drawn only as the app styles it with
+  `--rinch-sortable-slot-background`, `--rinch-sortable-slot-border` and
+  `--rinch-sortable-slot-radius` (on the list or an ancestor; all off by
+  default). It is always the list's own pseudo-element, never an item's, so
+  an item's `overflow: hidden` cannot clip it. Between items (and, in the
+  source's own collapsed list, in the room the source left at its end) it is
+  the list's `::before`, absolutely positioned over the box the component
+  writes as `--rinch-sortable-slot-x` / `-y` / `-width` / `-height`, measured
+  from the items as laid out: it moves nothing, and a wrapping row, a grid, a
+  right-to-left row and a reversed one each get it where the drop lands. At
+  the end of any other list (an empty one included) it is the list's
+  `::after`, `--rinch-sortable-slot-size` along the axis, after its items and
+  in their flow, so the list grows to hold it (in a grid or a wrapping row it
+  takes the next cell or line). A list holding only what is carried, and a
+  gap in the source's own list that does not collapse (where the source is
+  drawn at the place), draw none. The list's own `::before` and `::after` are
+  taken while a slot is on, and the list must stay `position: relative` (the
+  stylesheet's default) for the `::before` to be placed against it and for the
+  items to be measured in it (`layout_box_in`). In a right-to-left or reversed
+  row the items make room toward the row's end, so none is drawn over the
+  slot; which place the pointer picks there is still worked out as if the row
+  ran left to right (#3084).
 - **In the source's own list**, unless it collapses, a gap is the list laid out
   again in the order the drop would give: the items between the place and the
   source make room and the source itself is drawn at the place, so nothing is
@@ -366,6 +391,7 @@ add a stylesheet, has.
 | `--rinch-sortable-dragging-opacity` | `0.4` (`SortSource::Dim`) |
 | `--rinch-sortable-reflow-duration` | `150ms` (the gap's and a collapse's slide; `0ms` turns it off) |
 | `--rinch-sortable-reflow-easing` | `ease` |
+| `--rinch-sortable-slot-background` | `transparent` (the gap's slot; with `-border`, e.g. `2px dashed …`, default `none`, and `-radius`, default `0px`) |
 | `--rinch-sortable-ghost-opacity` | `0.75` (each `-ghost-` one is read where the item is: on the list, an ancestor or the item) |
 | `--rinch-sortable-ghost-tilt` | `0deg` (a `rotate`) |
 | `--rinch-sortable-ghost-scale` | `1` |

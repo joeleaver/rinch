@@ -88,6 +88,61 @@ pub trait DomLayout {
         None
     }
 
+    /// `node`'s border box as laid out, before any CSS transform on it or an
+    /// ancestor, in the frame of `container`'s **padding box**: the `left`,
+    /// `top`, `width` and `height` that put an absolutely positioned child of
+    /// `container` (a positioned box, so its containing block) over it. In
+    /// logical pixels, unscrolled: an absolute child of a box that scrolls is
+    /// placed against its scrolled content, as `node` is. Desktop sums the
+    /// layout; the web sums `offsetLeft`/`offsetTop` up the `offsetParent`
+    /// chain to `container`.
+    ///
+    /// A sortable list places the slot of an open gap with it (#2154): the
+    /// items around the gap carry a sliding `transform`, which a painted box
+    /// ([`Self::bounding_rect`]) includes mid-slide and this does not.
+    ///
+    /// **`None` unless `container` is on `node`'s `offsetParent` chain**, on
+    /// every host (CSSOM View's `offsetParent`, followed up): each step is
+    /// the nearest ancestor that is a containing block for absolutely
+    /// positioned boxes, the `<body>`, or, for a box that is not positioned
+    /// itself, a `td`, `th` or `table`. Chrome 158 and Firefox 160 agree on
+    /// what makes one: `position` other than `static`; a `transform`,
+    /// `filter`, `backdrop-filter` or `perspective` other than `none` (an
+    /// identity or `blur(0)` included); `contain: paint`, `layout`, `strict`
+    /// or `content`; and `will-change` naming `transform`, `filter`,
+    /// `backdrop-filter`, `perspective`, `contain` or `position`. Not
+    /// `contain: size`/`style`, `container-type`, `opacity`, `overflow`,
+    /// `isolation`, `clip-path`, `mix-blend-mode` or `z-index`. (The engines
+    /// also count `translate`, `rotate`, `scale`, `offset-path`,
+    /// `transform-style: preserve-3d` and `content-visibility`, which desktop
+    /// does not implement.) So `None` when `container` is none of those (a
+    /// list given `position: static`), when `node` or a box between is
+    /// `position: fixed`, when `node` is not rendered (`display: none` on it
+    /// or an ancestor, `display: contents` on it), when there is no layout,
+    /// and for a host with no geometry (the default).
+    ///
+    /// **Whole pixels on both hosts**, rounded as the browser rounds
+    /// `offsetLeft`: each step's offset from its `offsetParent`'s padding
+    /// edge on its own, and the width and height their own lengths. Desktop
+    /// rounds from its unrounded layout, half up (`floor(x + 0.5)`), which is
+    /// Chrome's rounding; Firefox rounds a negative tie away from zero
+    /// (-8.5 to -9 where Chrome and desktop answer -8), so there the hosts
+    /// differ by a pixel. Chrome also quantizes layout to 1/64 px before it
+    /// rounds while desktop rounds its `f32` layout, so within 1/64 px of a
+    /// tie the two can differ by a pixel too. A box desktop places after its
+    /// layout engine (an absolute whose containing block is not its parent,
+    /// an atomic inline) or one with no layout node of its own (an inline
+    /// element) is measured from its laid-out, already-rounded box. No
+    /// browser API gives the untransformed box fractionally:
+    /// `getBoundingClientRect` includes transforms.
+    fn layout_box_in(
+        &self,
+        _node: NodeId,
+        _container: NodeId,
+    ) -> Option<crate::reactive::ElementBounds> {
+        None
+    }
+
     /// The viewport's size in logical pixels — the box a `position: fixed;
     /// inset: 0` element fills, and the frame [`Self::bounding_rect`] answers
     /// in (issue #1764). rinch-dom answers the size of its last layout

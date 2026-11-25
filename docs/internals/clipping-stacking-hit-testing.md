@@ -517,7 +517,7 @@ correct, and each has a fixture in
   not narrow a root by its own clip when it holds such a box, the one case of
   #550 the lift made reachable at the root. The asymmetry is
   deliberate: a bounds under-measure costs content on the Vello path only, a
-  cull under-measure costs it on every path. `layer_bounds.rs`'s module doc names
+  cull under-measure costs it on every path. `paint/layer_bounds/mod.rs`'s module doc names
   all of this explicitly; read it before touching this.
 - **An absolute whose containing block is above the collecting root escapes
   the clips above the root too (#2815)** — the root's own bracket, and the

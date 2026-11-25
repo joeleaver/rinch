@@ -5,10 +5,23 @@ use rinch_core::dom::{CaretAffinity, DomContent, DomLayout, DomTree, NodeId};
 
 use super::RinchDocument;
 
+mod offset;
+
 impl DomLayout for RinchDocument {
     fn layout_size(&self, node: NodeId) -> Option<(f32, f32)> {
         let n = self.tree.nodes.get(node.0)?;
         Some((n.layout.width, n.layout.height))
+    }
+
+    /// The `offsetParent` chain from `node` to `container` and the offsets
+    /// along it, from the layout (`dom_impl/layout/offset.rs`), so both hosts
+    /// answer the same question the same way.
+    fn layout_box_in(
+        &self,
+        node: NodeId,
+        container: NodeId,
+    ) -> Option<rinch_core::reactive::ElementBounds> {
+        offset::layout_box_in(&self.tree, node.0, container.0)
     }
 
     /// The inline formatting context lays a `<br>` out as `"\n"`

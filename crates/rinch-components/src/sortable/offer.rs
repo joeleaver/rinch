@@ -325,6 +325,9 @@ pub(super) fn end_active() {
     for list in &active.reflowing {
         list.remove_class(REFLOWING_CLASS);
     }
+    if let Some(slot) = &active.slot {
+        slot.erase();
+    }
     if let Some((ghost, scope)) = active.ghost {
         if let Some(scope) = scope {
             scope.dispose();
@@ -438,6 +441,7 @@ pub(super) fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
             spacing,
             shifted: Vec::new(),
             reflowing: Vec::new(),
+            slot: None,
         })
     });
     // The drag starts over its own place (a collapsed item's space stays

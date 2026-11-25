@@ -80,6 +80,13 @@ const SHIFTED_CLASS: &str = "rinch-sortable__item--shifted";
 const REFLOWING_CLASS: &str = "rinch-sortable--reflowing";
 const GHOST_CLASS: &str = "rinch-sortable__ghost";
 const GHOST_ATTR: &str = "data-sortable-ghost";
+const SLOT_CLASS: &str = "rinch-sortable--slot";
+const SLOT_INTO_CLASS: &str = "rinch-sortable--slot-into";
+const SLOT_X: &str = "--rinch-sortable-slot-x";
+const SLOT_Y: &str = "--rinch-sortable-slot-y";
+const SLOT_WIDTH: &str = "--rinch-sortable-slot-width";
+const SLOT_HEIGHT: &str = "--rinch-sortable-slot-height";
+const SLOT_SIZE: &str = "--rinch-sortable-slot-size";
 const SHIFT_X: &str = "--rinch-sortable-shift-x";
 const SHIFT_Y: &str = "--rinch-sortable-shift-y";
 const GHOST_X: &str = "--rinch-sortable-ghost-x";
@@ -96,6 +103,7 @@ const NOT_MINE: &[&str] = &[ITEM_CLASS, "rinch-sortable"];
 const LIVE_STYLE: &str = "position: absolute; width: 1px; height: 1px; margin: -1px; \
      padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap";
 
+mod axis_box;
 mod component;
 mod drag_state;
 mod focus;
@@ -108,6 +116,7 @@ mod offer;
 mod pointer;
 mod reflow;
 mod registry;
+mod slot;
 mod types;
 
 pub use component::{SortableHandle, SortableItem, SortableList, sortable_drag_group};
@@ -117,6 +126,7 @@ pub use types::{
     SortPreview, SortPreviewFn, SortSource, SortTarget, SortVerdict,
 };
 
+use axis_box::*;
 use drag_state::*;
 use focus::*;
 use ghost::*;
@@ -126,6 +136,7 @@ use offer::*;
 use pointer::*;
 use reflow::*;
 use registry::*;
+use slot::*;
 
 // The document-keyed statics live here, not in the modules that use them:
 // a registry's name is its module path (`rinch_components::sortable::LISTS`),

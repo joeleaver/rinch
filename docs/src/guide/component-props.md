@@ -1774,6 +1774,7 @@ pointer, or by keyboard in a list with `keyboard` on (guide: [Sortable Lists](so
 | `drag_keys` | `Option<SortKeys>` | `None` | What a drag from an item of this list carries, in order (a selection). The item alone when not given, or when the answer leaves the item out. Not checked against any list; `from_list` names the pressed item's list only |
 | `preview` | `SortPreview` | `Clone` | What follows the pointer in a drag from this list: `Clone` (a translucent copy at the grab offset), `None`, `Snapshot` (the runtime's picture; desktop only), `Custom(SortPreviewFn)` |
 | `indicator` | `SortIndicator` | `Caret` | How a place in this list is shown: `Caret`, `Gap` (the items slide apart), `Both`, `None`. A refused place never opens a gap |
+| `slot` | `bool` | `false` | With a gap (`Gap` or `Both`): a box the size of what is carried where the drop lands, drawn only as `--rinch-sortable-slot-background` / `-border` / `-radius` style it. The list's own `::before` (positioned) or `::after` (in flow at its end), so no item's overflow clips it; off, a drag writes nothing of it and changes no layout. See [Sortable](sortable.md) |
 | `source` | `SortSource` | `Unchanged` | How this list's items look while a pointer drags them: `Unchanged`, `Dim`, `Collapse` (hidden, followers slide over), `Hide` |
 
 **SortableItem** — one item; a Tab stop in a `keyboard` list (`tabindex="0"`), not otherwise.

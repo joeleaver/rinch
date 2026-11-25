@@ -571,7 +571,7 @@ pub(super) fn child_rect(
 /// Where `taffy_id`'s box starts in its Taffy root's frame, unrounded: the
 /// sum `round_layout` rounds a child's location from, accumulated root-first
 /// in `f32` as it accumulates it, so the two agree to the bit.
-pub(super) fn taffy_origin(
+pub(crate) fn taffy_origin(
     taffy: &taffy::TaffyTree<crate::node::NodeContext>,
     taffy_id: taffy::NodeId,
 ) -> (f32, f32) {
