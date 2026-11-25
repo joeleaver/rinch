@@ -242,7 +242,7 @@ impl EditorHandle {
     /// its flat byte offset, as `(textblock element id, leaf element id,
     /// after)`: for a `Downstream` caret the image just after `pos`, else the
     /// one just before it (#1104, #1116). The host draws such a caret from the leaf's
-    /// box (`DomDocument::query_inline_box_caret`). `None` anywhere else.
+    /// box (`DomLayout::query_inline_box_caret`). `None` anywhere else.
     pub fn caret_inline_box(&self, pos: Pos, affinity: CaretAffinity) -> Option<(u64, u64, bool)> {
         let core = self.core();
         let view = core.view.as_ref()?;

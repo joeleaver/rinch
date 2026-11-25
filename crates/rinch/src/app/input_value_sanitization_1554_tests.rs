@@ -141,7 +141,7 @@ fn an_inputs_line_breaks_are_not_painted_below_its_box() {
     // given room below 30px its second and third lines are painted there. (In
     // its 30px box they are clipped to it and scrolled to, #827.)
     let (mut app, id, _log) = page("textarea", "ab\ncd\nef");
-    rinch_core::dom::DomDocument::set_attribute(
+    rinch_core::dom::DomContent::set_attribute(
         &mut *app.doc.as_ref().unwrap().borrow_mut(),
         rinch_core::dom::NodeId(id),
         "style",

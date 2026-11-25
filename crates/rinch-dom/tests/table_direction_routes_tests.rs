@@ -3,7 +3,7 @@
 //! re-sync, a row group losing its rows — leaves it laid out as a fresh build
 //! of the final tree would be. Written as review probes for PR #1097; the
 //! tick (p1*) and moved-row (p2b, p2c) cases failed at that PR's first head.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const CSS: &str = "

@@ -12,7 +12,7 @@
 //! and left whatever that listener itself held (the editor's core) borrowed for
 //! good, since wasm does not unwind. The document itself was released normally
 //! by the frame that borrowed it. The browser work now runs once the borrow is
-//! released (`DomDocument::take_after_borrow`), before the handle method
+//! released (`DomFocus::take_after_borrow`), before the handle method
 //! returns.
 //!
 //! ```text

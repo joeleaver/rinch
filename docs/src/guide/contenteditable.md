@@ -1263,7 +1263,7 @@ editor the blocks the scroll brings into the window were laid out at their
 estimated heights when the scroll was computed and settle to their measured ones
 after it, so the start can land a fraction of a line off `f`. Both are built on
 `NodeHandle::scroll_to_fraction(fraction, margin)`
-(`DomDocument::request_scroll_to_fraction`), which any element can use.
+(`DomScroll::request_scroll_to_fraction`), which any element can use.
 
 **`focus()`** gives the editor the keyboard as a press in it would — the previous
 owner loses it the same way (an `<input>` commits its change, another editor hides

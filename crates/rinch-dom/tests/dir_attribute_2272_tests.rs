@@ -22,7 +22,7 @@
 //! plus a pixel of break slack (#1869), a known difference of its own that
 //! `direction: rtl` shows as readily as `dir`.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::{get_node_summary, query_selector};
 

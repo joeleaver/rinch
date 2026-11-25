@@ -498,7 +498,7 @@ fn autofocus_page(which: &[usize], explicit: Option<usize>) -> (RinchApp, Vec<u6
 
 fn active_of(app: &RinchApp) -> Option<u64> {
     let doc = app.doc.as_ref().unwrap().borrow();
-    rinch_core::dom::DomDocument::active_element(&*doc).map(|n| n.0)
+    rinch_core::dom::DomFocus::active_element(&*doc).map(|n| n.0)
 }
 
 /// The first `autofocus` element in tree order takes the focus when the

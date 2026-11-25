@@ -16,7 +16,7 @@
 //! break, and shapes U+0085 and a preserved U+000C to a visible glyph.
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::text_query::{dom_cursor_to_ifc_offset, ifc_offset_to_dom_cursor};
 
@@ -247,7 +247,7 @@ fn caret_offsets_map_around_them_at_character_boundaries() {
 }
 
 /// What rinch-dom tells the editor's caret map each substituted char is worth
-/// (`DomDocument::substituted_char_flat_bytes`) is what its layout makes of
+/// (`DomLayout::substituted_char_flat_bytes`) is what its layout makes of
 /// it in preserved text, and in a `contenteditable` root.
 #[test]
 fn the_flat_bytes_the_host_reports_are_the_ones_it_lays_out() {

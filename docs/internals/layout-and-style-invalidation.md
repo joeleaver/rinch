@@ -503,7 +503,7 @@ went stale on class toggles, insertions and removals. Now:
   the walk) rejects descendant combinators early.
 - **`query_selector` uses the cascade's matcher, without its flags** (#1796,
   `crate::query`). `NodeHandle::query_selector{,_all}` and
-  `DomDocument::query_selector{,_all}` parse with Stylo's `SelectorParser`
+  `DomTree::query_selector{,_all}` parse with Stylo's `SelectorParser`
   (author origin) and match with `matches_selector_list` over `RinchNode`, so a
   query sees every selector the cascade does. It matches with
   `NeedsSelectorFlags::No` and no bloom filter: a query must not record
@@ -993,7 +993,7 @@ whole-window restyle (#2636).
   side walks it: `trap_focusables` (a `data-trap-focus` trap's Tab stops,
   through `focusables_composed` when the trap holds a
   `[rinch-style-isolated]` host), `deep_active_element` (the trap's Tab
-  start and its focus check) and `DomDocument::active_element` follow
+  start and its focus check) and `DomFocus::active_element` follow
   `shadowRoot.activeElement`, `text_content` includes shadow text after the
   host's light children's, and `get_children` / `insert_child` list and
   index a host's light children, then its shadow root's (desktop's order).

@@ -11,7 +11,7 @@
 //!   without this. It also has to win against an answer that was already on
 //!   its way, and must not blank a picture that is on screen.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_core::image::{ImageLoadResult, ImageLoader, register_image_scheme, reload_image};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::{has_pending, pending_reload_count};

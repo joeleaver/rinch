@@ -1,7 +1,7 @@
 //! `NodeHandle::select()` / `set_selection_range()` for a text control (issue
 //! #552): desktop's half of the "applied to the focused input directly, or
 //! stashed for the next time it gains focus" contract documented on
-//! `DomDocument::set_selection_range` and `RinchApp::apply_or_stash_text_selection`.
+//! `DomFocus::set_selection_range` and `RinchApp::apply_or_stash_text_selection`.
 
 use super::*;
 use rinch_core::dom::SelectionDirection;

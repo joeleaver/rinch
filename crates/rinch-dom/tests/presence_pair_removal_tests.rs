@@ -23,7 +23,7 @@
 //! now returns before invalidating anything, as `removeAttribute` does in a
 //! browser.
 
-use rinch_core::dom::{DomDocument, NodeId, RenderScope};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeId, RenderScope};
 use rinch_dom::RinchDocument;
 use std::cell::RefCell;
 use std::rc::Rc;

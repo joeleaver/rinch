@@ -16,7 +16,7 @@
 //! td { padding: 0 } table { border-spacing: 0 }` at 800x600). The cells hold
 //! fixed-size blocks and no text, so no number depends on the host's fonts.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const CSS: &str =

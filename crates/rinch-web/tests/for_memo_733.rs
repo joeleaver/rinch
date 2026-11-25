@@ -5,7 +5,7 @@
 //! Run as `reinsertion.rs` is (a chromedriver matching the installed Chrome).
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{__retired_insertions, DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{__retired_insertions, DomDocument, DomTree, NodeHandle, RenderScope};
 use rinch_core::{Signal, for_each_dom_typed};
 use rinch_web::web_document::{__node_registry_len, WebDocument};
 use std::cell::RefCell;

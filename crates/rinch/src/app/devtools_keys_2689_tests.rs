@@ -1,12 +1,15 @@
-//! Issue #2689: an app can turn the built-in DevTools keys off — F12 (the
-//! DevTools window, desktop) and Alt+I (inspect mode) — with
-//! `App::devtools(false)` / `RinchApp::set_devtools(false)`, and
-//! `RINCH_DEVTOOLS=on|off` overrides the app either way.
+//! Issue #2689: an app can turn the built-in DevTools key off — F12, the
+//! DevTools window (desktop) — with `App::devtools(false)` /
+//! `RinchApp::set_devtools(false)`, and `RINCH_DEVTOOLS=on|off` overrides the
+//! app either way.
 //!
-//! Off, the global key fallback must not consume either key: no
-//! `ToggleDevTools` / `ToggleInspectMode`, and the key goes on to the rest of
-//! the fallback (an Alt+I that typed a character is text input in a focused
-//! field), as any other unclaimed key does. On (the default) nothing changes.
+//! Off, the global key fallback must not consume it: no `ToggleDevTools`, and
+//! the key goes on to the rest of the fallback, as any other unclaimed key
+//! does. On (the default in a debug build) F12 toggles DevTools.
+//!
+//! Alt+I used to toggle inspect mode under the same switch. It is gone
+//! (#3062: rinch claims no app-level shortcuts): Alt+I is an ordinary key,
+//! typed into a focused field whatever the switch says.
 //!
 //! Driven through the real `rsx!` output and the real key path
 //! (`handle_event`), the way the desktop loop drives them.
@@ -121,6 +124,15 @@ impl Fixture {
         self.press(KeyCode::F12, None, false)
     }
 
+    /// Presses F12 and checks what it did: it toggles DevTools exactly when
+    /// they are `on`, and only in a build with the `windowing` feature, where
+    /// the DevTools window lives; without it F12 never toggles anything.
+    fn assert_f12_toggles(&mut self, on: bool) {
+        let actions = self.f12();
+        let expected = on && cfg!(feature = "windowing");
+        assert_eq!(toggles_devtools(&actions), expected, "{actions:?}");
+    }
+
     fn alt_i(&mut self) -> Vec<AppAction> {
         self.press(KeyCode::KeyI, Some("i"), true)
     }
@@ -165,30 +177,36 @@ fn toggles_devtools(actions: &[AppAction]) -> bool {
     actions.contains(&AppAction::ToggleDevTools)
 }
 
-fn toggles_inspect(actions: &[AppAction]) -> bool {
-    actions.contains(&AppAction::ToggleInspectMode)
-}
-
-/// The default is unchanged: F12 toggles DevTools (desktop), Alt+I toggles
-/// inspect mode and is not typed into a focused field.
+/// On (the default in a debug build), F12 toggles DevTools.
 #[test]
-fn on_by_default_both_keys_toggle_as_before() {
+#[cfg(feature = "windowing")]
+fn on_by_default_f12_toggles_devtools() {
     let _clean = Clean::new();
     let mut f = mount();
     assert!(f.app.devtools_enabled());
-    #[cfg(feature = "windowing")]
     assert!(toggles_devtools(&f.f12()));
-    f.focus_input();
-    let actions = f.alt_i();
-    assert!(toggles_inspect(&actions), "{actions:?}");
-    assert_eq!(f.value(), "", "inspect mode took Alt+I: nothing typed");
 }
 
-/// The issue's ask, directly: with the keys off, F12 and Alt+I open nothing,
-/// an app listener hears both (press and release), and Alt+I goes on to the
-/// field's text input instead of being swallowed.
+/// #3062: with DevTools on, Alt+I is an ordinary key. It toggles nothing, an
+/// app listener hears it, and a focused field types it. It used to toggle
+/// inspect mode and type nothing (on macOS, Option+I is the circumflex dead
+/// key, so a debug build could not type it in a field).
 #[test]
-fn off_neither_key_toggles_and_both_go_on() {
+fn alt_i_is_an_ordinary_key_with_devtools_on() {
+    let _clean = Clean::new();
+    let mut f = mount();
+    assert!(f.app.devtools_enabled());
+    f.focus_input();
+    let actions = f.alt_i();
+    assert!(!toggles_devtools(&actions), "{actions:?}");
+    assert_eq!(f.heard(), ["Down:i", "Up:i"]);
+    assert_eq!(f.value(), "i", "Alt+I went on to the field's text input");
+}
+
+/// The issue's ask, directly: with the key off, F12 opens nothing, an app
+/// listener hears it (press and release), and Alt+I still types.
+#[test]
+fn off_f12_does_not_toggle_and_goes_on() {
     let _clean = Clean::new();
     let mut f = mount();
     f.app.set_devtools(false);
@@ -196,27 +214,25 @@ fn off_neither_key_toggles_and_both_go_on() {
 
     let actions = f.f12();
     assert!(!toggles_devtools(&actions), "{actions:?}");
-    assert!(!toggles_inspect(&actions), "{actions:?}");
     assert_eq!(f.heard(), ["Down:F12", "Up:F12"]);
 
     f.focus_input();
     let actions = f.alt_i();
-    assert!(!toggles_inspect(&actions), "{actions:?}");
     assert!(!toggles_devtools(&actions), "{actions:?}");
     assert_eq!(f.heard(), ["Down:i", "Up:i"]);
     assert_eq!(f.value(), "i", "Alt+I went on to the field's text input");
 }
 
-/// Turning it back on restores both keys, in the same app.
+/// Turning it back on restores F12, in the same app.
 #[test]
-fn turned_back_on_both_keys_toggle_again() {
+#[cfg(feature = "windowing")]
+fn turned_back_on_f12_toggles_again() {
     let _clean = Clean::new();
     let mut f = mount();
     f.app.set_devtools(false);
+    assert!(!toggles_devtools(&f.f12()));
     f.app.set_devtools(true);
-    #[cfg(feature = "windowing")]
     assert!(toggles_devtools(&f.f12()));
-    assert!(toggles_inspect(&f.alt_i()));
 }
 
 /// `App::devtools(false)` reaches the window's app through the thread's
@@ -228,14 +244,12 @@ fn the_thread_default_reaches_an_app_created_after_it() {
     set_devtools_default(false);
     let mut off = mount();
     assert!(!off.app.devtools_enabled());
-    assert!(!toggles_inspect(&off.alt_i()));
-    #[cfg(feature = "windowing")]
-    assert!(!toggles_devtools(&off.f12()));
+    off.assert_f12_toggles(false);
 
     set_devtools_default(true);
     let mut on = mount();
     assert!(on.app.devtools_enabled());
-    assert!(toggles_inspect(&on.alt_i()));
+    on.assert_f12_toggles(true);
 }
 
 /// `RINCH_DEVTOOLS=on` brings the keys back to an app that turned them off.
@@ -247,9 +261,7 @@ fn the_environment_turns_them_on_over_the_app() {
     let mut f = mount();
     f.app.set_devtools(false);
     assert!(f.app.devtools_enabled());
-    #[cfg(feature = "windowing")]
-    assert!(toggles_devtools(&f.f12()));
-    assert!(toggles_inspect(&f.alt_i()));
+    f.assert_f12_toggles(true);
 }
 
 /// `RINCH_DEVTOOLS=off` silences them in an app that left them on.
@@ -262,10 +274,10 @@ fn the_environment_turns_them_off_over_the_app() {
     assert!(!f.app.devtools_enabled());
     let actions = f.f12();
     assert!(!toggles_devtools(&actions), "{actions:?}");
-    assert!(!toggles_inspect(&f.alt_i()));
     // Control: with the variable gone, the same app answers again.
     set_env_override_for_test(None);
-    assert!(toggles_inspect(&f.alt_i()));
+    assert!(f.app.devtools_enabled());
+    f.assert_f12_toggles(true);
 }
 
 /// What a `RINCH_DEVTOOLS` value means, and that only on/off values override.

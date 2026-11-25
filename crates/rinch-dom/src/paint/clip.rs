@@ -157,7 +157,7 @@
 //! cross-crate consumer the module doc above names — `layer_bounds`, the
 //! viewport-clip walks in `RinchApp`, and hit testing's `check_children` gate,
 //! which reads [`padding_box_insets`] directly rather than re-deriving it
-//! (`crates/rinch/src/app/hit_testing.rs`). The radii shrink to match:
+//! (`crates/rinch/src/app/hit_testing/walk.rs`). The radii shrink to match:
 //! [`padding_box_radii`] reduces each of [`border_radii`]'s (outer) corners by
 //! the border widths that meet there — the horizontal radius by the left or
 //! right width, the vertical one by the top or bottom width (css-backgrounds-3

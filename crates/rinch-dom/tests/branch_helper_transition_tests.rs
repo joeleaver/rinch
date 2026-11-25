@@ -30,7 +30,7 @@
 //! clears `has_been_styled` and drops `active_transitions` and
 //! `active_animations` for the whole removed subtree, and **all five call sites
 //! funnel into it**, because each one is `clear_animations(); remove();` and
-//! `NodeHandle::remove` is `DomDocument::remove_node`. On `rinch-web` the
+//! `NodeHandle::remove` is `DomTree::remove_node`. On `rinch-web` the
 //! browser does the same thing for free — a removed element is not rendered, so
 //! its transitions are cancelled and its re-insertion is a first style.
 //!
@@ -79,7 +79,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_dom::RinchDocument;
 

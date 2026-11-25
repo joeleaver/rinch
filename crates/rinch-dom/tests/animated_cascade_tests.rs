@@ -25,7 +25,7 @@
 //! animation is *pending* until the first frame its element is rendered in,
 //! and its start time is that frame's, so the first frame shows it at t = 0.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const T0: f64 = 1_000_000.0;

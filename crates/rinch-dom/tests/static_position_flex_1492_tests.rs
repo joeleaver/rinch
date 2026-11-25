@@ -13,7 +13,7 @@
 //! its content box starts at (11, 7) and no row sits where its corners
 //! coincide; the box is 40x30 between two 50x20 items. No text is laid out.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

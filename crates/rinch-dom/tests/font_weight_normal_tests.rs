@@ -6,7 +6,7 @@
 //! `300` or `bold` do. The same shape applies to `font-style: normal` on
 //! `<em>`/`<i>` and to `text-decoration: none` on `<u>`/`<s>`.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::values::FontStyleValue;
 

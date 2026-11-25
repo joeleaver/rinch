@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::split_frame::{SplitChange, SplitFrame};
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::Painter;
 use rinch_dom::paint::slicing::{SliceCoverage, SurfaceSlice};

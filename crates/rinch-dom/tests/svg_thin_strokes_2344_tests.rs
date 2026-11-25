@@ -14,7 +14,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 
 /// A 1px circle, and a 0.1px line at a fractional y, at 1x.

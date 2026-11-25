@@ -6,7 +6,7 @@
 //! so two documents that each had a focused editor retargeted it on every
 //! tick, which restored the other caret to solid and restarted the phase.
 //! Neither caret ever went off. The clock is kept per document now
-//! (`DomDocument::doc_key`, the #134 rule).
+//! (`DomTree::doc_key`, the #134 rule).
 //!
 //! Requires the `embed` (or `gpu`) feature, and `desktop` for the editor:
 //!     cargo test -p rinch --features embed,desktop --test embed_caret_blink_two_contexts

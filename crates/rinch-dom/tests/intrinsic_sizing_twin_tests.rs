@@ -24,7 +24,7 @@
 //!
 //! The probe that produced the table is reproduced in the PR for #691.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

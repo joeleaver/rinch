@@ -29,7 +29,7 @@
 #![cfg(feature = "software-renderer")]
 
 use peniko::kurbo::Affine;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::DecodedImage;
 use rinch_dom::paint::painter::{ImageSampling, PaintImage, Painter};

@@ -16,7 +16,7 @@
 //! have a twin placed by line numbers; they were known gaps until rinch read
 //! `grid-template-areas` and the `[names]` of a track list (#2704).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

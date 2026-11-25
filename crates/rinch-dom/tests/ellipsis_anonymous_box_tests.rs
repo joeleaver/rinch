@@ -22,7 +22,7 @@
 //! Only font-independent facts are asserted: every run is far wider than 90px
 //! in any face and the line box is declared.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const RUN1: &str = "a first run much too long for ninety pixels in any font";

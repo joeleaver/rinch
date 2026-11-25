@@ -26,7 +26,7 @@
 //! declarations. Where a fixture uses another size the fragment is that
 //! font's own ascent + descent around the baseline and is said so there.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomScroll, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter;
 use rinch_dom::testing::query_selector;

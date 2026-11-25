@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use rinch_components::color_utils::parse_color;
 use rinch_core::Signal;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{ClickContext, EventHandlerId, dispatch_input_event, set_click_context};
 use rinch_core::reactive::Effect;

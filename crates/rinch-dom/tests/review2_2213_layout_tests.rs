@@ -1,6 +1,6 @@
 //! The second layout review of #2213: histories against a fresh layout of
 //! the final document, and `align`'s placement against Chrome.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const CSS: &str =

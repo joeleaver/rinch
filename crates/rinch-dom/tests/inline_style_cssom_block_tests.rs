@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, StyleProp};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId, StyleProp};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

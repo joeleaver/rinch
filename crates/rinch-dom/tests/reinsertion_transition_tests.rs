@@ -18,7 +18,7 @@
 //! head. The cure has to be at the **detach**, because nothing at the
 //! re-insertion can tell a returning subtree from one that never left:
 //! `RinchDocument::detach_subtree_styles`, called from **four of the five places
-//! in `dom_impl/dom_document_impl.rs` that write `parent = None`** — the fifth,
+//! in `dom_impl/` (`tree.rs`, `content.rs`) that write `parent = None`** — the fifth,
 //! `set_inner_html`, frees the subtree outright through
 //! `NodeTree::remove_subtree` and needs no reset. The fourth,
 //! `set_text_content`, does not look like a detach at all and was missed on the
@@ -99,7 +99,7 @@
 //! drive the DOM API directly: through a reactive helper, the mutant that
 //! removes this entire fix used to pass. #704 deleted the method and all five
 //! of its call sites, every one of which was `clear_animations(); remove();`
-//! over a `NodeHandle::remove` that is `DomDocument::remove_node`.
+//! over a `NodeHandle::remove` that is `DomTree::remove_node`.
 //! `the_reactive_branch_helpers_reach_this_fix_too` is the same sequence turned
 //! into a positive pin, and `branch_helper_transition_tests` is #704's own
 //! file. Nothing below was rewritten to use a helper: driving the raw API keeps
@@ -122,7 +122,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId, RenderScope};
 use rinch_core::reactive::Signal;
 use rinch_dom::RinchDocument;
 
@@ -638,7 +638,7 @@ fn toggling_display_none_is_not_a_detach() {
 /// look like one.
 ///
 /// Called on an element that has children, it orphans every one of them
-/// (`dom_document_impl.rs`, the `_ =>` arm) and replaces them with a single text
+/// (`dom_impl/content.rs`, the `_ =>` arm) and replaces them with a single text
 /// node. What makes it #699's shape rather than a tidy teardown is that it
 /// **does not free the slab entry**: unlike `set_inner_html`, which reaches
 /// `NodeTree::remove_subtree` and drops the node along with both animation maps,
@@ -817,7 +817,7 @@ fn a_subtree_that_has_been_round_tripped_can_still_transition() {
 /// back **or ever after**, and through one of those helpers the mutant that
 /// removes this whole fix still passed. That hammer is gone: all five of its
 /// call sites were `clear_animations(); remove();`, and `NodeHandle::remove` is
-/// `DomDocument::remove_node`, which is the first row of the table in
+/// `DomTree::remove_node`, which is the first row of the table in
 /// `detach_subtree_styles`' own doc.
 ///
 /// So the same sequence now measures the real cure. The box goes out under

@@ -1,7 +1,7 @@
 //! The hit tester's memo: per-node subtree extents and per-root stacking
 //! sequences, reused across pointer events until the geometry changes.
 //!
-//! Hit testing (`crates/rinch/src/app/hit_testing.rs`) runs on every pointer
+//! Hit testing (`crates/rinch/src/app/hit_testing/`) runs on every pointer
 //! move. Two things made it O(document) per probe: it built every stacking
 //! root's [`PaintOrder`] afresh, and it had no way to skip a subtree whose
 //! content lay nowhere near the pointer — a box that does not clip may have

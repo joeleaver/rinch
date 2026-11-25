@@ -12,7 +12,7 @@
 //! min-content width is 40 and its max-content width `40 n`, on any host.
 //! Every expected width was measured in Chrome 156 on the same markup.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const VP: (f32, f32) = (800.0, 600.0);

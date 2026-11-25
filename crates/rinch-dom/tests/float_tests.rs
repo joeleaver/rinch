@@ -3,7 +3,7 @@
 //! for the boxes, 156 for the lines. Line positions are asserted only where
 //! they do not depend on the font (where a line starts, and where it may
 //! end), so the host's fonts do not move them.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const HTML: &str = "<div style='width:400px' id=w1>\

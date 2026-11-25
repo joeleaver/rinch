@@ -62,7 +62,7 @@ use std::path::{Path, PathBuf};
 /// after #474's own three PRs, and #707 took eight of those nine.
 ///
 /// Three of #474's four categories are closed. **A** (overlay behaviour) landed
-/// with the dismiss stack, `data-trap-focus` and `DomDocument::set_scroll_locked`;
+/// with the dismiss stack, `data-trap-focus` and `DomScroll::set_scroll_locked`;
 /// **B** (styling) with the five `radius` props, `CloseButton::icon_size` and
 /// the two `overlay_opacity`; **C** (a parent prop whose child's twin works)
 /// with `List::icon`, the two `Stepper` icons, `Stepper::allow_next_steps_select`,

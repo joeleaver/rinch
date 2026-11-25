@@ -10,7 +10,7 @@
 //! the probe points are the same.
 
 use super::hit_test;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FIXED: &str = "position: fixed; left: 130px; top: 110px; width: 270px; height: 290px";

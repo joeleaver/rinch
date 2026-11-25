@@ -29,7 +29,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::glyph_atlas::{GlyphAtlas, SharedAtlas};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;

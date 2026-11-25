@@ -24,7 +24,7 @@
 //! room as well, the `g` rows; it answered its widest line until #2330,
 //! issue #1276.)
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

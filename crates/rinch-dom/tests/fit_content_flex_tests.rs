@@ -9,7 +9,7 @@
 //! 560px column, the bundled Inter at 16px/20px, and the container's margins
 //! 23px and 17px, so its room is 260. `T` is 431.17px wide unwrapped and its
 //! longest word, "epsilon", 54.38; `W` is one 139.7px word.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

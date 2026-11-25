@@ -12,7 +12,7 @@
 //! is the root above it (rinch's body).
 
 use super::{event_target_at, hit_test};
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 
 const FACE: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 

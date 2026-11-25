@@ -687,7 +687,7 @@ fn mount_list() -> (RinchApp, Signal<Vec<Item>>) {
 
 /// Connected nodes carrying `class="row"`.
 fn row_count(app: &RinchApp) -> usize {
-    use rinch_core::dom::{DomDocument, NodeId};
+    use rinch_core::dom::NodeId;
     let d = app.doc.as_ref().unwrap().borrow();
     let ids: Vec<u64> = d.tree.nodes.iter().map(|(id, _)| id).collect();
     ids.into_iter()

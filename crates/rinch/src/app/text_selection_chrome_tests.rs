@@ -212,7 +212,7 @@ fn text_that_shrinks_under_a_selection_is_clamped_at_the_next_layout() {
         let d = app.doc.as_ref().unwrap().borrow();
         d.tree.get(b).unwrap().children[0]
     };
-    rinch_core::dom::DomDocument::set_text_content(
+    rinch_core::dom::DomContent::set_text_content(
         &mut *app.doc.as_ref().unwrap().borrow_mut(),
         rinch_core::dom::NodeId(text),
         "é",

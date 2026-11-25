@@ -18,7 +18,6 @@ use super::*;
 
 use rinch_components::Badge;
 use rinch_core::Component;
-use rinch_core::dom::DomDocument;
 
 const VIEWPORT: (f32, f32) = (800.0, 600.0);
 

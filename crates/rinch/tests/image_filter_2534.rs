@@ -41,7 +41,7 @@
 // without either the shared helpers would be dead code.
 #![cfg(any(feature = "windowing", feature = "gpu-renderer"))]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::DecodedImage;
 

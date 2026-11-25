@@ -36,7 +36,7 @@
 //! size (200x80 against the 800x600 initial containing block) that differs
 //! between the two answers.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::stacking::stacking_paint_order;
 

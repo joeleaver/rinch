@@ -18,7 +18,7 @@
 //! Every size is declared and no element holds text, so nothing here depends
 //! on the host's fonts.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::{Counter, FrameStats};
 

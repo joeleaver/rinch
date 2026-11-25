@@ -29,7 +29,7 @@
 //!   has to clear eagerly rather than let an earlier option's attribute
 //!   resurface.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::select::resolve_select_model;
 
