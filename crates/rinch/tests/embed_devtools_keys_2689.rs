@@ -1,6 +1,8 @@
 //! Issue #2689 on the embed path: `RinchContext::set_devtools(false)` stops
-//! rinch's key fallback answering F12 and Alt+I with `ToggleDevTools` /
-//! `ToggleInspectMode`, so a host with no DevTools gets those keys back.
+//! rinch's key fallback answering F12 with `ToggleDevTools`, so a host with no
+//! DevTools gets the key back. F12 is answered only with the `windowing`
+//! feature; Alt+I, which toggled inspect mode under the same switch, is an
+//! ordinary key since #3062.
 //!
 //! Requires the `embed` (or `gpu`) feature:
 //!     cargo test -p rinch --features embed --test embed_devtools_keys_2689
@@ -36,17 +38,19 @@ fn key(key: KeyCode, text: Option<&str>, alt: bool) -> [PlatformEvent; 2] {
     ]
 }
 
-fn toggles(ctx: &mut RinchContext) -> (bool, bool) {
-    let mut actions = ctx.update(&key(KeyCode::F12, None, false));
-    actions.extend(ctx.update(&key(KeyCode::KeyI, Some("i"), true)));
-    (
-        actions.contains(&AppAction::ToggleDevTools),
-        actions.contains(&AppAction::ToggleInspectMode),
-    )
+/// Whether F12 toggles DevTools; Alt+I, pressed alongside, must never.
+fn toggles(ctx: &mut RinchContext) -> bool {
+    let alt_i = ctx.update(&key(KeyCode::KeyI, Some("i"), true));
+    assert!(
+        !alt_i.contains(&AppAction::ToggleDevTools),
+        "Alt+I is not a DevTools key: {alt_i:?}"
+    );
+    ctx.update(&key(KeyCode::F12, None, false))
+        .contains(&AppAction::ToggleDevTools)
 }
 
 #[test]
-fn set_devtools_false_stops_the_fallback_answering_f12_and_alt_i() {
+fn set_devtools_false_stops_the_fallback_answering_f12() {
     if std::env::var_os(rinch::app::DEVTOOLS_ENV).is_some() {
         eprintln!("skipped: {} is set", rinch::app::DEVTOOLS_ENV);
         return;
@@ -64,19 +68,14 @@ fn set_devtools_false_stops_the_fallback_answering_f12_and_alt_i() {
     ctx.update(&[]);
 
     // Control: on by default, as before. F12 is a desktop-feature key.
-    let (devtools, inspect) = toggles(&mut ctx);
-    assert!(inspect, "Alt+I toggles inspect mode by default");
-    assert_eq!(devtools, cfg!(feature = "windowing"));
+    assert_eq!(toggles(&mut ctx), cfg!(feature = "windowing"));
     assert!(ctx.app().devtools_enabled());
 
     ctx.set_devtools(false);
     assert!(!ctx.app().devtools_enabled());
-    assert_eq!(
-        toggles(&mut ctx),
-        (false, false),
-        "off: neither key answered"
-    );
+    assert!(!toggles(&mut ctx), "off: F12 not answered");
 
     ctx.app_mut().set_devtools(true);
-    assert!(toggles(&mut ctx).1, "back on through app_mut()");
+    assert!(ctx.app().devtools_enabled(), "back on through app_mut()");
+    assert_eq!(toggles(&mut ctx), cfg!(feature = "windowing"));
 }

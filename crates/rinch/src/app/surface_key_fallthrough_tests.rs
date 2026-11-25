@@ -1,12 +1,11 @@
 //! Issue #482: a focused `RenderSurface` used to swallow every key the host
 //! had not claimed — window-level host keybindings (and, on desktop, rinch's
-//! own DevTools/inspect-mode toggles) went deaf the moment a canvas took
+//! own DevTools toggle) went deaf the moment a canvas took
 //! focus, whether or not the surface did anything with the key.
 //!
 //! `FocusTarget::Surface`'s `KeyDown` arm always forwarded the key to the
 //! surface and then unconditionally returned, with no path back to the same
-//! global fallback `FocusTarget::Input/None/Node` reach (DevTools, inspect
-//! mode, Tab, …). The fix: an additive, opt-in
+//! global fallback `FocusTarget::Input/None/Node` reach (DevTools, Tab, …). The fix: an additive, opt-in
 //! [`RenderSurfaceHandle::set_key_handler`] answers whether a given key
 //! should stop at the surface; unset (or returning `false`) now falls through
 //! to [`RinchApp::handle_unclaimed_key_fallback`], exactly as an unfocused
@@ -77,48 +76,20 @@ fn an_unclaimed_f12_still_toggles_devtools_while_a_surface_is_focused() {
     );
 }
 
-/// Same shape, Alt+I / inspect mode — a second built-in that the old code
-/// swallowed identically. Pinned separately so a fix that special-cased F12
-/// alone (rather than routing through the shared fallback) still gets caught.
-#[test]
-fn an_unclaimed_alt_i_still_toggles_inspect_mode_while_a_surface_is_focused() {
-    let (mut app, _surface) = app_with_focused_surface();
-
-    let actions = press(
-        &mut app,
-        KeyCode::KeyI,
-        Modifiers {
-            alt: true,
-            ..Default::default()
-        },
-    );
-
-    assert!(
-        actions.contains(&AppAction::ToggleInspectMode),
-        "Alt+I must reach the global fallback and toggle inspect mode: {actions:?}"
-    );
-}
-
 /// A surface that explicitly claims a key via `set_key_handler` must still
 /// stop it there — the fix is additive, not "nothing is ever swallowed again".
-/// `KeyCode::KeyI` with Alt held would otherwise toggle inspect mode; once the
-/// surface claims it, that must not happen.
+/// F12 would otherwise toggle DevTools; once the surface claims it, that must
+/// not happen.
 #[test]
+#[cfg(feature = "windowing")]
 fn a_surface_that_claims_the_key_still_stops_it_there() {
     let (mut app, surface) = app_with_focused_surface();
-    surface.set_key_handler(|data| data.key == "i");
+    surface.set_key_handler(|data| data.code == "F12");
 
-    let actions = press(
-        &mut app,
-        KeyCode::KeyI,
-        Modifiers {
-            alt: true,
-            ..Default::default()
-        },
-    );
+    let actions = press(&mut app, KeyCode::F12, Modifiers::default());
 
     assert!(
-        !actions.contains(&AppAction::ToggleInspectMode),
+        !actions.contains(&AppAction::ToggleDevTools),
         "a claimed key must not also run the global fallback: {actions:?}"
     );
 }

@@ -1384,7 +1384,7 @@ fn an_inline_element_never_clips_but_an_inline_block_does() {
 /// centre. The container is left **unpositioned** on purpose: a `relative` entry
 /// takes the whole live chain, so this is the shape where the span's clip is in
 /// it either way, and the real walk is pinned in
-/// `rinch`'s `hit_testing.rs::a_button_inside_an_overflow_hidden_span_is_still_tapped`.
+/// `rinch`'s `hit_testing/tests/fixed_and_inline.rs::a_button_inside_an_overflow_hidden_span_is_still_tapped`.
 #[test]
 fn a_positioned_inline_block_under_an_overflow_hidden_span_carries_no_clip_from_it() {
     let mut doc = RinchDocument::new();

@@ -168,7 +168,7 @@ agrees: `clip_shape` itself, `layer_bounds`' children-clip intersection and the
 `covers_target`/`clip_cuts_nothing` elision check in `paint_node` (both now
 read `clip`'s own rect rather than the node's plain border-box `rect`), hit
 testing's `check_children` gate (reads `padding_box_insets` directly, in
-`crates/rinch/src/app/hit_testing.rs` — a click on a clipping container's own
+`crates/rinch/src/app/hit_testing/walk.rs` — a click on a clipping container's own
 border strip resolves to the container, never to content that paint no longer
 draws there), `RinchApp::viewport_rect_with_radius`/`viewport_clip_rect` (the
 `GameViewport`/video compositor hole, inset and its radii reduced the same

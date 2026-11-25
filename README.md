@@ -43,7 +43,7 @@ That `{|| ...}` closure is doing all the work. It creates an Effect that tracks 
 | "Reactivity requires re-rendering the whole component" | Signals -> Effects -> surgical node updates. Component runs once. |
 | "No component library" | 60+ components. Buttons, inputs, modals, tabs, accordions, color pickers, rich text editors. |
 | "Styling is painful" | Theme system with CSS variables, 14 color palettes, dark mode, spacing scales. Write `p: "md"` instead of `padding: var(--rinch-spacing-md)`. |
-| "I can't inspect anything" | F12 opens DevTools. Alt+I for inspect mode. There's an MCP server so Claude can screenshot your app and fix your CSS. |
+| "I can't inspect anything" | F12 opens DevTools (debug builds), with an Inspect button. There's an MCP server so Claude can screenshot your app and fix your CSS. |
 | "Text rendering is bad" | Parley for shaping, HarfBuzz under the hood. Ligatures, BiDi, the works. |
 | "No web target" | Compiles to WASM with a browser-native DOM backend — no canvas, just real DOM nodes. 3MB binary. |
 
