@@ -85,7 +85,7 @@ rinch-editor-core/
     input_rules.rs          // InputRule { pattern: Regex, handler -> Option<Transaction> }
     plugin.rs               // trait Plugin, PluginKey, PluginState, view-hooks (decorations/node-views)
     plugins/
-      history.rs            // History plugin (Step-based, grouped, typing-merge)
+      history/              // History plugin (Step-based, grouped, typing-merge)
       // tables.rs, links.rs contributed here or by feature
     serialize/
       mod.rs                // schema-derived TOTAL serializer
@@ -638,7 +638,7 @@ Remove all three from `[workspace.dependencies]` (Cargo.toml lines 31/32/33).
 - `document/fragment.rs` markdown I/O (pulldown-cmark) → `core/src/serialize/markdown.rs`.
 - `document/fragment.rs` HTML parser structure → starting point for `core/src/serialize/html.rs` (rewritten whitelist-driven).
 - `rinch-editor/src/input/{rules,shortcuts}.rs` content + `normalize_key` logic → `core/src/{input_rules,keymap}.rs` (rebound to `(state)→Option<Transaction>` / winit keys).
-- `history/operations.rs` invert/merge/group **semantics** → `core/src/plugins/history.rs` (over Steps).
+- `history/operations.rs` invert/merge/group **semantics** → `core/src/plugins/history/` (over Steps).
 - `MarkData` (plain) → `core/src/model/mark.rs`.
 
 ### Files deleted in `rinch` (the live CE engine — ~5,400 lines + paint + wiring)
