@@ -276,7 +276,7 @@ scheduled).
 
 ### Intervals and polled signals off the native frame loop (#1773)
 
-`set_interval` (`rinch-core/src/timer.rs`) is a chain of `set_timeout` ticks,
+`set_interval` (`rinch-core/src/timer/mod.rs`) is a chain of `set_timeout` ticks,
 so it needs no backend of its own: a thread-local `INTERVALS` map holds each
 interval's pending `TimeoutHandle` (the handle the app keeps is a stable id),
 each tick re-arms from its own deadline (fixed rate; more than a period late it
