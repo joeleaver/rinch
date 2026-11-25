@@ -312,8 +312,19 @@ fn compute_damage_impl(
         // A box that moved carries its whole painted subtree with it, static
         // or positioned (see the doc above, #2222). A subtree the walk cannot
         // bound answers `UNBOUNDED` and the frame repaints in full.
-        let moved = node.painted.is_some()
-            && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
+        // A transform that changed carries it too: a translate written frame
+        // by frame by a `transform` transition moves no layout, and the box
+        // stays a stacking context throughout, so neither the layout test
+        // nor `reordered` below sees what its subtree painted past the box
+        // (a sortable item's `::before` slot, left at the item's old place).
+        // Asked only of a box with a transform of its own, now or as painted.
+        let moved = node.painted.as_ref().is_some_and(|p| {
+            node.prev_layout.x != node.layout.x
+                || node.prev_layout.y != node.layout.y
+                || ((p.transform.is_some() || node.has_applied_transform())
+                    && position_and_transform_in(tree, node_id, scale, Frame::Painted).2
+                        != transform)
+        });
         // A box that started or stopped clipping its content since it was
         // painted: what it painted unclipped is cleared or what it paints
         // unclipped now is drawn, past its own rect (#2222). Walked with its
