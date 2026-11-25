@@ -95,6 +95,7 @@ impl TestAppBuilder {
         // Made as the shell makes its main window (`build_runtime`): in the
         // content-sized mode when the props ask, with the props on it.
         let mut app = crate::shell::rinch_runtime::app_for_window(component, &props);
+        let fonts = registered_fonts::with_queued(fonts);
         app.register_app_fonts(&fonts);
         #[cfg(feature = "theme")]
         if let Some(css) = theme_css {

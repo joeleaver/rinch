@@ -238,6 +238,50 @@ covers the emoji still draws it, as in Chrome, and an emoji face you name after
 a generic (`…, sans-serif, 'Segoe UI Emoji'`) wins it. A character that is text
 by default — ❤ without U+FE0F, ©, the digits — follows the stack as written.
 
+## Faces that arrive while the app runs
+
+`.fonts()` is for the faces a build carries. A face the app only learns about
+later — a typeface the user picks from a catalogue and the app downloads, a
+document that names its own fonts — is registered from anywhere on the UI
+thread with `rinch::font::register_font`:
+
+```rust,ignore
+// In a download's callback, an effect, an event handler…
+let bytes: Vec<u8> = fetched_ttf;
+rinch::font::register_font(AppFont::from_data(bytes));
+```
+
+On the desktop it takes effect on the event loop's next turn: every open
+window registers the face, and text already drawn in a fallback is shaped and
+painted again in it, a frame behind. Windows opened afterwards are made with
+it. Called before `App::run`, the face reaches the first frame like one from
+`.fonts()`. Several calls in a row are registered together, in one turn.
+
+Registering a face identical to one already registered (the same bytes,
+claiming the same generics) does nothing, so an app may ask for a face it may
+already have. As with every registration, the face answers its own family name
+(and any generics it claims), and cannot be unregistered.
+
+The face is the app's, not the calling window's: one registered from a tray
+or menu callback, in a windowless app, after the main window closed, or by a
+window that closes before the turn still reaches every window that is open.
+
+In a test, `rinch::testing::TestApp` does what the app does: its window, and
+the windows it opened, register the face once the turn the call was made in
+has been served (any input method, or `settle()`). A face registered before
+`TestApp::mount` reaches the test's window, as one registered before
+`App::run` reaches the first frame.
+
+On the web it does nothing: the browser loads fonts from the page's CSS
+(`@font-face` or a stylesheet `<link>`). It does nothing yet on Android. In
+a process that embeds rinch through `RinchContext` (with no desktop app
+running) it is ignored, and faces registered before the first
+`RinchContext` was made are dropped then, as are faces queued after the last
+turn of a desktop run that ends in such a process: register faces with
+`RinchContext::register_app_font`. A desktop app that makes a `RinchContext`
+in `main` before `App::run` loses the faces it registered up to then; rinch
+logs a warning with the count when the app's runtime starts.
+
 ## Fonts installed while the app runs
 
 rinch lists the installed fonts once, when the first window (or embedded

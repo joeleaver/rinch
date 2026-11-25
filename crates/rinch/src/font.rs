@@ -136,6 +136,69 @@ pub fn watch_system_fonts(interval: Option<std::time::Duration>) {
 /// app chose: on Linux, the wait after a change before the rescan.
 pub const DEFAULT_SYSTEM_FONT_WATCH: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Register a face with the running app, from anywhere on the UI thread: a
+/// component, an effect, a timer, the callback of a download.
+///
+/// [`App::fonts`](crate::App::fonts) is for the faces a build carries, known
+/// before the first frame. This is for the ones that are not: a typeface the
+/// user picks from a catalogue and the app fetches, a document that names
+/// its own fonts. The app object that owns the font contexts
+/// ([`RinchApp::register_app_font`](crate::app::RinchApp::register_app_font))
+/// is the shell's, out of reach of component code; this queues the face for
+/// it.
+///
+/// On the desktop it takes effect on the event loop's next turn: every open
+/// window's document registers the face, and text already on screen in a
+/// fallback is shaped and painted again in it, a frame behind. A window
+/// opened afterwards is made with it, as with the build's own fonts. Called
+/// before the loop starts (in `main`, before [`App::run`](crate::App::run)),
+/// the face is registered with the first window, before its first layout.
+///
+/// A face is reachable by the family name in its file, and answers the
+/// generics it claims ([`AppFont::with_generics`]); see [`AppFont`]. A face
+/// identical to one already registered (the same bytes, claiming the same
+/// generics, with the same [`script_fallback`](AppFont::script_fallback)) is
+/// skipped, so an app may ask for one face more than once. The bytes are
+/// normally owned ([`AppFont::from_data`]) and live as long as the app does.
+///
+/// Where it applies:
+///
+/// - **Desktop** (`windowing`): as above. The face is the app's, whichever
+///   window's code registers it: one from a tray or menu callback, a
+///   windowless app, or a window that closes before the turn reaches every
+///   window open. Off the UI thread it is ignored, with a warning.
+/// - **`rinch::testing::TestApp`** (the `testing` feature): as on
+///   the desktop. Its window and the windows it opened register the face when
+///   it serves its window's requests, after the turn the call was made in;
+///   a face registered before `TestApp::mount` reaches the test's window.
+/// - **An embed host** (a `RinchContext` made
+///   and no desktop runtime running): ignored, with nothing kept; faces
+///   registered before the first context was made are dropped then, and so
+///   are those queued after the last turn of a desktop run that ends in an
+///   embed host. The host registers faces with
+///   `RinchContext::register_app_font`. A desktop app that makes a
+///   `RinchContext` before `App::run` loses the faces registered up to
+///   then, with a warning once its runtime starts.
+/// - **Web**: does nothing. The browser loads fonts from the page's CSS
+///   (`@font-face`, a stylesheet `<link>`), as [`App::fonts`](crate::App::fonts)
+///   leaves it to.
+/// - **Android**: does nothing yet.
+pub fn register_font(font: AppFont) {
+    #[cfg(feature = "windowing")]
+    {
+        if !rinch_core::is_main_thread() {
+            tracing::warn!("rinch::font::register_font was called off the UI thread; ignored");
+            return;
+        }
+        crate::shell::rinch_runtime::queue_font(font);
+    }
+    #[cfg(not(feature = "windowing"))]
+    {
+        let _ = font;
+        tracing::debug!("rinch::font::register_font: no desktop runtime here; ignored");
+    }
+}
+
 /// The bytes of a font file: borrowed for the life of the program, or owned
 /// and shared (#2101).
 ///
@@ -350,6 +413,19 @@ impl AppFont {
             generics: &[],
             script_fallback: false,
         }
+    }
+
+    /// Whether `other` registers exactly what this face does: the same
+    /// bytes (and so the same families, weights and styles), claiming the
+    /// same generics, joining the fallback chain or not alike. What
+    /// [`register_font`] skips a second registration of.
+    #[cfg(feature = "windowing")]
+    pub(crate) fn is_same_face(&self, other: &AppFont) -> bool {
+        let (mine, theirs) = (self.data.as_bytes(), other.data.as_bytes());
+        self.generics == other.generics
+            && self.script_fallback == other.script_fallback
+            && mine.len() == theirs.len()
+            && (std::ptr::eq(mine.as_ptr(), theirs.as_ptr()) || mine == theirs)
     }
 
     /// This face, answering `generics` as well as its own family name

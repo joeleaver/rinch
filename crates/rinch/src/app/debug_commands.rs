@@ -1988,7 +1988,7 @@ mod text_geometry_units_tests {
 #[cfg(test)]
 mod key_press_menu_shortcut_533_tests {
     //! Issue #533: the real winit `WindowEvent::KeyboardInput` arm in
-    //! `shell/rinch_runtime.rs` checks menu shortcuts *before* ever building a
+    //! `shell/rinch_runtime/window_events.rs` checks menu shortcuts *before* ever building a
     //! `PlatformEvent::KeyDown`, but the debug `KeyPress` command used to build
     //! one directly and hand it to `handle_event`, entering the pipeline
     //! downstream of that check. A debug-injected `key_press` for a registered
