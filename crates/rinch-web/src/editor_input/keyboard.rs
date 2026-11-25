@@ -241,6 +241,15 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
             refresh_caret();
             return true;
         }
+        // Then the open popups' key entries, the dismiss stack, and the
+        // app-wide key listeners (`on_app_key`), ahead of the keymap (#3062):
+        // an app's own binding for a key the editor also binds is the app's,
+        // as on desktop. The bubble delegate does not offer them the key
+        // again.
+        if crate::event_delegation::offer_popup_and_app_keys(event) {
+            refresh_caret();
+            return true;
+        }
     }
     // The PHYSICAL key, for keymap lookup — `event.key()` is the *resolved* char ("*" for
     // Shift+8, "¡" for Alt+1) which would never match the keymap's physical-key bindings.
@@ -388,10 +397,19 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
             else if ctrl || alt {
                 false
             } else if key.chars().count() == 1 && !key.chars().next().unwrap().is_control() {
-                // A read-only editor refuses the text but still owns the key, as
-                // on desktop: left unconsumed, a typed letter would go on to the
-                // page's own shortcuts and Space would scroll it.
-                handle.insert_text(&key) || handle.refuses_edits()
+                // A read-only editor refuses the text, and the key's default is
+                // prevented so that Space does not scroll the page. Its
+                // propagation is not stopped (#3062, E19): the `keydown` goes on
+                // to the page's own listeners, as a `readonly` field's does in
+                // Chrome.
+                if handle.insert_text(&key) {
+                    true
+                } else {
+                    if handle.refuses_edits() {
+                        event.prevent_default();
+                    }
+                    false
+                }
             } else {
                 false
             }

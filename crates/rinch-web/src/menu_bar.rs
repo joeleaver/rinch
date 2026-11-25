@@ -19,12 +19,10 @@ use std::cell::Cell;
 use rinch::menu::Menu;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
-use crate::editor_input::add_capture_on;
-
 thread_local! {
-    /// The window listener is page-global and installed exactly once, however
-    /// many roots mount with a menu bar.
-    static SHORTCUTS_INSTALLED: Cell<bool> = const { Cell::new(false) };
+    /// Whether any root has mounted a menu bar: until then the window key
+    /// listener matches no chord.
+    static SHORTCUTS_ARMED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Arm `menus`' chords, render the bar, and wrap `content` in it.
@@ -52,7 +50,8 @@ pub(crate) fn wrap(
     // (see `MenuBarChords`). Releasing is "only if the slot is still mine", so a
     // *later* bar's chords survive this root's unmount.
     scope.on_cleanup(move || drop(chords));
-    install_shortcut_dispatch();
+    SHORTCUTS_ARMED.with(|f| f.set(true));
+    crate::event_delegation::ensure_window_key_capture();
     rinch::menu::render_with_menu_bar(scope, &refs, content, 0)
 }
 
@@ -141,7 +140,12 @@ fn web_typed_letter(key: &str) -> Option<char> {
     c.is_ascii_alphabetic().then(|| c.to_ascii_lowercase())
 }
 
-/// Install the `keydown` listener that fires menu shortcuts.
+/// Fire the menu shortcut `event` names, if a menu bar armed one, and answer
+/// whether a callback ran: the caller then `preventDefault`s the key and stops
+/// its propagation. Asked first by the shared `window` capture listener
+/// (`event_delegation::ensure_window_key_capture`, #3062), ahead of the
+/// keyboard interceptor; a key the page already `preventDefault`ed never gets
+/// here, as a page that cancels a key beats Chrome's own shortcuts.
 ///
 /// **Capture phase, on `window`** — not on `document`, and the difference is the
 /// whole point. The desktop shell's chord check `return`s before the keystroke
@@ -174,74 +178,62 @@ fn web_typed_letter(key: &str) -> Option<char> {
 /// `match_shortcut_code` answers `false` for a chord nothing is listening to —
 /// an item with no `on_click`, a disabled one, one whose component has since
 /// unmounted — and a keystroke nobody claimed belongs to the page.
-fn install_shortcut_dispatch() {
-    if SHORTCUTS_INSTALLED.with(|f| f.replace(true)) {
-        return;
+pub(crate) fn dispatch_menu_chord(event: &web_sys::KeyboardEvent) -> bool {
+    if !SHORTCUTS_ARMED.with(|f| f.get()) {
+        return false;
     }
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    add_capture_on(
-        window.as_ref(),
-        "keydown",
-        |event: web_sys::KeyboardEvent| {
-            // `code` is the physical key's W3C name — "KeyK", "Digit0", "F5" — which
-            // is exactly what a shortcut string parses into, so no translation.
-            // It is still the only thing a *digit or punctuation* chord
-            // matches against (unaffected by #1170 below): `key` for those
-            // carries the shifted character, so Ctrl+Shift+K reports "K" on
-            // every layout and tells punctuation nothing about which key was
-            // pressed.
-            let code = event.code();
-            if code.is_empty() {
-                return;
-            }
-            // A keystroke the focused control acts on is the control's
-            // (#1169, #1290): matching it would `preventDefault` the very `/`
-            // the user is typing, or the ArrowDown a `<select>` moves by. So
-            // is AltGr text typed into a field, which Windows reports as
-            // Ctrl+Alt (#1291). The desktop shell asks the same question of
-            // its focus arbiter.
-            if rinch::menu::chord_yields_to(
-                key_target_owner(&event),
-                event.ctrl_key(),
-                event.meta_key(),
-                event.alt_key(),
-                &code,
-                web_alt_graph_text(&event),
-            ) {
-                return;
-            }
-            // `key` *is* what a letter chord matches against (issue #1170):
-            // lowercased, it is the layout's character for the pressed key —
-            // "z" from the key labelled Z wherever the layout put it — so
-            // `rinch::menu::match_shortcut_code` tries it first and falls back
-            // to `code` only when it names no single Latin letter (a digit, a
-            // punctuation mark, or a non-Latin character on a Cyrillic/Thai/…
-            // layout). Shift does not change it: the browser's `key` for a
-            // letter under Ctrl is already unshifted on every tested layout,
-            // and lowercasing covers Caps Lock.
-            let typed_letter = web_typed_letter(&event.key());
-            if rinch::menu::match_shortcut_code(
-                event.ctrl_key(),
-                event.meta_key(),
-                event.alt_key(),
-                event.shift_key(),
-                &code,
-                typed_letter,
-            ) {
-                event.prevent_default();
-                // The app must not *also* act on a key the menu consumed — the
-                // desktop shell returns instead of forwarding a matched chord, and
-                // this is the browser's way of saying the same thing. From
-                // `window` this reaches `editor_input`'s keymap and the bubble
-                // delegate, which sit on `document`, one node further along the
-                // path. The one listener it does **not** reach is the
-                // pointer-gesture observer, which is on `window` beside this one
-                // for exactly that reason (see above) — measured in Chrome 153: a
-                // consumed chord still clears the flag.
-                event.stop_propagation();
-            }
-        },
-    );
+    // `code` is the physical key's W3C name — "KeyK", "Digit0", "F5" — which
+    // is exactly what a shortcut string parses into, so no translation.
+    // It is still the only thing a *digit or punctuation* chord
+    // matches against (unaffected by #1170 below): `key` for those
+    // carries the shifted character, so Ctrl+Shift+K reports "K" on
+    // every layout and tells punctuation nothing about which key was
+    // pressed.
+    let code = event.code();
+    if code.is_empty() {
+        return false;
+    }
+    // A keystroke the focused control acts on is the control's
+    // (#1169, #1290): matching it would `preventDefault` the very `/`
+    // the user is typing, or the ArrowDown a `<select>` moves by. So
+    // is AltGr text typed into a field, which Windows reports as
+    // Ctrl+Alt (#1291). The desktop shell asks the same question of
+    // its focus arbiter.
+    if rinch::menu::chord_yields_to(
+        key_target_owner(event),
+        event.ctrl_key(),
+        event.meta_key(),
+        event.alt_key(),
+        &code,
+        web_alt_graph_text(event),
+    ) {
+        return false;
+    }
+    // `key` *is* what a letter chord matches against (issue #1170):
+    // lowercased, it is the layout's character for the pressed key —
+    // "z" from the key labelled Z wherever the layout put it — so
+    // `rinch::menu::match_shortcut_code` tries it first and falls back
+    // to `code` only when it names no single Latin letter (a digit, a
+    // punctuation mark, or a non-Latin character on a Cyrillic/Thai/…
+    // layout). Shift does not change it: the browser's `key` for a
+    // letter under Ctrl is already unshifted on every tested layout,
+    // and lowercasing covers Caps Lock.
+    //
+    // A match is `preventDefault`ed and stopped by the caller. The app must
+    // not *also* act on a key the menu consumed — the desktop shell returns
+    // instead of forwarding a matched chord, and this is the browser's way of
+    // saying the same thing. From `window` this reaches `editor_input`'s
+    // keymap and the bubble delegate, which sit on `document`, one node
+    // further along the path. The one listener it does **not** reach is the
+    // pointer-gesture observer, which is on `window` beside this one for
+    // exactly that reason (see above) — measured in Chrome 153: a consumed
+    // chord still clears the flag.
+    rinch::menu::match_shortcut_code(
+        event.ctrl_key(),
+        event.meta_key(),
+        event.alt_key(),
+        event.shift_key(),
+        &code,
+        web_typed_letter(&event.key()),
+    )
 }

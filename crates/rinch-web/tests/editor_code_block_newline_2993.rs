@@ -302,7 +302,9 @@ fn mod_enter_outside_a_code_block_reaches_the_page() {
     let interceptor_heard = intercepted.borrow().clone();
 
     // The control: in the code block the binding applies and is consumed, so
-    // neither hears it (and a positive control that the listener is live).
+    // the page's listener does not hear it (and a positive control that the
+    // listener is live). The interceptor does: since #3062 it is a `window`
+    // capture listener and hears every key before the editor's keymap.
     page_heard.borrow_mut().clear();
     intercepted.borrow_mut().clear();
     f.handle.set_selection(Selection::cursor(Pos(6)));
@@ -333,9 +335,10 @@ fn mod_enter_outside_a_code_block_reaches_the_page() {
     );
     assert!(consumed_in_code, "control: consumed in the code block");
     assert!(heard_in_code.is_empty(), "{heard_in_code:?}");
-    assert!(
-        interceptor_heard_in_code.is_empty(),
-        "{interceptor_heard_in_code:?}"
+    assert_eq!(
+        interceptor_heard_in_code,
+        ["Enter"],
+        "the interceptor hears it before the keymap"
     );
 }
 
