@@ -94,6 +94,12 @@ pub(crate) mod android_ime;
 #[cfg(any(all(feature = "android", target_os = "android"), test))]
 pub(crate) mod android_key;
 
+// What the Android shell answers the system for each key event (#3062): a key
+// rinch does not map, and a Back nothing used, are handed back. Plain data, so
+// host tests compile it too.
+#[cfg(any(all(feature = "android", target_os = "android"), test))]
+pub(crate) mod android_key_status;
+
 // The Android touch recogniser. `android_runtime` compiles only for
 // `target_os = "android"`, but the translation from finger to pointer events is
 // pure and is the part that has to be pinned down by tests, so it is compiled

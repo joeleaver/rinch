@@ -125,4 +125,43 @@ impl DevToolsStore {
     pub fn bump_version(&self) {
         self.doc_version.update(|v| *v += 1);
     }
+
+    /// Turn inspect mode on or off: what the DevTools toolbar's Inspect
+    /// button does, the only way in (#3062: there is no key for it). Turning
+    /// it off drops the node the pointer last hovered in the main window, so
+    /// its highlight goes too; the runtime redraws the main window when the
+    /// hovered node changes. Clicking a node in the main window is the other
+    /// way out, and selects that node.
+    pub fn toggle_inspect_mode(&self) {
+        let on = !self.inspect_mode.get();
+        self.inspect_mode.set(on);
+        if !on {
+            self.hovered_node_id.set(None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggling_inspect_mode_off_drops_the_hovered_node() {
+        let store = DevToolsStore::new();
+        store.toggle_inspect_mode();
+        assert!(store.inspect_mode.get());
+        store.hovered_node_id.set(Some(7));
+        store.toggle_inspect_mode();
+        assert!(!store.inspect_mode.get());
+        assert_eq!(store.hovered_node_id.get(), None, "its highlight goes");
+    }
+
+    #[test]
+    fn toggling_inspect_mode_on_keeps_a_hover_from_the_elements_tree() {
+        let store = DevToolsStore::new();
+        store.hovered_node_id.set(Some(3));
+        store.toggle_inspect_mode();
+        assert!(store.inspect_mode.get());
+        assert_eq!(store.hovered_node_id.get(), Some(3));
+    }
 }

@@ -795,12 +795,25 @@ under Rendering Backends for the predicate and its deviations.
 Press F12 to toggle the DevTools panel which shows:
 - **Performance**: FPS, frame time, and render time
 - **Elements**: DOM tree inspection
-- **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
+- **Styles**: Computed styles for selected elements
 
-**The keys can be turned off** (#2689). F12 and Alt+I are answered in
+**Inspect mode has no key** (#3062). The toolbar's Inspect button turns it on
+and off (`DevToolsStore::toggle_inspect_mode`, which drops the hovered node on
+the way off, so its highlight goes); while it is on, the main window's pointer
+moves set `hovered_node_id` (the outline) and a left click selects the node
+under it, opens the Elements tab and ends it (`rinch_runtime.rs`, the
+`PointerButton` arm). It used to be Alt+I as well, answered in the key fallback
+with `AppAction::ToggleInspectMode`; that beat text input in a focused field in
+a debug build (on macOS Option+I is the circumflex dead key), and rinch claims
+no app-level shortcuts of its own, so the key and the action are gone. The
+debug/MCP server has no inspect mode of its own: `query_selector`, `get_node` and
+`dom_tree` answer what the outline shows. F12 is the one app-level shortcut rinch keeps, and
+only in a debug build by default.
+
+**The key can be turned off** (#2689). F12 is answered in
 `RinchApp::handle_unclaimed_key_fallback`, after menu shortcuts, element key
-handlers, a registered node's `on_key` and the app-wide listeners; F12 only
-under the `windowing` feature, Alt+I on every target. Both are gated on
+handlers, a registered node's `on_key` and the app-wide listeners, and only
+under the `windowing` feature. It is gated on
 `RinchApp::devtools_enabled()` (`app/devtools_keys.rs`): the app's own
 setting (`RinchApp::set_devtools`, defaulting to the thread's
 `set_devtools_default`, which `App::devtools` sets in `App::run` before any
@@ -809,16 +822,15 @@ too), overridden by `RINCH_DEVTOOLS=on|off`. The variable is read once per
 thread and cached (`ENV_OVERRIDE`, which tests set with
 `set_env_override_for_test` instead of touching the shared process
 environment), and resolved at each key, so a runtime `set_devtools(false)` by
-an embed host still loses to it. Off, the two `if`s are skipped and the key
-continues down the fallback (`match key`), so an Alt+I carrying text is typed
-into a focused field. The only way the DevTools window opens is
+an embed host still loses to it. Off, the `if` is skipped and the key
+continues down the fallback (`match key`). The only way the DevTools window opens is
 `AppAction::ToggleDevTools` from that fallback (there is no programmatic open),
 so the gate covers it; a DevTools window already open when the keys are turned
 off stays open until its close button. `RinchContext::set_devtools` forwards
 to the app's. **The default is on in a debug build and off in a release build**
 (`DEVTOOLS_DEFAULT = cfg!(debug_assertions)`; the owner's decision on #2689,
 2026-11-15): `App`'s field and the thread default both start from it, so an
-embedded `RinchContext` in a release build has the keys off too unless its
+embedded `RinchContext` in a release build has the key off too unless its
 host calls `set_devtools(true)`.
 
 **The DevTools window is one of the runtime's windows** (#2416 stage 3a). It is
