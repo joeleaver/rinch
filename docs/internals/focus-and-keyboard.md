@@ -80,7 +80,7 @@ never blocks a key. **A window blur clears nothing** (it used to clear
 thread-wide `PRESSED`/`WITHHELD` sets, round 2 of #3073): a key held across a
 blur may come back up in another of the app's windows, where the listener that
 heard it must hear it; clearing a `main` listener's records on one window's blur
-stuck that key for good (macOS sends no synthetic focus-in press), clearing a
+stuck that key for good (Wayland and macOS send no synthetic focus-in press), clearing a
 document listener's records on its own blur stuck it the same way, and a blur
 arriving after the next window's press erased that press. The fresh-press rule
 covers what the blur clearing was for. A focused surface's claim needs no
@@ -93,10 +93,29 @@ it and was held into the surface releases to the page. The element's own
 `onkeyup` is deliberately **not** paired: it hears every release while its
 element holds the keyboard, whoever took the press, as a browser's `keyup`
 does (a `keydown` handler's `preventDefault` does not cancel the `keyup`).
-Known gap: the winit shell forwards an X11 synthetic focus-in press
-(`is_synthetic`) as a fresh one, so if the newly focused window consumes it
-ahead of the listeners, a listener that heard the key go down in the first
-window loses the release. Entries are keyed by
+**Focus changes, per platform** (pinned winit fork; the shell's
+`KeyboardInput` arm in `rinch_runtime.rs` ignores `is_synthetic` and hands
+every event to `route_key_event` in `winit_input.rs`). On **X11 and Windows**
+winit synthesises a *release* of every held key when a window loses the
+keyboard (`winit-x11` `xinput2_unfocused` → `handle_pressed_keys(Released)`;
+`winit-win32` `WM_KILLFOCUS`) and a *press* of every held key, built with
+`repeat: false`, when a window gains it (`xinput2_focused`; `WM_SETFOCUS`).
+So with W held in window A and the keyboard moved to B, A's listeners (and
+the `main`-registered ones) hear W come up early, at the focus-out, which
+closes their records; B then gets a fresh press the user never made
+(reported to `note_fresh_key_press` and offered to B's listeners and
+`main`'s, which record it unless something ahead of them consumes it), and
+the real release pairs with that. The two balance: each listener hears one
+press and one release, and none is left holding the key. On **Wayland**
+(`winit-wayland`'s `WlKeyboardEvent::Enter`/`Leave` drop the key repeat and
+send no key events; the keys the enter reports held are ignored) and
+**macOS** (`winit-appkit` synthesises no key events on a focus change, only
+a `ModifiersChanged` reset in `windowDidResignKey`) the real press and
+release are all there is: the release arrives in whichever of the app's
+windows has the keyboard when the key comes up, and the per-listener records
+route it to the listeners that heard the press. So a key let go in another
+app leaves a stale record only on Wayland and macOS; on X11 and Windows the
+focus-out release closes it. Entries are keyed by
 `current_dispatching_doc` at registration (`doc_matches`), carry their owner
 (dead owner skipped and pruned, `on_cleanup` removes at disposal), run
 untracked inside it; the handle's drop releases nothing (`remove()` does).

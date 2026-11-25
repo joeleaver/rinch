@@ -878,9 +878,14 @@ fn studio() -> NodeHandle {
   does not hear its release either. A held-key tracker can rely on it: every
   key it saw go down comes up, even when the key is let go in another of the
   app's windows or while a menu window holds the keyboard, and it never hears
-  a release whose press it did not see. If a release is lost entirely (the key
-  let go in another app), the listener hears no release for that press, and
-  the next fresh press of the key starts its pairing over. An element's own `onkeyup` is different: it hears
+  a release whose press it did not see. On X11 and Windows the system reports
+  a held key released when its window loses the keyboard and pressed again
+  when another of the app's windows gains it, so there a tracker sees the key
+  come up at the focus change, go down again in the new window, and come up
+  when it is let go; on Wayland and macOS the one release arrives in whichever
+  window has the keyboard then. If a release is lost entirely (on Wayland or
+  macOS, the key let go in another app), the listener hears no release for
+  that press, and the next fresh press of the key starts its pairing over. An element's own `onkeyup` is different: it hears
   every release while its element holds the keyboard, as a browser's `keyup`
   does.
 - **Not offered:** a press while an input method is composing, one the

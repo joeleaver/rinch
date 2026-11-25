@@ -85,7 +85,7 @@ fn two_windows() -> Two {
 /// window, where W is let go: the listener registered from `main` and the
 /// main window's own both hear the release. Before, the main window's blur
 /// forgot the press and the release reached neither, so W stayed down for
-/// good for both (macOS sends no focus-in press to recover with).
+/// good for both (Wayland and macOS send no focus-in press to recover with).
 #[test]
 fn a_key_held_into_another_window_releases_to_the_listeners_that_heard_it() {
     let Two {
