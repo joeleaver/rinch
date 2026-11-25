@@ -398,7 +398,7 @@ positions are lengths in the tile's space. Pins:
 `rinch-dom/tests/gradient_mask_1798_tests.rs` (Chrome 155 pixels),
 `rinch-dom/tests/image_rendering_mask_2098_2099_tests.rs` and its GPU twin
 `rinch/tests/gpu_image_rendering_mask_2098.rs` (Chrome 156 pixels, url masks),
-`hit_testing::tests::a_masked_boxs_overflow_is_not_hit_outside_its_border_box`,
+`hit_testing::tests::clip::a_masked_boxs_overflow_is_not_hit_outside_its_border_box`,
 `rinch-visual-test`'s `css_export` gradient test. Not Chrome's: a mask on a
 non-atomic `display: inline` element (a `<span>`): its text is drawn by its
 inline formatting context's root and is not masked, and its own `0x0` box

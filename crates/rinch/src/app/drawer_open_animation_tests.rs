@@ -259,7 +259,7 @@ fn opening_the_drawer_runs_its_300ms_slide() {
 /// Its root is `position: fixed` over the whole viewport with an overlay at 75%
 /// black inside it, so this is the assertion that `visibility: hidden` really
 /// replaces what `display: none` was doing. `hit_test` skips a hidden subtree
-/// (`hit_testing.rs`); the point of the fixture is that the Drawer's own closed
+/// (`hit_testing/walk.rs`); the point of the fixture is that the Drawer's own closed
 /// state reaches that skip.
 #[test]
 fn the_closed_drawer_takes_no_clicks() {

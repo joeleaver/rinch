@@ -3575,7 +3575,7 @@ fn compose_transform_parts(
 /// branch hands `parent_transform` straight down to the children rather than
 /// composing anything for it — a transform declared on such a node has no box
 /// to apply about and is simply not drawn. Hit testing makes the same exception
-/// (`local_point`, `crates/rinch/src/app/hit_testing.rs`); a forward walk that
+/// (`local_point`, `crates/rinch/src/app/hit_testing/walk.rs`); a forward walk that
 /// composed it anyway would place the node's descendants somewhere paint never
 /// puts them.
 fn compose_transform_step(
