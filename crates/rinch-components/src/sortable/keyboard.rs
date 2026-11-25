@@ -251,11 +251,16 @@ fn describe_lift(cfg: &ListConfig, slot: usize) {
 
 /// Drop a keyboard lift where its caret is: settled and judged again first.
 fn drop_lift() {
-    let Some((group, doc, first)) = ACTIVE.with(|a| {
+    let Some((group, doc, first, holder)) = ACTIVE.with(|a| {
         let a = a.borrow();
         let a = a.as_ref()?;
         a.lift.as_ref()?;
-        Some((a.group.clone(), a.doc, a.keys.first().cloned()))
+        Some((
+            a.group.clone(),
+            a.doc,
+            a.keys.first().cloned(),
+            a.source.clone(),
+        ))
     }) else {
         return;
     };
@@ -273,14 +278,26 @@ fn drop_lift() {
         return;
     };
     let cfg_id = Some(cfg.id.clone());
+    // Read before the app's handler can redraw the list: the node the item is
+    // in the list it lands in, if it is there (a drop within one list). It
+    // stays where it was until the app moves it, which may be later.
+    let landing = Landing {
+        index: mv.place.index,
+        held: first.as_ref().and_then(|first| {
+            items_of(&cfg.node)
+                .into_iter()
+                .find(|(_, k)| k == first)
+                .map(|(n, _)| n.node_id())
+        }),
+    };
     if let Some(cb) = cfg.ondrop.clone() {
         cb.invoke(mv);
     }
     // The app re-renders from its data — in this handler's batch, or later —
-    // and the moved item (a new node, when it changed lists) takes the focus
-    // back once it is drawn.
+    // and the moved item (a new node, when it changed lists or the app drew
+    // it again) takes the focus back once it is where the drop put it.
     if let Some(first) = first {
-        request_focus(doc, group, first, cfg_id);
+        request_drop_focus(doc, group, first, cfg_id, landing, &holder);
     }
 }
 

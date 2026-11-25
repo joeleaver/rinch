@@ -90,7 +90,7 @@ fn fixture(options: Options) -> Fixture {
     OPTIONS.with(|o| *o.borrow_mut() = options);
     DROPS.with(|d| d.borrow_mut().clear());
     SEEN.with(|d| d.borrow_mut().clear());
-    let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
+    let app = mount(move |__scope: &mut RenderScope| {
         let board = Signal::new(vec![
             (
                 "c1".to_string(),
@@ -136,6 +136,14 @@ fn fixture(options: Options) -> Fixture {
             }
         }
     });
+    let board = BOARD.with(|b| b.get()).unwrap();
+    Fixture { app, board }
+}
+
+/// Mount `render` with the theme's and the components' CSS, painted without
+/// a running clock.
+fn mount(render: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchApp {
+    let mut app = RinchApp::new(render);
     app.mount_component(VIEWPORT.0, VIEWPORT.1);
     {
         let doc = app.doc.as_ref().unwrap();
@@ -152,8 +160,7 @@ fn fixture(options: Options) -> Fixture {
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
-    let board = BOARD.with(|b| b.get()).unwrap();
-    Fixture { app, board }
+    app
 }
 
 fn send(f: &mut Fixture, event: PlatformEvent) {
@@ -389,6 +396,7 @@ fn gap_options() -> Options {
     }
 }
 
+mod async_drop;
 mod indicator;
 mod keyboard_and_cancel;
 mod preview;

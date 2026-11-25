@@ -154,7 +154,7 @@ pub(super) fn see_items(node: &NodeHandle, seer: &Seer) {
     if seer.keyboard {
         offer_keyboard(node);
     }
-    if take_request_for(node.doc_key(), seer, &key) {
+    if take_request_for(node.doc_key(), seer, &key, node) {
         focus_item(node);
     }
 }
@@ -222,7 +222,10 @@ impl Component for SortableList {
                 __scope,
                 &list,
                 NOT_MINE,
-                move |inserted, _| see_items(inserted, &seer),
+                move |inserted, _| {
+                    see_items(inserted, &seer);
+                    saw_arrival(doc, &seer);
+                },
             );
         }
         let reason = reason_node(__scope);

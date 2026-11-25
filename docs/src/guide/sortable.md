@@ -219,9 +219,14 @@ can land in any list of the group, `keyboard` or not. Dropped in a list without
 `keyboard`, an item that has no `tabindex` of yours is lent `tabindex="-1"` to
 take the focus back: focusable, no Tab stop, and the `tabindex` goes once the
 focus moves elsewhere (or the item goes; an item taken out and put back keeps
-the lend until the focus leaves it). The item is focused when it is drawn in
-the list it was dropped in; the request is forgotten once it is, at the next
-drag, and when that list goes and is not drawn again. One with a `tabindex` you wrote
+the lend until the focus leaves it). The item is focused when it is where the
+drop put it, in the list it was dropped in: drawn there as a new node (a
+`for` keyed by position, a list drawn again), or moved there by a keyed
+`for`. Until your `ondrop`'s change is drawn (it may apply it after an await
+or a timer of its own), the node you lifted stays where it was with the
+focus, and does not count. The request is forgotten once it is satisfied, at
+the next drag, when the focus moves from the lifted item to another element,
+and when that list goes and is not drawn again. One with a `tabindex` you wrote
 keeps yours, whatever its value, `tabindex="-1"` included (`SortableItem {
 "tabindex": "-1", … }`): the list decides the lend when it sees the moved
 item, after the attributes you wrote on it, so it never lends over yours or

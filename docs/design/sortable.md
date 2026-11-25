@@ -118,7 +118,8 @@ acting only when the item itself is focused:
   the same group in that direction (by on-screen boxes), at the same index or
   the near end. The caret's item is scrolled into view.
 - Space / Enter drops (an accepted place calls `ondrop`; the item is focused
-  again once the app re-rendered it), Escape cancels.
+  again once the app's re-render puts it where the drop placed it, now or
+  later: the lifted node, still where it was, does not count), Escape cancels.
 
 Escape is answered by the item's own handler rather than by a dismiss-stack
 entry: element handlers run before the dismiss stack, so it still beats an
