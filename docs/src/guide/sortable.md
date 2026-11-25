@@ -295,19 +295,27 @@ SortableList {
   threshold away from the pointer, so a slow sweep changes the place once
   each way. Over its own place a collapsed item's list opens the gap there
   again (with a gap indicator).
-- **The slot.** The room a gap opens can be lit: it holds a box the size of
-  what is carried, exactly where the drop lands, drawn only as the app styles
-  it with `--rinch-sortable-slot-background`, `--rinch-sortable-slot-border`
-  and `--rinch-sortable-slot-radius` (on the list or an ancestor; all off by
-  default). Between items it is the `::before` of the item after the gap,
-  positioned at `--rinch-sortable-slot-start` and sized by
-  `--rinch-sortable-slot-size`, which the component writes, so it rides that
-  item's shift and moves nothing. At the end of a list (an empty one
-  included) it is the list's own `::after`, after its items and in their
-  flow, so the list grows to hold it. A list holding only what is carried,
-  and a gap in the source's own list that does not collapse (where the
-  source is drawn at the place), draw none. An item's own `::before`, and a
-  list's own `::after`, are taken while they hold the slot.
+- **The slot** (`slot: true` on the list; off by default, and then a drag
+  writes nothing of it and the list's layout never changes). The room a gap
+  opens can be lit: it holds a box the size of what is carried, exactly where
+  the drop lands, drawn only as the app styles it with
+  `--rinch-sortable-slot-background`, `--rinch-sortable-slot-border` and
+  `--rinch-sortable-slot-radius` (on the list or an ancestor; all off by
+  default). It is always the list's own pseudo-element, never an item's, so
+  an item's `overflow: hidden` cannot clip it. Between items (and, in the
+  source's own collapsed list, in the room the source left at its end) it is
+  the list's `::before`, absolutely positioned over the box the component
+  writes as `--rinch-sortable-slot-x` / `-y` / `-width` / `-height`, measured
+  from the items as laid out: it moves nothing, and a wrapping row, a grid, a
+  right-to-left row and a reversed one each get it where the drop lands. At
+  the end of any other list (an empty one included) it is the list's
+  `::after`, `--rinch-sortable-slot-size` along the axis, after its items and
+  in their flow, so the list grows to hold it (in a grid or a wrapping row it
+  takes the next cell or line). A list holding only what is carried, and a
+  gap in the source's own list that does not collapse (where the source is
+  drawn at the place), draw none. The list's own `::before` and `::after` are
+  taken while a slot is on, and the list must stay `position: relative` (the
+  stylesheet's default) for the `::before` to be placed against it.
 - **In the source's own list**, unless it collapses, a gap is the list laid out
   again in the order the drop would give: the items between the place and the
   source make room and the source itself is drawn at the place, so nothing is

@@ -435,8 +435,11 @@ fn a_wrapping_row_puts_it_on_the_line_the_card_lands_on() {
     assert_eq!((x - lx, y - ly), (80.0, 0.0));
 }
 
-/// A grid, three columns; carried from the other list to after `c`, the
-/// row's last: the slot is at the start of the next row, where `d` was.
+/// A grid, three columns. Carried from the other list to after `c`, the
+/// row's last, the slot is the next row's first cell, where `d` was. And
+/// `a`, collapsed in its own grid and carried to after `c`, lands in the
+/// first row's last cell (the cards before the gap slid back into it), not
+/// in a cell before the second row's start.
 #[test]
 fn a_grid_puts_it_in_the_cell_the_card_lands_in() {
     let mut f = fixture(Setup {
@@ -450,14 +453,45 @@ fn a_grid_puts_it_in_the_cell_the_card_lands_in() {
     let (_, at) = lands_in_its_slot(&mut f, "g", over);
     assert_eq!(cards(&f, "c1"), ["a", "b", "c", "g", "d", "e"]);
     assert!(near(at, d_was), "the slot {at:?} is d's cell {d_was:?}");
+
+    grab(&mut f, "a");
+    let over = point(&f, item(&f, "c"), 0.8, 0.5);
+    let (list, (x, y, _, _)) = lands_in_its_slot(&mut f, "a", over);
+    assert_eq!(cards(&f, "c1"), ["b", "c", "a", "g", "d", "e"]);
+    let (lx, ly, _, _) = box_of(&f, lists(&f)[list]);
+    assert_eq!((x - lx, y - ly), (80.0, 0.0));
 }
 
-/// Right to left: the slot is on the side the card lands on.
+/// Right to left, the first card at the right. Carried from the other list
+/// between two cards, and collapsed in its own list and carried to its end,
+/// the left: each time the slot is where the card lands, on the side the
+/// row ends on.
 #[test]
 fn right_to_left_puts_it_where_the_card_lands() {
-    let mut f = fixture(Setup::row("width: 150px; direction: rtl"));
+    let mut f = fixture(Setup::row("width: 190px; direction: rtl"));
     grab(&mut f, "e");
     let over = point(&f, item(&f, "b"), 0.5, 0.5);
     lands_in_its_slot(&mut f, "e", over);
     assert_eq!(cards(&f, "c1").len(), 5);
+
+    grab(&mut f, "b");
+    let keys = cards(&f, "c1");
+    let last = item(&f, keys.last().unwrap());
+    let over = point(&f, last, 0.8, 0.5);
+    let (list, (x, _, _, _)) = lands_in_its_slot(&mut f, "b", over);
+    assert_eq!(cards(&f, "c1"), ["a", "e", "c", "d", "b"]);
+    let (lx, _, _, _) = box_of(&f, lists(&f)[list]);
+    assert_eq!(x - lx, 0.0, "at the left end");
+}
+
+/// Right to left, collapsed in its own list and carried between two cards:
+/// the cards before the place close up toward the row's start (the right),
+/// and the slot is the room where the card lands.
+#[test]
+fn right_to_left_a_collapsed_card_lands_in_its_slot() {
+    let mut f = fixture(Setup::row("width: 150px; direction: rtl"));
+    grab(&mut f, "a");
+    let over = point(&f, item(&f, "c"), 0.5, 0.5);
+    lands_in_its_slot(&mut f, "a", over);
+    assert_eq!(cards(&f, "c1"), ["b", "c", "a", "d"]);
 }

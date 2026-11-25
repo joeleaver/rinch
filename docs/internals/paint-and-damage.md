@@ -1511,8 +1511,14 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   is the blit rectangle at the truncated translate the software path blits
   at, unioned with the snapshot's painted bounds
   (`paint::paint_subtree_bounds`, kept on `ActiveDrag::snapshot_bounds`) at
-  the real fractional translate, rounded out; unknown bounds damage the whole
-  surface. Until the fix the GPU frame damaged only the truncated box, so the
+  the real fractional translate, rounded out. Those bounds are measured once
+  when the drag starts, without the per-frame visit budget
+  (`layer_bounds::unbudgeted_subtree_bounds`; `MAX_DEPTH` still applies), so
+  a ghost of more than 512 nodes is bounded. One still unbounded (a `fixed` or
+  `sticky` descendant, or deeper than `MAX_DEPTH`) has its Vello snapshot
+  recorded inside a clip to its box, as the software pixmap always was, and
+  its bounds are that box: it used to damage the whole surface on every frame
+  of the drag (#3065). Until the earlier fix the GPU frame damaged only the truncated box, so the
   right column and bottom row of every place a bordered ghost passed stayed
   painted after the drag. Pins: `gpu_drag_ghost_damage_tests`,
   `drag_ghost_dirty_region_tests`.

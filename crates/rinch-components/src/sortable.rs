@@ -1296,18 +1296,16 @@ fn carried_extent(
         })
         .filter(|f| *f > 0.0)
         .unwrap_or(1.0);
+    // Between the facing edges, whichever way the list runs: a right-to-left
+    // or reversed row has its next item at smaller coordinates, and measured
+    // one way only its spacing came out negative, so zero (#3065).
+    let between =
+        |(a, alen): (f32, f32), (b, blen): (f32, f32)| (b - (a + alen)).max(a - (b + blen));
     let spacing = at
         .and_then(|i| {
-            let here = item.bounding_rect()?;
-            let (start, len) = span(&here, cfg.axis);
-            if let Some((next, _)) = all.get(i + 1) {
-                let (n, _) = span(&next.bounding_rect()?, cfg.axis);
-                Some(n - (start + len))
-            } else {
-                let (prev, _) = all.get(i.checked_sub(1)?)?;
-                let (p, plen) = span(&prev.bounding_rect()?, cfg.axis);
-                Some(start - (p + plen))
-            }
+            let here = span(&item.bounding_rect()?, cfg.axis);
+            let (other, _) = all.get(i + 1).or_else(|| all.get(i.checked_sub(1)?))?;
+            Some(between(here, span(&other.bounding_rect()?, cfg.axis)))
         })
         .unwrap_or(0.0)
         .max(0.0)
@@ -1997,17 +1995,24 @@ fn slot_at(
         .map(|(n, _)| Some(AxisBox::of(&n.layout_box_in(&cfg.node)?, axis)))
         .collect::<Option<Vec<_>>>()?;
     let forward = flows_forward(&boxes);
-    // Where `node` would be without the gap.
+    // Where `node` would be without the gap: its box moved by its collapse
+    // shift. The plan counts that shift along the flow (minus one item for
+    // each collapsed item before it), but it is written as a translate
+    // toward larger coordinates whatever the direction, so in a list that
+    // runs backward (right to left, `*-reverse`) it is drawn the wrong way.
+    // The drop lands where the flow puts the item, so the slot reads the
+    // shift along the flow.
     let shifted = |node: &NodeHandle| {
         let i = held
             .iter()
             .position(|(n, _)| n.node_id() == node.node_id())?;
         let (dx, dy) = shift_of(node);
         let mut b = boxes[i];
-        b.at += match axis {
+        let along = match axis {
             SortAxis::Vertical => dy,
             SortAxis::Horizontal => dx,
         };
+        b.at += if forward { along } else { -along };
         Some(b)
     };
     let sized = |b: AxisBox, at: f32| AxisBox { at, len: size, ..b };
