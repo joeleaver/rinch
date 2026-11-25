@@ -485,3 +485,38 @@ fn a_read_only_editors_printable_key_reaches_the_page() {
     assert_ne!(f.paragraphs(), ["hello"]);
     f.teardown();
 }
+
+/// A `window` `blur` forgets the presses the app-wide listeners were offered:
+/// the release of a key held across it goes elsewhere, so the next release of
+/// that key belongs to a later press. Before the fix a press the input's
+/// `onkeydown` took after the window came back had its release offered to the
+/// listeners, paired with the press made before the blur.
+#[wasm_bindgen_test]
+fn a_window_blur_forgets_the_presses_on_app_key_was_offered() {
+    let f = Fields::mount();
+    let l = f.log.clone();
+    let app = on_app_key(move |k: &KeyEventData| {
+        let phase = if k.is_up() { "up" } else { "down" };
+        l.borrow_mut().push(format!("app:{phase}:{}", k.key));
+        false
+    });
+
+    // F2 pressed on `<body>` reaches the listener; its release is lost with
+    // the keyboard.
+    f.input().blur().unwrap();
+    let body: web_sys::EventTarget = document().body().unwrap().into();
+    key_at(&body, "keydown", "F2", "F2");
+    assert_eq!(take(&f.log), ["app:down:F2"]);
+    let window: web_sys::EventTarget = web_sys::window().unwrap().into();
+    window
+        .dispatch_event(&web_sys::Event::new("blur").unwrap())
+        .unwrap();
+
+    // Back in the input, its `onkeydown` takes F2: neither the press nor its
+    // release is the listener's.
+    f.input().focus().unwrap();
+    assert!(press("F2", "F2"));
+    assert_eq!(take(&f.log), ["element:F2"]);
+    app.remove();
+    f.teardown();
+}

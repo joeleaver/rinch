@@ -118,6 +118,16 @@ pub(crate) fn ensure_window_key_capture() {
         let _root = crate::mark_event_root(&event);
         events::dispatch_key_interceptor(&key_data(&event, events::KeyEventKind::Up));
     });
+    // The window losing the keyboard: the release of a key held across it goes
+    // elsewhere, so the presses `on_app_key` was offered are forgotten, or the
+    // next release of that key would be paired with a stale press (#3062). A
+    // capture listener on `window` also sees every element's `blur` on its way
+    // down; only the one aimed at `window` itself counts.
+    add_capture_on(&window, "blur", |event: web_sys::Event| {
+        if event.event_phase() == web_sys::Event::AT_TARGET {
+            events::forget_app_key_presses();
+        }
+    });
 }
 
 /// Offer a press to the open popups' key entries and, for Escape, the dismiss
@@ -335,9 +345,11 @@ pub(super) fn install_key_delegation(browser_doc: &web_sys::Document) {
             let _root = crate::mark_event_root(event);
             offer_element_key(event, "data-onkeyup", &key_data);
         }
-        // Every release reaches the app-wide listeners, but one whose press a
-        // focused surface claimed (#1784). As no root's: they hear the page.
-        // Asked first, as the dispatch clears the mark.
+        // The app-wide listeners hear a release only when they were offered its
+        // press (#3062): not one whose press a focused surface claimed (#1784)
+        // or something ahead of them consumed, and none after a window blur.
+        // As no root's: they hear the page. The surface's mark is asked first,
+        // as the dispatch clears it.
         let claimed = events::app_key_release_withheld(&key_data.code);
         events::dispatch_app_key(&key_data);
 

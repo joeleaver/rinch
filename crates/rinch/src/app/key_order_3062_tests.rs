@@ -515,3 +515,46 @@ fn on_app_key_hears_a_release_only_after_its_press() {
     assert_eq!(take(&log), ["on_key:w", "app:down:w", "app:up:w"]);
     listener.remove();
 }
+
+/// A window that loses the keyboard forgets the presses `on_app_key` was
+/// offered: the release of a key held across the blur goes to the window that
+/// took the keyboard, so the next release of that key here belongs to a later
+/// press. Before the fix a press the input's `onkeydown` consumed after the
+/// window came back had its release offered to the listener, paired with the
+/// press made before the blur.
+#[test]
+fn a_window_blur_forgets_the_presses_on_app_key_was_offered() {
+    clear_keyboard_interceptor();
+    let log: Log = Default::default();
+    let mut f = fields(&log);
+    let listener = log_app_keys(&log);
+    let focus = |app: &mut RinchApp, focused| {
+        app.handle_event(PlatformEvent::WindowFocus(focused), VP, 1.0);
+    };
+    focus(&mut f.app, true);
+
+    // F2 pressed with nothing focused reaches the listener; its release is
+    // lost with the keyboard.
+    f.app.handle_event(
+        PlatformEvent::KeyDown {
+            key: KeyCode::F2,
+            logical_key: None,
+            text: None,
+            modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Unknown,
+        },
+        VP,
+        1.0,
+    );
+    assert_eq!(take(&log), ["app:down:F2"]);
+    focus(&mut f.app, false);
+    focus(&mut f.app, true);
+
+    // Back in the window, the input's `onkeydown` takes F2: neither the press
+    // nor its release is the listener's.
+    f.focus_input();
+    take(&log);
+    press(&mut f.app, KeyCode::F2, None);
+    assert_eq!(take(&log), ["element:down:F2", "element:up:F2"]);
+    listener.remove();
+}

@@ -59,7 +59,16 @@ either. A focused surface's claim also marks the code
 element's own `onkeyup` is deliberately **not** paired: it hears every release
 while its element holds the keyboard, whoever took the press, as a browser's
 `keyup` does (a `keydown` handler's `preventDefault` does not cancel the
-`keyup`). Entries are keyed by
+`keyup`). **A window blur forgets both records** (`forget_app_key_presses`,
+desktop from `WindowFocus(false)` in `event_dispatch.rs`, rinch-web from a
+`window` `blur` in `event_delegation/keys.rs`): the release of a key held
+across the blur goes to whatever took the keyboard, so without it a later
+press of that key consumed ahead of the listeners would have its release
+offered, paired with the stale press. The records are the thread's, not a
+document's: a blur clears them for every window. Known gap: a focus change
+whose blur is held or arrives after the release (a menu window taking its
+parent's keyboard, #2552) leaves the press recorded, so its release in the
+newly focused window reaches that document's listeners. Entries are keyed by
 `current_dispatching_doc` at registration (`doc_matches`), carry their owner
 (dead owner skipped and pruned, `on_cleanup` removes at disposal), run
 untracked inside it; the handle's drop releases nothing (`remove()` does).

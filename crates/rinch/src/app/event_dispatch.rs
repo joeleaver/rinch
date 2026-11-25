@@ -1713,6 +1713,11 @@ impl RinchApp {
                             self.close_select_popup_returning_focus();
                         }
                         rinch_core::notify_window_blurred(self.doc_key());
+                        // The release of a key held across the blur goes to the
+                        // window that took the keyboard: forget the presses
+                        // `on_app_key` was offered, or the next release of that
+                        // key here would be paired with a stale press (#3062).
+                        rinch_core::forget_app_key_presses();
                         // The matching `KeyUp` of anything held across the blur
                         // goes to the window that took the keyboard, so the
                         // Enter/Space activation latch (issue #228) would stay

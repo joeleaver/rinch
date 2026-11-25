@@ -39,7 +39,10 @@
 //! when its press was, so a key something ahead of them consumed, or an input
 //! method composed with, is not theirs on the way up either. The element's own
 //! `onkeyup` is not paired this way: it hears every release while its element
-//! holds the keyboard, as a browser's `keyup` does.
+//! holds the keyboard, as a browser's `keyup` does. A window that loses the
+//! keyboard forgets every press it offered ([`forget_app_key_presses`]): the
+//! release of a key held across the blur goes elsewhere, and the next release
+//! of that key here belongs to a press made after it.
 //!
 //! **Whose keys.** On desktop a listener registered while a document's code
 //! runs hears that document's keys, and one registered from `main` every
@@ -88,7 +91,8 @@ thread_local! {
     /// press something earlier consumed (an interceptor, an element's
     /// `onkeydown`, the editor's `on_key`, a key entry, a surface) or that an
     /// input method composed with never reaches [`dispatch_app_key`], so its
-    /// release does not either.
+    /// release does not either. Cleared on a window blur
+    /// ([`forget_app_key_presses`]).
     static PRESSED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
@@ -235,6 +239,21 @@ pub fn withhold_app_key_release(code: &str) {
     });
 }
 
+/// Forget every press offered to the listeners and every release a focused
+/// render surface withheld: the window lost the keyboard. The release of a key
+/// held across the blur goes to whatever took the keyboard, so without this a
+/// later press of that key consumed ahead of the listeners (a field's
+/// `onkeydown`) would have its release offered to them, paired with the stale
+/// press. The desktop runtime calls it from `PlatformEvent::WindowFocus(false)`
+/// and rinch-web from a `window` `blur`.
+///
+/// The records are the thread's, not a document's: any window's blur clears
+/// them all, as a key cannot be held in a window without the keyboard.
+pub fn forget_app_key_presses() {
+    WITHHELD.with(|w| w.borrow_mut().clear());
+    PRESSED.with(|p| p.borrow_mut().clear());
+}
+
 /// Whether the release of the physical key `code` will be withheld from the
 /// listeners, because a focused render surface claimed its press
 /// ([`withhold_app_key_release`]). Read it before [`dispatch_app_key`] is
@@ -353,7 +372,12 @@ mod tests {
             false
         });
         withhold_app_key_release("KeyW");
+        assert!(app_key_release_withheld("KeyW"));
         dispatch_app_key(&up("KeyW"));
+        assert!(
+            !app_key_release_withheld("KeyW"),
+            "the release clears its own mark"
+        );
         withhold_app_key_release("KeyS");
         dispatch_app_key(&down("KeyS"));
         dispatch_app_key(&up("KeyS"));
@@ -401,6 +425,29 @@ mod tests {
                 "b:Up:KeyC",
             ]
         );
+        clear();
+    }
+
+    /// A window blur forgets the presses the listeners were offered and the
+    /// releases a surface withheld: the release of a key held across it is
+    /// lost, and the next release of that key here is a later press's.
+    #[test]
+    fn a_window_blur_forgets_offered_presses_and_withheld_releases() {
+        clear();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let l = log.clone();
+        let _a = on_app_key(move |k| {
+            l.borrow_mut().push(format!("{:?}:{}", k.kind, k.code));
+            false
+        });
+        dispatch_app_key(&down("KeyS"));
+        withhold_app_key_release("KeyW");
+        forget_app_key_presses();
+        assert!(!app_key_release_withheld("KeyW"));
+        // A later S press stopped ahead of the listeners: its release is not
+        // theirs.
+        dispatch_app_key(&up("KeyS"));
+        assert_eq!(*log.borrow(), ["Down:KeyS"]);
         clear();
     }
 
