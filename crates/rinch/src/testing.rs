@@ -709,6 +709,7 @@ impl TestAppBuilder {
         // Made as the shell makes its main window (`build_runtime`): in the
         // content-sized mode when the props ask, with the props on it.
         let mut app = crate::shell::rinch_runtime::app_for_window(component, &props);
+        let fonts = registered_fonts::with_queued(fonts);
         app.register_app_fonts(&fonts);
         #[cfg(feature = "theme")]
         if let Some(css) = theme_css {
@@ -1012,6 +1013,12 @@ impl TestApp {
                     }
                     continue;
                 }
+                if matches!(event, RinchNativeEvent::RegisterFonts) {
+                    // `rinch::font::register_font`: the app's, whichever
+                    // window's code sent it (#3042), as the shell serves it.
+                    self.register_queued_fonts();
+                    continue;
+                }
                 let (window, doc) = match to {
                     EventFor::Window(window) => (Some(window), None),
                     EventFor::Sender(doc) => (None, doc),
@@ -1034,10 +1041,6 @@ impl TestApp {
                 } else if let RinchNativeEvent::InjectedPlatformEvent(event) = event {
                     // `inject_platform_event`: the shell dispatches it.
                     self.send(event);
-                } else if matches!(event, RinchNativeEvent::RegisterFonts) {
-                    // `rinch::font::register_font`: every window registers
-                    // the faces, as the shell's turn does.
-                    self.register_queued_fonts();
                 } else if matches!(event, RinchNativeEvent::ApplyWindowTitle) {
                     // `rinch::window::set_window_title` in this app's
                     // document: the title it stored is the window's title
@@ -1053,6 +1056,8 @@ impl TestApp {
                 }
             }
         }
+        // Whatever became of the event that asked, as the shell's every turn.
+        self.register_queued_fonts();
         self.serving = false;
     }
 

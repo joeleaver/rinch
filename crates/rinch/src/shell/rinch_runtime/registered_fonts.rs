@@ -25,6 +25,14 @@ thread_local! {
 ///   `KEPT_BEFORE_RUN` places.
 /// - An embed host (`Drainer::EmbedHost`): dropped. Nothing would ever
 ///   take it; the host registers faces with `RinchContext::register_app_font`.
+///   Faces queued before the process turned out to be one are dropped when
+///   it does ([`drop_queued`]), as the window requests kept for a runtime
+///   are.
+///
+/// Whatever the event's fate, a runtime's every turn and a `TestApp`'s
+/// every serve take the queue: the event only wakes them, so a lost one
+/// leaves the faces for the next turn, never stuck behind a `first` that
+/// will not come again.
 ///
 /// A face identical to one already waiting is not queued twice
 /// ([`AppFont::is_same_face`]).
@@ -81,6 +89,24 @@ pub(crate) fn take_new_fonts(kept: &mut Vec<AppFont>) -> Vec<AppFont> {
         }
     }
     new
+}
+
+/// Drop the faces queued on this thread: the process became an embed host
+/// (#2801), whose own loop takes nothing from the queue, so they would stay
+/// for the life of the thread. Called where the native event queue's
+/// drainer becomes [`Drainer::EmbedHost`], on the thread that made the
+/// `RinchContext` or ended the run, which is the UI thread `register_font`
+/// queues on.
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+pub(super) fn drop_queued() {
+    let dropped = QUEUED.with(|queued| std::mem::take(&mut *queued.borrow_mut()));
+    if !dropped.is_empty() {
+        tracing::debug!(
+            "an embed host and no desktop runtime: {} queued font face(s) dropped \
+             (register with RinchContext::register_app_font)",
+            dropped.len()
+        );
+    }
 }
 
 impl RinchRuntime {

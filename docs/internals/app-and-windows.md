@@ -167,6 +167,20 @@ whether to wake anything:
   fallback. `TestApp` serves the event in `serve_window_requests`
   (`testing/registered_fonts.rs`): its window and its open children register
   the faces, and its `fonts` keep them for children opened later.
+  `TestApp::mount` takes the queue after the builder's `fonts`, as `with_app`
+  does, so a face registered before the mount reaches its window.
+- **The event is the app's, and only a wake.** `handle_native_event` serves
+  `RegisterFonts` before `role_for`, like `OpenWindow` and `Exit`, and
+  `TestApp` before its child routing: a windowless app's tray or menu callback
+  (`Sender(None)`), a call after the main window closed, or one from a window
+  that closed before the turn has no window to route to, and the event used to
+  be ignored ("not open") or handed to a child that dropped it. Since the next
+  face sends an event only when the queue goes from empty to one, that left
+  every later face queued for good. Now, besides, every turn
+  (`run_native_events`) and every `TestApp` serve takes the queue whatever
+  became of the event, so no lost or misrouted event can leave it stuck: the
+  next turn of any kind registers the faces and empties the queue, and the
+  face after that wakes the loop again.
 - **No runtime yet** (`Drainer::Coming`, an app's `main`): the face is queued
   and no event is sent, so calls in `main` keep none of the queue's
   `KEPT_BEFORE_RUN` places. `RinchRuntime::with_app` takes the queue after the
@@ -174,7 +188,12 @@ whether to wake anything:
   frame.
 - **An embed host** (`Drainer::EmbedHost`): nothing will ever take the face,
   so it is dropped (debug log) rather than kept; the host registers with
-  `RinchContext::register_app_font`. A context's code calling it while a
+  `RinchContext::register_app_font`. Faces queued before the process turned
+  out to be one (in `main`, before its first `RinchContext`) are dropped when
+  it does (`wake::note_embed_host`), and so are any queued after the last turn
+  of a run that ends in one (`run_unless_exit_asked`'s `RunEnds`), as the
+  window requests kept for a runtime are. A run that ends with no context
+  made keeps them for the next run's runtime, which takes them as it is made. A context's code calling it while a
   desktop runtime runs in the same process registers with the runtime's
   windows, not the context.
 

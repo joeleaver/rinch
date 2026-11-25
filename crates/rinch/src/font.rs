@@ -163,14 +163,18 @@ pub const DEFAULT_SYSTEM_FONT_WATCH: std::time::Duration = std::time::Duration::
 ///
 /// Where it applies:
 ///
-/// - **Desktop** (`windowing`): as above. Off the UI thread it is ignored,
-///   with a warning.
+/// - **Desktop** (`windowing`): as above. The face is the app's, whichever
+///   window's code registers it: one from a tray or menu callback, a
+///   windowless app, or a window that closes before the turn reaches every
+///   window open. Off the UI thread it is ignored, with a warning.
 /// - **`rinch::testing::TestApp`** (the `testing` feature): as on
 ///   the desktop. Its window and the windows it opened register the face when
-///   it serves its window's requests, after the turn the call was made in.
+///   it serves its window's requests, after the turn the call was made in;
+///   a face registered before `TestApp::mount` reaches the test's window.
 /// - **An embed host** (a `RinchContext` made
-///   and no desktop runtime running): ignored, with nothing kept. The host
-///   registers faces with `RinchContext::register_app_font`.
+///   and no desktop runtime running): ignored, with nothing kept; faces
+///   registered before the first context was made are dropped then. The
+///   host registers faces with `RinchContext::register_app_font`.
 /// - **Web**: does nothing. The browser loads fonts from the page's CSS
 ///   (`@font-face`, a stylesheet `<link>`), as [`App::fonts`](crate::App::fonts)
 ///   leaves it to.

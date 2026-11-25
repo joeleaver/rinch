@@ -262,14 +262,22 @@ claiming the same generics) does nothing, so an app may ask for a face it may
 already have. As with every registration, the face answers its own family name
 (and any generics it claims), and cannot be unregistered.
 
+The face is the app's, not the calling window's: one registered from a tray
+or menu callback, in a windowless app, after the main window closed, or by a
+window that closes before the turn still reaches every window that is open.
+
 In a test, `rinch::testing::TestApp` does what the app does: its window, and
 the windows it opened, register the face once the turn the call was made in
-has been served (any input method, or `settle()`).
+has been served (any input method, or `settle()`). A face registered before
+`TestApp::mount` reaches the test's window, as one registered before
+`App::run` reaches the first frame.
 
 On the web it does nothing: the browser loads fonts from the page's CSS
 (`@font-face` or a stylesheet `<link>`). It does nothing yet on Android. In
 a process that embeds rinch through `RinchContext` (with no desktop app
-running) it is ignored: register faces with `RinchContext::register_app_font`.
+running) it is ignored, and faces registered before the first
+`RinchContext` was made are dropped then: register faces with
+`RinchContext::register_app_font`.
 
 ## Fonts installed while the app runs
 

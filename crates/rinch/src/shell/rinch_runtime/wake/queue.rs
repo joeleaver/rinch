@@ -84,7 +84,7 @@ impl NativeEventQueue {
         Self::with_drainer(Drainer::Runtime)
     }
 
-    pub(super) const fn with_drainer(drainer: Drainer) -> Self {
+    pub(crate) const fn with_drainer(drainer: Drainer) -> Self {
         Self {
             events: VecDeque::new(),
             rerender_pending: false,

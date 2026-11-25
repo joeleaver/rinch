@@ -3,6 +3,15 @@
 //! to every open window.
 
 use super::TestApp;
+use crate::font::AppFont;
+
+/// The fonts a `TestApp` is mounted with: the builder's, then the faces
+/// `register_font` queued before the mount, as `RinchRuntime::with_app`
+/// takes them; a queued face identical to one already there is skipped.
+pub(super) fn with_queued(mut fonts: Vec<AppFont>) -> Vec<AppFont> {
+    crate::shell::rinch_runtime::take_new_fonts(&mut fonts);
+    fonts
+}
 
 impl TestApp {
     /// Register the faces `rinch::font::register_font` queued with the
@@ -89,5 +98,56 @@ mod tests {
         app.settle();
         assert_eq!(app.children.len(), 2);
         assert_eq!(registered(app.children[1].app()), [mono]);
+    }
+
+    /// A face registered by a child window's own code is the app's: the
+    /// test's window and every child get it. Before the fix the event was
+    /// routed to the child as its own request, which has none for it, and
+    /// silently dropped, so no window ever had the face.
+    #[test]
+    fn a_face_from_a_childs_document_reaches_every_window() {
+        let mut app = TestApp::mount(component);
+        crate::open_window(
+            WindowProps {
+                visible: false,
+                ..Default::default()
+            },
+            component,
+        );
+        app.settle();
+        let before = app.app.pending_fonts.len();
+        {
+            let _doc = rinch_core::push_dispatching_doc(app.children[0].doc());
+            crate::font::register_font(AppFont::monospace(FACE));
+        }
+        app.settle();
+        let mono = parley::fontique::GenericFamily::Monospace;
+        assert_eq!(registered(&app.app)[before..], [mono]);
+        assert_eq!(registered(app.children[0].app()), [mono]);
+    }
+
+    /// A face registered before the `TestApp` is mounted reaches its window,
+    /// after the builder's own fonts, as a face registered in an app's
+    /// `main` reaches its first window (`RinchRuntime::with_app`).
+    #[test]
+    fn a_face_registered_before_the_mount_reaches_the_window() {
+        // No `TestApp` takes the event yet: it goes to the process's queue,
+        // which tests counting its events hold this lock to read.
+        let _lock = crate::app::RERENDER_EVENTS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        rinch_core::mark_host_thread();
+        crate::font::register_font(AppFont::monospace(FACE));
+        let app = TestApp::builder(component)
+            .fonts(&[AppFont::serif(FACE)])
+            .mount();
+        crate::shell::rinch_runtime::drain_native_queue_for_test();
+        let serif = parley::fontique::GenericFamily::Serif;
+        let mono = parley::fontique::GenericFamily::Monospace;
+        let registered = registered(&app.app);
+        assert!(
+            registered.ends_with(&[serif, mono]),
+            "the builder's, then the queued face: {registered:?}"
+        );
     }
 }

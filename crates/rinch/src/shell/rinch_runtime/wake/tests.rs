@@ -450,3 +450,40 @@ fn without_an_exit_the_loop_runs_and_its_leftovers_end_with_it() {
         "the ended run's exit would end the next run"
     );
 }
+
+/// A run that ends in an embed host (a `RinchContext` was made, #2801)
+/// drops the faces `register_font` queued after its last turn: nothing
+/// would take them (#3042). A run that ends with another to come keeps them
+/// for that runtime, which takes them as it is made.
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+#[test]
+fn a_run_ending_in_an_embed_host_drops_the_queued_faces() {
+    use crate::font::AppFont;
+    use crate::shell::rinch_runtime::registered_fonts::{queue_font_for, take_new_fonts};
+    const FACE: &[u8] = include_bytes!("../../../../assets/fonts/Inter-Regular.ttf");
+
+    let _ = take_new_fonts(&mut Vec::new());
+    let embed = std::sync::Mutex::new(NativeEventQueue::with_drainer(Drainer::Coming));
+    embed.lock().unwrap().note_embed_host();
+    embed.lock().unwrap().note_runtime();
+    let result = run_unless_exit_asked_in(&embed, (), |()| {
+        queue_font_for(Drainer::Coming, false, AppFont::serif(FACE));
+        Ok(())
+    });
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(embed.lock().unwrap().drainer(), Drainer::EmbedHost);
+    assert!(take_new_fonts(&mut Vec::new()).is_empty(), "dropped");
+
+    let app = std::sync::Mutex::new(NativeEventQueue::with_drainer(Drainer::Coming));
+    app.lock().unwrap().note_runtime();
+    let result = run_unless_exit_asked_in(&app, (), |()| {
+        queue_font_for(Drainer::Coming, false, AppFont::serif(FACE));
+        Ok(())
+    });
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        take_new_fonts(&mut Vec::new()).len(),
+        1,
+        "kept for the next run"
+    );
+}

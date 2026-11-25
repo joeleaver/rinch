@@ -188,3 +188,153 @@ fn an_embed_host_keeps_nothing() {
     assert_eq!(register_events_queued(), 0);
     assert!(take_new_fonts(&mut Vec::new()).is_empty(), "nothing kept");
 }
+
+/// A process that turns out to be an embed host (a `RinchContext` made
+/// with no desktop runtime) drops the faces queued for the runtime that
+/// will not come, as it drops the window requests kept for it. Before the
+/// fix they stayed in the thread's queue for the life of the process.
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+#[test]
+fn becoming_an_embed_host_drops_the_queued_faces() {
+    let _ = take_new_fonts(&mut Vec::new());
+    // Its own queue: the transition is under test, not the process's queue.
+    let queue = Mutex::new(wake::NativeEventQueue::with_drainer(wake::Drainer::Coming));
+    queue_font_for(wake::Drainer::Coming, false, AppFont::serif(FACE));
+    wake::note_embed_host_in(&queue);
+    assert_eq!(queue.lock().unwrap().drainer(), wake::Drainer::EmbedHost);
+    assert!(take_new_fonts(&mut Vec::new()).is_empty(), "nothing kept");
+
+    // A context made while a runtime runs changes nothing: its faces are
+    // the runtime's.
+    let running = Mutex::new(wake::NativeEventQueue::with_drainer(wake::Drainer::Runtime));
+    queue_font_for(wake::Drainer::Coming, false, AppFont::serif(FACE));
+    wake::note_embed_host_in(&running);
+    assert_eq!(take_new_fonts(&mut Vec::new()).len(), 1, "kept");
+}
+
+/// Open a second window in `runtime`, made without an OS window, and return
+/// its id; nothing left in the native queue.
+fn open_second(runtime: &mut RinchRuntime) -> u64 {
+    let handle = crate::open_window(
+        WindowProps {
+            visible: false,
+            ..Default::default()
+        },
+        component,
+    );
+    let pending = crate::window_handle::take_pending(handle.id()).expect("waiting to be made");
+    let window = RinchRuntime::mount_other_window(pending, &runtime.fonts, 1.0);
+    let id = window.handle;
+    runtime.others.push(window);
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    id
+}
+
+/// A windowless app's runtime (`App::windowless`), its root mounted, with
+/// `windows` second windows open; nothing queued, nothing registered.
+fn windowless_with(windows: usize) -> (RinchRuntime, Vec<u64>) {
+    on_the_ui_thread();
+    crate::window_handle::set_windowless(true);
+    crate::window_handle::set_exit_when(crate::ExitWhen::Explicitly);
+    let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+    crate::window_handle::set_windowless(false);
+    crate::window_handle::set_exit_when(crate::ExitWhen::MainWindowCloses);
+    runtime.mount_windowless_root();
+    let ids = (0..windows).map(|_| open_second(&mut runtime)).collect();
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    let _ = take_new_fonts(&mut Vec::new());
+    (runtime, ids)
+}
+
+/// A windowless app has no main window for a `RegisterFonts` sent from
+/// outside any document (a tray or menu callback, `Sender(None)`) to be
+/// routed to. The face is the app's, so it reaches every open window. Before
+/// the fix the event was "for a window that is not open", ignored, and the
+/// queue it left behind sent no event for any later face.
+#[test]
+fn a_windowless_app_registers_a_face_from_outside_any_document() {
+    let (mut runtime, _) = windowless_with(1);
+    assert!(runtime.main_closed, "no main window");
+
+    crate::font::register_font(AppFont::monospace(FACE));
+    runtime.drain_native_events(&NoOsLoop);
+    assert_eq!(
+        registered(&runtime.others[0].app),
+        vec![GenericFamily::Monospace]
+    );
+    assert_eq!(runtime.fonts.len(), 1, "kept for windows opened later");
+
+    // The next face wakes the loop again and is registered too.
+    crate::font::register_font(AppFont::serif(FACE));
+    assert_eq!(register_events_queued(), 1, "the queue was not left stuck");
+    runtime.drain_native_events(&NoOsLoop);
+    assert_eq!(
+        registered(&runtime.others[0].app),
+        vec![GenericFamily::Monospace, GenericFamily::Serif]
+    );
+}
+
+/// After the main window has closed (an app that runs on without it), a
+/// face registered from outside any document reaches the windows still
+/// open.
+#[test]
+fn a_face_registered_after_the_main_window_closed_reaches_the_rest() {
+    let mut runtime = runtime_with_two_windows();
+    // An app that runs on without its main window (`App::exit_when`).
+    runtime.exit_when = crate::ExitWhen::Explicitly;
+    assert!(!runtime.close_soon(WindowRole::Main), "the app runs on");
+    assert!(!runtime.settle_closes_now());
+    assert!(runtime.main_closed);
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+
+    crate::font::register_font(AppFont::monospace(FACE));
+    runtime.drain_native_events(&NoOsLoop);
+    assert_eq!(
+        registered(&runtime.others[0].app),
+        vec![GenericFamily::Monospace]
+    );
+    assert_eq!(runtime.fonts.len(), 1);
+}
+
+/// A face registered by a window's own code, which then closes before the
+/// loop's turn, is still the app's: the windows left are given it, though
+/// the event's sender has no window any more (in a windowless app, so there
+/// is no main window to fall back to either).
+#[test]
+fn a_face_from_a_window_that_closed_before_the_turn_reaches_the_rest() {
+    let (mut runtime, ids) = windowless_with(2);
+    let sender = runtime.others[0].app.doc_key();
+    {
+        let _doc = rinch_core::push_dispatching_doc(sender);
+        crate::font::register_font(AppFont::monospace(FACE));
+    }
+    runtime.close_other(ids[0]);
+    runtime.drain_native_events(&NoOsLoop);
+
+    assert_eq!(runtime.others.len(), 1);
+    assert_eq!(
+        registered(&runtime.others[0].app),
+        vec![GenericFamily::Monospace]
+    );
+    assert_eq!(runtime.fonts.len(), 1);
+}
+
+/// However the event is lost, the loop's next turn takes the queue: here
+/// the turn runs without it, and the face is still registered, and the next
+/// face sends its event again.
+#[test]
+fn a_turn_takes_the_faces_whatever_became_of_the_event() {
+    let mut runtime = runtime_with_two_windows();
+    crate::font::register_font(AppFont::monospace(FACE));
+    let _lost = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    runtime.run_native_events(
+        vec![(EventFor::Sender(None), RinchNativeEvent::ReRender)],
+        &NoOsLoop,
+    );
+
+    let mono = vec![GenericFamily::Monospace];
+    assert_eq!(registered(&runtime.main.app), mono);
+    assert_eq!(registered(&runtime.others[0].app), mono);
+    crate::font::register_font(AppFont::serif(FACE));
+    assert_eq!(register_events_queued(), 1, "the next face wakes the loop");
+}
