@@ -29,8 +29,9 @@ pub(crate) fn add_capture<E: JsCast + 'static>(
 /// uses: it is one node further out than `document` on every event path, so a
 /// listener there runs ahead of *every* document listener whatever order they
 /// were registered in — and a `stopPropagation()` from it stops all of them.
-/// That is what the menu bar's chord check needs (`menu_bar.rs`), and what
-/// keeps the pointer-gesture observer seeing a key the chord check consumed.
+/// That is what the shared key listener needs (`event_delegation::keys`: the
+/// menu bar's chords and the keyboard interceptor, #3062), and what keeps the
+/// pointer-gesture observer seeing a key that listener consumed.
 pub(crate) fn add_capture_on<E: JsCast + 'static>(
     target: &web_sys::EventTarget,
     name: &str,
@@ -105,8 +106,17 @@ fn ensure_editor_web_styles(doc: &web_sys::Document) {
 /// build (with the rest of [`install`](fn@install)), the page's first mount told nobody, so
 /// its views were never observed and a view that grew left the caret and the
 /// highlight below it where they were (#2075). Called from `mount_tree` before
-/// the build. Setting the listener again is harmless.
+/// the build. Setting the listener again is harmless. The editor core learns
+/// the platform here too ([`sync_host_platform`]),
+/// for a component that labels a chord as it renders, and the page asks for
+/// the keyboard layout map (`key_layout::ask_layout_map_once`).
 pub(crate) fn install_before_build() {
+    // Which platform's keys arrive, before a component asks (a tooltip's
+    // `KeyBinding::label(host_is_macos())`).
+    super::sync_host_platform();
+    // What the user's layout types per key, for the AltGr question, asked
+    // now so the browser's answer (a promise) is in by the first key.
+    crate::key_layout::ask_layout_map_once();
     // A node view that resizes moves what is below it (the caret, a highlight).
     registry::set_node_view_host_listener(on_node_view_host);
 }
@@ -151,6 +161,12 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {
+        // A press the page (or rinch's `window` listener) already
+        // `preventDefault`ed is taken: the editor acts on none of it (#3062),
+        // as Chrome's editing does nothing for a cancelled `keydown`.
+        if e.default_prevented() {
+            return;
+        }
         // The editor's hooks run as its root's code (#2811).
         let _root = crate::mark_event_root(&e);
         if handle_keydown(&e, &doc) {

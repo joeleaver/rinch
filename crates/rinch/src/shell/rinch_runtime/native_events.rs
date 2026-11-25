@@ -33,6 +33,11 @@ impl RinchRuntime {
         for (to, event) in events {
             self.handle_native_event(to, event, event_loop);
         }
+        // Every turn takes the faces `rinch::font::register_font` queued,
+        // whatever became of the `RegisterFonts` that woke it (#3042): the
+        // event is only the wake, so no path that drops or reroutes it can
+        // leave the queue waiting for an event its next face will not send.
+        self.register_queued_fonts();
         // What the turn asked of each layer surface, in one commit (#2464).
         for role in self.roles() {
             self.flush_layer_turn(role, event_loop);
@@ -124,6 +129,13 @@ impl RinchRuntime {
             }
             RinchNativeEvent::Exit => {
                 event_loop.exit();
+                return;
+            }
+            // The app's faces, for every open window and the ones to come,
+            // whoever sent it: before `role_for`, which has no window for a
+            // windowless app's or a closed sender's (#3042).
+            RinchNativeEvent::RegisterFonts => {
+                self.register_queued_fonts();
                 return;
             }
             _ => {}
@@ -461,7 +473,9 @@ impl RinchRuntime {
             }
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
             // The app's, taken before a window is looked for.
-            RinchNativeEvent::OpenWindow(_) | RinchNativeEvent::Exit => return,
+            RinchNativeEvent::OpenWindow(_)
+            | RinchNativeEvent::Exit
+            | RinchNativeEvent::RegisterFonts => return,
             #[cfg(feature = "a11y")]
             RinchNativeEvent::A11yAction(req) => {
                 self.main.apply_a11y_action(req);

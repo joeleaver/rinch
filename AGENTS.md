@@ -293,7 +293,7 @@ dependencies.
 
 Each component is self-contained and low-risk to modify individually. They implement
 `Component::render(&self, scope, children) -> NodeHandle`. Follow existing patterns —
-`badge.rs` for something simple, `tabs.rs` or `tree.rs` for something complex. `_fn`
+`badge.rs` for something simple, `tabs.rs` or `tree/` for something complex. `_fn`
 suffix props (`value_fn`, `checked_fn`) exist for surgical updates without a full
 component re-render. There are no unit tests here; verify visually through ui-zoo.
 

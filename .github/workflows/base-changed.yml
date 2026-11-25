@@ -34,9 +34,10 @@ name: Base changed
 # In a called workflow the `github` context is this run's: the event is
 # `pull_request`, the ref is `refs/pull/N/merge`, so each one checks out and
 # tests the merge with the new base exactly as it does on a push to the PR.
-# `paths-ignore` in `perf.yml` is a trigger filter and does not apply to a
-# call, so a docs-only batch PR with the `perf` label gets one Perf run when
-# it is retargeted.
+# `perf.yml` has no trigger path filter on `pull_request` (a filter would not
+# apply to a call anyway); its `changes` job decides inside, so a retargeted
+# docs-only batch PR with the `perf` label reports `perf / instruction-counts`
+# as skipped, as its own runs do.
 #
 # Batched merges (docs/internals/ci.md): the three called workflows decide
 # inside, by job-level `if`s on `github.head_ref` (which is this run's PR head

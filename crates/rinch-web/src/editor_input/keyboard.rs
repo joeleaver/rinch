@@ -19,7 +19,7 @@ use super::*;
 /// — on Dvorak/AZERTY the key that types `b` fires bold, not the physical QWERTY-B
 /// position. **Digits, symbols, and named keys resolve PHYSICALLY** (`event.code()`),
 /// because the logical key for e.g. `Shift+8` is `"*"`, not `"8"` — the physical
-/// `Digit8` is what the keymap's `Mod-Shift-8` binding needs. `None` for keys with no
+/// `Digit8` is what an app's `Mod-Shift-8` binding needs. `None` for keys with no
 /// bindable identity (they fall through to text insertion / native clipboard).
 ///
 /// (Desktop keys everything physically off the platform `KeyCode`; unifying that for
@@ -91,7 +91,7 @@ fn offer_node_view_key(event: &web_sys::KeyboardEvent) -> Option<bool> {
     let key = event.key();
     let offered = rinch_editor_view::EditorKey {
         key: &key,
-        primary: if is_mac() {
+        primary: if keymap_mod_is_cmd() {
             event.meta_key()
         } else {
             event.ctrl_key()
@@ -208,6 +208,15 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     if !on_capture {
         return false;
     }
+    // What a plain press types, for the AltGr question below. Before the
+    // composition check: `learn` rejects a composing press (its `key` is the
+    // input method's), but it still has to see it. On Firefox and macOS a dead
+    // key starts a composition, so the press that ends the dead key is a
+    // composing one; returning before noting it left the dead key pending on
+    // a page with no menu bar (whose listener notes every press), and the
+    // next plain press was then taken for the composed character and taught
+    // nothing.
+    crate::key_layout::note_press(event);
     // During an IME composition, yield every key to the textarea + IME — the composed
     // text arrives via the composition events, so inserting here would double up.
     if event.is_composing() || COMPOSING.with(|c| c.get()) {
@@ -225,7 +234,7 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     if key != "Unidentified" && key != "Process" {
         let offered = rinch_editor_view::EditorKey {
             key: &key,
-            primary: if is_mac() {
+            primary: if keymap_mod_is_cmd() {
                 event.meta_key()
             } else {
                 event.ctrl_key()
@@ -241,6 +250,15 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
             refresh_caret();
             return true;
         }
+        // Then the open popups' key entries, the dismiss stack, and the
+        // app-wide key listeners (`on_app_key`), ahead of the keymap (#3062):
+        // an app's own binding for a key the editor also binds is the app's,
+        // as on desktop. The bubble delegate does not offer them the key
+        // again.
+        if crate::event_delegation::offer_popup_and_app_keys(event) {
+            refresh_caret();
+            return true;
+        }
     }
     // The PHYSICAL key, for keymap lookup — `event.key()` is the *resolved* char ("*" for
     // Shift+8, "¡" for Alt+1) which would never match the keymap's physical-key bindings.
@@ -248,6 +266,28 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     let ctrl = event.ctrl_key() || event.meta_key();
     let shift = event.shift_key();
     let alt = event.alt_key();
+    // The keymap's `Mod` (#3062, E21): Cmd on Apple platforms (macOS, iOS,
+    // iPadOS), Ctrl elsewhere, as ProseMirror reads `navigator.platform`. The
+    // other one (Ctrl on a Mac, where Ctrl+A/E/B are Cocoa's caret keys; the
+    // Windows key elsewhere) matches no binding, so its chords stay the
+    // browser's. The core's not-on-macOS bindings (Mod-y) are told the same
+    // platform, per key, as the wheel's sideways rule is.
+    let mac = keymap_mod_is_cmd();
+    // AltGr (#1291): Windows reports it as Ctrl+Alt, so Polish AltGr+C (`ć`)
+    // or German AltGr+7 (`{`) would read as a Mod-Alt chord. A press that
+    // typed a character through AltGr is text: it skips the keymap and goes
+    // on, unconsumed, to the browser, whose input lands through `beforeinput`.
+    // An AltGr press that types nothing new (German right-Alt+1 reports `"1"`)
+    // is still the chord, as on desktop (`web_alt_graph_text`).
+    let alt_graph_text = crate::key_layout::web_alt_graph_text(event);
+    // Set at every mount already (`sync_host_platform`); kept per key so a
+    // test's `__set_mac_platform` between presses is heard too.
+    rinch_editor_core::keymap::set_host_is_macos(mac);
+    let (mod_key, other_mod) = if mac {
+        (event.meta_key(), event.ctrl_key())
+    } else {
+        (event.ctrl_key(), event.meta_key())
+    };
 
     // The goal column survives a run of Up / Down and Page Up / Down.
     if !matches!(
@@ -373,11 +413,13 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
             // 3. THE KEYMAP — the single source of truth for every command key. Letters
             //    resolve logically (`key`, layout-correct), digits/symbols physically
             //    (`code`). A matched binding is consumed even if its command no-op'd
-            //    here (Ctrl+Shift+R on a right-aligned paragraph must not reload the
-            //    page), except a fall-through one (`Plugin::fall_through_keys`: the
+            //    here (Mod+Z with nothing to undo must not reach the browser's undo
+            //    stack), except a fall-through one (`Plugin::fall_through_keys`: the
             //    base keymap's Mod+Enter in a paragraph), which is left unconsumed so
             //    the page's `keydown` listeners hear it (#2993).
-            if let Some(binding) = editor_key_binding(&key, &code, ctrl, shift, alt)
+            if !other_mod
+                && !alt_graph_text
+                && let Some(binding) = editor_key_binding(&key, &code, mod_key, shift, alt)
                 && handle.dispatch_key(binding).is_some()
             {
                 true
@@ -388,10 +430,19 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
             else if ctrl || alt {
                 false
             } else if key.chars().count() == 1 && !key.chars().next().unwrap().is_control() {
-                // A read-only editor refuses the text but still owns the key, as
-                // on desktop: left unconsumed, a typed letter would go on to the
-                // page's own shortcuts and Space would scroll it.
-                handle.insert_text(&key) || handle.refuses_edits()
+                // A read-only editor refuses the text, and the key's default is
+                // prevented so that Space does not scroll the page. Its
+                // propagation is not stopped (#3062, E19): the `keydown` goes on
+                // to the page's own listeners, as a `readonly` field's does in
+                // Chrome.
+                if handle.insert_text(&key) {
+                    true
+                } else {
+                    if handle.refuses_edits() {
+                        event.prevent_default();
+                    }
+                    false
+                }
             } else {
                 false
             }

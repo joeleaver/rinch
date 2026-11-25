@@ -92,9 +92,13 @@ fn a_closed_windows_parked_freed_target_is_forgotten() {
 /// the name `rinch_core::doc_entries` gives it (its static's path).
 /// Left out, each covered by a test of its own: `FREED`, which fills only
 /// when a claimed target is freed
-/// ([`a_closed_windows_parked_freed_target_is_forgotten`]), and the sortable
-/// list's preview wrappers and focus request, which fill only during and
-/// after a drag (`sortable_2154_tests`).
+/// ([`a_closed_windows_parked_freed_target_is_forgotten`]); the sortable
+/// list's preview wrappers and focus request (`GHOST_WRAPPERS`,
+/// `PENDING_FOCUS`), which fill only during and after a drag
+/// (`sortable_2154_tests`); and its lent `tabindex` records
+/// (`rinch_components::sortable::LENT_TABINDEX`), which fill only after a
+/// keyboard drop into a list without `keyboard`
+/// (`sortable_2091_tests::keyboard::a_lent_tabindex_is_forgotten_with_its_document`).
 const EVERY_KIND: [&str; 25] = [
     "rinch::app::DOC_RERENDERS",
     "rinch::editor::virtualization::WINDOWS",

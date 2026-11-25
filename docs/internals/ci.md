@@ -10,7 +10,7 @@ Two kinds of pull request into `main`:
 |---|---|---|
 | `fmt`, `clippy`, `clippy-wasm`, `clippy-android`, `check-android`, `check-macos` | run | run |
 | `test (unit)`, `test (integration-a-m)`, `test (integration-n-z)`, `test (feature-gated)`, `test-gpu (lavapipe)`, `test-wasm` | skipped | run |
-| Perf `instruction-counts` (and its `comment`) | skipped | skipped, unless it carries the `perf` label: then run, against `main` |
+| Perf `instruction-counts` (and its `comment`) | skipped | skipped, unless it carries the `perf` label and changes something outside `docs/**` and `*.md`: then run, against `main` |
 | Documentation `build` (rustdoc, mdBook, UI Zoo, Pages artifact) | skipped | run |
 | Documentation `book` (mdBook only) | run when the PR changes `docs/` | skipped |
 
@@ -30,6 +30,19 @@ a trigger path or branch filter: a skipped job reports as skipped, while a
 filtered-out check never reports, and a required check waiting on it stays
 pending for ever. `github.head_ref` is the caller's inside a call from
 `base-changed.yml`, so a retarget is classified like the PR's own runs.
+
+**Required checks.** Branch protection on `main` requires `fmt`, `clippy`,
+`clippy-wasm`, `clippy-android`, `check-android`, `check-macos`, the four
+`test (…)` shards, `test-gpu (lavapipe)`, `test-wasm`, `instruction-counts` and
+`build` (`gh api repos/joeleaver/rinch/branches/main/protection/required_status_checks`).
+So no workflow that holds one may filter its `pull_request` trigger by path or
+branch beyond `branches: [main]`. Perf's used to (`paths-ignore` of `docs/**`
+and `*.md`), and a docs-only batch PR (#3069) then had no `instruction-counts`
+at all and sat blocked with every check green. It now runs on every PR and
+skips a docs-only batch by its `changes` job, the way `docs.yml`'s `changes`
+gates `book`: `instruction-counts` reports as skipped, which passes. The `push`
+trigger keeps its path filter, since protection requires checks of pull
+requests only.
 
 Every PR workflow cancels its own superseded run (a push replaces the run of
 the push before it). A run on `main` is never cancelled in progress.

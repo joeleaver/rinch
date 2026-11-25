@@ -7809,6 +7809,7 @@ dependencies = [
  "rinch",
  "rinch-av",
  "rinch-core",
+ "rinch-editor-core",
  "rinch-macros",
  "rinch-platform",
  "rinch-rtc",

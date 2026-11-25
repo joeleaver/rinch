@@ -42,6 +42,8 @@ fn app() -> NodeHandle {
     let editor = create_editor();
     // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
     editor.set_markdown_shortcuts(true);
+    // Tab moves between table cells only when the app opts in (#3062).
+    editor.set_tab_behavior(rinch::editor::TabBehavior::IndentInListsAndTables);
     let dark = Signal::new(false);
 
     const TBTN: &str = "padding: 6px 12px; border: 1px solid #d0d7de; border-radius: 6px; background: #ffffff; color: #1f2328; cursor: pointer; font-family: sans-serif; font-size: 14px;";

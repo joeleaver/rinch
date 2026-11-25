@@ -6,7 +6,9 @@
 //! editor refuses both commands, and consuming the key left a keyboard user
 //! who tabbed or clicked into a read-only document with no way out. It now
 //! behaves like a `readonly` field: Tab and Shift+Tab go to the next and the
-//! previous Tab stop.
+//! previous Tab stop. (Since #2210 an editable editor lets go of a Tab it has
+//! no use for, and since #3062 it indents only under
+//! `TabBehavior::IndentInListsAndTables`, which the control here opts into.)
 //!
 //! Driven through the real `PlatformEvent` path, with a Tab stop on each side
 //! of the editor, so "focus left" is also "focus left *in the right
@@ -179,12 +181,15 @@ fn tab_from_a_programmatically_focused_read_only_editor_starts_at_the_editor() {
     }
 }
 
-/// The control, and the switch going off again: an editable editor keeps Tab
-/// and nests the item, as it always has.
+/// The control, and the switch going off again: an editable editor that
+/// indents (`IndentInListsAndTables`, opt-in since #3062) keeps Tab and nests
+/// the item.
 #[test]
 fn an_editable_editor_still_indents_on_tab_also_after_read_only_is_switched_off() {
     for was_read_only in [false, true] {
         let mut p = page(was_read_only);
+        p.handle
+            .set_tab_behavior(crate::editor::TabBehavior::IndentInListsAndTables);
         p.handle.set_read_only(false);
         assert_eq!(top_level_items(&p.handle), 2, "precondition");
         p.handle.set_selection(Selection::cursor(Pos(11)));

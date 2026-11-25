@@ -168,7 +168,7 @@ impl winit::window::Window for AtOnceWindow {
 
 /// An event loop with no OS behind it, for the drain.
 #[derive(Debug, Default)]
-struct NoOsLoop;
+pub(super) struct NoOsLoop;
 
 impl winit::event_loop::ActiveEventLoop for NoOsLoop {
     fn create_proxy(&self) -> winit::event_loop::EventLoopProxy {

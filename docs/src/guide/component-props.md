@@ -1701,7 +1701,7 @@ Custom Default: `level_offset` defaults to `"md"`, `expand_on_click` defaults to
 | `expand_on_click` | `bool` | **`true`** | Click expands/collapses |
 | `select_on_click` | `bool` | `false` | Click selects |
 | `render_node` | `Option<RenderTreeNode>` | `None` | Custom node renderer |
-| `onselect` | `Option<ValueCallback<String>>` | `None` | A row was selected: by a plain click or Enter, by Space, or by the cursor in a single-select tree with `keyboard`. Not by a Ctrl-click, a Shift run or Ctrl+A |
+| `onselect` | `Option<ValueCallback<String>>` | `None` | A row was selected: by a plain click or Enter, by Space, or by the cursor in a single-select tree with `keyboard`. Not by a Ctrl-click or a Shift run |
 | `onexpand` | `Option<ValueCallback<String>>` | `None` | |
 | `oncollapse` | `Option<ValueCallback<String>>` | `None` | |
 | `data_source` | `Option<Rc<dyn Fn() -> Vec<TreeNodeData>>>` | `None` | Reactive data source — when provided, root nodes update when this changes |
@@ -1716,7 +1716,7 @@ Custom Default: `level_offset` defaults to `"md"`, `expand_on_click` defaults to
 | `ondragend` | `Option<ValueCallback<()>>` | `None` | The drag ended, dropped anywhere or cancelled; after any drop |
 | `hover_expand_ms` | `u32` | **`600`** | How long a drag rests inside a collapsed row with children before it expands; `0` never expands |
 | `guides` | `bool` | `false` | A faint line down each expanded row's children, at `--tree-guide-offset` |
-| `keyboard` | `bool` | `false` | Keyboard navigation (needs `tree`): a cursor moved by the arrows, Home/End, PageUp/PageDown, Right/Left (expand or step in, collapse or step out), `*` (expand the cursor row's siblings) and type-ahead. The tree is one Tab stop (roving tabindex) |
+| `keyboard` | `bool` | `false` | Keyboard navigation (needs `tree`): a cursor moved by the arrows, Home/End, Right/Left (expand or step in, collapse or step out), `*` (expand the cursor row's siblings) and type-ahead. The tree is one Tab stop (roving tabindex). It takes no Ctrl, Cmd or Alt chord and neither PageUp nor PageDown (#3062): an app that wants Ctrl+A or paging binds it in `handle_key` |
 | `handle_key` | `Option<TreeKeyHandler>` | `None` | Every key a row of the tree gets, before the tree's own; `true` consumes it |
 | `oncursor` | `Option<ValueCallback<String>>` | `None` | The cursor came to rest on a row, `cursor_delay_ms` after the last move |
 | `cursor_delay_ms` | `u32` | **`120`** | How long the cursor rests before `oncursor`; `0` reports every move at once |
@@ -1755,7 +1755,7 @@ the chevron expands without selecting the row.
 ### SortableList, SortableItem, SortableHandle
 
 Lists whose items drag within and between lists of the same `group`, by
-pointer or keyboard (guide: [Sortable Lists](sortable.md)).
+pointer, or by keyboard in a list with `keyboard` on (guide: [Sortable Lists](sortable.md)).
 
 **SortableList** — a flex row or column of items.
 
@@ -1766,7 +1766,8 @@ pointer or keyboard (guide: [Sortable Lists](sortable.md)).
 | `axis` | `SortAxis` | `Vertical` | `Vertical` or `Horizontal`: which way the items run, and which axis the place is read along |
 | `label` | `String` | `""` | The list's name in keyboard announcements (its `id` when empty) |
 | `disabled` | `bool` | `false` | Read-only: no drag starts from its items, none lands in it, no lift |
-| `lift_keys` | `Vec<String>` | `[]` | The `KeyEventData::key` values that lift and drop; Space and Enter when empty (`vec![" ".into()]` leaves Enter to the app) |
+| `keyboard` | `bool` | `false` | The keyboard drag (#3062): each item is a Tab stop (`tabindex="0"` unless the app set one) described by `aria-description`, the lift keys lift, the arrows move (into any list of the group), the lift key drops, Escape cancels. Off, the list takes no key and its items are Tab stops only if the app gives them a `tabindex` |
+| `lift_keys` | `Vec<String>` | `[]` | In a `keyboard` list, the `KeyEventData::key` values that lift and drop; Space and Enter when empty (`vec![" ".into()]` leaves Enter to the app) |
 | `judge` | `Option<SortJudge>` | `None` | Whether a move into this list may happen, asked live for every place on offer and again at the drop; a refusal's reason is drawn at the caret. Accepted when not given |
 | `ondrop` | `Option<ValueCallback<SortMove>>` | `None` | An accepted drop into this list. The component moves nothing: the app applies it to its data |
 | `ondropchange` | `Option<ValueCallback<Option<(SortMove, SortVerdict)>>>` | `None` | For a drag that started in this list: the move on offer and its verdict each time it changes; `None` when nothing is on offer and when the drag ends |
@@ -1776,7 +1777,7 @@ pointer or keyboard (guide: [Sortable Lists](sortable.md)).
 | `slot` | `bool` | `false` | With a gap (`Gap` or `Both`): a box the size of what is carried where the drop lands, drawn only as `--rinch-sortable-slot-background` / `-border` / `-radius` style it. The list's own `::before` (positioned) or `::after` (in flow at its end), so no item's overflow clips it; off, a drag writes nothing of it and changes no layout. See [Sortable](sortable.md) |
 | `source` | `SortSource` | `Unchanged` | How this list's items look while a pointer drags them: `Unchanged`, `Dim`, `Collapse` (hidden, followers slide over), `Hide` |
 
-**SortableItem** — one item; focusable (`tabindex="0"`).
+**SortableItem** — one item; a Tab stop in a `keyboard` list (`tabindex="0"`), not otherwise.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|

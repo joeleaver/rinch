@@ -176,6 +176,8 @@ mod editor_hanging_space_caret_1041_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_home_end_image_1116_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_host_keymap_3062_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_image_drop_review_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_image_drop_tests;
@@ -312,6 +314,9 @@ mod implicit_focus_tests;
 mod inline_draggable_2233_tests;
 #[cfg(test)]
 mod inline_drop_target_2246_tests;
+mod key_events;
+#[cfg(all(test, feature = "windowing"))]
+mod key_order_3062_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod spellcheck_menu_tests;
 // A window's input region (#2741): the desktop shell's alone.

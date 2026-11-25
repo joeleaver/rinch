@@ -87,7 +87,7 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 | `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:483`, `:485` |
 | `Tab` | `left_section`, `right_section` | `tabs.rs:397`, `:399` |
 
-The `Tree` component takes its icons through data rather than a prop: `TreeNodeData::icon` (`tree.rs:56`), set with the `with_icon(TablerIcon)` builder.
+The `Tree` component takes its icons through data rather than a prop: `TreeNodeData::icon` (`tree/mod.rs`), set with the `with_icon(TablerIcon)` builder.
 
 `List` and `ListItem` also take `icon_node: Option<SectionRenderer>` (#2207), a marker node of the app's own (pass `Some(renderer)`), which wins over `icon` on the same component. Both reach the item through one private `Marker` enum (`list.rs`), so the default-icon patch below treats a list's node exactly as its Tabler default: once per item at render and again for late items, the renderer called once per item, an item's own `icon` or `icon_node` winning, and a defaulted item (`data-list-icon`) taking a new list's marker when it moves.
 
@@ -169,6 +169,37 @@ first, synchronously. So a `for` reconcile, a `show_dom` branch and a hand-rolle
 with no deferred queue and no drain site in any host — which is what the
 alternative would have needed, since `queue_main_callback` takes a `Send`
 closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
+
+**An insertion observer is a cost on every insertion of its thread**, not only
+beneath its root: once `INSERT_COUNT` is above zero, each `NodeHandle`
+insertion walks its parent's ancestors through the registry. So a container
+registers one only for a default it really has to give. `SortableList` (#3062)
+registers one for good only with `keyboard` (a late item becomes a Tab stop,
+`offer_keyboard`). A plain list registers one only while the pending focus
+request names it (`sortable/focus.rs`): a keyboard drop into it, or a lift
+re-rendered over it, asks for the moved item to be focused once it is drawn
+(`request_focus`), which watches every plain list of the request's group (and
+id, when it names one) under a `Scope` of its own, and a plain list drawn
+while a request names it (`watch_if_named`) watches too. The watch is released
+when the request is satisfied (the list sees the item, `see_items`, or the
+timer finds it, `try_pending_focus`; a drop's request only once the list's
+order shows the drop applied, `sortable/landing.rs`), replaced by a newer
+request, dropped at the next drag (`begin`), when the focus leaves the lifted
+item while it is still connected (`leave_entry`), or when its list unmounts
+(`list_gone`). A request
+whose lists have all gone goes on the next turn of the event loop, not at
+once: a list re-rendered as a new node may go before its successor is drawn,
+and the request is for the successor. `rinch_core::dom::insert_observer_count`
+(hidden) is what the tests count (`sortable/focus_tests.rs`,
+`rinch/src/app/sortable_2091_tests/keyboard.rs`).
+
+The `tabindex="-1"` lent to a focused item that has none (`lend_tabindex`) is
+recorded in `LENT_TABINDEX` with the focus-leave entry that takes it back. The
+item's cleanup forgets the record (`forget_lent`); a lend sweeps the records
+of items the document has **retired** (`NodeHandle::is_retired`: discarded,
+or freed by `set_inner_html`, by a route that ran no cleanup), never of items
+that are only detached: one taken out and put back is the same node and still
+holds the lend, which its entry takes back when the focus leaves.
 
 `Breadcrumbs` takes both halves too (#2193): its separators are real
 `aria-hidden` spans appended to every item but the last, so a crumb that arrives
@@ -539,9 +570,10 @@ Progress always had (Mantine animates width too); `none` makes it jump, as
 of what is carried where a gap's drop lands. Off, `reflow` never calls
 `slot_at`, so no class, property or generated box is written and no layout
 changes. On, it is drawn by one `Slot { list, place }` per drag
-(`rinch-components/src/sortable.rs`), always on the **list**, never on an
-item: an item's `overflow: hidden` used to clip a slot hung outside the item's
-box.
+(`rinch-components/src/sortable/slot.rs`; the boxes it is placed from,
+`AxisBox`, are in `sortable/axis_box.rs`), always on the **list**, never on
+an item: an item's `overflow: hidden` used to clip a slot hung outside the
+item's box.
 
 - `SlotPlace::At { x, y, w, h }`: the list's `::before`
   (`.rinch-sortable--slot`), `position: absolute` over the box written as

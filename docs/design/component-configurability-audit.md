@@ -302,6 +302,7 @@ Excluded, as the brief says: SortableItem drag ghost, preview and gap-reflow (#2
   - *Can the app change it today?* Partly. `handle_key` can consume PageUp and PageDown and move the cursor with `TreeController::set_cursor`.
   - *Proposed option:* `page_rows: usize`, **default `0`, meaning "by the visible height"** (Chrome). `10` gives today's behaviour.
   - *Likelihood:* Low-Medium. In a tall tree, a 10-row page feels wrong.
+  - *Since #3062:* the tree no longer takes PageUp or PageDown at all (they are not in the WAI-ARIA tree pattern), so the item is moot; an app that wants paging binds it in `handle_key`.
 
 - **Differs from Chrome:** the buffer here is 700 ms, where Chromium's is 1 s. **`tree.rs:2247`: type-ahead has a fixed 700 ms buffer (`TYPE_AHEAD_MS`, timer at `tree.rs:2826`) and cannot be switched off.**
   - *Chrome:* a native `<select>` / listbox has type-ahead find. Chromium's `TypeAhead` resets the buffer after 1 second without a key. That is from memory of the Chromium source; confirm before changing.
@@ -1934,14 +1935,14 @@ are left to the app, which has the seams it needs (`on_image_hover` + overlay;
   - Likelihood: **Medium.** Apps with their own undo stack, or collaboration
     hosts, want to turn it off or tune it.
 
-### Default keymap (rinch-editor-core `commands/mod.rs`, `keymap.rs`)
+### Default keymap (rinch-editor-core `commands/base_plugin.rs`, `keymap.rs`)
 
 - **Differs from Chrome:** in an editable editor, Tab and Shift+Tab are kept
-  inside it. **`crates/rinch-editor-core/src/commands/mod.rs:1702-1703`**
+  inside it. **`crates/rinch-editor-core/src/commands/base_plugin.rs:119-120`**
   (`Tab` → `sinkListItem`, `Shift-Tab` → `liftListItem`), plus the view's table
   cell navigation. `docs/src/guide/contenteditable.md:1016-1022` says an
   editable editor "keeps them for table cells and list indentation". Outside a
-  list, `sink_list_item_any` returns `None` (Tab is a no-op, line 520-521).
+  list, `sink_list_item_any` returns `None` (Tab is a no-op, `commands/wrapping.rs:231-232`).
   The guide's wording and the old audit note ("consumed always") say focus
   still does not move on. I have not re-verified that at runtime.
   - *Chrome:* in a `contenteditable`, Tab and Shift+Tab move focus to the
@@ -1961,7 +1962,7 @@ are left to the app, which has the seams it needs (`on_image_hover` + overlay;
     Tab to reach the Submit button.
 
 - **Differs from Chrome:** many chords beyond Chrome's three.
-  **`crates/rinch-editor-core/src/commands/mod.rs:1692-1751`** — Fixed chords:
+  **`crates/rinch-editor-core/src/commands/base_plugin.rs:105-126`** — Fixed chords:
   Mod+B/I/U/E, Mod+Shift+S/7/8/9/B/0, Mod+Shift+L/E/R/J (alignment), Mod+Alt+1–6,
   and Mod/Alt+Backspace/Delete.
   - *Chrome:* a `contenteditable` binds Ctrl/Cmd+B, I and U to bold, italic and
