@@ -147,10 +147,20 @@ group.
   before it removes or moves it (`release_focus_within`), so the browser's
   `focusout` arrives with the lifted item still connected and nothing redrawn
   yet, while desktop lets the focus go after the detach. The leave entry marks
-  the request (`FocusRequest::fell`) and schedules the settled check, which
-  first tries to satisfy it and then, if the lifted item is still connected
-  with the focus still on the document, ends it (a click on blank space). With
-  no timer backend a fall to the document ends nothing. A key drawn twice is
+  the request (`FocusRequest::fell`) and schedules the settled check. The
+  check reads the fall first: if the lifted item is still connected with the
+  focus still on the document, it ends the request (a click on blank space)
+  unless the node it would claim is the lifted item itself (a keyed move after
+  the web's blur), so a redraw by position applied in the same turn as the
+  click, which gives the key to another node, does not take the focus back.
+  For the same reason a list seeing a new node of the key while the fall is
+  marked and the lifted item still drawn leaves it to the check
+  (`take_request_for`). With no timer backend (`rinch_core::timers_fire()` is
+  `false`: wasm32 with none installed) no check comes, so the leave entry
+  decides at once, as before the check existed: the request ends if the lifted
+  item is still connected. A web redraw that removes or moves the focused item
+  blurs it while connected, so on such a host that redraw ends the request
+  too. A key drawn twice is
   one key to the landing rule (`moved` keeps one copy), so the request ends on
   its first node (`Order::Other`) once anything moves. The order checks are
   linear: `Landing` holds its key sets, and a check builds one for the list.

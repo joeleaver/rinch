@@ -178,10 +178,26 @@ fn park(
     // by a keyed move, which keeps the item's node and draws no new one, is
     // never checked: the item keeps the focus it held, and the request stays
     // until the next drag, the focus moving from the item to another element,
-    // or a document sweep. The focus falling to the document is decided by
-    // a check too (`leave_entry`), so without timers it ends nothing.
+    // the focus falling to the document while the item is still drawn (which
+    // `leave_entry` then decides at once, `checks_run`), or a document sweep.
     rinch_core::unowned(|| set_timeout(0, try_pending_focus));
     serial
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by a test to stand for a host with no timer backend.
+    pub(super) static NO_TIMERS_FOR_TEST: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the checks this module schedules will run: whether a timeout
+/// fires on this thread (`rinch_core::timers_fire`).
+fn checks_run() -> bool {
+    #[cfg(test)]
+    if NO_TIMERS_FOR_TEST.with(Cell::get) {
+        return false;
+    }
+    rinch_core::timers_fire()
 }
 
 /// Whether the request `serial` is still pending.
@@ -204,6 +220,14 @@ fn is_pending(serial: u64) -> bool {
 /// request, or the lifted item is still drawn with the focus still on the
 /// document (a click on blank space), which ends it.
 ///
+/// Where no timer backend is installed (`checks_run`), no check would ever
+/// come, so the fall is decided at once: the request ends if the lifted item
+/// is still connected, and stays for a node drawn in its place if the item
+/// is already detached. Since rinch-web blurs a node while it is still in
+/// place (above), on such a host a redraw that removes or moves the focused
+/// item ends the request too, and the item the drop lands on does not get
+/// the focus back: a click on blank space must never be undone later.
+///
 /// Unowned, like the request: the render running at the drop is not the
 /// request's.
 fn leave_entry(holder: &NodeHandle, serial: u64) -> DismissHandle {
@@ -214,6 +238,16 @@ fn leave_entry(holder: &NodeHandle, serial: u64) -> DismissHandle {
             |_| false,
             move || {
                 let Some(focus) = focused_element(&owner) else {
+                    if !checks_run() {
+                        // No check will come: decide at once. The lifted item
+                        // still drawn means the user went elsewhere; one a
+                        // redraw took away keeps the request for its
+                        // successor (`see_items`).
+                        if owner.is_connected() {
+                            drop(take_request(serial));
+                        }
+                        return;
+                    }
                     let marked = PENDING_FOCUS.with_mut(|p| {
                         p.0.as_mut()
                             .filter(|r| r.serial == serial)
@@ -321,15 +355,24 @@ pub(super) fn cancel_pending_focus() {
 /// Take the pending request if it is for `node`, the item `key` of the list
 /// `seer` in `doc` (`claim`): whether it was. A drop's request is taken here
 /// only by a new node in a list that shows the drop applied; anything else is
-/// checked once the tree has settled instead.
+/// checked once the tree has settled instead, and so is any node while the
+/// focus has fallen from the lifted item and that item is still drawn: the
+/// check decides whether the user clicked blank space (`try_pending_focus`).
 pub(super) fn take_request_for(doc: u64, seer: &Seer, key: &str, node: &NodeHandle) -> bool {
-    let Some((serial, landing)) = PENDING_FOCUS.with(|p| {
+    let Some((serial, landing, fell_from)) = PENDING_FOCUS.with(|p| {
         p.0.as_ref()
             .filter(|r| r.key == key && r.targets(doc, &seer.group, &seer.id))
-            .map(|r| (r.serial, r.landing.clone()))
+            .map(|r| {
+                let fell_from = r.holder.clone().filter(|_| r.fell);
+                (r.serial, r.landing.clone(), fell_from)
+            })
     }) else {
         return false;
     };
+    if fell_from.is_some_and(|h| h.is_connected()) {
+        schedule_check(serial);
+        return false;
+    }
     let keys = match landing {
         Some(_) => keys_of_list_of(node),
         None => Vec::new(),
@@ -440,10 +483,21 @@ fn drop_if_orphaned(serial: u64) {
 /// `leave_entry`) and the lifted item is still drawn with the focus still on
 /// the document, the request ends: no redraw took the item away, the user
 /// clicked blank space. An item taken away (detached) keeps it.
+///
+/// The fall is read before any node is claimed: a click on blank space and a
+/// redraw by position applied in the same turn (the lifted item's node still
+/// drawn, another node now holding its key where the drop put it) must end
+/// the request, not hand that node the focus. Only the lifted item itself,
+/// still drawn and now where the drop put it, is focused after a fall: the
+/// web blurs an item before a keyed redraw moves it (`leave_entry`), and that
+/// redraw applied the drop.
 pub(super) fn try_pending_focus() {
-    let Some((serial, doc, group, key, list, landing)) = PENDING_FOCUS.with_mut(|p| {
+    let Some((serial, doc, group, key, list, landing, fell_from)) = PENDING_FOCUS.with_mut(|p| {
         p.0.as_mut().map(|r| {
             r.check_due = false;
+            let fell_from = std::mem::take(&mut r.fell)
+                .then(|| r.holder.clone())
+                .flatten();
             (
                 r.serial,
                 r.doc,
@@ -451,11 +505,15 @@ pub(super) fn try_pending_focus() {
                 r.key.clone(),
                 r.list.clone(),
                 r.landing.clone(),
+                fell_from,
             )
         })
     }) else {
         return;
     };
+    // The lifted item, when the focus fell from it to the document and it is
+    // still drawn with the focus still there.
+    let stranded = fell_from.filter(|h| h.is_connected() && focused_element(h).is_none());
     // Not yet applied (the app applies the drop later): a list that sees the
     // item drawn again, or the next check, focuses it.
     for cfg in lists_of_group(&group, doc)
@@ -466,25 +524,17 @@ pub(super) fn try_pending_focus() {
         let keys: Vec<String> = items.iter().map(|(_, k)| k.clone()).collect();
         for (node, _) in items.into_iter().filter(|(_, k)| *k == key) {
             if matches!(claim(landing.as_deref(), &node, &keys, true), Claim::Take) {
-                if take_request(serial).is_some() {
+                let mine = stranded
+                    .as_ref()
+                    .is_none_or(|h| h.node_id() == node.node_id());
+                if take_request(serial).is_some() && mine {
                     focus_item(&node);
                 }
                 return;
             }
         }
     }
-    let fell_from = PENDING_FOCUS.with_mut(|p| {
-        let r = p.0.as_mut().filter(|r| r.serial == serial)?;
-        if std::mem::take(&mut r.fell) {
-            r.holder.clone()
-        } else {
-            None
-        }
-    });
-    if let Some(holder) = fell_from
-        && holder.is_connected()
-        && focused_element(&holder).is_none()
-    {
+    if stranded.is_some() {
         let old = take_request(serial);
         drop(old);
     }

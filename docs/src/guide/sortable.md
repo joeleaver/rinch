@@ -432,7 +432,10 @@ drives it. What such a host must also give the guest:
   (the item keeps its node) is then never checked: the item keeps the focus
   it held, and the request waits for the next drag or the focus moving to
   another element. The focus falling to blank space is decided by a timer
-  too, so without them it ends nothing.
+  too; without them it is decided at once, ending the request while the
+  lifted item is still drawn. A browser blurs an item a redraw removes or
+  moves while it is still drawn, so on such a host the redraw that applies
+  the drop ends the request as well, and the item is not focused again.
 - **The drag ghost.** Lists carry `data-drag-ghost="false"` (all but a
   `preview: SortPreview::Snapshot` one): the component draws the drag itself,
   and a host that paints a ghost should read the attribute on the source or

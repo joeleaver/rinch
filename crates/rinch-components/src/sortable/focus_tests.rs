@@ -302,6 +302,100 @@ fn a_keyed_move_after_the_web_blur_focuses_the_item() {
     assert!(focused(&a), "the moved item lost the focus");
 }
 
+/// Stands for a host with no timer backend while it lives.
+struct NoTimers;
+
+impl NoTimers {
+    fn new() -> NoTimers {
+        NO_TIMERS_FOR_TEST.with(|t| t.set(true));
+        NoTimers
+    }
+}
+
+impl Drop for NoTimers {
+    fn drop(&mut self) {
+        NO_TIMERS_FOR_TEST.with(|t| t.set(false));
+    }
+}
+
+/// #3071 review 7, finding 1: with no timer backend no check ever runs, so
+/// the focus falling to the document while the lifted item is still drawn
+/// (a click on blank space) ends a drop's request at once, and a later
+/// redraw by position that applies the drop leaves the focus where the user
+/// put it. The control: an item a redraw took away first keeps the request.
+#[test]
+fn without_timers_a_fall_from_a_drawn_item_ends_the_request_at_once() {
+    let _no_timers = NoTimers::new();
+    let mut scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let (plain, _a) = drop_request(&mut scope);
+    scope.body_handle().focus();
+    rinch_core::notify_focus_moved(doc);
+    assert_eq!(pending(), None, "the request outlived the blur");
+    for (n, _) in items_of(&plain) {
+        n.remove();
+    }
+    let redrawn: Vec<NodeHandle> = ["b", "a", "c", "d"]
+        .iter()
+        .map(|k| item(&mut scope, k))
+        .collect();
+    for n in &redrawn {
+        plain.append_child(n);
+    }
+    assert!(!focused(&redrawn[1]), "the redraw took the focus back");
+
+    let (_plain, a) = drop_request(&mut scope);
+    a.remove();
+    scope.body_handle().focus();
+    rinch_core::notify_focus_moved(doc);
+    assert_eq!(pending(), Some(("a".into(), Some("b".into()))), "control");
+    cancel_pending_focus();
+}
+
+/// #3071 review 7, finding 2: a click on blank space, then a redraw by
+/// position applied in the same turn (the lifted item's node still drawn,
+/// another node given its key where the drop put it). The settled check ends
+/// the request rather than give that node the focus.
+#[test]
+fn a_blank_click_then_a_position_redraw_ends_the_request() {
+    let mut scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let (plain, a) = drop_request(&mut scope);
+    scope.body_handle().focus();
+    rinch_core::notify_focus_moved(doc);
+    let b = items_of(&plain)[1].0.clone();
+    a.set_attribute(KEY_ATTR, "b");
+    b.set_attribute(KEY_ATTR, "a");
+    assert_eq!(keys_of(&plain), ["b", "a", "c", "d"], "control: applied");
+    try_pending_focus();
+    assert_eq!(pending(), None, "the request outlived the blank click");
+    assert!(!focused(&b), "the redraw took the focus back");
+}
+
+/// Finding 2 where the redraw draws a new node for the key while the lifted
+/// item is still drawn: the list seeing it defers to the settled check
+/// (`take_request_for`), which ends the request.
+#[test]
+fn a_blank_click_then_a_new_node_of_the_key_ends_the_request() {
+    let mut scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let (plain, a) = drop_request(&mut scope);
+    scope.body_handle().focus();
+    rinch_core::notify_focus_moved(doc);
+    let b = items_of(&plain)[1].0.clone();
+    let c = items_of(&plain)[2].0.clone();
+    a.set_attribute(KEY_ATTR, "b");
+    b.remove();
+    // Arrives with the list already in the applied order.
+    let new_a = item(&mut scope, "a");
+    plain.insert_before(&new_a, &c);
+    assert_eq!(keys_of(&plain), ["b", "a", "c", "d"], "control: applied");
+    assert!(!focused(&new_a), "the arrival took the focus back");
+    try_pending_focus();
+    assert_eq!(pending(), None, "the request outlived the blank click");
+    assert!(!focused(&new_a), "the check took the focus back");
+}
+
 /// How many lent `tabindex` records document `doc` has.
 fn lent_in(doc: u64) -> usize {
     LENT_TABINDEX.with(|l| l.iter().filter(|(d, _, _)| *d == doc).count())
