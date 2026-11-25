@@ -58,28 +58,24 @@ pub fn styles() -> String {
     transition: transform var(--rinch-sortable-reflow-duration, 150ms)
         var(--rinch-sortable-reflow-easing, ease);
 }
-/* SortIndicator::Gap: the slot, a box the size of what is carried in the
-   gap the drop lands in. The item after the gap draws it before itself at the
-   --rinch-sortable-slot-start / -size the component writes, so it rides the
-   item's shift and moves nothing; at the end of a list (an empty one
-   included) the list draws it after its items, in their flow, so the list
+/* SortableList::slot (with a gap): a box the size of what is carried, where
+   the drop lands. Always the list's own pseudo-element, never an item's, so
+   an item's overflow cannot clip it. Between items (and in the room a
+   collapsed item left at the end of its own list) it is the list's absolute
+   ::before over the box the component writes as --rinch-sortable-slot-x /
+   -y / -width / -height, measured from the items as laid out (physical
+   offsets of a measured box, so right to left and reversed rows are placed
+   as laid out), and it moves nothing; at the end of a list it is the list's
+   in-flow ::after, --rinch-sortable-slot-size along the axis, so the list
    grows to hold it. It shows only as the app styles it:
    --rinch-sortable-slot-background, -border, -radius. */
-.rinch-sortable__item--slot::before {
+.rinch-sortable--slot::before {
     content: "";
     position: absolute;
-    left: 0;
-    right: 0;
-    top: var(--rinch-sortable-slot-start, 0px);
-    height: var(--rinch-sortable-slot-size, 0px);
-}
-.rinch-sortable__item--slot-horizontal::before {
-    top: 0;
-    bottom: 0;
-    right: auto;
-    height: auto;
-    left: var(--rinch-sortable-slot-start, 0px);
-    width: var(--rinch-sortable-slot-size, 0px);
+    left: var(--rinch-sortable-slot-x, 0px);
+    top: var(--rinch-sortable-slot-y, 0px);
+    width: var(--rinch-sortable-slot-width, 0px);
+    height: var(--rinch-sortable-slot-height, 0px);
 }
 .rinch-sortable--slot-into::after {
     content: "";
@@ -91,7 +87,7 @@ pub fn styles() -> String {
     height: auto;
     width: var(--rinch-sortable-slot-size, 0px);
 }
-.rinch-sortable__item--slot::before,
+.rinch-sortable--slot::before,
 .rinch-sortable--slot-into::after {
     box-sizing: border-box;
     pointer-events: none;

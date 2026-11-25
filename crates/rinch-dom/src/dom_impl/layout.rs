@@ -11,6 +11,34 @@ impl DomLayout for RinchDocument {
         Some((n.layout.width, n.layout.height))
     }
 
+    /// The parent-relative layout origins summed from `node` up to
+    /// `container` (layouts are untransformed and unscrolled), less
+    /// `container`'s border: an absolute child's insets start at its padding
+    /// box ([`Self::content_origin_inset`]).
+    fn layout_box_in(
+        &self,
+        node: NodeId,
+        container: NodeId,
+    ) -> Option<rinch_core::reactive::ElementBounds> {
+        let n = self.tree.nodes.get(node.0)?;
+        let (width, height) = (n.layout.width, n.layout.height);
+        let (mut x, mut y) = (0.0, 0.0);
+        let mut at = node.0;
+        while at != container.0 {
+            let n = self.tree.nodes.get(at)?;
+            x += n.layout.x;
+            y += n.layout.y;
+            at = n.parent?;
+        }
+        let (ix, iy) = self.content_origin_inset(container.0);
+        Some(rinch_core::reactive::ElementBounds {
+            x: x - ix,
+            y: y - iy,
+            width,
+            height,
+        })
+    }
+
     /// The inline formatting context lays a `<br>` out as `"\n"`
     /// (`ifc.rs`), one byte of the flat offsets every text query here takes.
     fn line_break_flat_bytes(&self) -> usize {

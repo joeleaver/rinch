@@ -1612,6 +1612,17 @@ impl NodeHandle {
         doc.borrow_mut().bounding_rect(self.node_id)
     }
 
+    /// This element's border box as laid out, before any CSS transform, in
+    /// `container`'s padding-box frame: where an absolutely positioned child
+    /// of `container` (a positioned ancestor) goes to cover it
+    /// ([`DomLayout::layout_box_in`]). On desktop, as of the last layout, as
+    /// [`Self::bounding_rect`]. `None` when `container` is not such an
+    /// ancestor, or the host has no geometry.
+    pub fn layout_box_in(&self, container: &NodeHandle) -> Option<crate::reactive::ElementBounds> {
+        let doc = self.accessed_doc()?;
+        doc.borrow().layout_box_in(self.node_id, container.node_id)
+    }
+
     /// The viewport's size in logical pixels, in the frame of
     /// [`Self::bounding_rect`] (issue #1764). On desktop it is the size of the
     /// last layout; on the web `documentElement.clientWidth/clientHeight`.

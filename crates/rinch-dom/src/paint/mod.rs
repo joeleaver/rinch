@@ -50,6 +50,7 @@ pub(crate) use layer_bounds::measure_subtree_reach;
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
+    unbudgeted_subtree_bounds,
 };
 pub(crate) use svg::parse_paint_order;
 use svg::*;
@@ -4406,18 +4407,17 @@ pub fn paint_subtree(
 /// Where [`paint_subtree`] can draw for the same `root_node_id` and `scale`:
 /// device pixels around the scene origin its border box is put at, every
 /// descendant, shadow and outline included, and its own transform applied.
-/// `None` when the walk cannot bound what the subtree paints.
+/// `None` when the walk cannot bound what the subtree paints: a `position:
+/// fixed` or `sticky` descendant, or one deeper than the walk descends.
 ///
 /// A drag ghost is the scene `paint_subtree` records, appended at the
 /// pointer: the frame that moves it on or takes it away must repaint every
 /// pixel it covered, and its box alone misses an outline, a shadow or the
-/// antialiased edge at a fractional offset.
+/// antialiased edge at a fractional offset. Asked once per drag, so with no
+/// visit budget: a large subtree is measured, not given up on.
 pub fn paint_subtree_bounds(tree: &NodeTree, root_node_id: RawNodeId, scale: f64) -> Option<Rect> {
     let node = tree.get(root_node_id)?;
-    let bounds = opacity_layer_bounds(tree, root_node_id, scale, 0.0, 0.0);
-    if bounds == UNBOUNDED {
-        return None;
-    }
+    let bounds = unbudgeted_subtree_bounds(tree, root_node_id, scale, 0.0, 0.0)?;
     let transform = compose_node_transform(node, 0.0, 0.0, scale, Affine::IDENTITY);
     Some(transform.transform_rect_bbox(bounds))
 }

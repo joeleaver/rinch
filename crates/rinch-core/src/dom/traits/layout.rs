@@ -88,6 +88,30 @@ pub trait DomLayout {
         None
     }
 
+    /// `node`'s border box as laid out, before any CSS transform on it or an
+    /// ancestor, in the frame of `container`'s **padding box**: the `left`,
+    /// `top`, `width` and `height` that put an absolutely positioned child of
+    /// `container` (a positioned box, so its containing block) over it. In
+    /// logical pixels, unscrolled: an absolute child of a box that scrolls is
+    /// placed against its scrolled content, as `node` is. The web's
+    /// `offsetLeft`/`offsetTop` summed up the `offsetParent` chain to
+    /// `container`.
+    ///
+    /// A sortable list places the slot of an open gap with it (#2154): the
+    /// items around the gap carry a sliding `transform`, which a painted box
+    /// ([`Self::bounding_rect`]) includes mid-slide and this does not.
+    ///
+    /// `None` when `container` is not an ancestor of `node` (on the web: not
+    /// on its `offsetParent` chain, as when it is not positioned), when there
+    /// is no layout, and for a host with no geometry (the default).
+    fn layout_box_in(
+        &self,
+        _node: NodeId,
+        _container: NodeId,
+    ) -> Option<crate::reactive::ElementBounds> {
+        None
+    }
+
     /// The viewport's size in logical pixels — the box a `position: fixed;
     /// inset: 0` element fills, and the frame [`Self::bounding_rect`] answers
     /// in (issue #1764). rinch-dom answers the size of its last layout

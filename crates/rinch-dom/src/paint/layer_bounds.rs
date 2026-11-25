@@ -465,6 +465,30 @@ pub(super) fn moved_subtree_bounds(
     }
 }
 
+/// [`opacity_layer_bounds`] for a question asked once rather than once a
+/// frame, so with no visit budget: what a drag ghost's snapshot paints,
+/// measured when the drag starts (#3065). [`MAX_DEPTH`] still guards the
+/// recursion. `None` where the walk cannot bound it all the same (a
+/// `position: fixed` or `sticky` descendant, a subtree deeper than
+/// [`MAX_DEPTH`]) and where it paints nothing.
+pub(super) fn unbudgeted_subtree_bounds(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> Option<Rect> {
+    let node = tree.get(node_id)?;
+    let offset_x = x - node.layout.x as f64 * scale;
+    let offset_y = y - node.layout.y as f64 * scale;
+    let mut walk = Walk::new(tree, scale, false, false);
+    walk.budget = u32::MAX;
+    match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => Some(r),
+        _ => None,
+    }
+}
+
 /// What `node_id`'s subtree paints as [`moved_subtree_bounds`] measures it,
 /// at scale 1 and relative to its border-box origin, for
 /// `PaintedState::subtree_reach` (#2222): a moved box whose subtree has not

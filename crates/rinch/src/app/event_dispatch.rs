@@ -4415,6 +4415,32 @@ impl RinchApp {
             .unwrap_or((0.0, 0.0))
         };
 
+        // What the ghost covers around its origin, in device pixels, measured
+        // once for the whole drag (#173): what its subtree paints, or `None`
+        // where that cannot be bounded (a `fixed` or `sticky` descendant).
+        // Such a ghost is drawn clipped to its own box, as the software
+        // ghost's pixmap always is, so its damage is that box rather than
+        // the whole surface on every frame (#3065).
+        #[cfg(any(
+            feature = "gpu-renderer",
+            feature = "android-gpu",
+            feature = "embed",
+            software_shell
+        ))]
+        let (ghost_box, ghost_reach) = {
+            let d = doc.borrow();
+            let (w, h) = d.tree.get(node_id).map_or((1.0, 1.0), |n| {
+                (
+                    (n.layout.width as f64 * scale_factor).ceil().max(1.0),
+                    (n.layout.height as f64 * scale_factor).ceil().max(1.0),
+                )
+            });
+            (
+                peniko::kurbo::Rect::new(0.0, 0.0, w, h),
+                rinch_dom::paint::paint_subtree_bounds(&d.tree, node_id, scale_factor),
+            )
+        };
+
         #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
         let snapshot = {
             let mut painter = VelloPainter::new();
@@ -4432,6 +4458,13 @@ impl RinchApp {
                 d.tree.viewport.height as f64 * scale_factor,
             ));
 
+            if ghost_reach.is_none() {
+                painter.push_clip(
+                    peniko::Fill::NonZero,
+                    peniko::kurbo::Affine::IDENTITY,
+                    &rinch_dom::paint::painter::PaintShape::Rect(ghost_box),
+                );
+            }
             rinch_dom::paint::paint_subtree(
                 &d.tree,
                 &mut painter,
@@ -4440,6 +4473,9 @@ impl RinchApp {
                 &mut d.font_cx,
                 &mut d.layout_cx,
             );
+            if ghost_reach.is_none() {
+                painter.pop_layer();
+            }
             painter
         };
 
@@ -4448,15 +4484,8 @@ impl RinchApp {
             let mut d = doc.borrow_mut();
             let d = &mut *d;
 
-            // Compute the element's size in physical pixels for the snapshot pixmap
-            let node = d.tree.get(node_id);
-            let (sw, sh) = node
-                .map(|n| {
-                    let w = (n.layout.width as f64 * scale_factor).ceil() as u32;
-                    let h = (n.layout.height as f64 * scale_factor).ceil() as u32;
-                    (w.max(1), h.max(1))
-                })
-                .unwrap_or((1, 1));
+            // The element's box in physical pixels: the snapshot pixmap.
+            let (sw, sh) = (ghost_box.width() as u32, ghost_box.height() as u32);
 
             let mut painter = TinySkiaPainter::new(sw, sh);
             painter.fill_transparent();
@@ -4476,8 +4505,7 @@ impl RinchApp {
         };
         // What the ghost covers wherever it is drawn: its damage (#173).
         #[cfg(software_shell)]
-        let snapshot_bounds =
-            rinch_dom::paint::paint_subtree_bounds(&doc.borrow().tree, node_id, scale_factor);
+        let snapshot_bounds = ghost_reach.unwrap_or(ghost_box);
 
         self.active_dnd = Some(ActiveDrag {
             node_id,

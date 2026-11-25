@@ -116,3 +116,96 @@ fn a_ghost_at_a_fractional_place_damages_its_edges_and_outline() {
     let dropped = rects(app.build_gpu_frame(1.0, (W, H), None));
     assert!(covers(&dropped, last), "{dropped:?} repaints {last:?}");
 }
+
+/// A page with one draggable box at (400, 20), 60 x 30, holding `inner`.
+fn app_holding(inner: &str) -> RinchApp {
+    let inner = inner.to_string();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "position: relative; width: 600px; height: 400px");
+        let src = scope.create_element("div");
+        src.set_attribute("draggable", "true");
+        src.set_attribute(
+            "style",
+            "position: absolute; left: 400px; top: 20px; width: 60px; height: 30px; \
+             background: rgb(40, 40, 40)",
+        );
+        src.set_inner_html(&inner);
+        root.append_child(&src);
+        root
+    });
+    app.mount_component(W as f32, H as f32);
+    assert!(matches!(
+        app.build_gpu_frame(
+            1.0,
+            (W, H),
+            Some(rinch_dom::perf::FullRepaintReason::FirstFrame)
+        ),
+        GpuFrame::Full(_)
+    ));
+    app
+}
+
+/// Grabs the box 30, 15 into it and drags it to (250, 200), so it is drawn
+/// at (220, 185); returns the ghost's rect on that frame and the damage of
+/// the frame after it moved on to (100, 300).
+fn drag_away(app: &mut RinchApp) -> (Rect, Vec<Rect>) {
+    event(
+        app,
+        PlatformEvent::MouseDown {
+            x: 430.0,
+            y: 35.0,
+            button: MouseButton::Left,
+        },
+    );
+    event(app, PlatformEvent::MouseMove { x: 250.0, y: 200.0 });
+    assert!(app.active_dnd.is_some(), "the drag activated");
+    let _ = app.build_gpu_frame(1.0, (W, H), None);
+    let ghost = app.last_ghost_rect.expect("the ghost was drawn");
+    event(app, PlatformEvent::MouseMove { x: 100.0, y: 300.0 });
+    let moved = rects(app.build_gpu_frame(1.0, (W, H), None));
+    (ghost, moved)
+}
+
+fn area(rects: &[Rect]) -> f64 {
+    rects.iter().map(|r| r.area()).sum()
+}
+
+/// More nodes than the paint's per-frame visit budget: the ghost's reach is
+/// measured once, without it, so the ghost damages its box, not the whole
+/// surface on every frame (#3065).
+#[test]
+fn a_ghost_past_the_visit_budget_damages_only_its_box() {
+    let many = "<i style=\"position: absolute; left: 1px; top: 1px; width: 1px; height: 1px\"></i>"
+        .repeat(700);
+    let mut app = app_holding(&many);
+    let (ghost, moved) = drag_away(&mut app);
+    let drawn = Rect::new(220.0, 185.0, 280.0, 215.0);
+    assert!(ghost.contains_rect(drawn), "{ghost:?} holds {drawn:?}");
+    assert!(
+        ghost.area() < 2.0 * drawn.area(),
+        "the ghost's rect {ghost:?} is its box, not the surface"
+    );
+    assert!(covers(&moved, drawn), "{moved:?} repaints {drawn:?}");
+    assert!(
+        area(&moved) < (W * H) as f64 / 4.0,
+        "moving the ghost repaints around it, not the surface: {moved:?}"
+    );
+}
+
+/// A `position: fixed` descendant cannot be placed by the ghost's walk: the
+/// snapshot is drawn clipped to its box (as the software pixmap is), and its
+/// damage is that box (#3065: it damaged the whole surface every frame).
+#[test]
+fn a_ghost_with_a_fixed_descendant_damages_only_its_box() {
+    let mut app = app_holding(
+        "<div style=\"position: fixed; left: 0; top: 300px; width: 50px; height: 50px; \
+         background: rgb(200, 0, 0)\"></div>",
+    );
+    let (ghost, moved) = drag_away(&mut app);
+    assert_eq!(ghost, Rect::new(220.0, 185.0, 280.0, 215.0));
+    assert!(
+        area(&moved) < (W * H) as f64 / 4.0,
+        "moving the ghost repaints around it, not the surface: {moved:?}"
+    );
+}

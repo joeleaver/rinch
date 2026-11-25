@@ -49,6 +49,8 @@ mod scroll_into_view;
 mod sortable_2091_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod sortable_2154_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod sortable_slot_tests;
 #[cfg(test)]
 mod tree_drop_tests;
 #[cfg(test)]
@@ -975,12 +977,14 @@ pub(crate) struct ActiveDrag {
     /// Height of the snapshot pixmap in physical pixels.
     #[cfg(software_shell)]
     pub snapshot_height: u32,
-    /// Where the snapshot paints, in physical pixels around its origin
+    /// Where the snapshot paints, in physical pixels around its origin,
+    /// measured once when the drag starts
     /// (`rinch_dom::paint::paint_subtree_bounds`): the box, and whatever its
-    /// subtree draws past it. `None` when it cannot be bounded, and then the
-    /// ghost damages the whole surface.
+    /// subtree draws past it. A subtree that cannot be bounded (a `fixed` or
+    /// `sticky` descendant) is drawn clipped to its box, as the software
+    /// pixmap is, and this is that box (#3065).
     #[cfg(software_shell)]
-    pub snapshot_bounds: Option<peniko::kurbo::Rect>,
+    pub snapshot_bounds: peniko::kurbo::Rect,
     /// Offset within the element where the grab happened, relative to its
     /// top-left, in **logical** pixels: it is `mousedown_pos` minus the node's
     /// layout origin, and `mousedown_pos` is a logical pointer position (#299).
@@ -4132,15 +4136,14 @@ impl RinchApp {
     ///
     /// Both are rounded out to whole pixels. A rect cut to the truncated
     /// translate left a column of the ghost's right edge and a row of its
-    /// bottom edge on screen at every place it moved from. `bounds`
-    /// unknown is the whole surface.
+    /// bottom edge on screen at every place it moved from.
     #[cfg(software_shell)]
     fn ghost_overlay_rect(
         tx: f64,
         ty: f64,
         src_w: u32,
         src_h: u32,
-        bounds: Option<peniko::kurbo::Rect>,
+        bounds: peniko::kurbo::Rect,
         dst_w: u32,
         dst_h: u32,
     ) -> Option<peniko::kurbo::Rect> {
@@ -4148,10 +4151,7 @@ impl RinchApp {
         let surface = Rect::new(0.0, 0.0, dst_w as f64, dst_h as f64);
         let (bx, by) = (tx.trunc(), ty.trunc());
         let blit = Rect::new(bx, by, bx + src_w as f64, by + src_h as f64);
-        let scene = match bounds {
-            Some(b) => b + peniko::kurbo::Vec2::new(tx, ty),
-            None => surface,
-        };
+        let scene = bounds + peniko::kurbo::Vec2::new(tx, ty);
         let r = blit.union(scene).expand().intersect(surface);
         if r.width() <= 0.0 || r.height() <= 0.0 || src_w == 0 || src_h == 0 {
             return None;
@@ -8619,8 +8619,8 @@ mod drag_ghost_dirty_region_tests {
 
     /// The box of a `w` x `h` snapshot, as `paint_subtree_bounds` gives one
     /// that paints nothing past its box.
-    fn boxed(w: u32, h: u32) -> Option<Rect> {
-        Some(Rect::new(0.0, 0.0, w as f64, h as f64))
+    fn boxed(w: u32, h: u32) -> Rect {
+        Rect::new(0.0, 0.0, w as f64, h as f64)
     }
 
     /// Every number here is a device (physical) pixel: the translate is the
@@ -8647,16 +8647,18 @@ mod drag_ghost_dirty_region_tests {
     /// ghost's too.
     #[test]
     fn what_paints_past_the_box_is_covered() {
-        let bounds = Some(Rect::new(-3.0, -2.0, 245.0, 48.0));
+        let bounds = Rect::new(-3.0, -2.0, 245.0, 48.0);
         let r = RinchApp::ghost_overlay_rect(297.0, 501.0, 239, 40, bounds, 900, 700).unwrap();
         assert_eq!(r, Rect::new(294.0, 499.0, 542.0, 549.0));
     }
 
-    /// A snapshot that could not be bounded covers the whole surface.
+    /// A ghost whose reach is off the surface damages nothing, however far
+    /// its subtree paints past its box (#3065: one that could not be
+    /// bounded damaged the whole surface on every frame, off-screen too).
     #[test]
-    fn unknown_bounds_cover_the_surface() {
-        let r = RinchApp::ghost_overlay_rect(297.0, 501.0, 239, 40, None, 900, 700).unwrap();
-        assert_eq!(r, Rect::new(0.0, 0.0, 900.0, 700.0));
+    fn a_reach_entirely_off_screen_contributes_nothing() {
+        let bounds = Rect::new(-40.0, -40.0, 400.0, 300.0);
+        assert!(RinchApp::ghost_overlay_rect(-900.0, 10.0, 239, 40, bounds, 900, 700).is_none());
     }
 
     #[test]

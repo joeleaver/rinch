@@ -79,10 +79,12 @@ const SHIFTED_CLASS: &str = "rinch-sortable__item--shifted";
 const REFLOWING_CLASS: &str = "rinch-sortable--reflowing";
 const GHOST_CLASS: &str = "rinch-sortable__ghost";
 const GHOST_ATTR: &str = "data-sortable-ghost";
-const SLOT_CLASS: &str = "rinch-sortable__item--slot";
-const SLOT_ACROSS_CLASS: &str = "rinch-sortable__item--slot-horizontal";
+const SLOT_CLASS: &str = "rinch-sortable--slot";
 const SLOT_INTO_CLASS: &str = "rinch-sortable--slot-into";
-const SLOT_START: &str = "--rinch-sortable-slot-start";
+const SLOT_X: &str = "--rinch-sortable-slot-x";
+const SLOT_Y: &str = "--rinch-sortable-slot-y";
+const SLOT_WIDTH: &str = "--rinch-sortable-slot-width";
+const SLOT_HEIGHT: &str = "--rinch-sortable-slot-height";
 const SLOT_SIZE: &str = "--rinch-sortable-slot-size";
 const SHIFT_X: &str = "--rinch-sortable-shift-x";
 const SHIFT_Y: &str = "--rinch-sortable-shift-y";
@@ -239,10 +241,8 @@ pub enum SortIndicator {
     /// The slide is a CSS transition (`--rinch-sortable-reflow-duration`,
     /// `--rinch-sortable-reflow-easing`); layout does not move.
     ///
-    /// The gap holds a slot the size of what is carried, where the drop
-    /// lands: invisible unless the app paints it with
-    /// `--rinch-sortable-slot-background`, `-border` and `-radius` (set on
-    /// the list or an ancestor), so the place can be lit as well as opened.
+    /// With [`SortableList::slot`] the gap also holds a box the app can
+    /// style, where the drop lands.
     Gap,
     /// The gap and the caret.
     Both,
@@ -352,6 +352,8 @@ struct ListConfig {
     drag_keys: Option<SortKeys>,
     preview: SortPreview,
     indicator: SortIndicator,
+    /// Draw the open gap's slot ([`SortableList::slot`]).
+    slot: bool,
     source: SortSource,
     /// The document and its `<body>`, where a preview is mounted.
     doc: std::rc::Weak<RefCell<dyn rinch_core::dom::DomDocument>>,
@@ -478,49 +480,59 @@ struct Active {
     slot: Option<Slot>,
 }
 
-/// Where the open gap's slot is drawn ([`SortIndicator::Gap`]): a box the
-/// size of what is carried, in the gap, painted only as the app styles it
-/// (`--rinch-sortable-slot-*`). The item after the gap draws it before
-/// itself and it rides that item's shift; at the end of a list (an empty
-/// one included) the list draws it after its items, in their flow.
+/// The open gap's slot ([`SortableList::slot`]): a box the size of what is
+/// carried, where the drop lands, painted only as the app styles it
+/// (`--rinch-sortable-slot-*`). Always a pseudo-element of the list holding
+/// the gap, never of an item, so no item's `overflow` clips it.
 #[derive(Clone)]
 struct Slot {
-    node: NodeHandle,
-    /// Drawn by the list, at its end, rather than by an item.
-    into: bool,
-    horizontal: bool,
-    /// From the item's own start along the axis, in its own units.
-    start: f32,
-    size: f32,
+    list: NodeHandle,
+    place: SlotPlace,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SlotPlace {
+    /// Between items, or in the room a collapsed item left at its own
+    /// list's end: the list's absolutely positioned `::before` over this box,
+    /// in the list's padding-box frame, so it moves nothing.
+    At { x: f32, y: f32, w: f32, h: f32 },
+    /// At the end of a list the carried items are not in (an empty one
+    /// included): the list's in-flow `::after`, `size` along its axis, so
+    /// the list grows to hold it, and a wrapping list or a grid puts it
+    /// where an item added at the end would go.
+    End { size: f32 },
 }
 
 impl Slot {
     fn same(&self, other: &Slot) -> bool {
-        self.node.node_id() == other.node.node_id()
-            && self.into == other.into
-            && self.horizontal == other.horizontal
-            && self.start == other.start
-            && self.size == other.size
+        self.list.node_id() == other.list.node_id() && self.place == other.place
     }
 
     fn draw(&self) {
-        if self.into {
-            self.node.add_class(SLOT_INTO_CLASS);
-        } else {
-            self.node.add_class(SLOT_CLASS);
-            if self.horizontal {
-                self.node.add_class(SLOT_ACROSS_CLASS);
+        match self.place {
+            SlotPlace::At { x, y, w, h } => {
+                self.list.add_class(SLOT_CLASS);
+                self.list.set_styles(&[
+                    (SLOT_X, &px(x)),
+                    (SLOT_Y, &px(y)),
+                    (SLOT_WIDTH, &px(w)),
+                    (SLOT_HEIGHT, &px(h)),
+                ]);
+            }
+            SlotPlace::End { size } => {
+                self.list.add_class(SLOT_INTO_CLASS);
+                self.list.set_styles(&[(SLOT_SIZE, &px(size))]);
             }
         }
-        self.node
-            .set_styles(&[(SLOT_START, &px(self.start)), (SLOT_SIZE, &px(self.size))]);
     }
 
     fn erase(&self) {
-        for class in [SLOT_CLASS, SLOT_ACROSS_CLASS, SLOT_INTO_CLASS] {
-            self.node.remove_class(class);
-        }
-        clear_props(&self.node, &[SLOT_START, SLOT_SIZE]);
+        self.list.remove_class(SLOT_CLASS);
+        self.list.remove_class(SLOT_INTO_CLASS);
+        clear_props(
+            &self.list,
+            &[SLOT_X, SLOT_Y, SLOT_WIDTH, SLOT_HEIGHT, SLOT_SIZE],
+        );
     }
 }
 
@@ -1742,7 +1754,10 @@ fn reflow() {
         return;
     };
     let mut want: Vec<(NodeHandle, NodeHandle, f32, f32)> = Vec::new();
-    let mut add = |cfg: &ListConfig, node: &NodeHandle, d: f32| {
+    let add = |want: &mut Vec<(NodeHandle, NodeHandle, f32, f32)>,
+               cfg: &ListConfig,
+               node: &NodeHandle,
+               d: f32| {
         let (dx, dy) = match cfg.axis {
             SortAxis::Vertical => (0.0, d),
             SortAxis::Horizontal => (d, 0.0),
@@ -1776,7 +1791,7 @@ fn reflow() {
             if plan.keys.contains(key) {
                 before += 1;
             } else if before > 0 {
-                add(&cfg, node, -per * before as f32);
+                add(&mut want, &cfg, node, -per * before as f32);
             }
         }
     }
@@ -1790,15 +1805,24 @@ fn reflow() {
             // the ones between the place and the source make room and the
             // source sits at the place — nothing is painted over it.
             for (node, d) in reordered(&cfg, &plan.keys, *slot, plan.spacing) {
-                add(&cfg, &node, d);
+                add(&mut want, &cfg, &node, d);
             }
         } else {
             let d = along(&cfg);
             let rest = rest_of(&cfg.node, &plan.keys).0;
-            for (node, _) in rest.iter().skip(*slot) {
-                add(&cfg, node, d);
+            if cfg.slot {
+                // Read before the gap's own shift is added: where each item
+                // would be without the gap (its collapse shift, if any).
+                let shift_of = |node: &NodeHandle| {
+                    want.iter()
+                        .find(|w| w.0.node_id() == node.node_id())
+                        .map_or((0.0, 0.0), |w| (w.2, w.3))
+                };
+                slot_now = slot_at(&cfg, &rest, *slot, d - plan.spacing, plan.spacing, shift_of);
             }
-            slot_now = slot_at(&cfg, &rest, *slot, d - plan.spacing, plan.spacing);
+            for (node, _) in rest.iter().skip(*slot) {
+                add(&mut want, &cfg, node, d);
+            }
         }
     }
     let (old, mut reflowing) = ACTIVE.with(|a| {
@@ -1858,65 +1882,169 @@ fn reflow() {
     }
 }
 
+/// A box in a list's padding-box frame, along its axis and across it.
+#[derive(Clone, Copy)]
+struct AxisBox {
+    at: f32,
+    len: f32,
+    cross: f32,
+    cross_len: f32,
+}
+
+impl AxisBox {
+    fn of(b: &ElementBounds, axis: SortAxis) -> Self {
+        match axis {
+            SortAxis::Vertical => AxisBox {
+                at: b.y,
+                len: b.height,
+                cross: b.x,
+                cross_len: b.width,
+            },
+            SortAxis::Horizontal => AxisBox {
+                at: b.x,
+                len: b.width,
+                cross: b.y,
+                cross_len: b.height,
+            },
+        }
+    }
+
+    fn place(self, axis: SortAxis) -> SlotPlace {
+        match axis {
+            SortAxis::Vertical => SlotPlace::At {
+                x: self.cross,
+                y: self.at,
+                w: self.cross_len,
+                h: self.len,
+            },
+            SortAxis::Horizontal => SlotPlace::At {
+                x: self.at,
+                y: self.cross,
+                w: self.len,
+                h: self.cross_len,
+            },
+        }
+    }
+
+    fn same_line(&self, other: &AxisBox) -> bool {
+        self.cross < other.cross + other.cross_len && other.cross < self.cross + self.cross_len
+    }
+}
+
+/// Whether a list's items run toward larger coordinates along its axis, as
+/// laid out: the first two neighbours on one line say (a right-to-left row
+/// or a `*-reverse` flex direction runs the other way). Forward when no two
+/// share a line.
+fn flows_forward(boxes: &[AxisBox]) -> bool {
+    boxes
+        .windows(2)
+        .find(|w| w[0].same_line(&w[1]) && (w[1].at - w[0].at).abs() > 0.5)
+        .is_none_or(|w| w[1].at > w[0].at)
+}
+
 /// The slot of a gap opened at `slot` of `rest` (the list's items less the
-/// carried ones), `size` long, `spacing` from the item after it: drawn by
-/// that item, before itself; at the end of the list (an empty list included)
-/// by the list, after its items and in their flow, so the list grows to hold
-/// it, unless the carried items are still in the list's flow (its own list,
-/// collapsed): then the room is there already and the last item draws it
-/// after itself. A list holding only what is carried (its own place, the
-/// carried items still taking their space) draws none.
+/// carried ones), `size` long along the axis, `spacing` between items;
+/// `shift_of` is an item's shift before the gap's own (its collapse).
+///
+/// Placed from the items' boxes as laid out (untransformed, in the list's
+/// frame, [`NodeHandle::layout_box_in`]), so a right-to-left row, a reversed
+/// one, a wrapping one and a grid each put it where the drop lands:
+///
+/// - Between items, where the item after the gap is (it slides on by the
+///   gap), on its line: at its start edge in the list's flow. When that is
+///   before the start of every item's line (a gap at a line break in the
+///   source's own collapsed list, where the items before the gap slid back
+///   onto the line before), after the item before the gap instead, on its
+///   line.
+/// - At the end of the source's own collapsed list, where the carried items
+///   still take their space: in the room that leaves, which ends where the
+///   list's last item is laid out.
+/// - At the end of any other list (an empty one included): the list's
+///   in-flow `::after`, so the list grows to hold it.
+///
+/// A list holding only what is carried draws none, and none is drawn where
+/// the host has no layout to place it by.
 fn slot_at(
     cfg: &ListConfig,
     rest: &[(NodeHandle, String)],
     slot: usize,
     size: f32,
     spacing: f32,
+    shift_of: impl Fn(&NodeHandle) -> (f32, f32),
 ) -> Option<Slot> {
-    let horizontal = cfg.axis == SortAxis::Horizontal;
     let size = size.max(0.0);
-    if let Some((after, _)) = rest.get(slot) {
-        return Some(Slot {
-            node: after.clone(),
-            into: false,
-            horizontal,
-            start: -(spacing + size),
-            size,
-        });
+    let held = items_of(&cfg.node);
+    let at = |place| {
+        Some(Slot {
+            list: cfg.node.clone(),
+            place,
+        })
+    };
+    if rest.is_empty() {
+        return if held.is_empty() {
+            at(SlotPlace::End { size })
+        } else {
+            None
+        };
     }
-    let held = items_of(&cfg.node).len();
-    match rest.last() {
-        // The carried items are still in this list's flow (collapsed, they
-        // only stop showing and the items after them slide over their
-        // space), so the room at the end is already there, past the last
-        // item's shifted place: the last item draws the slot after itself,
-        // riding its shift.
-        Some((last, _)) if held > rest.len() => {
-            let (w, h) = size_of(last)?;
-            let len = if horizontal { w } else { h };
-            Some(Slot {
-                node: last.clone(),
-                into: false,
-                horizontal,
-                start: len + spacing,
-                size,
-            })
+    let own_room = held.len() > rest.len();
+    if slot >= rest.len() && !own_room {
+        return at(SlotPlace::End { size });
+    }
+    let axis = cfg.axis;
+    let boxes = held
+        .iter()
+        .map(|(n, _)| Some(AxisBox::of(&n.layout_box_in(&cfg.node)?, axis)))
+        .collect::<Option<Vec<_>>>()?;
+    let forward = flows_forward(&boxes);
+    // Where `node` would be without the gap.
+    let shifted = |node: &NodeHandle| {
+        let i = held
+            .iter()
+            .position(|(n, _)| n.node_id() == node.node_id())?;
+        let (dx, dy) = shift_of(node);
+        let mut b = boxes[i];
+        b.at += match axis {
+            SortAxis::Vertical => dy,
+            SortAxis::Horizontal => dx,
+        };
+        Some(b)
+    };
+    let sized = |b: AxisBox, at: f32| AxisBox { at, len: size, ..b };
+    let Some((after, _)) = rest.get(slot) else {
+        let last = *boxes.last()?;
+        let start = if forward {
+            last.at + last.len - size
+        } else {
+            last.at
+        };
+        return at(sized(last, start).place(axis));
+    };
+    let a = shifted(after)?;
+    let before_after = sized(a, if forward { a.at } else { a.at + a.len - size });
+    let on_a_line = if forward {
+        let line_start = boxes.iter().map(|b| b.at).fold(f32::INFINITY, f32::min);
+        before_after.at >= line_start - 0.5
+    } else {
+        let line_end = boxes
+            .iter()
+            .map(|b| b.at + b.len)
+            .fold(f32::NEG_INFINITY, f32::max);
+        before_after.at + size <= line_end + 0.5
+    };
+    let chosen = match slot.checked_sub(1).map(|i| &rest[i].0) {
+        Some(prev) if !on_a_line => {
+            let p = shifted(prev)?;
+            let start = if forward {
+                p.at + p.len + spacing
+            } else {
+                p.at - spacing - size
+            };
+            sized(p, start)
         }
-        Some(_) => Some(Slot {
-            node: cfg.node.clone(),
-            into: true,
-            horizontal,
-            start: 0.0,
-            size,
-        }),
-        None => (held == 0).then(|| Slot {
-            node: cfg.node.clone(),
-            into: true,
-            horizontal,
-            start: 0.0,
-            size,
-        }),
-    }
+        _ => before_after,
+    };
+    at(chosen.place(axis))
 }
 
 // =============================================================================
@@ -2552,6 +2680,17 @@ pub struct SortableList {
     /// How a place in this list is shown: a caret (the default), a gap that
     /// opens there, both, or nothing ([`SortIndicator`]).
     pub indicator: SortIndicator,
+    /// With a gap ([`SortIndicator::Gap`] or [`SortIndicator::Both`]): also
+    /// draw a box in the open gap, where the drop lands, for the app to style
+    /// (`--rinch-sortable-slot-background`, `-border`, `-radius`). Off by
+    /// default, and then nothing of it is drawn or written.
+    ///
+    /// The slot is the list's own `::before` (absolutely positioned over the
+    /// gap, so the list must stay its containing block: `position: relative`,
+    /// its default) and, at the end of a list the carried items come from
+    /// elsewhere, its in-flow `::after` (the list grows by the slot). A list
+    /// that turns it on gives up both pseudo-elements to it during a drag.
+    pub slot: bool,
     /// How this list's items look while a pointer drags them: unchanged (the
     /// default), dimmed, collapsed or hidden ([`SortSource`]).
     pub source: SortSource,
@@ -2566,6 +2705,7 @@ impl std::fmt::Debug for SortableList {
             .field("disabled", &self.disabled)
             .field("preview", &self.preview)
             .field("indicator", &self.indicator)
+            .field("slot", &self.slot)
             .field("source", &self.source)
             .finish()
     }
@@ -2586,6 +2726,7 @@ impl Default for SortableList {
             drag_keys: None,
             preview: SortPreview::Clone,
             indicator: SortIndicator::Caret,
+            slot: false,
             source: SortSource::Unchanged,
         }
     }
@@ -2666,6 +2807,7 @@ impl Component for SortableList {
             drag_keys: self.drag_keys.clone(),
             preview: self.preview.clone(),
             indicator: self.indicator,
+            slot: self.slot,
             source: self.source,
             doc: __scope.doc_weak(),
             body: __scope.body_handle(),
