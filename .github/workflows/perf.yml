@@ -20,8 +20,9 @@ name: Perf
 #     re-bases on the main of that moment. Comparing against
 #     `pull_request.base.sha` instead would be wrong: that is the base recorded
 #     at the PR's last push, so once main moves, other PRs' changes count as
-#     this one's (review of #903, D1). A component PR, and a batch PR without
-#     the label, skip the job.
+#     this one's (review of #903, D1). A component PR, a batch PR without
+#     the label, and a batch PR that changes only `docs/**` and `*.md` files
+#     (the `changes` job) skip the job.
 #
 # Instruction counts, not wall time: a hosted runner's timings move with its
 # neighbours' load, and a count moves only when the code does. Two runs of one
@@ -86,16 +87,19 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    # A docs-only PR changes no benchmarked code (S4). NB: if `Perf` is ever made
-    # a REQUIRED check, replace this with a changes-filter job, since a
-    # paths-filtered required check stays pending forever on a skipped PR.
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
+    # No `paths-ignore` here: `instruction-counts` is a REQUIRED check on
+    # `main`, and a check whose workflow a path filter kept from starting never
+    # reports at all, so the PR waits on it for ever (batch #3069, docs only,
+    # sat blocked with every other check green). A docs-only PR changes no
+    # benchmarked code (S4), so the `changes` job below finds that out and
+    # `instruction-counts` reports as SKIPPED, which passes.
   # Called by `base-changed.yml` when a PR's base branch becomes `main` (#448):
   # a base change fires only `edited`, which is not listed above on purpose.
-  # `paths-ignore` does not apply to a call.
+  # Inside a call `github.event_name` is still `pull_request` (the caller's
+  # context), so `changes` gates a retarget exactly as it gates the PR's own runs.
   workflow_call:
+  # On a push the path filter is fine: branch protection requires checks of
+  # pull requests only, and a docs-only push to `main` has nothing to measure.
   push:
     branches: [main]
     paths-ignore:
@@ -176,7 +180,46 @@ jobs:
         working-directory: head
         run: CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo bench -p rinch-bench --no-run
 
+  # Whether the PR changes anything outside the docs: the merge commit GitHub
+  # builds for the PR (what `actions/checkout` checks out on `pull_request`,
+  # also in a call) against its first parent, the `main` tip it was merged
+  # onto, the same pair `instruction-counts` measures and the same diff
+  # `docs.yml`'s `changes` job reads. "Docs" is what the old trigger filter
+  # ignored: `docs/**` and any `*.md`. Batch PRs only: `instruction-counts`
+  # skips every other pull request anyway, so a component PR starts no runner
+  # for this. No concurrency group, so an unrelated label's run cannot cancel
+  # anything (D2).
+  changes:
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'batch/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: List the changed paths
+        id: diff
+        run: |
+          # A file, not a pipe: under `pipefail` a `grep -q` that exits early
+          # can fail its writer with SIGPIPE and turn a match into a miss.
+          list="$RUNNER_TEMP/changed-paths.txt"
+          git diff --name-only HEAD^1 HEAD > "$list"
+          cat "$list"
+          # Any path that is neither under `docs/` nor a `.md` file.
+          if grep -qvE '^docs/|\.md$' "$list"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   instruction-counts:
+    needs: changes
     # Batched merges (docs/internals/ci.md): a push to `main` is always
     # measured, against its first parent. A pull request is measured only when
     # its head branch starts with `batch/` AND it carries the `perf` label. Any
@@ -190,14 +233,22 @@ jobs:
     # A label event re-runs the check only for a label that changes whether it
     # runs (`perf`) or its verdict (`perf-regression-accepted`). Removing
     # `perf` gives a skipped run, which is the newest check of that name.
+    #
+    # A pull request that changes only docs (`changes` says `code=false`) is
+    # skipped too, labels or not. `!cancelled()` because `changes` is skipped
+    # on a push (and on a component PR), and a skipped `needs` would otherwise
+    # skip this job. The test is `!= 'false'`, not `== 'true'`, so a `changes`
+    # job that FAILED (no output) measures rather than passing unmeasured.
     if: >-
-      github.event_name == 'push' ||
+      !cancelled() &&
+      (github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
+       needs.changes.outputs.code != 'false' &&
        startsWith(github.head_ref, 'batch/') &&
        contains(github.event.pull_request.labels.*.name, 'perf') &&
        ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
         github.event.label.name == 'perf' ||
-        github.event.label.name == 'perf-regression-accepted'))
+        github.event.label.name == 'perf-regression-accepted')))
     # Job-level, not workflow-level: a run whose job is skipped (an unrelated
     # label) never enters the group, so it cannot cancel a real run (D2).
     # A PR's superseded run is cancelled. Each push to `main` has a group of

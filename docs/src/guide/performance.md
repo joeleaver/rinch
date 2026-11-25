@@ -732,8 +732,9 @@ runs there before the merge. With the label, the regression is still
 reported, as a warning, and the job passes. Adding or removing either label
 runs the job again. A push to `main` has no such hatch. So does changing the PR's base branch to `main`: that run
 comes from `.github/workflows/base-changed.yml`, which calls `perf.yml`, and
-its check is named `perf / instruction-counts`. A docs-only batch PR with the
-`perf` label, which the `Perf` workflow otherwise skips, gets one run there. Say in the PR which benchmark moved and why, in the pull request
+its check is named `perf / instruction-counts`. A batch PR that changes only
+`docs/**` and `*.md` files is skipped there too, label or not, as it is on its
+own runs: its `instruction-counts` check reports as skipped, which passes. Say in the PR which benchmark moved and why, in the pull request
 template's *Performance* section, the same way a counter-baseline update does
 (see [The baselines are the contract](#the-baselines-are-the-contract)). The
 two checks complement each other. The baselines are exact and say *which* work
