@@ -107,11 +107,15 @@ fn ensure_editor_web_styles(doc: &web_sys::Document) {
 /// highlight below it where they were (#2075). Called from `mount_tree` before
 /// the build. Setting the listener again is harmless. The editor core learns
 /// the platform here too ([`sync_host_platform`]),
-/// for a component that labels a chord as it renders.
+/// for a component that labels a chord as it renders, and the page asks for
+/// the keyboard layout map (`key_layout::ask_layout_map_once`).
 pub(crate) fn install_before_build() {
     // Which platform's keys arrive, before a component asks (a tooltip's
     // `KeyBinding::label(host_is_macos())`).
     super::sync_host_platform();
+    // What the user's layout types per key, for the AltGr question, asked
+    // now so the browser's answer (a promise) is in by the first key.
+    crate::key_layout::ask_layout_map_once();
     // A node view that resizes moves what is below it (the caret, a highlight).
     registry::set_node_view_host_listener(on_node_view_host);
 }

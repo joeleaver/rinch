@@ -90,6 +90,7 @@ mod editor_input;
 mod event_delegation;
 mod highlight;
 mod images;
+mod key_layout;
 mod menu_bar;
 mod pointer_lock;
 pub mod web_document;
@@ -125,6 +126,8 @@ pub use images::__reset_image_sources;
 /// on desktop; `register_image_url_scheme` is the browser-only form that answers
 /// with a URL.
 pub use images::{LOGICAL_SRC_ATTR, register_image_url_scheme, unregister_image_url_scheme};
+#[doc(hidden)]
+pub use key_layout::{__forget_key_layout, __known_unmodified_key};
 /// The menu declaration types, re-exported so a web app names them in one place
 /// (`rinch_web::{Menu, MenuItem}`) while its desktop twin builds the very same
 /// values from `rinch::menu`. They are the same types, not a parallel set.
@@ -156,10 +159,10 @@ pub fn __leading_floors() -> bool {
 // `editor_input`, installed once alongside event delegation.
 pub use rinch_editor_view::{
     CaretAffinity, CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, ImageInput,
-    ImageInputSource, KeyBindError, LinkClick, LinkHover, LinkSpan, MarginAnchor, MarginAssoc,
-    MarginAt, MarginLine, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration, NodeViewRender,
-    NodeViewSpec, OVERLAY_SLOT_ATTR, ScrollAlign, SelectionAnchor, TabBehavior, clear_image_source,
-    create_editor, history_now_ms, set_image_source,
+    ImageInputSource, KeyBindError, KeyBinding, LinkClick, LinkHover, LinkSpan, MarginAnchor,
+    MarginAssoc, MarginAt, MarginLine, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration,
+    NodeViewRender, NodeViewSpec, OVERLAY_SLOT_ATTR, ScrollAlign, SelectionAnchor, TabBehavior,
+    clear_image_source, create_editor, history_now_ms, host_is_macos, set_image_source,
 };
 
 // Collaborative editing (M9), behind the `collaboration` feature. The collab methods

@@ -1623,7 +1623,16 @@ Mac the Windows key is not `Mod`). On desktop the editor and the text fields rea
 the same answer, so their macOS-only rules (Cmd+Y is not redo) always agree. On the
 web, a key typed through AltGr (Windows reports it as Ctrl+Alt: German AltGr+7 is
 `{`) is text, never a Ctrl+Alt chord. An AltGr press that types nothing new — on a
-German or Polish layout right-Alt+1 reports just `1` — is the chord, as on desktop.
+German or Polish layout right-Alt+1 reports just `1`, and AltGr+Shift+1 just `!` —
+is the chord, as on desktop. The browser does not say what a key types without
+AltGr, so the page learns it from the user's plain presses (and, in Chrome and
+Edge, from the keyboard layout map as the page mounts). Until a key has been
+pressed plainly, Firefox and Safari assume the US character for a letter or digit
+key; on a layout where AltGr+1 types `1` itself (Lithuanian), that press runs an
+app's `Mod-Alt-1` instead of typing, until the user has typed on the digit row
+once. After that the press is text: with no character to compare against, the
+page takes AltGr text at its word, because a missed shortcut still has its menu
+entry or button, while a swallowed character has no other way in.
 
 | Shortcut | Action |
 |----------|--------|
@@ -1700,7 +1709,9 @@ placeholder change and every load. A plugin that brings its own keys does so wit
 
 A toolbar tooltip can name the chord the way the platform does:
 `KeyBinding::parse("Mod-Shift-s").unwrap().label(host_is_macos())` is `⇧⌘S` on
-macOS and `Ctrl+Shift+S` elsewhere (both from `rinch::editor`). On the web,
+macOS and `Ctrl+Shift+S` elsewhere. Both come with the rest of the editor API:
+`rinch::editor::{KeyBinding, host_is_macos}` on desktop and
+`rinch_web::{KeyBinding, host_is_macos}` on the web. On the web,
 `host_is_macos()` reads the browser's platform (any Apple one, iOS and iPadOS
 included) from the moment a mount starts, so a tooltip built while the app's
 components render is already right.

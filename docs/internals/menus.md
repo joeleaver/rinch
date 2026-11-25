@@ -211,15 +211,35 @@ classifies through `RinchApp::key_owner` (the arbiter's `FocusTarget`) in
 `RinchApp::try_menu_shortcut`, which the shell calls with winit's `text`; the
 web through `menu_bar::key_target_owner` on the keydown's
 `composedPath()[0]` — not `activeElement`, the host of a shadow-root field —
-and `menu_bar::web_alt_graph_text`, which asks the same `is_alt_graph_text`
-with `getModifierState("AltGraph")` as the platform fact and, for the key's
-unmodified character (which a browser does not report), what
-`note_unmodified_key` learned from the layout's own unmodified presses (both
-keydown listeners call it), seeded once from `navigator.keyboard.getLayoutMap()`
-where it exists (Chromium), else the US character of a `KeyX` / `DigitN` code
-(review of #3074: German right-Alt+1 reports AltGraph with `key` `"1"` and is
-the chord). Pins: `rinch-web/tests/menu_bar_bare_chord.rs`,
-`rinch-web/tests/editor_mod_key_3062.rs`. The `<input>` type list is one function,
+and `key_layout::web_alt_graph_text`, which asks the same `is_alt_graph_text`
+with `getModifierState("AltGraph")` as the platform fact and, for what the key
+types without AltGr (which a browser does not report), the page's
+`key_layout::KeyLayout`. **At the press's Shift level**: a browser's `key` for
+an AltGr press that types nothing falls back to the key's own character with
+Shift applied (German AltGr+Shift+1 reports `"!"`), and desktop, whose `text` is
+then empty, reads that press as the chord, so the web compares `"!"` with the
+key's Shift character, not with `"1"`. The table is learned per `code` from
+the layout's own presses (`key_layout::note_press`, called by both keydown
+listeners: plain presses for the plain level, Shift-only ones for the Shift
+level; never a composing press, whose `key` is the input method's), seeded
+from `navigator.keyboard.getLayoutMap()` where it exists (Chromium) — asked
+at the first mount (`install_before_build`), so the map is in before the
+page's first key — and a seed never replaces a learned entry. Else the US
+character of a `KeyX` / `DigitN` code (Shift+`DigitN`: `!@#…`), except that
+the digit fallback is dropped once any plain digit-row press typed a
+non-digit (Lithuanian `ą č ę …`, French `& é " …`). **Which way an unknown key
+errs:** before a key's first plain press, Firefox and Safari (no layout map)
+judge it by the fallback, so on a layout where AltGr+N types N itself
+(Lithuanian digits) an app's Mod-Alt-N chord takes that press and the
+character is swallowed, until the user has typed on the digit row once (any
+digit key then drops the fallback for the row) or pressed that key plainly.
+With no fallback the error is the other way, a missed chord, and that is the
+safer one: the command still has its menu entry or button, the swallowed
+character has no other way in. The fallback is kept for the case that needs
+it (review of #3074: German and Polish right-Alt+1 report AltGraph with `key`
+`"1"` and are the chord). Pins: `rinch-web/tests/menu_bar_bare_chord.rs`,
+`rinch-web/tests/editor_mod_key_3062.rs`, `rinch-web/tests/key_layout_map_3062.rs`,
+`rinch-web/src/key_layout_tests.rs`. The `<input>` type list is one function,
 `rinch::menu::input_type_takes_text`.
 
 **AltGr text reaches the field as text** (#934, Windows): the shell keeps `text` on a

@@ -300,6 +300,8 @@ fn on_ios_and_ipados_cmd_is_mod() {
 /// `AltGraph`, is the chord (the positive control).
 #[wasm_bindgen_test]
 fn an_alt_graph_character_is_not_a_ctrl_alt_chord() {
+    // Start from the fallbacks, whatever an earlier test's keys taught.
+    rinch_web::__forget_key_layout();
     let f = Fixture::focused(false);
     f.handle
         .bind_key("Mod-Alt-7", "toggleBold")
@@ -344,6 +346,8 @@ const ALT_GR: Mods = Mods {
 /// typed text, and the chord was dropped.
 #[wasm_bindgen_test]
 fn an_alt_graph_press_that_types_its_own_key_is_the_chord() {
+    // Start from the fallbacks, whatever an earlier test's keys taught.
+    rinch_web::__forget_key_layout();
     let f = Fixture::focused(false);
     f.handle
         .bind_key("Mod-Alt-1", "toggleBold")
@@ -355,6 +359,38 @@ fn an_alt_graph_press_that_types_its_own_key_is_the_chord() {
     assert_eq!(after, "<p><strong>abc</strong></p>", "and bolds");
 }
 
+/// AltGr+Shift (#3062 review): German AltGr+Shift+1 types nothing, and
+/// Chrome on Windows then reports `key` `"!"`, the key's Shift character.
+/// Desktop's `text` is empty for that press, so it is the app's chord there
+/// (`is_alt_graph_text`); it is the chord here too. Comparing `"!"` against
+/// the unshifted `"1"` read it as AltGr text and dropped the chord. The
+/// positive control: AltGr+Shift reporting a character the key's Shift level
+/// does not type (`"¡"`) is text, left to the browser.
+#[wasm_bindgen_test]
+fn an_alt_graph_shift_press_reporting_the_shift_character_is_the_chord() {
+    rinch_web::__forget_key_layout();
+    let f = Fixture::focused(false);
+    f.handle
+        .bind_key("Mod-Alt-Shift-1", "toggleBold")
+        .expect("a base command");
+    let alt_gr_shift = Mods {
+        shift: true,
+        ..ALT_GR
+    };
+    let typed = f.key("\u{a1}", "Digit1", alt_gr_shift);
+    let after_typed = f.html();
+    let chord = f.key("!", "Digit1", alt_gr_shift);
+    let after_chord = f.html();
+    f.teardown();
+    assert!(
+        !typed,
+        "AltGr+Shift+1 typing `¡` is text, left to the browser"
+    );
+    assert_eq!(after_typed, "<p>abc</p>", "and bolds nothing");
+    assert!(chord, "AltGr+Shift+1 reporting `!` is the app's chord");
+    assert_eq!(after_chord, "<p><strong>abc</strong></p>", "and bolds");
+}
+
 /// What a key types unmodified is learned from the layout's own plain
 /// presses, not assumed to be the US one: on a French layout `Digit3` types
 /// `"`, so an AltGr press reporting `"` there typed nothing new and is the
@@ -362,6 +398,8 @@ fn an_alt_graph_press_that_types_its_own_key_is_the_chord() {
 /// (which French AltGr+3 types) is text, left to the browser.
 #[wasm_bindgen_test]
 fn the_unmodified_character_is_the_layouts_not_the_us_one() {
+    // Start from the fallbacks, whatever an earlier test's keys taught.
+    rinch_web::__forget_key_layout();
     let f = Fixture::focused(false);
     f.handle
         .bind_key("Mod-Alt-3", "toggleBold")
