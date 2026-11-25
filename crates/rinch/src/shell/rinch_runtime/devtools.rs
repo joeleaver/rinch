@@ -148,26 +148,6 @@ impl RinchRuntime {
         tracing::info!("DevTools: closed");
     }
 
-    /// Toggle inspect mode on/off.
-    pub(super) fn toggle_inspect_mode(&mut self) {
-        self.ensure_devtools_store();
-        if let Some(store) = &self.devtools_store {
-            let current = store.inspect_mode.get();
-            store.inspect_mode.set(!current);
-            if current {
-                // Turning off: clear highlights
-                store.hovered_node_id.set(None);
-                self.main.app.inspect_highlight = None;
-                // The highlight's last rect is the damage (`last_inspect_rect`).
-                self.main.app.request_repaint();
-                if let Some(w) = &self.main.window {
-                    w.request_redraw();
-                }
-            }
-            tracing::info!("Inspect mode: {}", if !current { "ON" } else { "OFF" });
-        }
-    }
-
     /// Update inspect highlight from the DevTools store.
     /// Called before painting the main window.
     pub(super) fn update_inspect_highlight(&mut self) {

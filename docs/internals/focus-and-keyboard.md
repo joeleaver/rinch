@@ -928,7 +928,7 @@ beside it:
   the menu at the new point on a field (GTK, Chrome) or opens whatever context
   menu is there; other presses outside are still swallowed.
 - **A field disabled under its open menu closes it** (`text_menu_target_is_live`).
-- F12 / Alt+I, Tab and every other key stay swallowed while a popup is open.
+- F12, Tab and every other key stay swallowed while a popup is open.
 Pins: `app/runtime_popup_822_tests.rs`.
 
 **Key auto-repeat: the press says so** (#463). Enter/Space on a focused

@@ -1,6 +1,9 @@
-//! Whether the built-in DevTools keys work (issue #2689): F12 toggles the
-//! DevTools window (desktop) and Alt+I toggles inspect mode, when nothing in
-//! the app claimed the key (`RinchApp::handle_unclaimed_key_fallback`).
+//! Whether the built-in DevTools key works (issue #2689): F12 toggles the
+//! DevTools window (desktop, the `windowing` feature), when nothing in the app
+//! claimed the key (`RinchApp::handle_unclaimed_key_fallback`). It is the only app-level
+//! shortcut rinch claims for itself. Alt+I toggled inspect mode under the same
+//! switch until #3062 removed it: inspect mode is the DevTools window's
+//! Inspect button, and Alt+I is an ordinary key.
 //!
 //! On in debug builds and off in release builds by default ([`DEVTOOLS_DEFAULT`],
 //! `cfg!(debug_assertions)`), so an app ships without them unless it asks.
@@ -12,9 +15,8 @@
 //! starts the process can bring DevTools back to an app that ships with it
 //! off, or silence it in one that does not.
 //!
-//! Off, the fallback does not consume either key: F12 and Alt+I go on to the
-//! rest of the fallback (text input, for an Alt+I that typed a character),
-//! exactly as any other unclaimed key does.
+//! Off, the fallback does not consume F12: it goes on to the rest of the
+//! fallback, exactly as any other unclaimed key does.
 
 use super::RinchApp;
 
@@ -38,8 +40,8 @@ thread_local! {
     static ENV_OVERRIDE: std::cell::Cell<Option<Option<bool>>> = const { std::cell::Cell::new(None) };
 }
 
-/// Whether a `RinchApp` created from now on, on this thread, answers F12 and
-/// Alt+I ([`App::devtools`](crate::App::devtools) calls this before the
+/// Whether a `RinchApp` created from now on, on this thread, answers F12
+/// ([`App::devtools`](crate::App::devtools) calls this before the
 /// window's app is created). `RINCH_DEVTOOLS` still overrides it.
 pub fn set_devtools_default(enabled: bool) {
     DEVTOOLS_OFF_BY_DEFAULT.set(!enabled);
@@ -112,11 +114,12 @@ impl Default for DevToolsKeys {
 }
 
 impl RinchApp {
-    /// Turn the built-in DevTools keys on (the default) or off for this app:
-    /// F12, which toggles the DevTools window on the desktop, and Alt+I, which
-    /// toggles inspect mode. Off, neither key is consumed, so an app's own
-    /// handling of what is left of the key (text input) sees it. A
-    /// `RINCH_DEVTOOLS=on|off` in the environment wins over this setting.
+    /// Turn the built-in DevTools key on (the default in a debug build) or
+    /// off for this app: F12, which toggles the DevTools window on the
+    /// desktop (the `windowing` feature; elsewhere there is nothing to turn
+    /// off). Off, F12 is not consumed, so the rest of rinch's key handling
+    /// sees it. A `RINCH_DEVTOOLS=on|off` in the environment wins over this
+    /// setting.
     ///
     /// Turning it off does not close a DevTools window already open (its
     /// close button still does), nor end inspect mode.
@@ -124,7 +127,7 @@ impl RinchApp {
         self.devtools_keys.app_enabled = enabled;
     }
 
-    /// Whether F12 and Alt+I reach DevTools and inspect mode in this app: the
+    /// Whether F12 reaches DevTools in this app: the
     /// environment's `RINCH_DEVTOOLS` if it is set to on or off, else
     /// [`set_devtools`](Self::set_devtools) (else
     /// [`App::devtools`](crate::App::devtools), else on).

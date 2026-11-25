@@ -542,8 +542,8 @@ keeps receiving every `KeyDown`/`KeyUp` exactly as above — that delivery is un
 registration asked *after*: should this key stop at the surface? Leave it unset — the
 default — and the surface claims nothing, so a host's own `window`-level keybindings (and,
 on the web, the browser's own reload/find/… shortcuts) keep working the moment the canvas
-is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I; both unless the app
-turned them off with `App::devtools(false)`) and Tab:
+is focused, and on desktop so do DevTools (F12, unless the app turned it off with
+`App::devtools(false)`) and Tab:
 
 ```rust
 surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space"));

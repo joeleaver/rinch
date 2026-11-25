@@ -95,7 +95,7 @@ unaffected. `set_key_handler(|key: &SurfaceKeyData| -> bool)` answers a separate
 question asked *after*: should this key stop at the surface, or continue past it? Leave it
 unset (the default) and the surface claims nothing, so a host's own `window`-level
 keybindings (and, on the web, the browser's own shortcuts — reload, find, …) keep working
-the moment a canvas takes focus, and on desktop so do DevTools (F12), inspect mode (Alt+I)
+the moment a canvas takes focus, and on desktop so do DevTools (F12)
 and Tab. Return `true` only for a key the surface genuinely uses (WASD steering a
 character, Space to jump):
 

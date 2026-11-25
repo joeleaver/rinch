@@ -107,6 +107,8 @@ mod devtools_keys;
 mod devtools_keys_2689_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod img_error_2202_tests;
+#[cfg(test)]
+mod key_down_unused_3062_tests;
 mod spellcheck;
 #[cfg(test)]
 mod spellcheck_tests;
@@ -1597,8 +1599,11 @@ pub struct RinchApp {
     /// Smooth wheel scrolling (#2287): whether it is on, and the scrollers
     /// gliding now.
     pub(crate) smooth_wheel: smooth_wheel::SmoothWheelState,
-    /// Whether F12 and Alt+I reach DevTools and inspect mode (#2689).
+    /// Whether F12 reaches DevTools (#2689).
     pub(crate) devtools_keys: devtools_keys::DevToolsKeys,
+    /// Whether rinch had no use for the last `KeyDown` (#3062): see
+    /// [`RinchApp::key_down_unused`].
+    pub(crate) key_down_unused: bool,
     /// App-bundled fonts, kept for the life of the app rather than drained.
     ///
     /// `mount_component` builds a *new* document with its own font context and
@@ -1774,6 +1779,7 @@ impl RinchApp {
             title_tooltip: Default::default(),
             smooth_wheel: Default::default(),
             devtools_keys: Default::default(),
+            key_down_unused: false,
             pending_fonts: Vec::new(),
             system_fonts_generation,
             scope_context_to_doc: false,

@@ -1001,8 +1001,7 @@ fn process_actions(actions: &[AppAction], running: &mut bool) {
             | AppAction::DragWindow
             | AppAction::DragResizeWindow(_)
             | AppAction::SetCursor(_)
-            | AppAction::ToggleDevTools
-            | AppAction::ToggleInspectMode => {}
+            | AppAction::ToggleDevTools => {}
             // This shell asks for `TextContextMenuPresentation::Shell` at
             // startup; the loop answers the action by scanning each event's
             // actions for it (`toolbar_requested`) and showing the platform

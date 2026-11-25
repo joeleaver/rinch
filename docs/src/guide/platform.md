@@ -1886,15 +1886,19 @@ its `tracing` output, and `log` records keep going to the app's logger; if a
 ## DevTools
 
 On the desktop, **F12** opens and closes the DevTools window (the element
-tree, computed styles, frame timing) and **Alt+I** turns inspect mode on and
-off, which outlines the element under the pointer. **They are on in debug builds
-and off in release builds** unless the app says otherwise
+tree, computed styles, frame timing). Its **Inspect** button turns inspect
+mode on and off, which outlines the element under the pointer; clicking an
+element selects it in the tree and ends inspect mode. **F12 is on in debug
+builds and off in release builds** unless the app says otherwise
 (`rinch::app::DEVTOOLS_DEFAULT`, `cfg!(debug_assertions)`), so a shipped app
-has no DevTools window by accident. Both keys are a fallback: a menu shortcut, a focused widget's
-`on_key`, an element's key handler and an app-wide `on_app_key` listener all
-see the key first, and any of them that takes it keeps it from DevTools.
+has no DevTools window by accident. It is the only app-level shortcut rinch claims for
+itself, and it is a fallback: a menu shortcut, a focused widget's `on_key`, an
+element's key handler and an app-wide `on_app_key` listener all see the key
+first, and any of them that takes it keeps it from DevTools. (Alt+I used to
+toggle inspect mode too. Since #3062 it is an ordinary key, and types its
+character into a focused field.)
 
-`App::devtools` sets them for the app in either kind of build:
+`App::devtools` sets it for the app in either kind of build:
 
 ```rust
 App::new(app)
@@ -1903,25 +1907,24 @@ App::new(app)
     .run();
 ```
 
-Off, the keys are not consumed: F12 and Alt+I go on to the rest of rinch's key
-handling like any other key (an Alt+I that typed a character goes into a
-focused text field), so the app can use them for itself. A DevTools window
-already open is not closed by turning the keys off. Change the setting while
-the app runs with `RinchApp::set_devtools`; an embedded `RinchContext` has
+Off, F12 is not consumed: it goes on to the rest of rinch's key handling like
+any other key, so the app can use it for itself. A DevTools window already
+open is not closed by turning the key off. Change the setting while the app
+runs with `RinchApp::set_devtools`; an embedded `RinchContext` has
 `set_devtools` too, and a host with no DevTools window of its own should turn
-it off, since the keys otherwise end as `AppAction::ToggleDevTools` and
-`AppAction::ToggleInspectMode` in what `update` returns.
+it off, since F12 otherwise ends as `AppAction::ToggleDevTools` in what
+`update` returns (with the `windowing` feature).
 
 **`RINCH_DEVTOOLS` overrides the app's choice**, both ways, so a developer can
 debug an app that ships with DevTools off without rebuilding it:
 
 ```bash
-RINCH_DEVTOOLS=on ./my-app    # F12 and Alt+I work, whatever the app chose
-RINCH_DEVTOOLS=off ./my-app   # neither works, whatever the app chose
+RINCH_DEVTOOLS=on ./my-app    # F12 works, whatever the app chose
+RINCH_DEVTOOLS=off ./my-app   # it does not, whatever the app chose
 ```
 
-`on`, `1`, `true` and `yes` turn them on, `off`, `0`, `false` and `no` turn
-them off (in any case); an empty variable leaves the app's choice, and any
+`on`, `1`, `true` and `yes` turn it on, `off`, `0`, `false` and `no` turn
+it off (in any case); an empty variable leaves the app's choice, and any
 other value is ignored with a warning in the log.
 
 ## Enabling Features
