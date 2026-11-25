@@ -970,6 +970,35 @@ press being judged** cannot. `RinchApp::press_is_fresh` is the one place that
 decides, and `Fresh` is authoritative *over* the latch — that is the repair, not
 a tie-break.
 
+**What Android is told about each key** (#3062). android-activity asks the
+input callback for an `InputStatus` per event, and the shell used to answer
+`Handled` for everything, so the system's default for a key never ran: the
+volume and media keys did nothing, and Back never left the app. Now
+`android_runtime/input.rs` dispatches each key **inside** that callback and
+answers from `shell/android_key_status.rs` (`KeyAnswers`, host-compiled and
+unit-tested):
+
+- A key the translator drops (no rinch `KeyCode` and no character) and an
+  action rinch does not read (`ACTION_MULTIPLE`) are `Unhandled`. A dead key
+  is not dropped in that sense: the translator keeps its accent, so it stays
+  `Handled`.
+- Back reaches the app as Escape, so a dismiss entry, an app key listener or a
+  handler takes it first, the way Chrome on Android closes the top popup
+  before it goes back. The press is `Unhandled` when
+  `RinchApp::key_down_unused` says nothing used it, and the release follows
+  its press: the system goes back on the release, and only for a press it saw
+  unhandled.
+- Every other delivered key stays `Handled`, used or not. That includes a
+  hardware Escape, because Android's generic key map turns an unhandled
+  Escape into a Back.
+
+`RinchApp::key_down_unused` is set only where key handling ends with nothing
+done: the unclaimed-key fallback's last arm (no shortcut, no default action and
+no field to type into), a focused editor that had no binding or text for the
+key, a `<select>` that did not read it, and an unmounted editor. It is reset by
+every `KeyDown`, and a `KeyUp` leaves it alone. Tests are in
+`app/key_down_unused_3062_tests.rs`. Not checked on a device.
+
 Not carried to `KeyEventData`, so a registered node's `on_key` still cannot tell
 a repeat from a press: the honest field is the same three-state one, and
 `rinch-core` depends on neither `rinch-platform` nor the browser, so it needs a

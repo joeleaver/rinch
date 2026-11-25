@@ -1,13 +1,15 @@
-//! Reading the activity's input queue: touch and hardware key events.
+//! Reading the activity's input queue: touch and hardware key events, and
+//! what each key is answered (#3062).
 
 use std::time::Instant;
 
 use android_activity::AndroidApp;
 use android_activity::InputStatus;
-use android_activity::input::{KeyAction, KeyMapChar, MotionAction};
+use android_activity::input::{KeyAction, KeyEvent, KeyMapChar, Keycode, MotionAction};
 use rinch_platform::{KeyCode, Modifiers, PlatformEvent};
 
 use crate::shell::android_key::{KeyPhase, KeyTranslator, MapChar, RawKey};
+use crate::shell::android_key_status::{KeyAnswers, KeyDelivery, KeyStatus, undelivered};
 use crate::shell::touch_gesture::{EventClock, TouchAction, TouchGesture};
 
 /// The motion actions the recogniser reacts to. Everything else — pointer index
@@ -24,17 +26,30 @@ fn touch_action(action: MotionAction) -> TouchAction {
     }
 }
 
+/// Drains the input queue, dispatching each event as it is read.
+///
+/// `dispatch` hands one event to the app and answers
+/// [`RinchApp::key_down_unused`](crate::app::RinchApp::key_down_unused) after
+/// it. Keys are dispatched **inside** android-activity's callback because the
+/// callback's return value is the key's answer to the system (#3062): a key
+/// rinch does not map, and a Back nothing used, are handed back
+/// (`android_key_status`). Touch events are dispatched there too, in the order
+/// they arrived, so a key and a touch in one drain reach the app in order.
+///
 /// `now` is sampled once per loop iteration by the caller and threaded through,
 /// so every event in one drain — and the timers that run after it — agree on
 /// what time it is.
-pub(super) fn collect_input_events(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn drain_input_events(
     android_app: &AndroidApp,
     gesture: &mut TouchGesture,
     event_clock: &mut EventClock,
     scale_factor: f64,
     now: Instant,
     keys: &mut KeyTranslator,
-) -> Vec<PlatformEvent> {
+    answers: &mut KeyAnswers,
+    dispatch: &mut dyn FnMut(PlatformEvent) -> bool,
+) {
     let mut events = Vec::new();
 
     match android_app.input_events_iter() {
@@ -65,56 +80,21 @@ pub(super) fn collect_input_events(
                             sampled_at,
                             &mut events,
                         );
+                        for event in events.drain(..) {
+                            dispatch(event);
+                        }
+                        // Touch stays the app's, as it always was.
+                        InputStatus::Handled
                     }
                     InputEvent::KeyEvent(key) => {
-                        let meta = key.meta_state();
-                        let modifiers = Modifiers {
-                            ctrl: meta.ctrl_on(),
-                            shift: meta.shift_on(),
-                            alt: meta.alt_on(),
-                            meta: false,
-                        };
-
-                        // Only what needs the device is done here: read the
-                        // event and ask the key character map. What the event
-                        // becomes is `android_key`'s, which host tests compile
-                        // (issue #479).
-                        let phase = match key.action() {
-                            KeyAction::Down => Some(KeyPhase::Down {
-                                repeat_count: key.repeat_count(),
-                            }),
-                            KeyAction::Up => Some(KeyPhase::Up),
-                            _ => None,
-                        };
-                        if let Some(phase) = phase {
-                            let map = android_app.device_key_character_map(key.device_id()).ok();
-                            let ch = match map
-                                .as_ref()
-                                .map(|map| map.get(key.key_code(), key.meta_state()))
-                            {
-                                Some(Ok(KeyMapChar::Unicode(ch))) => MapChar::Unicode(ch),
-                                Some(Ok(KeyMapChar::CombiningAccent(accent))) => {
-                                    MapChar::CombiningAccent(accent)
-                                }
-                                _ => MapChar::None,
-                            };
-                            let raw = RawKey {
-                                id: (key.device_id(), key.key_code().into()),
-                                phase,
-                                key: map_android_keycode(key.key_code()),
-                                ch,
-                                modifiers,
-                            };
-                            let event = keys.translate(raw, |accent, ch| {
-                                map.as_ref()
-                                    .and_then(|map| map.get_dead_char(accent, ch).ok().flatten())
-                            });
-                            events.extend(event);
+                        let status = key_event(android_app, key, keys, answers, dispatch);
+                        match status {
+                            KeyStatus::Handled => InputStatus::Handled,
+                            KeyStatus::Unhandled => InputStatus::Unhandled,
                         }
                     }
-                    _ => {}
+                    _ => InputStatus::Handled,
                 }
-                InputStatus::Handled
             }) {}
         }
         Err(e) => {
@@ -133,7 +113,74 @@ pub(super) fn collect_input_events(
     // Apply momentum scrolling
     gesture.tick_momentum(now, &mut events);
 
-    events
+    for event in events {
+        dispatch(event);
+    }
+}
+
+/// One hardware key event: translate it, dispatch what it becomes, and answer
+/// the system for it.
+fn key_event(
+    android_app: &AndroidApp,
+    key: &KeyEvent<'_>,
+    keys: &mut KeyTranslator,
+    answers: &mut KeyAnswers,
+    dispatch: &mut dyn FnMut(PlatformEvent) -> bool,
+) -> KeyStatus {
+    let id = (key.device_id(), key.key_code().into());
+    let is_back = key.key_code() == Keycode::Back;
+
+    // Only what needs the device is done here: read the event and ask the key
+    // character map. What the event becomes is `android_key`'s, and what the
+    // system is answered `android_key_status`'s, which host tests compile
+    // (issues #479, #3062).
+    let phase = match key.action() {
+        KeyAction::Down => KeyPhase::Down {
+            repeat_count: key.repeat_count(),
+        },
+        KeyAction::Up => KeyPhase::Up,
+        // `ACTION_MULTIPLE` (and anything newer): rinch does not read it.
+        _ => return answers.answer(id, is_back, None, KeyDelivery::NotDelivered),
+    };
+
+    let meta = key.meta_state();
+    let modifiers = Modifiers {
+        ctrl: meta.ctrl_on(),
+        shift: meta.shift_on(),
+        alt: meta.alt_on(),
+        meta: false,
+    };
+    let map = android_app.device_key_character_map(key.device_id()).ok();
+    let ch = match map
+        .as_ref()
+        .map(|map| map.get(key.key_code(), key.meta_state()))
+    {
+        Some(Ok(KeyMapChar::Unicode(ch))) => MapChar::Unicode(ch),
+        Some(Ok(KeyMapChar::CombiningAccent(accent))) => MapChar::CombiningAccent(accent),
+        _ => MapChar::None,
+    };
+    let raw = RawKey {
+        id,
+        phase,
+        key: map_android_keycode(key.key_code()),
+        ch,
+        modifiers,
+    };
+    let event = keys.translate(raw, |accent, ch| {
+        map.as_ref()
+            .and_then(|map| map.get_dead_char(accent, ch).ok().flatten())
+    });
+    let delivery = match event {
+        None => undelivered(ch, phase),
+        Some(event @ PlatformEvent::KeyDown { .. }) => KeyDelivery::Pressed {
+            unused: dispatch(event),
+        },
+        Some(event) => {
+            dispatch(event);
+            KeyDelivery::Released
+        }
+    };
+    answers.answer(id, is_back, Some(phase), delivery)
 }
 
 fn map_android_keycode(keycode: android_activity::input::Keycode) -> Option<KeyCode> {

@@ -20,6 +20,7 @@ use crate::app::{RinchApp, TextContextMenuPresentation, TextEditAction};
 use crate::shell::android_frame;
 use crate::shell::android_ime::{ImeAction, ImeComposition};
 use crate::shell::android_key::KeyTranslator;
+use crate::shell::android_key_status::KeyAnswers;
 use crate::shell::touch_gesture::{EventClock, TouchGesture};
 
 // ── Cross-thread dispatch ────────────────────────────────────────────────────
@@ -189,6 +190,9 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // Hardware-key state that outlives one event: the pending dead key and
     // how each held key's press was spelled. See `android_key`.
     let mut keys = KeyTranslator::new();
+    // Which Back presses were handed back to the system, so their releases
+    // are too (#3062).
+    let mut key_answers = KeyAnswers::new();
     // The platform's floating text-selection toolbar, as the loop believes it
     // to be (issue #813). See `ToolbarMirror` for why a belief and a count.
     let mut text_toolbar = ToolbarMirror::new();
@@ -532,22 +536,28 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
 
         // Process touch / key input — must drain after poll_events returns
         let logical_size = rinch_platform::to_logical(physical_size, scale_factor);
-        let input_events = input::collect_input_events(
+        // Each event is dispatched as it is read: a key's answer to the system
+        // (handled, or handed back) is what the app made of it (#3062).
+        let mut input_events = Vec::new();
+        let mut toolbar_requested = false;
+        input::drain_input_events(
             &android_app,
             &mut gesture,
             &mut event_clock,
             scale_factor,
             Instant::now(),
             &mut keys,
+            &mut key_answers,
+            &mut |event| {
+                let actions = app.handle_event(event.clone(), physical_size, scale_factor);
+                toolbar_requested |= actions
+                    .iter()
+                    .any(|a| matches!(a, AppAction::ShowTextContextMenu));
+                process_actions(&actions, &mut running);
+                input_events.push(event);
+                app.key_down_unused()
+            },
         );
-        let mut toolbar_requested = false;
-        for event in &input_events {
-            let actions = app.handle_event(event.clone(), physical_size, scale_factor);
-            toolbar_requested |= actions
-                .iter()
-                .any(|a| matches!(a, AppAction::ShowTextContextMenu));
-            process_actions(&actions, &mut running);
-        }
 
         // A long press on a text field asks for the platform's floating
         // text-selection toolbar (issue #813). The press itself — a right
