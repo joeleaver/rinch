@@ -362,7 +362,7 @@ fn take_down(drag: &DragState) {
 /// the new row's over, so a move from one row onto the next would report
 /// `None` between the two. The source row's drag move, which follows every
 /// move's targets, reports it if nothing replaced it ([`report_withdrawn`]).
-fn withdraw(config: &Rc<TreeConfig>) {
+pub(super) fn withdraw(config: &Rc<TreeConfig>) {
     let drag = &config.drag;
     drag.cancel_hover();
     take_down(drag);

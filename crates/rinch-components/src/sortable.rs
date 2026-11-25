@@ -1,9 +1,10 @@
 //! Sortable lists (#2091): drag items within and between ordered lists.
 //!
 //! [`SortableList`] is a list of one *group* (cards, columns, lanes…) and
-//! [`SortableItem`] an item in it, named by a key. A drag — by pointer, or by
-//! keyboard (Space/Enter to lift — [`SortableList::lift_keys`] —, arrows to
-//! move, the lift key again to drop, Escape to cancel) — only ever targets
+//! [`SortableItem`] an item in it, named by a key. A drag — by pointer, or, in
+//! a list with [`SortableList::keyboard`], by keyboard (Space/Enter to lift —
+//! [`SortableList::lift_keys`] —, arrows to move, the lift key again to drop,
+//! Escape to cancel) — only ever targets
 //! lists of its own group, so lists nest without fighting: a card dragged over
 //! a column's header offers nothing, and a column dragged over its own cards is
 //! placed among the columns.
@@ -85,6 +86,12 @@ const GHOST_X: &str = "--rinch-sortable-ghost-x";
 const GHOST_Y: &str = "--rinch-sortable-ghost-y";
 /// The keys that lift and drop when a list names none.
 const DEFAULT_LIFT_KEYS: [&str; 2] = [" ", "Enter"];
+/// The `aria-description` of an item a keyboard list's keys can lift.
+const KEYS_DESCRIPTION: &str =
+    "Press Space to lift, the arrow keys to move, Space to drop, Escape to cancel.";
+/// What a [`SortableList::keyboard`] list's walk stops descending at: its
+/// items, and nested lists (whose items are theirs).
+const NOT_MINE: &[&str] = &[ITEM_CLASS, "rinch-sortable"];
 /// Inline style that keeps the live region off screen without the stylesheet.
 const LIVE_STYLE: &str = "position: absolute; width: 1px; height: 1px; margin: -1px; \
      padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap";
@@ -335,6 +342,8 @@ struct ListConfig {
     axis: SortAxis,
     label: String,
     disabled: bool,
+    /// Whether a lift key lifts this list's items ([`SortableList::keyboard`]).
+    keyboard: bool,
     lift_keys: Vec<String>,
     judge: Option<SortJudge>,
     ondrop: Option<ValueCallback<SortMove>>,
@@ -2285,10 +2294,23 @@ fn try_pending_focus() {
     {
         if let Some((node, _)) = items_of(&cfg.node).into_iter().find(|(_, k)| *k == key) {
             PENDING_FOCUS.with_mut(|p| p.0.take());
-            node.focus();
+            focus_item(&node);
             return;
         }
     }
+}
+
+/// Give a keyboard lift's item the focus. An item is a Tab stop only in a
+/// [`SortableList::keyboard`] list, and only once the list has seen it
+/// (`offer_keyboard`): the item drawn again in the middle of a lift (its
+/// render comes before its list's), and one dropped into a list without
+/// `keyboard`, are made focusable first, as the item that holds the
+/// keyboard has to be.
+fn focus_item(item: &NodeHandle) {
+    if item.get_attribute("tabindex").is_none() {
+        item.set_attribute("tabindex", "0");
+    }
+    item.focus();
 }
 
 /// Cancel a keyboard lift (`focus_left`: the focus moved away).
@@ -2353,7 +2375,9 @@ fn item_key(item: &NodeHandle, key: &str, ev: &KeyEventData) -> bool {
             .as_ref()
             .is_some_and(|a| a.lift.is_none() && !a.source_gone)
     });
-    if activate && !pointer_drag && !ev.shift && !cfg.disabled {
+    // Only a `keyboard` list's lift keys lift (#3062): elsewhere they are the
+    // app's. A lift under way goes on above whatever the list says now.
+    if activate && cfg.keyboard && !pointer_drag && !ev.shift && !cfg.disabled {
         lift(item, key);
         return ACTIVE.with(|a| a.borrow().is_some());
     }
@@ -2388,9 +2412,18 @@ pub struct SortableList {
     /// Its items still draw; give them `disabled` too to take their drag
     /// source away entirely (a press then never becomes a drag).
     pub disabled: bool,
-    /// The keys (`KeyEventData::key`) that lift a focused item and drop it:
-    /// Space and Enter when empty. `vec![" ".into()]` leaves Enter to the app
-    /// (an item that opens on Enter).
+    /// The keyboard drag, off by default (#3062: no browser control and no
+    /// WAI-ARIA pattern has one, so it is the app's choice). With it, each
+    /// item is a Tab stop (`tabindex="0"`) with an `aria-description` of the
+    /// keys, and a focused item's lift key (`lift_keys`) lifts it; the arrows
+    /// then move it, within this list and into any list of the group, the
+    /// lift key drops it and Escape cancels. Without it the list takes no
+    /// key, and its items are not Tab stops unless the app gives them a
+    /// `tabindex`.
+    pub keyboard: bool,
+    /// The keys (`KeyEventData::key`) that lift a focused item and drop it,
+    /// in a `keyboard` list: Space and Enter when empty. `vec![" ".into()]`
+    /// leaves Enter to the app (an item that opens on Enter).
     pub lift_keys: Vec<String>,
     /// Whether a move into this list may happen, asked for every place on
     /// offer, live, and again at the drop; a refusal's reason is shown at the
@@ -2426,6 +2459,7 @@ impl std::fmt::Debug for SortableList {
             .field("id", &self.id)
             .field("axis", &self.axis)
             .field("disabled", &self.disabled)
+            .field("keyboard", &self.keyboard)
             .field("preview", &self.preview)
             .field("indicator", &self.indicator)
             .field("source", &self.source)
@@ -2441,6 +2475,7 @@ impl Default for SortableList {
             axis: SortAxis::Vertical,
             label: String::new(),
             disabled: false,
+            keyboard: false,
             lift_keys: Vec::new(),
             judge: None,
             ondrop: None,
@@ -2474,6 +2509,33 @@ fn reason_node(scope: &mut RenderScope) -> NodeHandle {
     reason
 }
 
+/// Make the items in `node`'s subtree that belong to a
+/// [`SortableList::keyboard`] list keyboard items: a Tab stop each, and the
+/// keys in the description of every one that drags. An item renders before
+/// its list, so it cannot know; the list does this at its render and again
+/// for every item that arrives later (`adopt_late_children`). A nested list's
+/// items are that list's. What the app wrote on the item (a `tabindex`, an
+/// `aria-description`, #433) is kept.
+fn offer_keyboard(node: &NodeHandle) {
+    if node.get_attribute(LIST_ATTR).is_some() {
+        return;
+    }
+    if node.get_attribute(KEY_ATTR).is_none() {
+        for child in node.children() {
+            offer_keyboard(&child);
+        }
+        return;
+    }
+    if node.get_attribute("tabindex").is_none() {
+        node.set_attribute("tabindex", "0");
+    }
+    if node.get_attribute(DISABLED_ATTR).is_none()
+        && node.get_attribute("aria-description").is_none()
+    {
+        node.set_attribute("aria-description", KEYS_DESCRIPTION);
+    }
+}
+
 impl Component for SortableList {
     fn render(&self, __scope: &mut RenderScope, children: &[NodeHandle]) -> NodeHandle {
         hook_drag_end();
@@ -2505,6 +2567,14 @@ impl Component for SortableList {
         for child in children {
             list.append_child(child);
         }
+        if self.keyboard {
+            for child in children {
+                offer_keyboard(child);
+            }
+            crate::late_children::adopt_late_children(__scope, &list, NOT_MINE, |inserted, _| {
+                offer_keyboard(inserted)
+            });
+        }
         let reason = reason_node(__scope);
         list.append_child(&reason);
         let live = __scope.create_element("div");
@@ -2521,6 +2591,7 @@ impl Component for SortableList {
             axis: self.axis,
             label: self.label.clone(),
             disabled: self.disabled,
+            keyboard: self.keyboard,
             lift_keys: self.lift_keys.clone(),
             judge: self.judge.clone(),
             ondrop: self.ondrop.clone(),
@@ -2554,9 +2625,9 @@ impl Component for SortableList {
 /// An item of a [`SortableList`], named by `value`.
 ///
 /// The whole item drags, or with `handle` only a [`SortableHandle`] inside it.
-/// A press that never passes the drag threshold stays a click. Focused, a lift
-/// key (Space or Enter, [`SortableList::lift_keys`]) lifts it for a keyboard
-/// move.
+/// A press that never passes the drag threshold stays a click. In a
+/// [`SortableList::keyboard`] list it is a Tab stop, and focused, a lift key
+/// (Space or Enter, [`SortableList::lift_keys`]) lifts it for a keyboard move.
 #[derive(Debug, Default)]
 pub struct SortableItem {
     /// The item's key, as `SortMove::keys` and `SortPlace` name it.
@@ -2578,15 +2649,12 @@ impl Component for SortableItem {
         if !self.label.is_empty() {
             item.set_attribute("data-sortable-label", &self.label);
         }
-        item.set_attribute("tabindex", "0");
+        // A keyboard list makes it a Tab stop and describes the keys
+        // (`offer_keyboard`): the item cannot know its list yet.
         if self.disabled {
             item.set_attribute(DISABLED_ATTR, "");
         } else {
             item.set_attribute("aria-roledescription", "sortable item");
-            item.set_attribute(
-                "aria-description",
-                "Press Space to lift, the arrow keys to move, Space to drop, Escape to cancel.",
-            );
             if !self.handle {
                 item.set_attribute("draggable", "true");
                 item.add_class("rinch-sortable__item--grab");
@@ -2667,7 +2735,7 @@ fn adopt(item: &NodeHandle, key: &str) {
             }
         });
         PENDING_FOCUS.with_mut(|p| p.0 = Some((doc, group.clone(), key.to_string(), None)));
-        item.focus();
+        focus_item(item);
         rinch_core::unowned(|| set_timeout(0, try_pending_focus));
     }
     let wanted = PENDING_FOCUS.with(|p| {
@@ -2675,7 +2743,7 @@ fn adopt(item: &NodeHandle, key: &str) {
             .is_some_and(|(d, _, k, _)| *d == doc && k == key)
     });
     if wanted && lifted.is_none() {
-        item.focus();
+        focus_item(item);
     }
 }
 

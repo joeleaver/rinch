@@ -258,7 +258,7 @@ pub fn sortable_section() -> NodeHandle {
             Space { h: "sm" }
 
             SortableList {
-                group: "lanes", id: "board", label: "Board", class: "sortable-demo-lanes",
+                group: "lanes", id: "board", label: "Board", class: "sortable-demo-lanes", keyboard: true,
                 style: "--rinch-sortable-gap: 12px",
                 ondrop: move |m: SortMove| dropped(board, status, m),
                 ondropchange: move |o: Option<(SortMove, SortVerdict)>| offered(status, o),
@@ -271,7 +271,7 @@ pub fn sortable_section() -> NodeHandle {
                             {format!("⠿ {}", lane.1.title)}
                         }
                         SortableList {
-                            group: "columns", id: lane.1.id.clone(), axis: SortAxis::Horizontal, label: lane.1.title.clone(),
+                            group: "columns", id: lane.1.id.clone(), axis: SortAxis::Horizontal, label: lane.1.title.clone(), keyboard: true,
                             class: "sortable-demo-columns",
                             style: "--rinch-sortable-gap: 8px; overflow-x: auto; padding-bottom: 4px",
                             ondrop: move |m: SortMove| dropped(board, status, m),
@@ -285,7 +285,7 @@ pub fn sortable_section() -> NodeHandle {
                                         {format!("{} · {}", col.title, col.cards.len())}
                                     }
                                     SortableList {
-                                        group: "cards", id: col.id.clone(), label: col.title.clone(),
+                                        group: "cards", id: col.id.clone(), label: col.title.clone(), keyboard: true,
                                         class: "sortable-demo-cards",
                                         style: "flex: 1; min-height: 40px; max-height: 220px; overflow-y: auto; padding: 2px",
                                         judge: Some(wip_judge(board)),

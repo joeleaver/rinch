@@ -423,7 +423,7 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
         },
     );
     assert_eq!(selection(&f), ["b", "c"], "a run from b, where Space was");
-    // Ctrl+A: the cursor row's siblings.
+    // Ctrl+A is not the tree's (#3062): the selection stays.
     press(
         &mut f,
         KeyCode::KeyA,
@@ -433,7 +433,29 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
             ..Default::default()
         },
     );
-    assert_eq!(selection(&f), ["a", "b", "c", "d"]);
+    assert_eq!(selection(&f), ["b", "c"]);
+}
+
+/// #3062: PageUp and PageDown are not in the WAI-ARIA tree pattern. They
+/// reach the app's `handle_key` and leave the cursor where it is; the
+/// pattern's End and Home still move it.
+#[test]
+fn page_up_and_page_down_leave_the_cursor_to_the_app() {
+    let mut f = fixture();
+    let a = centre(&f.app, row(&f.app, "a"));
+    click(&mut f, a);
+    assert_eq!(f.state.cursor.get().as_deref(), Some("a"));
+
+    press(&mut f, KeyCode::PageDown, None, Modifiers::default());
+    assert_eq!(f.seen.borrow().last().map(String::as_str), Some("PageDown"));
+    assert_eq!(f.state.cursor.get().as_deref(), Some("a"), "PageDown");
+    press(&mut f, KeyCode::End, None, Modifiers::default());
+    assert_eq!(f.state.cursor.get().as_deref(), Some("c"), "End");
+    press(&mut f, KeyCode::PageUp, None, Modifiers::default());
+    assert_eq!(f.seen.borrow().last().map(String::as_str), Some("PageUp"));
+    assert_eq!(f.state.cursor.get().as_deref(), Some("c"), "PageUp");
+    press(&mut f, KeyCode::Home, None, Modifiers::default());
+    assert_eq!(f.state.cursor.get().as_deref(), Some("a"), "Home");
 }
 
 #[test]

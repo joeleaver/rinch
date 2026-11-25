@@ -1,6 +1,7 @@
 //! Tree multi-select (#1598): clicks with Ctrl and Shift, Shift with the
-//! keys, Ctrl+A, Enter and Space in a `multiple` tree, and what the app is
-//! told. Started as the review probes of #1598; each was red before its fix.
+//! keys, Enter and Space in a `multiple` tree, and what the app is told
+//! (Ctrl+A is the app's since #3062). Started as the review probes of #1598;
+//! each was red before its fix.
 
 use super::*;
 use std::cell::RefCell;
@@ -260,14 +261,6 @@ fn a_shift_click_run_leaves_out_a_disabled_row() {
     assert_eq!(last_report(&p), ["a", "c"]);
 }
 
-#[test]
-fn ctrl_a_leaves_out_a_disabled_row() {
-    let mut p = build(MULTI, with_disabled_b(), &[]);
-    click(&mut p, "a", Modifiers::default());
-    press(&mut p, KeyCode::KeyA, Some("a"), ctrl());
-    assert_eq!(sel(&p), ["a", "c", "d"]);
-}
-
 // ---- Without select_on_click (F3, #1601's rule) -----------------------------
 
 #[test]
@@ -282,14 +275,6 @@ fn without_select_on_click_shift_arrows_only_move_the_cursor() {
         "the cursor moves"
     );
     assert!(sel(&p).is_empty(), "Shift+Down selected {:?}", sel(&p));
-}
-
-#[test]
-fn without_select_on_click_ctrl_a_selects_nothing() {
-    let mut p = build(MULTI_NO_SELECT, flat(&["a", "b", "c"]), &[]);
-    click(&mut p, "a", Modifiers::default());
-    press(&mut p, KeyCode::KeyA, Some("a"), ctrl());
-    assert!(sel(&p).is_empty(), "Ctrl+A selected {:?}", sel(&p));
 }
 
 // ---- A deleted anchor (F5) and deleted rows (F6) ----------------------------
@@ -494,10 +479,14 @@ fn nothing_is_reported_when_the_selection_did_not_change() {
         "{:?}",
         &p.changes.borrow()[n..]
     );
-    press(&mut p, KeyCode::KeyA, Some("a"), ctrl());
-    assert_eq!(p.changes.borrow().len(), n + 1, "Ctrl+A changed it");
-    press(&mut p, KeyCode::KeyA, Some("a"), ctrl());
-    assert_eq!(p.changes.borrow().len(), n + 1, "a second Ctrl+A did not");
+    press(&mut p, KeyCode::End, None, shift());
+    assert_eq!(p.changes.borrow().len(), n + 1, "Shift+End changed it");
+    press(&mut p, KeyCode::End, None, shift());
+    assert_eq!(
+        p.changes.borrow().len(),
+        n + 1,
+        "a second Shift+End did not"
+    );
 }
 
 #[test]
@@ -640,12 +629,29 @@ fn a_tree_without_keyboard_or_drag_selects_a_run() {
     assert_eq!(sel(&p), ["a", "b", "c"]);
 }
 
+/// #3062: Ctrl+A and Cmd+A are not the tree's. It selected the cursor row's
+/// siblings; now the selection is unchanged, nothing is reported, and the
+/// app's `handle_key` (offered every key first) is where it binds one.
 #[test]
-fn ctrl_a_selects_the_cursor_rows_siblings_only() {
+fn ctrl_a_and_cmd_a_are_left_to_the_app() {
     let mut p = build(MULTI, nested(), &["a"]);
     click(&mut p, "a1", Modifiers::default());
-    press(&mut p, KeyCode::KeyA, Some("a"), ctrl());
-    assert_eq!(sel(&p), ["a1", "a2"]);
+    let reports = p.changes.borrow().len();
+    let cmd = Modifiers {
+        meta: true,
+        ..Default::default()
+    };
+    for modifiers in [ctrl(), cmd] {
+        p.seen.borrow_mut().clear();
+        press(&mut p, KeyCode::KeyA, Some("a"), modifiers);
+        assert_eq!(sel(&p), ["a1"], "the selection is unchanged");
+        assert_eq!(p.changes.borrow().len(), reports, "nothing is reported");
+        assert_eq!(
+            p.seen.borrow().first().map(|s| s.0.as_str()),
+            Some("a"),
+            "the app was offered it"
+        );
+    }
 }
 
 // ---- What handle_key is offered (F7) ----------------------------------------

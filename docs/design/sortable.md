@@ -48,14 +48,15 @@ SortableList {
 
 - `SortableList` — `group`, `id`, `axis` (`Vertical` | `Horizontal`),
   `judge`, `ondrop`, `ondropchange`, `drag_keys`, `label`, `disabled`,
-  `lift_keys`, `class`, `style`.
+  `keyboard` (off by default since #3062), `lift_keys`, `class`, `style`.
   Its element carries `data-sortable-list` (a per-render token) and the
   `rinch-sortable` classes; an `aria-live` region inside it announces the
   keyboard flow.
 - `SortableItem` — `value` (the key), `handle` (drag only by a
   `SortableHandle` inside), `label` (for announcements), `disabled`, `class`,
   `style`. Its
-  element carries `data-sortable-key`, `tabindex="0"` and the drag handlers.
+  element carries `data-sortable-key` and the drag handlers; a `keyboard`
+  list adds `tabindex="0"` (#3062).
 - `SortableHandle` — `draggable="true"` and nothing else: the handlers are the
   item's, found by the runtime's walk up from the draggable node.
 - `SortMove { group, keys, from_list, to_list, place }`,

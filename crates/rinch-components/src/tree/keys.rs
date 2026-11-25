@@ -147,8 +147,6 @@ pub type LabelOf = Rc<dyn Fn(&str) -> String>;
 pub(super) const CURSOR_CLASS: &str = "rinch-tree__node-content--cursor";
 /// The class the tree carries while one of its rows has the keyboard.
 pub(super) const FOCUSED_CLASS: &str = "rinch-tree--focused";
-/// How far PageUp and PageDown move the cursor, in rows.
-const PAGE_ROWS: usize = 10;
 /// How long typed letters are remembered for type-ahead.
 pub(super) const TYPE_AHEAD_MS: u32 = 700;
 
@@ -215,7 +213,9 @@ pub(super) enum Nav {
 }
 
 /// The tree's own answer to `key` with the cursor on `cursor`; `None` for a
-/// key it does not handle.
+/// key it does not handle. These are the WAI-ARIA tree pattern's keys:
+/// PageUp and PageDown are not among them, and go unhandled to the app
+/// (#3062).
 pub(super) fn nav(
     shape: &Shape,
     expanded: &HashSet<String>,
@@ -231,8 +231,6 @@ pub(super) fn nav(
         "ArrowUp" => Nav::To(visible[at.saturating_sub(1)]),
         "Home" => Nav::To(visible[0]),
         "End" => Nav::To(visible[last]),
-        "PageDown" => Nav::To(visible[(at + PAGE_ROWS).min(last)]),
-        "PageUp" => Nav::To(visible[at.saturating_sub(PAGE_ROWS)]),
         "ArrowRight" if has_children && !shape.is_open(cursor, expanded) => Nav::Expand(cursor),
         "ArrowRight" if has_children => Nav::To(shape.rows[cursor].children[0]),
         "ArrowRight" => return None,

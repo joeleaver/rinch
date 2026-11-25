@@ -41,7 +41,18 @@ fn arrows_walk_the_rows_drawn() {
     assert_eq!(to(&s, nav(&s, &open(), i("a"), "ArrowUp")), "a");
     assert_eq!(to(&s, nav(&s, &open(), i("a1"), "End")), "c");
     assert_eq!(to(&s, nav(&s, &open(), i("c"), "Home")), "a");
-    assert_eq!(to(&s, nav(&s, &open(), i("a"), "PageDown")), "c");
+}
+
+/// #3062: PageUp and PageDown are not in the WAI-ARIA tree pattern, so the
+/// tree does not handle them, from any row.
+#[test]
+fn page_up_and_page_down_are_not_the_trees() {
+    let s = shape();
+    for row in ["a", "a1", "b", "c"] {
+        let at = s.index(row).unwrap();
+        assert_eq!(nav(&s, &open(), at, "PageDown"), None, "PageDown on {row}");
+        assert_eq!(nav(&s, &open(), at, "PageUp"), None, "PageUp on {row}");
+    }
 }
 
 #[test]

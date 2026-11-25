@@ -188,7 +188,12 @@ list — your `ondrop` takes each key out of wherever it is.
 
 ## Keyboard
 
-A `SortableItem` is focusable. With the item itself focused:
+The keyboard drag is opt-in (#3062): set `keyboard: true` on a list, and each
+of its items is a Tab stop (`tabindex="0"`, unless you gave the item a
+`tabindex` yourself). Without it the list takes no key — Space, Enter and the
+arrows reach your app — and its items are Tab stops only if you make them
+ones. A list with nested lists decides for its own items only. With an item of
+a `keyboard` list focused:
 
 | Key | Does |
 |-----|------|
@@ -208,8 +213,10 @@ Moving the focus to another element (Tab, a click elsewhere) cancels it. Each
 step is announced in the `aria-live` region of the list it started from, as
 drawn now, with the list's `label` and the item's `label` (their ids when
 empty); the same sentence twice in a row is still announced. Items carry
-`aria-roledescription="sortable item"` and an `aria-description` with the
-keys.
+`aria-roledescription="sortable item"`; in a `keyboard` list an enabled item
+also gets an `aria-description` with the keys, unless you wrote one. A lift
+can land in any list of the group, `keyboard` or not; the dropped item is made
+focusable to take the focus back.
 
 ## Read-only
 

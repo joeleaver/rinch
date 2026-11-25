@@ -128,6 +128,7 @@ fn mount() -> Signal<Vec<Col>> {
             BOARD.with(|b| b.set(Some(board)));
             rsx! {
                 SortableList {
+                    keyboard: true,
                     group: "columns", id: "row", axis: SortAxis::Horizontal,
                     style: "--rinch-sortable-gap: 0px; width: 300px; overflow-x: auto; margin: 0; padding: 0",
                     ondrop: move |m: SortMove| on_drop(board, m),
@@ -140,6 +141,7 @@ fn mount() -> Signal<Vec<Col>> {
                             style: "flex: 0 0 150px; width: 150px",
                             SortableHandle { style: "height: 20px" }
                             SortableList {
+                                keyboard: true,
                                 group: "cards", id: c.id.clone(),
                                 style: "--rinch-sortable-gap: 0px; height: 90px; overflow-y: auto; margin: 0; padding: 0",
                                 judge: Some(Rc::new(judge) as SortJudge),

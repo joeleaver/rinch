@@ -194,11 +194,7 @@ pub(super) fn activate_row(
 }
 
 /// Make `next` the selection, and tell the app if that changed it.
-pub(super) fn change_selection(
-    config: &Rc<TreeConfig>,
-    tree_state: UseTreeReturn,
-    next: HashSet<String>,
-) {
+fn change_selection(config: &Rc<TreeConfig>, tree_state: UseTreeReturn, next: HashSet<String>) {
     if untracked(|| tree_state.selected.get()) == next {
         return;
     }

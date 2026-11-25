@@ -53,10 +53,12 @@ fn list(
     .render(scope, items)
 }
 
+/// A list whose keyboard drag is on: most tests here drive it by key.
 fn cards(group: &str, id: &str) -> SortableList {
     SortableList {
         group: group.into(),
         id: id.into(),
+        keyboard: true,
         ..Default::default()
     }
 }

@@ -367,17 +367,8 @@ fn on_tree_key(
     // Selecting several rows from the keyboard, in a tree that selects
     // (#1601: one that does not select on click selects nothing from it).
     let selects_several = multiple && config.select_on_click;
-    // Ctrl+A: the cursor row and its siblings (not disabled ones).
-    if selects_several && (key.ctrl || key.meta) && !key.alt && key.key.eq_ignore_ascii_case("a") {
-        let siblings: HashSet<String> = shape
-            .siblings(cursor_row)
-            .iter()
-            .filter(|&&r| !shape.rows[r].disabled)
-            .map(|&r| shape.rows[r].value.clone())
-            .collect();
-        change_selection(config, tree_state, siblings);
-        return true;
-    }
+    // A chord is never the tree's, Ctrl+A (Cmd+A) included: an app that
+    // wants select-all binds it in `handle_key` (#3062).
     if key.ctrl || key.alt || key.meta {
         return false;
     }

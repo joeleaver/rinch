@@ -183,6 +183,7 @@ fn fixture() -> Fixture {
         rsx! {
             div { style: "width: 800px; height: 600px",
                 SortableList {
+                    keyboard: true,
                     group: "lanes", id: "board", axis: SortAxis::Vertical, label: "Board",
                     style: "--rinch-sortable-gap: 0px",
                     ondrop: move |m: SortMove| on_drop(board, m),
@@ -195,6 +196,7 @@ fn fixture() -> Fixture {
                             key: lane.id.clone(), value: lane.id.clone(), handle: true,
                             SortableHandle { style: "height: 20px" }
                             SortableList {
+                                keyboard: true,
                                 group: "columns", id: lane.id.clone(), axis: SortAxis::Horizontal,
                                 style: "--rinch-sortable-gap: 0px; width: 500px; overflow-x: auto",
                                 ondrop: move |m: SortMove| on_drop(board, m),
@@ -208,6 +210,7 @@ fn fixture() -> Fixture {
                                         style: "width: 200px; flex-shrink: 0",
                                         SortableHandle { style: "height: 20px" }
                                         SortableList {
+                                            keyboard: true,
                                             group: "cards", id: c.id.clone(), label: c.id.clone(),
                                             style: "--rinch-sortable-gap: 0px; height: 120px; overflow-y: auto; padding-top: 6px",
                                             judge: Some(Rc::new(judge_cards) as SortJudge),
@@ -1584,12 +1587,14 @@ mod nested_same_group {
             rsx! {
                 div { style: "width: 400px",
                     SortableList {
+                        keyboard: true,
                         group: "n", id: "root", style: "--rinch-sortable-gap: 0px",
                         ondrop: move |m: SortMove| NDROPS.with(|d| d.borrow_mut().push(m)),
                         ondropchange: move |o: Offer| NOFFERS.with(|v| v.borrow_mut().push(o)),
                         SortableItem { value: "x", style: "min-height: 30px",
                             div { style: "height: 30px" }
                             SortableList {
+                                keyboard: true,
                                 group: "n", id: "x-children",
                                 style: "--rinch-sortable-gap: 0px; margin-left: 250px; width: 120px",
                                 ondrop: move |m: SortMove| NDROPS.with(|d| d.borrow_mut().push(m)),

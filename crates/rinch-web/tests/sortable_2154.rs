@@ -124,6 +124,7 @@ fn mount(options: Options) -> Signal<Board> {
                 div { style: "display: flex; gap: 100px; align-items: flex-start; padding: 20px",
                     for (id, cards) in board.get() {
                         SortableList {
+                            keyboard: true,
                             key: id.clone(), group: "cards", id: id.clone(),
                             style: "--rinch-sortable-gap: 10px; width: 150px; margin: 0; padding: 0",
                             judge: Some(Rc::new(judge) as SortJudge),
@@ -462,18 +463,21 @@ fn mount_styled() {
             rsx! {
                 div { style: "display: flex; gap: 100px; align-items: flex-start; padding: 20px",
                     SortableList {
+                        keyboard: true,
                         group: "cards", id: "c1",
                         style: "width: 150px; --rinch-sortable-ghost-opacity: 0.5; --rinch-sortable-ghost-shadow: rgb(255, 0, 0) 0px 0px 0px 3px",
                         SortableItem { value: "a", style: "height: 30px", "a" }
                     }
                     div { style: "transform: scale(0.5); transform-origin: 0 0",
                         SortableList {
+                            keyboard: true,
                             group: "cards", id: "c3", style: "width: 150px",
                             SortableItem { value: "g", style: "height: 30px", "g" }
                         }
                     }
                     div { class: "lane-b",
                         SortableList {
+                            keyboard: true,
                             group: "cards", id: "c2", style: "width: 150px",
                             SortableItem { value: "e", style: "height: 30px", "e" }
                             SortableItem {
@@ -624,6 +628,7 @@ fn a_copy_keeps_svg_tag_case_and_leaves_a_radio_group_alone() {
         move |__scope: &mut RenderScope| {
             rsx! {
                 SortableList {
+                    keyboard: true,
                     group: "cards", id: "c1", style: "width: 150px",
                     SortableItem { value: "a", style: "height: 40px",
                         input { r#type: "radio", name: "pick-2154", checked: true, class: "pick" }
@@ -726,6 +731,7 @@ fn the_copies_carry_no_runtime_attributes() {
                 div { "data-trap-focus": "", "data-render-surface": "1", "data-viewport": "1",
                     "data-state": "open",
                     SortableList {
+                        keyboard: true,
                         group: "cards", id: "c1", style: "width: 150px",
                         SortableItem { value: "a", style: "height: 40px",
                             div { "contenteditable": "true", "data-pm-editor": "", "data-scroll-lock-exempt": "", style: "height: 15px", "a" }

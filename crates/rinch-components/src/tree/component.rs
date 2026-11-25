@@ -182,10 +182,10 @@ pub struct Tree {
     pub guides: bool,
     /// Keyboard navigation (needs `tree`): while one of the rows has the
     /// keyboard, the arrow keys move a cursor (Right expands or steps in,
-    /// Left collapses or steps out), Home, End, PageUp and PageDown jump,
-    /// `*` expands the cursor row's siblings, and typed letters find the next
-    /// row that starts with them. The tree is one Tab stop: the cursor row
-    /// (the first row before there is one) is `tabindex="0"`, every other
+    /// Left collapses or steps out), Home and End jump to the first and last
+    /// row, `*` expands the cursor row's siblings, and typed letters find the
+    /// next row that starts with them. The tree is one Tab stop: the cursor
+    /// row (the first row before there is one) is `tabindex="0"`, every other
     /// row `-1`. In a single-select tree the selection follows the cursor as
     /// a click would select (only with `select_on_click`, never a disabled
     /// row, and `onselect` is told). In a `multiple` tree a plain arrow
@@ -193,10 +193,13 @@ pub struct Tree {
     /// (and Shift+Space) selects the run from the anchor (the row last
     /// clicked, Ctrl-clicked or toggled, or the one the app named with
     /// [`TreeController::set_anchor`]) to the cursor row, replacing the
-    /// selection; Ctrl+A selects the cursor row's siblings; Enter adds the
-    /// cursor row as a click would, keeping the rest. All of these only with
-    /// `select_on_click`, and none selects a disabled row (see
-    /// [`Tree::onselectionchange`]).
+    /// selection; Enter adds the cursor row as a click would, keeping the
+    /// rest. All of these only with `select_on_click`, and none selects a
+    /// disabled row (see [`Tree::onselectionchange`]).
+    ///
+    /// The tree takes no key with Ctrl, Cmd or Alt held, and neither PageUp
+    /// nor PageDown (#3062): an app that wants Ctrl+A to select, or the page
+    /// keys to move the cursor, binds them in [`Tree::handle_key`].
     pub keyboard: bool,
     /// Every key the tree's rows get, before the tree's own; `true` consumes
     /// it. [`TreeKey::drop_for`] turns a key into a structural move.
@@ -219,8 +222,8 @@ pub struct Tree {
     /// with Enter, even when that unselected it, or the one the app named
     /// with [`TreeController::set_anchor`]; a hidden one counts as its
     /// shown ancestor) to that row, replacing the selection; Enter adds the
-    /// cursor row, keeping the rest; Ctrl+A selects the cursor row's
-    /// siblings; a collapse by a click or a key unselects the rows it hides
+    /// cursor row, keeping the rest; a collapse by a click or a key unselects
+    /// the rows it hides
     /// (only with `select_on_click`: otherwise the selection is the app's).
     /// Disabled rows are never selected, and nothing is reported when the
     /// selection did not change (a click that collapses and selects is one
@@ -229,12 +232,12 @@ pub struct Tree {
     /// stays in [`UseTreeReturn::selected`]: the tree does not prune the
     /// selection when the data changes.
     ///
-    /// Differences from the WAI-ARIA tree pattern: Ctrl+A selects the cursor
-    /// row's siblings, not every row; Shift with an arrow selects the run
-    /// from the anchor (the desktop file-manager model) where the pattern's
-    /// recommended model toggles the next row and keeps the rest; and
-    /// Ctrl+Shift-click toggles the row (Ctrl wins) rather than adding the
-    /// run.
+    /// Differences from the WAI-ARIA tree pattern: Ctrl+A (optional in the
+    /// pattern) is not the tree's (see [`Tree::keyboard`]); Shift with an
+    /// arrow selects the run from the anchor (the desktop file-manager model)
+    /// where the pattern's recommended model toggles the next row and keeps
+    /// the rest; and Ctrl+Shift-click toggles the row (Ctrl wins) rather than
+    /// adding the run.
     pub onselectionchange: Option<ValueCallback<Vec<String>>>,
 }
 

@@ -108,6 +108,7 @@ fn fixture(options: Options) -> Fixture {
             div { style: "display: flex; gap: 100px; width: 800px; height: 600px; padding: 20px",
                 for (id, cards) in board.get() {
                     SortableList {
+                        keyboard: true,
                         key: id.clone(), group: "cards", id: id.clone(),
                         style: "--rinch-sortable-gap: 10px; width: 150px",
                         judge: Some(Rc::new(judge) as SortJudge),
@@ -951,6 +952,7 @@ mod preview_cascade {
             rsx! {
                 div { style: "display: flex; gap: 100px; width: 800px; height: 600px; padding: 20px",
                     SortableList {
+                        keyboard: true,
                         group: "cards", id: "c1",
                         style: "width: 150px; --rinch-sortable-ghost-opacity: 0.5; --rinch-sortable-ghost-shadow: 0 0 0 3px red",
                         SortableItem { value: "a", style: "height: 30px", "a" }
@@ -958,6 +960,7 @@ mod preview_cascade {
                     }
                     div { class: "lane-b",
                         SortableList {
+                            keyboard: true,
                             group: "cards", id: "c2", style: "width: 150px",
                             SortableItem { value: "e", style: "height: 30px", "e" }
                             SortableItem {
@@ -969,6 +972,7 @@ mod preview_cascade {
                     }
                     div { style: "opacity: 0.5",
                         SortableList {
+                            keyboard: true,
                             group: "cards", id: "c4",
                             style: "width: 150px; --rinch-sortable-ghost-opacity: 1",
                             SortableItem { value: "k", style: "height: 30px; background: rgb(0, 0, 0)" }

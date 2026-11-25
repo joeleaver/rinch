@@ -439,7 +439,7 @@ keeps the old text).
 | `Image` | Responsive image with fallback |
 | `List` / `ListItem` | Styled list |
 | `Tree` | Hierarchical rows with expand/collapse, selection, drag-to-rearrange and keyboard navigation |
-| `SortableList` | Items that drag within and between lists of one group (cards across columns, columns, lanes), with a live judge, a pointer-following preview, a caret or an animated gap, and a keyboard flow + `SortableItem`, `SortableHandle` — see [Sortable Lists](sortable.md) |
+| `SortableList` | Items that drag within and between lists of one group (cards across columns, columns, lanes), with a live judge, a pointer-following preview, a caret or an animated gap, and an opt-in keyboard flow (`keyboard: true`) + `SortableItem`, `SortableHandle` — see [Sortable Lists](sortable.md) |
 
 ```rust
 // Avatar
@@ -549,7 +549,7 @@ there is one) has `tabindex="0"` and every other row `-1`, so Tab moves into
 the tree and out of it in one press. While one of its rows has the keyboard
 (a click, Tab, or `TreeController::focus()`), the keys act from that row:
 
-- Up/Down, Home/End and PageUp/PageDown move the cursor over the rows drawn;
+- Up/Down and Home/End move the cursor over the rows drawn;
   Right expands a closed row or steps into an open one; Left collapses an
   open row or steps out to the parent; `*` (Shift+8 or the numpad's)
   expands the cursor row's siblings; typed letters find the next row whose
@@ -560,9 +560,12 @@ the tree and out of it in one press. While one of its rows has the keyboard
   (the cursor can rest on one), and `onselect` is told. In a `multiple` tree
   a plain arrow selects nothing; Space toggles the cursor row; Shift with a
   move key, and Shift+Space, select the run of drawn rows from the **anchor**
-  to the cursor row, replacing the selection; Ctrl+A (Cmd+A) selects the
-  cursor row's siblings; Enter adds the cursor row as a click would, keeping
-  the rest. See *Selecting several rows* below.
+  to the cursor row, replacing the selection; Enter adds the cursor row as a
+  click would, keeping the rest. See *Selecting several rows* below.
+- **Not the tree's** (#3062): no key with Ctrl, Cmd or Alt held, Ctrl+A
+  (Cmd+A) included, and neither PageUp nor PageDown. They reach the app
+  untouched; one that wants select-all or paging binds it in `handle_key`
+  (with `TreeController::set_selection` and `set_cursor`).
 - The cursor row takes the keyboard and is scrolled into view; `oncursor`
   tells the app once it has rested `cursor_delay_ms` (120), for an app that
   opens what the cursor is on without opening every row it passes.
@@ -635,7 +638,7 @@ With `UseTreeOptions { multiple: true, .. }` and `select_on_click: true`:
   when the `Tree` re-renders.
 - The keys are the ones listed above; Shift+arrows move the cursor (and tell
   `oncursor`) as the plain arrows do.
-- **Disabled rows** are never selected: a run and Ctrl+A leave them out.
+- **Disabled rows** are never selected: a run leaves them out.
 - **A collapse** by the chevron, Left, a row click or Enter unselects the
   rows it hides; a click or Enter that collapses and selects reports once,
   with the final selection. A collapse by the app
@@ -647,7 +650,7 @@ With `UseTreeOptions { multiple: true, .. }` and `select_on_click: true`:
   `TreeController::set_selection(values)` replaces the selection from code.
 - Without `select_on_click` (#1601's rule for every tree), the selection is
   the app's: neither clicks nor keys select anything (Shift+arrows only move
-  the cursor, Ctrl+A is not the tree's), and no collapse unselects.
+  the cursor), and no collapse unselects.
 
 **Moving a selection.** A drag from a selected row, and `TreeKey::drop_for`
 from one, move the whole selection (top to bottom, rows inside other
@@ -664,8 +667,8 @@ below the last, and a block with gaps closes them (`b` and `d` moved Down
 land after `e`). `TreeKey::above` and `below` are then the rows around the
 block.
 
-**Where this differs from the WAI-ARIA tree pattern:** Ctrl+A selects the
-cursor row's siblings, not every row; Shift with an arrow selects the run
+**Where this differs from the WAI-ARIA tree pattern:** Ctrl+A (optional in
+the pattern) is not the tree's; Shift with an arrow selects the run
 from the anchor (the desktop file-manager model), where the pattern's
 recommended model toggles the next row and keeps the rest; Ctrl+Shift-click
 toggles the row (Ctrl wins) rather than adding the run; a row Space or
