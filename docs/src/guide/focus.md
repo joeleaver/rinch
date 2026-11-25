@@ -794,6 +794,36 @@ Everything under [Window focus](#window-focus) applies: while the window is
 blurred, IME reports disabled and no composition is routed, but the claim — and
 `on_ime` with it — comes back on refocus.
 
+## Who hears a key first
+
+Everything rinch itself does with a key (typing into a field, Tab, activation,
+`onsubmit`, the editor's keymap, the DevTools keys) is the key's *default*. It
+runs only after every hook of yours has had the key and left it, as a browser's
+default runs after the page's listeners (issue #3062). A press is offered, in
+order, until one party takes it:
+
+1. Your menu accelerators. On desktop an Escape that ends a pointer lock comes
+   first and goes nowhere else.
+2. Escape ending a drag, then (desktop) an open text context menu or `<select>`
+   list, which takes every key while open, as the browser's own popups do.
+3. `set_keyboard_interceptor`, the capture-phase hook. On the web it is a
+   `window` capture listener, so it hears keys a page element's own listener
+   stopped.
+4. The focused editor's `on_key` (or a node view's), or the focused element's
+   `onkeydown` and then its ancestors'.
+5. Open popups' key entries (`push_key_handler`), then for Escape the dismiss
+   stack.
+6. A focused render surface's `set_key_handler` claim, or (desktop) a
+   registered widget's `on_key`.
+7. App-wide listeners (`on_app_key`).
+8. Rinch's defaults, the editor's keymap among them.
+
+On the web a key the page has already `preventDefault`ed is the page's, and
+rinch does nothing with it. A page `window` capture listener added before the
+first root mounts runs ahead of all of the above. The table with the code
+behind each step is `docs/internals/focus-and-keyboard.md`, "The key handler
+order".
+
 ## App-wide key listeners
 
 `on_app_key` registers a listener that hears every key press and release the
@@ -827,25 +857,29 @@ fn studio() -> NodeHandle {
 }
 ```
 
-- **Where it runs.** After everything that owns a key: menu chords, a focused
-  editor's `on_key`, the focused element's `onkeydown` and its ancestors',
-  `set_keyboard_interceptor`, an open popup's key entry, the dismiss stack, a
-  focused [registered widget's](#registering-a-focus-target) `on_key` (desktop),
-  and a focused render surface's `set_key_handler` claim. Before the focused
-  element's default: typing into a field, Tab, Enter/Space activation,
-  `onsubmit`. So an open `Select` list keeps its arrows, a `Modal` still closes
-  on Escape, and a key typed into a text field reaches the listener first, as
-  a browser's `window` listener does — check the focused element if your
-  shortcut should leave fields alone.
+- **Where it runs.** After everything that owns a key: menu chords,
+  `set_keyboard_interceptor`, a focused editor's `on_key`, the focused
+  element's `onkeydown` and its ancestors', an open popup's key entry, the
+  dismiss stack, a focused [registered widget's](#registering-a-focus-target)
+  `on_key` (desktop), and a focused render surface's `set_key_handler` claim.
+  Before every default rinch runs for a key: typing into a field, Tab,
+  Enter/Space activation, `onsubmit`, and the rich-text editor's keymap. So an
+  open `Select` list keeps its arrows, a `Modal` still closes on Escape, and a
+  key typed into a text field or an editor reaches the listener first, as a
+  browser's `window` listener does. Check the focused element if your shortcut
+  should leave fields alone. The whole order is under
+  [Who hears a key first](#who-hears-a-key-first).
 - **Consuming.** Listeners are offered a press in registration order; the first
   to answer `true` consumes it: no later listener and no default sees it, and on
   the web the event is `preventDefault`ed and stops propagating. A release goes
   to every listener and the answer is ignored.
-- **Not offered:** a press while the rich-text editor holds the keyboard (its
-  keys are its own), while an input method is composing, and on desktop while
-  the built-in text context menu or an open native `<select>` list owns the
-  keyboard. A key a focused render surface claims is the surface's, press and
-  release.
+- **Not offered:** a press while an input method is composing, one the
+  editor's `on_key` took, and on desktop one the built-in text context menu or
+  an open native `<select>` list takes while open. A key a focused render
+  surface claims is the surface's, press and release. Since #3062 the
+  rich-text editor's keys are offered (before its keymap), so a listener that
+  answers `true` for a key the editor binds, such as Enter, takes it from the
+  editor.
 - **Lifetime.** A listener belongs to the component that registered it and is
   released when it unmounts; registered outside any render (from `main`) it
   lives for the life of the app. `AppKeyListener::remove()` releases one early;
@@ -911,16 +945,15 @@ __scope.on_cleanup(move || drop(handle));
   dispatches with no document marked, and the rule is deliberately permissive
   when either side is unmarked, so every handler is reached. The explicit key
   you pass at registration is what carries the distinction where one exists.
-- **Both backends, no branch.** Dispatch lives inside
-  `dispatch_keyboard_event`, which desktop calls ahead of the focus arbiter and
-  `rinch-web` calls from its document `keydown` listener.
+- **Both backends, no branch.** Dispatch lives inside `dispatch_popup_key`,
+  which desktop calls after the focused element's key handlers and `rinch-web`
+  calls from its document `keydown` listener.
 
 Some things are dispatched **before** the stack and will take Escape from it: a
-`set_keyboard_interceptor` that consumes the key, and an in-progress drag, which
-Escape cancels. Both apply on either backend. `rinch-web` has one more — a
-focused `RenderSurface` swallows every key there, where on desktop a surface is
-routed by the arbiter, i.e. *after* the stack. That asymmetry is older than the
-stack (the interceptor already had it) and is not something this API changed.
+menu accelerator bound to Escape, an in-progress drag (Escape cancels it), a
+`set_keyboard_interceptor` that consumes the key, a focused editor's `on_key`,
+and the focused element's `onkeydown`. All apply on either backend. A focused
+`RenderSurface` is asked *after* the stack on both.
 
 ### Register at mount, or at open
 

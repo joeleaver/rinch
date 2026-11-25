@@ -9,26 +9,31 @@
 //!
 //! # Where it sits
 //!
-//! Both backends offer a key, in order, to: menu chords → the focused editor's
-//! / node view's `on_key` → the focused element's `onkeydown` and its
-//! ancestors' → [`set_keyboard_interceptor`](super::set_keyboard_interceptor)
-//! → open popups' [key entries](super::push_key_handler) → the
-//! [dismiss stack](super::push_dismiss_handler) → a focused registered
-//! widget's `FocusEntry::on_key` (desktop) → a focused render surface's
-//! own claim (`RenderSurfaceHandle::set_key_handler`) → **these listeners** →
-//! the focused element's default (text editing, Tab, Enter/Space activation,
-//! `onsubmit`). So everything that owns a key while it is open or focused — an
-//! open `Select` list, a `Modal` closing on Escape, a code editor's
-//! interceptor, a game canvas — wins, and a listener still runs before the
-//! default action, as a `window` listener runs before a browser's.
+//! Both backends offer a key press, in order, to (issue #3062; the whole order
+//! is `docs/internals/focus-and-keyboard.md` "The key handler order"): the
+//! app's menu chords and rinch's three keyboard owners (Escape ending a drag
+//! or a pointer lock, an open native `<select>` list, the text context menu)
+//! → [`set_keyboard_interceptor`](super::set_keyboard_interceptor) → the
+//! focused editor's / node view's `on_key` → the focused element's `onkeydown`
+//! and its ancestors' → open popups' [key entries](super::push_key_handler) →
+//! the [dismiss stack](super::push_dismiss_handler) → a focused registered
+//! widget's `FocusEntry::on_key` (desktop) → a focused render surface's own
+//! claim (`RenderSurfaceHandle::set_key_handler`) → **these listeners** →
+//! rinch's defaults: the rich-text editor's caret keys, Tab and keymap, a
+//! field's text editing, Tab, Enter/Space activation, `onsubmit`. So
+//! everything that owns a key while it is open or focused — an open `Select`
+//! list, a `Modal` closing on Escape, a code editor's interceptor, a game
+//! canvas — wins, and a listener still runs before the default action, as a
+//! `window` listener runs before a browser's.
 //!
-//! A key typed into a text field therefore reaches the listeners, as it reaches
-//! a browser's `window` listener; a shortcut that should leave text fields
-//! alone asks [`NodeHandle::active_element`](crate::dom::NodeHandle::active_element).
-//! Not offered at all: a press while the rich-text editor holds the keyboard
-//! (its keys are its own on both backends), while an input method composes,
-//! and on desktop while the built-in text context menu or an open native
-//! `<select>` list owns the keyboard.
+//! A key typed into a text field or the rich-text editor therefore reaches the
+//! listeners, as it reaches a browser's `window` listener, and a listener that
+//! takes it takes it from the editor's keymap too (Ctrl+B, Enter, a typed
+//! letter). A shortcut that should leave text alone asks
+//! [`NodeHandle::active_element`](crate::dom::NodeHandle::active_element).
+//! Not offered at all: a press while an input method composes, and on desktop
+//! while the built-in text context menu or an open native `<select>` list owns
+//! the keyboard.
 //!
 //! **Whose keys.** On desktop a listener registered while a document's code
 //! runs hears that document's keys, and one registered from `main` every
@@ -141,7 +146,7 @@ pub fn on_app_key(f: impl Fn(&KeyEventData) -> bool + 'static) -> AppKeyListener
 /// listener consumed a **press**; a release always answers `false`.
 ///
 /// Backends call this at the place the `module docs` name, after
-/// [`dispatch_keyboard_event`](super::dispatch_keyboard_event) answered
+/// [`dispatch_popup_key`](super::dispatch_popup_key) answered
 /// `false` and a focused render surface did not claim the key. Listeners run
 /// from a snapshot with no borrow held, so one may register or remove
 /// listeners (its own included).
@@ -204,6 +209,16 @@ pub fn withhold_app_key_release(code: &str) {
     WITHHELD.with(|w| {
         w.borrow_mut().insert(code.to_string());
     });
+}
+
+/// Whether the release of the physical key `code` will be withheld from the
+/// listeners, because a focused render surface claimed its press
+/// ([`withhold_app_key_release`]). Read it before [`dispatch_app_key`] is
+/// offered the release, which clears the mark. rinch-web asks it so that it
+/// stops the propagation of only those releases (issue #3062), as the desktop
+/// withholds only those.
+pub fn app_key_release_withheld(code: &str) -> bool {
+    WITHHELD.with(|w| w.borrow().contains(code))
 }
 
 /// Remove the entry with `id`; it is dropped outside the borrow, since a

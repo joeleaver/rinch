@@ -164,11 +164,11 @@ fn onkeydown_consumes_enter_and_shift_enter_goes_on() {
     f.teardown();
 }
 
-/// Before the interceptor and the dismiss stack, as on desktop: a field's
-/// handler takes Escape and the overlay stays; an unconsumed key reaches the
-/// interceptor.
+/// After the interceptor (#3062: it is a `window` capture listener now) and
+/// before the dismiss stack, as on desktop: a field's handler takes Escape and
+/// the overlay stays.
 #[wasm_bindgen_test]
-fn onkeydown_runs_before_the_interceptor_and_the_dismiss_stack() {
+fn onkeydown_runs_after_the_interceptor_and_before_the_dismiss_stack() {
     let f = Fixture::mount();
     f.el("k-ta").focus().unwrap();
     let seen = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -186,10 +186,10 @@ fn onkeydown_runs_before_the_interceptor_and_the_dismiss_stack() {
 
     assert!(key("keydown", "Escape", "Escape", false, false));
     assert_eq!(dismissed.get(), 0, "the field took Escape");
-    assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+    assert_eq!(*seen.borrow(), ["Escape"], "the interceptor first");
 
     assert!(!key("keydown", "x", "KeyX", false, false));
-    assert_eq!(*seen.borrow(), ["x"]);
+    assert_eq!(*seen.borrow(), ["Escape", "x"]);
     drop(entry);
     rinch_core::clear_keyboard_interceptor();
     f.teardown();

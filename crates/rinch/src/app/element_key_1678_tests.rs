@@ -213,11 +213,12 @@ fn onkeydown_consumes_enter_before_the_field_and_onsubmit() {
     );
 }
 
-/// The element sees a key before the document-level interceptor and the
-/// dismiss stack — so a picker in a field inside a `Modal` takes Escape and
-/// the modal stays — and an unconsumed key still reaches both.
+/// The element sees a key after the interceptor (#3062: the app's capture
+/// hook hears every key first) and before the dismiss stack — so a picker in
+/// a field inside a `Modal` takes Escape and the modal stays — and an
+/// unconsumed key still reaches the field.
 #[test]
-fn onkeydown_runs_before_the_interceptor_and_the_dismiss_stack() {
+fn onkeydown_runs_after_the_interceptor_and_before_the_dismiss_stack() {
     let mut f = mount();
     let ta = f.textarea.clone();
     f.click(&ta);
@@ -238,12 +239,16 @@ fn onkeydown_runs_before_the_interceptor_and_the_dismiss_stack() {
 
     f.press(KeyCode::Escape, None, false);
     assert_eq!(dismissed.get(), 0, "the field's handler took Escape");
-    assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+    assert_eq!(
+        *seen.borrow(),
+        ["interceptor:Escape"],
+        "the interceptor first"
+    );
 
     f.press(KeyCode::KeyX, Some("x"), false);
     assert_eq!(
         *seen.borrow(),
-        ["interceptor:x"],
+        ["interceptor:Escape", "interceptor:x"],
         "an unconsumed key goes on"
     );
     assert_eq!(f.value(&f.textarea), "x");

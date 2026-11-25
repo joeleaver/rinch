@@ -29,8 +29,9 @@ pub(crate) fn add_capture<E: JsCast + 'static>(
 /// uses: it is one node further out than `document` on every event path, so a
 /// listener there runs ahead of *every* document listener whatever order they
 /// were registered in — and a `stopPropagation()` from it stops all of them.
-/// That is what the menu bar's chord check needs (`menu_bar.rs`), and what
-/// keeps the pointer-gesture observer seeing a key the chord check consumed.
+/// That is what the shared key listener needs (`event_delegation::keys`: the
+/// menu bar's chords and the keyboard interceptor, #3062), and what keeps the
+/// pointer-gesture observer seeing a key that listener consumed.
 pub(crate) fn add_capture_on<E: JsCast + 'static>(
     target: &web_sys::EventTarget,
     name: &str,
@@ -151,6 +152,12 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {
+        // A press the page (or rinch's `window` listener) already
+        // `preventDefault`ed is taken: the editor acts on none of it (#3062),
+        // as Chrome's editing does nothing for a cancelled `keydown`.
+        if e.default_prevented() {
+            return;
+        }
         // The editor's hooks run as its root's code (#2811).
         let _root = crate::mark_event_root(&e);
         if handle_keydown(&e, &doc) {
