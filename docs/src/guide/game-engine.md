@@ -552,6 +552,20 @@ surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "Key
 The document-level keyboard interceptor (`set_keyboard_interceptor`) is unaffected either
 way — it already sees every key before a focused surface does, on both backends.
 
+**Claiming is also how a surface says it used a key** (`RinchApp::key_down_unused`, #3062).
+A key the event handler acted on but `set_key_handler` did not claim goes on to rinch's
+defaults like any other, and if none applies it is reported unused, so the shell may hand
+it to the platform. On Android that matters for Back, which reaches the app as Escape: a
+game that opens its pause menu on Escape from `set_event_handler` alone opens the menu
+*and* the system goes back, leaving the app. Claim the key the game used:
+
+```rust
+surface.set_key_handler(|key| key.code == "Escape" && game_has_a_menu_to_open());
+```
+
+The rule runs this way on purpose: if every key a surface heard counted as used, Back could
+never leave a game.
+
 **On the web, an unclaimed key also keeps the browser's default action** — no longer
 `preventDefault()`ed just because the surface is focused, matching an unfocused `<canvas>`.
 Space, PageUp/Down and the arrow keys can scroll the page, and Tab leaves the canvas. A web
@@ -977,6 +991,30 @@ if ctx.wants_keyboard() {
     game.handle_key(key); // game shortcuts
 }
 ```
+
+`wants_keyboard()` asks before the key; **`RinchApp::key_down_unused()`
+answers after it** (#3062). Give the UI the key first, then read
+`ctx.app().key_down_unused()`: `true` means rinch did nothing with that
+`KeyDown` — no handler, dismiss entry, popup or editor took it, and none of
+rinch's default actions applied — so the game may use it:
+
+```rust
+ctx.update(&[key_event]);
+if ctx.app().key_down_unused() {
+    game.handle_key(key); // the UI had no use for it
+}
+```
+
+A default action counts only when it did something: an arrow with nothing
+focused and nothing to scroll is unused (so it can steer a camera), as are
+Enter with no field to commit or button to press, a held Enter's auto-repeats
+on a button, Tab with nothing focusable, and a character with no field to type
+into. An arrow in a focused text field, a scroll, a Tab that moves the focus
+and Enter that submits are used. The clipboard, select-all and undo chords are
+reported used whatever they found. A focused `RenderSurface` uses a key only by
+claiming it with `set_key_handler` (see [Surface Events](#surface-events)). The
+answer is for the last `KeyDown` only; a `KeyUp` leaves it, and it is `false`
+before any key.
 
 > **A mouse-clicked plain button does not claim `wants_keyboard()` —
 > a Tab-focused one still does** (issue #548). A `<button>`/`<a href>` is

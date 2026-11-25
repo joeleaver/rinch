@@ -10,14 +10,14 @@ use rinch_core::events::{on_app_key, push_dismiss_handler};
 use rinch_macros::rsx;
 use std::cell::Cell;
 
-const VP: (u32, u32) = (800, 600);
+pub(super) const VP: (u32, u32) = (800, 600);
 
-struct Fixture {
-    app: RinchApp,
+pub(super) struct Fixture {
+    pub(super) app: RinchApp,
     input: NodeHandle,
 }
 
-fn mount() -> Fixture {
+pub(super) fn mount() -> Fixture {
     let slot: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |__scope: &mut RenderScope| {
@@ -40,7 +40,7 @@ fn mount() -> Fixture {
 
 /// Press and release; answers `key_down_unused` read after the press, and
 /// checks that the release leaves it.
-fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>) -> bool {
+pub(super) fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>) -> bool {
     app.handle_event(
         PlatformEvent::KeyDown {
             key,
@@ -71,11 +71,11 @@ fn press(app: &mut RinchApp, key: KeyCode, text: Option<&str>) -> bool {
 }
 
 impl Fixture {
-    fn press(&mut self, key: KeyCode, text: Option<&str>) -> bool {
+    pub(super) fn press(&mut self, key: KeyCode, text: Option<&str>) -> bool {
         press(&mut self.app, key, text)
     }
 
-    fn focus_input(&mut self) {
+    pub(super) fn focus_input(&mut self) {
         self.input.focus();
         self.app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
         assert!(matches!(self.app.focus_target, FocusTarget::Input(_)));

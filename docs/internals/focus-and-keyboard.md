@@ -993,11 +993,22 @@ unit-tested):
   Escape into a Back.
 
 `RinchApp::key_down_unused` is set only where key handling ends with nothing
-done: the unclaimed-key fallback's last arm (no shortcut, no default action and
-no field to type into), a focused editor that had no binding or text for the
-key, a `<select>` that did not read it, and an unmounted editor. It is reset by
-every `KeyDown`, and a `KeyUp` leaves it alone. Tests are in
-`app/key_down_unused_3062_tests.rs`. Not checked on a device.
+done: the unclaimed-key fallback when its default action did nothing, a focused
+editor that had no binding or text for the key (or a Tab that neither the
+editor nor `handle_tab` used), a `<select>` claim with no popup open, and an
+unmounted editor. In the fallback each default action answers whether it acted
+(PR #3072's review): `handle_tab` (moved the focus, or a `trap_focus` overlay
+kept it; nothing focusable and no trap is unused), `handle_text_key` (extended
+the read-only selection, or a live field holds the keyboard and the keymap
+gives the key an action), `handle_enter` (fired change or submit, or inserted a
+line break in an editable `<textarea>`), a focused node's Enter/Space
+(`press_is_fresh`: an auto-repeat is unused), a keyboard scroll, and text typed
+into a field. The clipboard, select-all and undo chords count as used whatever
+they found. A focused `RenderSurface` uses a key only by claiming it with
+`set_key_handler`; an unclaimed one goes through the fallback like any other,
+so Back can leave a game. It is reset by every `KeyDown`, and a `KeyUp` leaves
+it alone. Tests are in `app/key_down_unused_3062_tests.rs` and
+`app/key_down_unused_review_3072_tests.rs`. Not checked on a device.
 
 Not carried to `KeyEventData`, so a registered node's `on_key` still cannot tell
 a repeat from a press: the honest field is the same three-state one, and

@@ -1388,6 +1388,28 @@ panel only Paste and Select all reach a rinch field — measured.) The
 rich-text `Editor` is not part of an Android build today (it is
 `windowing`-only), so the toolbar covers `<input>` and `<textarea>`.
 
+### Android: Back, volume and the other system keys
+
+Since #3062 the Android shell hands the keys the app does not use back to the
+system, so they do what they do in any app:
+
+- **Back** reaches the app as Escape. A popup, modal, open `<select>`, dismiss
+  entry or key handler that takes Escape keeps it, and the top one closes, as
+  Chrome on Android closes a popup before it goes back. When nothing used it
+  (`RinchApp::key_down_unused`), the system goes back: the Activity finishes,
+  or on Android 12 and later a root Activity moves to the background. A focused
+  `RenderSurface` uses Escape only by claiming it with `set_key_handler`
+  (see the game-engine guide's Surface Events).
+- **Volume, media and the other keys rinch has no `KeyCode` for** never reach
+  the app, so the volume changes and the media session gets its keys.
+- **Every other key the app receives stays the app's**, used or not, Escape
+  from a hardware keyboard included (Android would otherwise turn an unused
+  Escape into Back). Enter in a text field and D-pad focus moves stay in the
+  app.
+
+Before #3062 the shell kept every key, so Back did nothing in a rinch app and
+the volume keys were dead while it had the focus.
+
 ---
 
 ## System Tray

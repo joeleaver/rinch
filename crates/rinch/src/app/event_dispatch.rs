@@ -311,16 +311,28 @@ impl RinchApp {
     /// Whether rinch had no use for the last `KeyDown` given to
     /// [`handle_event`](Self::handle_event) (#3062): nothing took it (an
     /// element's or a registered widget's key handler, an app-wide key
-    /// listener, the dismiss stack, an open popup, the focused editor or
-    /// surface, a menu shortcut routed through the app) and rinch's own
-    /// handling has no default action for it — it is not Tab, an editing,
-    /// caret, clipboard or activation key, F12 with DevTools on, a keyboard
-    /// scroll, nor text typed into a focused field.
+    /// listener, the dismiss stack, an open popup, the focused editor, a
+    /// menu shortcut routed through the app) and rinch's own default actions
+    /// did nothing with it: no keyboard scroll, no focus move (Tab with
+    /// nowhere to go is unused; inside a `trap_focus` overlay it is used),
+    /// no caret, selection or edit in a field (an arrow with nothing focused
+    /// is unused), no change, submit or line break on Enter, no activation
+    /// (a repeated Enter or Space on a focused node is unused), no character
+    /// typed into a field, and not F12 with DevTools on. The clipboard,
+    /// select-all and undo chords are reported used whatever they found.
+    ///
+    /// **A focused `RenderSurface` uses a key only by claiming it** with
+    /// `RenderSurfaceHandle::set_key_handler`. Its event handler still
+    /// receives every key, but a key the key handler does not claim goes
+    /// on to rinch's defaults like any other and, if nothing takes it, is
+    /// unused: a game that opens its pause menu on Escape from the event
+    /// handler alone also has Android go back on Back. Claim the key.
     ///
     /// A shell answers its platform with it: the Android shell hands such a
     /// key back to the system, so Back (delivered to the app as Escape) goes
     /// back when no popup or handler took it. An embedding host can pass the
-    /// key on to its own bindings the same way. `false` before any key.
+    /// key on to its own bindings the same way (camera keys on arrows, for
+    /// one). `false` before any key.
     pub fn key_down_unused(&self) -> bool {
         self.key_down_unused
     }
@@ -2080,8 +2092,8 @@ impl RinchApp {
                                 // paragraph ran the keymap's `sinkListItem`,
                                 // which did nothing, and the matched binding was
                                 // consumed anyway: a keyboard trap.
-                                if !handle.tab_key(shift) {
-                                    self.handle_tab(shift);
+                                if !handle.tab_key(shift) && !self.handle_tab(shift) {
+                                    self.key_down_unused = true;
                                 }
                             } else {
                                 self.dispatch_new_editor_key(
@@ -2749,6 +2761,11 @@ impl RinchApp {
     /// (an action already fully answers this key); `false` if the key fell
     /// through everything (including plain text input, already attempted),
     /// in which case the caller's match arm ends normally.
+    ///
+    /// Each default action below answers whether it did anything, and a key
+    /// none of them used sets `key_down_unused` (#3062): Tab with nowhere to
+    /// go, a caret key with no field or selection, Enter with no field to
+    /// commit or a repeat on a focused node, a character with no field.
     #[allow(clippy::too_many_arguments)]
     fn handle_unclaimed_key_fallback(
         &mut self,
@@ -2793,7 +2810,7 @@ impl RinchApp {
             return true;
         }
 
-        match key {
+        let used = match key {
             KeyCode::Tab => self.handle_tab(shift),
             // The caret and delete keys follow the platform's text keymap
             // (issue #951): on macOS Cmd+Left is the line's start and Option
@@ -2812,25 +2829,47 @@ impl RinchApp {
             // reports AltGr as Ctrl+Alt, and AltGr+C, +X, +A, +Z type
             // characters on some layouts (Polish `ć`, `ź`, `ą`, `ż`; #934) —
             // the `_` arm below inserts them.
-            KeyCode::KeyA if ctrl && !alt => self.handle_select_all(),
-            KeyCode::KeyC if ctrl && !alt => self.handle_copy(),
+            //
+            // The chords are rinch's whether or not there was anything to copy
+            // or undo: they are reported used.
+            KeyCode::KeyA if ctrl && !alt => {
+                self.handle_select_all();
+                true
+            }
+            KeyCode::KeyC if ctrl && !alt => {
+                self.handle_copy();
+                true
+            }
             KeyCode::KeyV if ctrl && !alt => {
                 self.handle_paste();
+                true
             }
-            KeyCode::KeyX if ctrl && !alt => self.handle_cut(),
-            KeyCode::KeyZ if ctrl && !alt && shift => self.handle_redo(),
-            KeyCode::KeyZ if ctrl && !alt => self.handle_undo(),
-            KeyCode::KeyY if ctrl && !alt => self.handle_redo(),
+            KeyCode::KeyX if ctrl && !alt => {
+                self.handle_cut();
+                true
+            }
+            KeyCode::KeyZ | KeyCode::KeyY if ctrl && !alt => {
+                if key == KeyCode::KeyY || shift {
+                    self.handle_redo();
+                } else {
+                    self.handle_undo();
+                }
+                true
+            }
+            // A repeat of the key that activated the node does nothing
+            // (issue #228), so it is unused.
             KeyCode::Enter | KeyCode::Space
                 if !ctrl && matches!(self.focus_target, FocusTarget::Node(_)) =>
             {
+                let fresh = self.press_is_fresh(key, repeat);
                 if let FocusTarget::Node(id) = self.focus_target
-                    && self.press_is_fresh(key, repeat)
+                    && fresh
                 {
                     self.node_activation_held = Some(key);
                     self.activate_focused_node(id, vp_w, vp_h);
                     actions.push(AppAction::RequestRedraw);
                 }
+                fresh
             }
             KeyCode::Enter if !ctrl => self.handle_enter(shift),
             // Space with no Node target falls through to the `_` arm below —
@@ -2847,6 +2886,7 @@ impl RinchApp {
                     self.open_select_popup(id, vp_w, vp_h);
                     actions.push(AppAction::RequestRedraw);
                 }
+                true
             }
             KeyCode::ArrowUp | KeyCode::ArrowDown => self.handle_text_key(key, modifiers),
             _ => {
@@ -2868,12 +2908,16 @@ impl RinchApp {
                     && !t.is_empty()
                 {
                     self.handle_text_input(t);
+                    true
                 } else {
-                    // The end of rinch's key handling, with nothing done:
-                    // the shell may give the key back to the platform.
-                    self.key_down_unused = true;
+                    false
                 }
             }
+        };
+        // The end of rinch's key handling: with nothing done, the shell may
+        // give the key back to the platform.
+        if !used {
+            self.key_down_unused = true;
         }
         false
     }
