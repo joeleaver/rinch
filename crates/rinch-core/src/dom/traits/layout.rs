@@ -127,7 +127,9 @@ pub trait DomLayout {
     /// rounds from its unrounded layout, half up (`floor(x + 0.5)`), which is
     /// Chrome's rounding; Firefox rounds a negative tie away from zero
     /// (-8.5 to -9 where Chrome and desktop answer -8), so there the hosts
-    /// differ by a pixel. A box desktop places after its layout engine (an
+    /// differ by a pixel. Chrome also quantizes layout to 1/64 px before it
+    /// rounds while desktop rounds its `f32` layout, so within 1/64 px of a
+    /// tie the two can differ by a pixel too. A box desktop places after its layout engine (an
     /// absolute whose containing block is not its parent, an atomic inline)
     /// or one with no layout node of its own (an inline element) is measured
     /// from its laid-out, already-rounded box. No browser API gives the

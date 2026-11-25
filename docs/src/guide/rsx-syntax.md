@@ -1070,6 +1070,8 @@ pixels** on both hosts, each step up the chain rounded on its own as a
 browser rounds `offsetLeft`: half up, so a box 8.25px in answers 8 and one
 8.5px in answers 9 (a box 0.5px left of its parent answers 0 in Chrome and
 on desktop, -1 in Firefox, which rounds a negative half away from zero).
+Chrome quantizes layout to 1/64 px before rounding while desktop rounds its
+`f32` layout, so within 1/64 px of a tie the two can differ by a pixel.
 Where the pixel grid matters to more than layout, use `bounding_rect()`.
 
 ## Fragments

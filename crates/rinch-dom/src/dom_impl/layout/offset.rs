@@ -16,7 +16,10 @@ use crate::node::NodeTree;
 /// `offsetLeft`: the offset of a box's unrounded border box from its
 /// `offsetParent`'s unrounded padding edge, half up (`floor(x + 0.5)`,
 /// Chrome 158's rounding; Firefox 160 rounds a negative tie away from zero),
-/// and the width and height their own unrounded lengths rounded. Summing
+/// and the width and height their own unrounded lengths rounded. Chrome
+/// quantizes layout to 1/64 px (`LayoutUnit`) before it rounds, and this
+/// rounds the `f32` layout, so within 1/64 px of a tie the two can answer a
+/// pixel apart. Summing
 /// the rounded layout instead takes the difference of two edges each rounded
 /// where it falls in the page, which differs by a pixel wherever the
 /// `offsetParent` sits at a fraction (#3065 review).
