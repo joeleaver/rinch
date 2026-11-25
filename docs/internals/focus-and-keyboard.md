@@ -928,7 +928,7 @@ beside it:
   the menu at the new point on a field (GTK, Chrome) or opens whatever context
   menu is there; other presses outside are still swallowed.
 - **A field disabled under its open menu closes it** (`text_menu_target_is_live`).
-- F12 / Alt+I, Tab and every other key stay swallowed while a popup is open.
+- F12, Tab and every other key stay swallowed while a popup is open.
 Pins: `app/runtime_popup_822_tests.rs`.
 
 **Key auto-repeat: the press says so** (#463). Enter/Space on a focused
@@ -969,6 +969,46 @@ track held keys by `k.code`. But a second event can be swallowed too; a fact car
 press being judged** cannot. `RinchApp::press_is_fresh` is the one place that
 decides, and `Fresh` is authoritative *over* the latch — that is the repair, not
 a tie-break.
+
+**What Android is told about each key** (#3062). android-activity asks the
+input callback for an `InputStatus` per event, and the shell used to answer
+`Handled` for everything, so the system's default for a key never ran: the
+volume and media keys did nothing, and Back never left the app. Now
+`android_runtime/input.rs` dispatches each key **inside** that callback and
+answers from `shell/android_key_status.rs` (`KeyAnswers`, host-compiled and
+unit-tested):
+
+- A key the translator drops (no rinch `KeyCode` and no character) and an
+  action rinch does not read (`ACTION_MULTIPLE`) are `Unhandled`. A dead key
+  is not dropped in that sense: the translator keeps its accent, so it stays
+  `Handled`.
+- Back reaches the app as Escape, so a dismiss entry, an app key listener or a
+  handler takes it first, the way Chrome on Android closes the top popup
+  before it goes back. The press is `Unhandled` when
+  `RinchApp::key_down_unused` says nothing used it, and the release follows
+  its press: the system goes back on the release, and only for a press it saw
+  unhandled.
+- Every other delivered key stays `Handled`, used or not. That includes a
+  hardware Escape, because Android's generic key map turns an unhandled
+  Escape into a Back.
+
+`RinchApp::key_down_unused` is set only where key handling ends with nothing
+done: the unclaimed-key fallback when its default action did nothing, a focused
+editor that had no binding or text for the key (or a Tab that neither the
+editor nor `handle_tab` used), a `<select>` claim with no popup open, and an
+unmounted editor. In the fallback each default action answers whether it acted
+(PR #3072's review): `handle_tab` (moved the focus, or a `trap_focus` overlay
+kept it; nothing focusable and no trap is unused), `handle_text_key` (extended
+the read-only selection, or a live field holds the keyboard and the keymap
+gives the key an action), `handle_enter` (fired change or submit, or inserted a
+line break in an editable `<textarea>`), a focused node's Enter/Space
+(`press_is_fresh`: an auto-repeat is unused), a keyboard scroll, and text typed
+into a field. The clipboard, select-all and undo chords count as used whatever
+they found. A focused `RenderSurface` uses a key only by claiming it with
+`set_key_handler`; an unclaimed one goes through the fallback like any other,
+so Back can leave a game. It is reset by every `KeyDown`, and a `KeyUp` leaves
+it alone. Tests are in `app/key_down_unused_3062_tests.rs` and
+`app/key_down_unused_review_3072_tests.rs`. Not checked on a device.
 
 Not carried to `KeyEventData`, so a registered node's `on_key` still cannot tell
 a repeat from a press: the honest field is the same three-state one, and

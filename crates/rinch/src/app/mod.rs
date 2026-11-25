@@ -107,6 +107,10 @@ mod devtools_keys;
 mod devtools_keys_2689_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod img_error_2202_tests;
+#[cfg(test)]
+mod key_down_unused_3062_tests;
+#[cfg(test)]
+mod key_down_unused_review_3072_tests;
 mod spellcheck;
 #[cfg(test)]
 mod spellcheck_tests;
@@ -1600,8 +1604,11 @@ pub struct RinchApp {
     /// Smooth wheel scrolling (#2287): whether it is on, and the scrollers
     /// gliding now.
     pub(crate) smooth_wheel: smooth_wheel::SmoothWheelState,
-    /// Whether F12 and Alt+I reach DevTools and inspect mode (#2689).
+    /// Whether F12 reaches DevTools (#2689).
     pub(crate) devtools_keys: devtools_keys::DevToolsKeys,
+    /// Whether rinch had no use for the last `KeyDown` (#3062): see
+    /// [`RinchApp::key_down_unused`].
+    pub(crate) key_down_unused: bool,
     /// App-bundled fonts, kept for the life of the app rather than drained.
     ///
     /// `mount_component` builds a *new* document with its own font context and
@@ -1777,6 +1784,7 @@ impl RinchApp {
             title_tooltip: Default::default(),
             smooth_wheel: Default::default(),
             devtools_keys: Default::default(),
+            key_down_unused: false,
             pending_fonts: Vec::new(),
             system_fonts_generation,
             scope_context_to_doc: false,
@@ -4748,9 +4756,14 @@ impl RinchApp {
     /// measured for the deletes; Blink's selection modifier moves by line
     /// there): a word delete deletes to the value's start or end and a word
     /// move goes there, so neither reveals where the spaces are.
-    fn handle_text_key(&mut self, key: KeyCode, modifiers: Modifiers) {
+    ///
+    /// Answers whether the key was used (`RinchApp::key_down_unused`, #3062):
+    /// it extended the read-only selection, or a text field holds the keyboard
+    /// and the keymap gives the key a caret or delete action there. With no
+    /// field and no selection to extend, nothing below acts.
+    fn handle_text_key(&mut self, key: KeyCode, modifiers: Modifiers) -> bool {
         let Some(action) = text_key_action(self.text_keymap, key, modifiers) else {
-            return;
+            return false;
         };
         // With no field holding the keyboard, a Shift chord extends the
         // read-only selection (#2953).
@@ -4764,7 +4777,10 @@ impl RinchApp {
             && self.live_focused_input_handler().is_none()
             && self.extend_text_selection_by_key(motion)
         {
-            return;
+            return true;
+        }
+        if self.live_focused_input_handler().is_none() {
+            return false;
         }
         let password = self.focused_input_is_password();
         match action {
@@ -4791,8 +4807,9 @@ impl RinchApp {
                     (true, true) => EditCommand::DeleteToLineEnd,
                 })
             }
-            TextKeyAction::Inert | TextKeyAction::ScrollPage { .. } => {}
+            TextKeyAction::Inert | TextKeyAction::ScrollPage { .. } => return false,
         }
+        true
     }
     /// Whether the focused text field is an `<input type="password">`.
     fn focused_input_is_password(&self) -> bool {
@@ -4841,13 +4858,18 @@ impl RinchApp {
     ///
     /// `shift` is what separates a `<textarea>`'s two meanings for the key —
     /// see the newline block below. An `<input>` ignores it.
-    fn handle_enter(&mut self, shift: bool) {
+    ///
+    /// Answers whether Enter did something (`RinchApp::key_down_unused`,
+    /// #3062): fired the field's change or submit handler, or inserted a line
+    /// break. Enter in a field that listens for neither, or with no field
+    /// focused, is unused.
+    fn handle_enter(&mut self, shift: bool) -> bool {
         // Check if a text input is focused and has onchange/onsubmit handlers.
         // Probe liveness first: with a freed id the block below still runs, the
         // node lookups match nothing, and Enter is swallowed rather than falling
         // through to the global handlers (issue #141).
         if self.live_focused_input_handler().is_none() {
-            return;
+            return false;
         }
         // Enter is a commit boundary but not an edit command, so neither of
         // `handle_input_edit_command`'s adopts has run: pull in any pending
@@ -4892,11 +4914,13 @@ impl RinchApp {
         // submit — and only if the value changed since the gesture began. A
         // `<textarea>` is exempt: browsers never fire change on Enter there,
         // so its gesture (and baseline) runs until blur.
+        let mut used = false;
         if !is_textarea
             && self.focused_input_value != self.focused_input_baseline
             && let Some(hid) = change_handler_id
             && events::has_input_handler(events::EventHandlerId(hid))
         {
+            used = true;
             // Payload: the live `value` attribute — what the field displays and
             // what the web backend delivers — falling back to the keystroke
             // buffer. The buffer-vs-baseline gate above stays authoritative for
@@ -4957,8 +4981,11 @@ impl RinchApp {
             // carries the caret and fires `oninput` exactly as a typed
             // character does — on the web a line break *is* an input event
             // (`inputType: insertLineBreak`), not a separate kind of edit.
+            // A read-only `<textarea>` refuses the edit.
+            used |= !self.focused_input_is_readonly();
             self.handle_input_edit_command(EditCommand::InsertNewline);
         } else if let Some(handler_id) = submit_handler_id {
+            used = true;
             events::dispatch_event(events::EventHandlerId(handler_id));
 
             // After onsubmit, the handler may have changed the signal (e.g., cleared it).
@@ -4971,6 +4998,7 @@ impl RinchApp {
             // (A textarea never committed — its gesture continues.)
             self.focused_input_baseline = self.focused_input_value.clone();
         }
+        used
     }
     /// ArrowUp / ArrowDown in the focused text field (issue #307).
     ///
@@ -5608,7 +5636,11 @@ impl RinchApp {
     // ── Tab navigation ─────────────────────────────────────────────────
 
     /// Handle Tab/Shift+Tab key to navigate between focusable elements.
-    fn handle_tab(&mut self, shift: bool) {
+    ///
+    /// Answers whether Tab was used (`RinchApp::key_down_unused`, #3062): it
+    /// moved the focus, or an open `trap_focus` overlay kept it. With no trap
+    /// and nothing focusable in the document, Tab is unused.
+    fn handle_tab(&mut self, shift: bool) -> bool {
         // Find current focused element: a focused input, a generic focusable
         // node held by the arbiter, or — falling back — the DOM's focused node
         // resolved upward to its nearest focusable ancestor (a pointer click
@@ -5640,13 +5672,13 @@ impl RinchApp {
             let d = self.doc.as_ref()?.borrow();
             d.tree.focused_node
         });
-        let root = self.tab_trap_root(current).unwrap_or(0);
-        let TabStops { stops, probe_rank } = self.collect_tab_stops_from(root, probe);
+        let trap = self.tab_trap_root(current);
+        let TabStops { stops, probe_rank } = self.collect_tab_stops_from(trap.unwrap_or(0), probe);
         // A trap with nothing focusable inside it swallows Tab rather than
         // letting it out: that is what containment means, and it is the state a
         // browser leaves an `inert`-ed page in too.
         if stops.is_empty() {
-            return;
+            return trap.is_some();
         }
         // The sequence (issue #435): positive `tabindex` ascending, then `0`,
         // ties in tree order — a stable sort of the tree-ordered stops. The
@@ -5713,6 +5745,7 @@ impl RinchApp {
         {
             handle.spell_user_focus();
         }
+        true
     }
 
     /// The Tab sequence over tree-ordered `stops` (issue #435): every positive
