@@ -2,13 +2,15 @@
 //! browser: the moved card gets the focus once the redraw that applies the
 //! drop is drawn.
 //!
-//! rinch-web blurs a focused node before it removes or moves it, while the
-//! node is still in place, so the browser's `focusout` (no `relatedTarget`)
-//! tells the sortable's focus request that the focus fell to `<body>` with
-//! the lifted card still drawn, before the redraw has drawn anything. That
-//! must not end the request: a redraw keyed by position draws the card again
-//! as a new node, and a redraw keyed by card moves the card's own node. A
-//! blur with no redraw (a click on blank space) does end it.
+//! rinch-web blurs a focused node before it removes it (or moves it, where
+//! the browser has no `moveBefore`), while the node is still in place, so
+//! the browser's `focusout` (no `relatedTarget`) tells the sortable's focus
+//! request that the focus fell to `<body>` with the lifted card still drawn,
+//! before the redraw has drawn anything. That must not end the request: a
+//! redraw keyed by position draws the card again as a new node. A redraw
+//! keyed by card moves the card's own node, which keeps the focus where
+//! `moveBefore` is (both browsers here). A blur with no redraw (a click on
+//! blank space) does end the request.
 //!
 //! One keyboard list, c1 [a b c d], whose `ondrop` records the drop and
 //! applies nothing; the test applies it a turn later, as an app does after
@@ -198,8 +200,40 @@ fn apply_drop(cards: Signal<Vec<String>>) {
 async fn applied_later_focuses_the_card(rows: Rows) {
     let cards = drop_a_last(rows).await;
     let old = item("a");
+    // Every focus change the redraw makes, as the browser reports it.
+    let seen = std::rc::Rc::new(RefCell::new(Vec::<String>::new()));
+    let log = {
+        let seen = seen.clone();
+        wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::FocusEvent)>::new(
+            move |e: web_sys::FocusEvent| seen.borrow_mut().push(e.type_()),
+        )
+    };
+    for name in ["focusin", "focusout"] {
+        document()
+            .add_event_listener_with_callback_and_bool(name, log.as_ref().unchecked_ref(), true)
+            .unwrap();
+    }
     apply_drop(cards);
+    let during = seen.borrow().clone();
+    for name in ["focusin", "focusout"] {
+        document()
+            .remove_event_listener_with_callback_and_bool(name, log.as_ref().unchecked_ref(), true)
+            .unwrap();
+    }
     assert_eq!(drawn(), ["b", "c", "d", "a"], "control: applied");
+    // A redraw by position removes the focused card: rinch-web blurs it
+    // first. A keyed move uses `moveBefore` where the browser has it (Chrome
+    // and Firefox here), which keeps the focus and fires nothing; where it
+    // has not, the move is a removal and blurs it like the removal does
+    // (that order is `focus_tests.rs`'s
+    // `a_keyed_move_after_the_web_blur_focuses_the_item`).
+    if matches!(rows, Rows::ByIndex) {
+        assert_eq!(
+            during.first().map(String::as_str),
+            Some("focusout"),
+            "control: the redraw blurred the lifted card first ({during:?})"
+        );
+    }
     match rows {
         Rows::ByIndex => assert!(!old.is_same_node(Some(&item("a"))), "control: drawn again"),
         Rows::ByCard => assert!(old.is_same_node(Some(&item("a"))), "control: moved"),
@@ -219,7 +253,8 @@ async fn a_redraw_by_position_gives_the_dropped_card_the_focus() {
     applied_later_focuses_the_card(Rows::ByIndex).await;
 }
 
-/// Keyed by card: the redraw moves `a`'s own node last (blurring it first).
+/// Keyed by card: the redraw moves `a`'s own node last (`moveBefore`, the
+/// focus kept; a guard, which passes on the old rule too).
 #[wasm_bindgen_test]
 async fn a_keyed_move_gives_the_dropped_card_the_focus() {
     applied_later_focuses_the_card(Rows::ByCard).await;

@@ -430,7 +430,9 @@ drives it. What such a host must also give the guest:
   already drawn; without them it is focused only when a new node of it is
   drawn with the list in the drop's order. A drop applied by a keyed move
   (the item keeps its node) is then never checked: the item keeps the focus
-  it held, and the request waits for the next drag or the focus leaving it.
+  it held, and the request waits for the next drag or the focus moving to
+  another element. The focus falling to blank space is decided by a timer
+  too, so without them it ends nothing.
 - **The drag ghost.** Lists carry `data-drag-ghost="false"` (all but a
   `preview: SortPreview::Snapshot` one): the component draws the drag itself,
   and a host that paints a ghost should read the attribute on the source or
