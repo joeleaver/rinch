@@ -74,6 +74,12 @@ impl TestApp {
                     }
                     continue;
                 }
+                if matches!(event, RinchNativeEvent::RegisterFonts) {
+                    // `rinch::font::register_font`: the app's, whichever
+                    // window's code sent it (#3042), as the shell serves it.
+                    self.register_queued_fonts();
+                    continue;
+                }
                 let (window, doc) = match to {
                     EventFor::Window(window) => (Some(window), None),
                     EventFor::Sender(doc) => (None, doc),
@@ -111,6 +117,8 @@ impl TestApp {
                 }
             }
         }
+        // Whatever became of the event that asked, as the shell's every turn.
+        self.register_queued_fonts();
         self.serving = false;
     }
 

@@ -84,7 +84,7 @@ impl NativeEventQueue {
         Self::with_drainer(Drainer::Runtime)
     }
 
-    pub(super) const fn with_drainer(drainer: Drainer) -> Self {
+    pub(crate) const fn with_drainer(drainer: Drainer) -> Self {
         Self {
             events: VecDeque::new(),
             rerender_pending: false,
@@ -149,6 +149,12 @@ impl NativeEventQueue {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.events.is_empty()
+    }
+
+    /// What will drain the queue: whether a send now is kept for a runtime
+    /// to come, queued to a running one, or dropped in an embed host.
+    pub(crate) fn drainer(&self) -> Drainer {
+        self.drainer
     }
 
     fn holds_exit(&self) -> bool {
@@ -226,11 +232,6 @@ impl NativeEventQueue {
             self.clear();
         }
         exit
-    }
-
-    #[cfg(test)]
-    pub(super) fn drainer(&self) -> Drainer {
-        self.drainer
     }
 }
 

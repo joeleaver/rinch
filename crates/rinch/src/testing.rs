@@ -412,6 +412,7 @@ mod lifecycle;
 mod played_outputs;
 /// Reading a document, the main window's or a child's.
 mod read;
+mod registered_fonts;
 mod target;
 mod test_window;
 mod window_state;
@@ -502,6 +503,14 @@ pub(crate) fn stands_in_layer_shell() -> bool {
 thread_local! {
     /// The live `TestApp`s of this thread, newest last.
     static SINKS: RefCell<Vec<Rc<Sink>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether a [`TestApp`] is live on this thread: it then takes every native
+/// event sent here ([`capture_native_event`]).
+pub(crate) fn has_test_app() -> bool {
+    SINKS
+        .try_with(|sinks| !sinks.borrow().is_empty())
+        .unwrap_or(false)
 }
 
 /// Take `event` for a [`TestApp`] on this thread, if one is live: the one

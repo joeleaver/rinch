@@ -16,7 +16,7 @@ pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy> = OnceLock::new();
 
 mod queue;
 
-use queue::Drainer;
+pub(super) use queue::Drainer;
 pub(crate) use queue::{EventFor, NativeEventQueue};
 
 /// Queue of native events to process on the next proxy_wake_up.
@@ -32,6 +32,11 @@ pub(super) static NATIVE_EVENT_QUEUE: Mutex<NativeEventQueue> =
         Drainer::Coming
     }));
 
+/// What will drain the native event queue now ([`Drainer`]).
+pub(super) fn native_event_drainer() -> Drainer {
+    NATIVE_EVENT_QUEUE.lock().unwrap().drainer()
+}
+
 /// Note that a desktop runtime exists, so native events are queued for it
 /// (#2801). Called by `RinchRuntime::with_app`, before anything of its app.
 pub(super) fn note_runtime_made() {
@@ -42,7 +47,23 @@ pub(super) fn note_runtime_made() {
 /// no desktop runtime made, the process is an embed host (#2801).
 #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 pub(crate) fn note_embed_host() {
-    NATIVE_EVENT_QUEUE.lock().unwrap().note_embed_host();
+    note_embed_host_in(&NATIVE_EVENT_QUEUE);
+}
+
+/// [`note_embed_host`] on `queue`, which its unit tests make their own.
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+pub(super) fn note_embed_host_in(queue: &Mutex<NativeEventQueue>) {
+    let became = {
+        let mut queue = queue.lock().unwrap();
+        let before = queue.drainer();
+        queue.note_embed_host();
+        before != queue.drainer()
+    };
+    // The faces `register_font` queued for the runtime that will not come
+    // go with the window requests kept for it (#3042).
+    if became {
+        super::registered_fonts::drop_queued();
+    }
 }
 
 /// Whether [`exit`](crate::exit) was asked for before the run that is
@@ -82,10 +103,16 @@ fn run_unless_exit_asked_in<R>(
     struct RunEnds<'a>(&'a Mutex<NativeEventQueue>);
     impl Drop for RunEnds<'_> {
         fn drop(&mut self) {
-            self.0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .note_run_ended();
+            let mut queue = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            queue.note_run_ended();
+            // Back to an embed host: the faces queued after the run's last
+            // turn would never be taken (#3042). Back to `Coming`, they wait
+            // for the next run's runtime, which takes them as it is made.
+            #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
+            if queue.drainer() == Drainer::EmbedHost {
+                drop(queue);
+                super::registered_fonts::drop_queued();
+            }
         }
     }
     let _ends = RunEnds(queue);
@@ -102,6 +129,14 @@ fn run_unless_exit_asked_in<R>(
 #[doc(hidden)]
 pub fn __native_events_queued() -> usize {
     NATIVE_EVENT_QUEUE.lock().unwrap().events.len()
+}
+
+/// Empty the native event queue: for a crate test outside the shell that
+/// sent to it with no runtime to drain it, holding
+/// `RERENDER_EVENTS_TEST_LOCK` as the tests that count its events do.
+#[cfg(test)]
+pub(crate) fn drain_native_queue_for_test() {
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
 }
 
 /// Queue a native event and wake the event loop. A `ReRender` while one is
@@ -288,6 +323,9 @@ pub enum RinchNativeEvent {
     ApplyVsync,
     /// Apply the zoom `rinch::window::set_zoom` set to every open window.
     ApplyZoom,
+    /// Register the faces `rinch::font::register_font` queued with every
+    /// open window, and keep them for windows opened later.
+    RegisterFonts,
     /// Show a Wayland layer-shell window on this output (#1523).
     SetWindowOutput(Option<String>),
     /// Start moving the window with the pointer (#1523).

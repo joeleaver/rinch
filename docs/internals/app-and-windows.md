@@ -147,6 +147,66 @@ registration is kept as a `PendingFont { font, fill_empty_generics }` so the
 mount replays the same policy onto the document's context that the hit-test
 context got.
 
+**Faces registered while the app runs: `rinch::font::register_font`** (#3042).
+The `RinchApp` that owns the font contexts belongs to the desktop shell, so
+component code cannot call `register_app_font` itself. `register_font` (UI
+thread only, like `set_zoom`) hands the face to
+`shell/rinch_runtime/registered_fonts.rs`, which queues it on a thread-local
+and decides from what will drain the native event queue (`Drainer`, #3015)
+whether to wake anything:
+
+- **A runtime is running** (`Drainer::Runtime`), or a `TestApp` is live on the
+  thread: the face is queued, and the first face of a run sends
+  `RinchNativeEvent::RegisterFonts`; faces queued behind it ride the same
+  event, so a run of registrations costs one event. The runtime's turn
+  (`RinchRuntime::register_queued_fonts`) takes the queue, registers the faces
+  on every open window's app (`roles()`: main, DevTools, others), asks each OS
+  window for a redraw, and appends them to `RinchRuntime::fonts`, which
+  `new_other_window` makes later windows with. The registration's root-dirty
+  mark (#2749) is what makes that frame re-shape text already drawn in a
+  fallback. `TestApp` serves the event in `serve_window_requests`
+  (`testing/registered_fonts.rs`): its window and its open children register
+  the faces, and its `fonts` keep them for children opened later.
+  `TestApp::mount` takes the queue after the builder's `fonts`, as `with_app`
+  does, so a face registered before the mount reaches its window.
+- **The event is the app's, and only a wake.** `handle_native_event` serves
+  `RegisterFonts` before `role_for`, like `OpenWindow` and `Exit`, and
+  `TestApp` before its child routing: a windowless app's tray or menu callback
+  (`Sender(None)`), a call after the main window closed, or one from a window
+  that closed before the turn has no window to route to, and the event used to
+  be ignored ("not open") or handed to a child that dropped it. Since the next
+  face sends an event only when the queue goes from empty to one, that left
+  every later face queued for good. Now, besides, every turn
+  (`run_native_events`) and every `TestApp` serve takes the queue whatever
+  became of the event, so no lost or misrouted event can leave it stuck: the
+  next turn of any kind registers the faces and empties the queue, and the
+  face after that wakes the loop again.
+- **No runtime yet** (`Drainer::Coming`, an app's `main`): the face is queued
+  and no event is sent, so calls in `main` keep none of the queue's
+  `KEPT_BEFORE_RUN` places. `RinchRuntime::with_app` takes the queue after the
+  build's own `.fonts()`, so a face registered in `main` reaches the first
+  frame.
+- **An embed host** (`Drainer::EmbedHost`): nothing will ever take the face,
+  so it is dropped (debug log) rather than kept; the host registers with
+  `RinchContext::register_app_font`. Faces queued before the process turned
+  out to be one (in `main`, before its first `RinchContext`) are dropped when
+  it does (`wake::note_embed_host`), and so are any queued after the last turn
+  of a run that ends in one (`run_unless_exit_asked`'s `RunEnds`), as the
+  window requests kept for a runtime are. A run that ends with no
+  context made keeps them for the next run's runtime, which takes them as it
+  is made. When a desktop runtime is made after faces were dropped this way
+  (an app that made a `RinchContext` in `main` before `App::run`),
+  `RinchRuntime::with_app` logs one `warn` with the count
+  (`registered_fonts::warn_dropped`); a plain embed host never makes a
+  runtime, so it logs only the `debug` lines. A context's code calling it
+  while a desktop runtime runs in the same process registers with the
+  runtime's windows, not the context.
+
+A face identical to one already queued or registered (`AppFont::is_same_face`:
+the same bytes, generics and `script_fallback`) is skipped, at the queue and
+against `RinchRuntime::fonts` (a `TestApp`'s `fonts`), so asking for one face
+twice grows no font list. Web and Android builds compile it as a no-op.
+
 **Font bytes are `FontData`, owned or `'static`** (#2101). `AppFont::data` is a
 `FontData` (`&'static [u8]` or an `Arc<dyn AsRef<[u8]> + Send + Sync>`, from
 `Vec<u8>`, `Box<[u8]>`, `Arc<[u8]>`, `Arc<Vec<u8>>` or `peniko::Blob<u8>`), so

@@ -42,6 +42,11 @@ pub(super) struct Child {
 }
 
 impl Child {
+    /// Register `fonts` with its document (`rinch::font::register_font`).
+    pub(super) fn register_app_fonts(&mut self, fonts: &[crate::font::AppFont]) {
+        self.window.app_mut().register_app_fonts(fonts);
+    }
+
     /// Open the window `open_window` opened as `id`, as the shell makes a
     /// second window up to its OS window, then give it its first
     /// configure, as `create_window` does: the surface, its scale, and a
@@ -104,6 +109,12 @@ impl Child {
     /// Its document's key.
     pub(super) fn doc(&self) -> u64 {
         self.window.app().doc_key()
+    }
+
+    /// Its app, for the in-crate tests that read what it registered.
+    #[cfg(test)]
+    pub(super) fn app(&self) -> &crate::app::RinchApp {
+        self.window.app()
     }
 
     /// The surface for the next event: the test's, once, else the stand-in,
