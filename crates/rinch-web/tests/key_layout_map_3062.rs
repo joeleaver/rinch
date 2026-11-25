@@ -17,6 +17,9 @@ use rinch_core::element::ThemeProviderProps;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
+#[path = "support/engine.rs"]
+mod engine;
+
 wasm_bindgen_test_configure!(run_in_browser);
 
 /// Resolve after `ms` of wall clock.
@@ -64,6 +67,13 @@ async fn the_layout_map_is_asked_at_mount_not_at_the_first_key() {
     }
     root.unmount();
     host.remove();
+    // The engines' own answer, so the test cannot pass on the branch
+    // without the map by accident: Chromium has it, Gecko does not.
+    assert_eq!(
+        has_layout_map(),
+        !engine::is_gecko(),
+        "Chromium has getLayoutMap, Firefox does not"
+    );
     if has_layout_map() {
         assert!(
             known.is_some(),
