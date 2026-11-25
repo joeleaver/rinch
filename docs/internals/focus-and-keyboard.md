@@ -47,10 +47,19 @@ Pins: `app/element_key_1678_tests.rs`,
 `set_keyboard_interceptor` (whose one slot per document, second call replaces,
 stays as it was). Offered every key press the stages above left, in
 registration order, the first `true` consuming it (no later listener, no
-default; web `preventDefault` + `stopPropagation`); every release goes to every
-listener, answer ignored — except a release whose press a focused render
-surface claimed (`withhold_app_key_release`, cleared by that release or the
-next delivered press of the code). Entries are keyed by
+default; web `preventDefault` + `stopPropagation`); a release goes to every
+listener, answer ignored, **only when its press was offered to them** (#3062):
+`dispatch_app_key` records each press's physical `code` (`PRESSED`) and drops a
+release with no record, so a key whose press the interceptor, an element's
+`onkeydown`, the editor's `on_key`, a key entry or a focused surface took — or
+that an input method composed with — is not the listeners' on the way up
+either. A focused surface's claim also marks the code
+(`withhold_app_key_release`), which rinch-web reads
+(`app_key_release_withheld`) to stop only that release's propagation. The
+element's own `onkeyup` is deliberately **not** paired: it hears every release
+while its element holds the keyboard, whoever took the press, as a browser's
+`keyup` does (a `keydown` handler's `preventDefault` does not cancel the
+`keyup`). Entries are keyed by
 `current_dispatching_doc` at registration (`doc_matches`), carry their owner
 (dead owner skipped and pruned, `on_cleanup` removes at disposal), run
 untracked inside it; the handle's drop releases nothing (`remove()` does).
@@ -61,7 +70,8 @@ Desktop: `RinchApp::offer_app_key`, called from `key_events.rs`'s
 for an unclaimed key, in the `Editor` arm before its Tab handling and keymap
 (#3062), and on every KeyUp after the element's `onkeyup`; not while an open
 `<select>` list or the text context menu has the key, nor while the focused
-field shows a `data-preedit`. Web: the document bubble keydown delegate (a key
+field shows a `data-preedit` or the focused rich-text editor a preedit
+(`EditorHandle::is_composing`). Web: the document bubble keydown delegate (a key
 with nothing focused targets `<body>` and bubbles there) after the surface
 block and before the Tab trap, skipping `isComposing`/`Process`; for a key on
 an editor's capture textarea the editor's own listener asks them, between its
@@ -1208,8 +1218,11 @@ offered in this order, and the first party that consumes it ends the walk:
 | 6 | Rinch's defaults: the field's editing, Tab, activation, `onsubmit`, the DevTools keys. | `handle_unclaimed_key_fallback` |
 
 A release goes to the interceptor, then the element's `onkeyup` (whose
-consumption stops only its ancestors), then the app-wide listeners (except the
-release of a press a focused surface claimed).
+consumption stops only its ancestors), then the app-wide listeners — only when
+they were offered its press (`dispatch_app_key`'s `PRESSED` record), so a key
+an earlier step took, or an input method composed with, is not theirs on the
+way up. The element's `onkeyup` is not paired: it hears every release, as a
+browser's `keyup` does.
 
 Steps 0a, 0b and 1 beat the interceptor deliberately (#3062). An accelerator on
 Escape runs before Escape ends a drag because the shell asks the accelerators
@@ -1264,6 +1277,14 @@ Pins: `rinch-web/tests/key_order_3062.rs`, `element_key_1678.rs`,
 - On the web, keyups are no longer stopped while a surface is focused, unless
   the surface claimed the press.
 - On the web, a read-only editor's printable keys propagate to the page.
+- `on_app_key` listeners hear a release only when they heard its press: a key
+  the interceptor, an element's `onkeydown`, the editor's `on_key`, a key entry
+  or a focused surface took, or an input method composed with, no longer
+  reaches them on release (both backends). The element's own `onkeyup` still
+  hears every release while its element holds the keyboard, whoever took the
+  press; pair presses and releases there by tracking your own `onkeydown`.
+- On desktop, `on_app_key` is not offered a key while the rich-text editor
+  shows an IME composition (it already was not for a composing field).
 
 ## Keyboard scrolling (#2977)
 

@@ -75,10 +75,14 @@ fn key_data(event: &web_sys::KeyboardEvent, kind: events::KeyEventKind) -> event
 /// A release goes to the interceptor whatever its default: a release has no
 /// default for rinch to yield, and a held-key tracker must see every one.
 ///
-/// A page's own `window` capture listener registered **before** this one
-/// (before the first root mounted) runs first and can `preventDefault` a key
-/// away from rinch. One registered after it runs after the interceptor, as
-/// two `window` capture listeners run in the order they were added.
+/// Two `window` capture listeners run in the order they were added. A page's
+/// own one registered **before** this one (before the first root mounted or
+/// built its menu bar) runs first and can `preventDefault` a press away from
+/// rinch (not a release, which the interceptor hears regardless). One
+/// registered after it runs after this whole listener — menu chord, drag
+/// Escape and interceptor — and runs even for a press rinch consumed:
+/// `stopPropagation` keeps the event from other nodes, not from the later
+/// listeners on `window` itself, so that listener sees `defaultPrevented` set.
 pub(crate) fn ensure_window_key_capture() {
     if WINDOW_KEYS_INSTALLED.with(|f| f.replace(true)) {
         return;

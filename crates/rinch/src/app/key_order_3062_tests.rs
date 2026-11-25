@@ -436,3 +436,82 @@ fn an_editor_key_meets_the_interceptor_on_key_entries_and_listeners_in_order() {
     listener.remove();
     clear_keyboard_interceptor();
 }
+
+/// A listener that logs every press and release it is offered, by phase, and
+/// consumes none.
+fn log_app_keys(log: &Log) -> rinch_core::AppKeyListener {
+    let l = log.clone();
+    on_app_key(move |k| {
+        let phase = if k.is_up() { "up" } else { "down" };
+        l.borrow_mut().push(format!("app:{phase}:{}", k.key));
+        false
+    })
+}
+
+/// While the rich-text editor shows an IME composition its keys are the input
+/// method's: `on_app_key` is not offered them, press or release, as it is not
+/// offered a composing field's and the editor's `on_key` is not. Before the
+/// fix the desktop asked only a focused `<input>` whether it was composing.
+#[test]
+fn on_app_key_is_not_offered_an_editor_key_during_composition() {
+    clear_keyboard_interceptor();
+    let mut page = editor_page();
+    let log: Log = Default::default();
+    let listener = log_app_keys(&log);
+
+    page.handle.ime_set_preedit("ka", None);
+    assert!(page.handle.is_composing());
+    press(&mut page.app, KeyCode::KeyX, Some("x"));
+    assert_eq!(take(&log), Vec::<String>::new(), "the input method's key");
+
+    // Control: once the composition ends, the listener hears the editor's keys.
+    page.handle.ime_clear_preedit();
+    press(&mut page.app, KeyCode::KeyX, Some("x"));
+    assert_eq!(take(&log), ["app:down:x", "app:up:x"]);
+    listener.remove();
+}
+
+/// `on_app_key` hears a release only when it heard the press: a key the
+/// element's `onkeydown` or the editor's `on_key` consumed is not the
+/// listeners' on the way up either. The element's own `onkeyup` still hears
+/// every release, as a browser's `keyup` does.
+#[test]
+fn on_app_key_hears_a_release_only_after_its_press() {
+    clear_keyboard_interceptor();
+    let log: Log = Default::default();
+    let mut f = fields(&log);
+    f.focus_input();
+    take(&log);
+    let listener = log_app_keys(&log);
+
+    // F2 is the input's `onkeydown`'s.
+    press(&mut f.app, KeyCode::F2, None);
+    assert_eq!(take(&log), ["element:down:F2", "element:up:F2"]);
+
+    // Control: a key the element leaves reaches the listener both ways.
+    press(&mut f.app, KeyCode::F3, None);
+    assert_eq!(
+        take(&log),
+        [
+            "element:down:F3",
+            "app:down:F3",
+            "element:up:F3",
+            "app:up:F3"
+        ]
+    );
+    listener.remove();
+
+    // The editor's `on_key` consuming a press keeps its release too.
+    let mut page = editor_page();
+    let ol = log.clone();
+    page.handle.on_key(move |k| {
+        ol.borrow_mut().push(format!("on_key:{}", k.key));
+        k.key == "q"
+    });
+    let listener = log_app_keys(&log);
+    press(&mut page.app, KeyCode::KeyQ, Some("q"));
+    assert_eq!(take(&log), ["on_key:q"]);
+    press(&mut page.app, KeyCode::KeyW, Some("w"));
+    assert_eq!(take(&log), ["on_key:w", "app:down:w", "app:up:w"]);
+    listener.remove();
+}

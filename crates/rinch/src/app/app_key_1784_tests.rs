@@ -259,7 +259,8 @@ fn a_consumed_tab_moves_no_focus() {
 }
 
 /// Everything ahead of the listeners wins: the element's own `onkeydown`, the
-/// interceptor and the dismiss stack each consume a press it then never hears.
+/// interceptor and the dismiss stack each consume a press it then never hears,
+/// nor its release (#3062: a release follows its press).
 #[test]
 fn earlier_stages_that_consume_a_press_keep_it_from_the_listeners() {
     let mut f = mount();
@@ -272,18 +273,18 @@ fn earlier_stages_that_consume_a_press_keep_it_from_the_listeners() {
 
     // The tile's onkeydown takes F2.
     f.press(KeyCode::F2, None);
-    assert_eq!(take(&log), ["app:Up:F2"]);
+    assert_eq!(take(&log), Vec::<String>::new(), "its release too (#3062)");
 
     // A dismiss handler takes Escape.
     let doc_key = f.app.doc_key();
     let _dismiss = push_dismiss_handler(doc_key, || true);
     f.press(KeyCode::Escape, None);
-    assert_eq!(take(&log), ["app:Up:Escape"]);
+    assert_eq!(take(&log), Vec::<String>::new(), "its release too (#3062)");
 
     // The interceptor takes F3.
     set_keyboard_interceptor(|k| k.key == "F3");
     f.press(KeyCode::F3, None);
-    assert_eq!(take(&log), ["app:Up:F3"]);
+    assert_eq!(take(&log), Vec::<String>::new(), "its release too (#3062)");
     // ... and passes F4 on.
     f.press(KeyCode::F4, None);
     assert_eq!(take(&log), ["app:Down:F4", "app:Up:F4"]);
@@ -355,7 +356,8 @@ fn a_focused_registered_widget_takes_its_keys_before_the_listeners() {
     f.press(KeyCode::ArrowUp, None);
     assert_eq!(
         take(&log),
-        ["app:Up:ArrowDown", "app:Down:ArrowUp", "app:Up:ArrowUp"]
+        ["app:Down:ArrowUp", "app:Up:ArrowUp"],
+        "the widget's ArrowDown is not the listeners', press or release (#3062)"
     );
     // The widget is offered its releases too, after the listeners.
     assert_eq!(

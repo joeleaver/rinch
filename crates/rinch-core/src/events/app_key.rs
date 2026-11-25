@@ -35,6 +35,12 @@
 //! while the built-in text context menu or an open native `<select>` list owns
 //! the keyboard.
 //!
+//! **Releases** follow their press: a release is offered to the listeners only
+//! when its press was, so a key something ahead of them consumed, or an input
+//! method composed with, is not theirs on the way up either. The element's own
+//! `onkeyup` is not paired this way: it hears every release while its element
+//! holds the keyboard, as a browser's `keyup` does.
+//!
 //! **Whose keys.** On desktop a listener registered while a document's code
 //! runs hears that document's keys, and one registered from `main` every
 //! document's on the thread — a DevTools window's included. On rinch-web a
@@ -77,6 +83,13 @@ thread_local! {
     /// Physical codes whose press a focused render surface claimed: their
     /// release is the surface's too ([`withhold_app_key_release`]).
     static WITHHELD: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Physical codes whose press was offered to the listeners and whose
+    /// release has not come yet: only those releases are offered (#3062). A
+    /// press something earlier consumed (an interceptor, an element's
+    /// `onkeydown`, the editor's `on_key`, a key entry, a surface) or that an
+    /// input method composed with never reaches [`dispatch_app_key`], so its
+    /// release does not either.
+    static PRESSED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// A registered app-wide key listener (see [`on_app_key`]).
@@ -112,8 +125,12 @@ impl AppKeyListener {
 ///   and on rinch-web the event is `preventDefault`ed and its propagation
 ///   stopped. A **release** goes to every listener and the answer is ignored —
 ///   a release has no default to prevent, and a held-key tracker must see each
-///   one. The one release withheld is that of a key a focused render surface
-///   claimed: a surface's claimed keys are its own, press and release.
+///   one. A release is offered only when its **press** was: a key whose press
+///   something ahead of the listeners consumed (the interceptor, an element's
+///   `onkeydown`, the editor's `on_key`, a key entry, a focused surface's
+///   claim) or an input method composed with is not theirs, release included.
+///   A listener later in the list than one that consumed the press still hears
+///   the release, as every listener hears every release it was offered.
 /// - **Document.** Registered while a document's code runs (its render, an
 ///   effect it owns, its event handler), a listener hears that document's keys;
 ///   registered outside any — from `main` — it hears every document's. On
@@ -145,6 +162,11 @@ pub fn on_app_key(f: impl Fn(&KeyEventData) -> bool + 'static) -> AppKeyListener
 /// Offer a key to the app-wide listeners ([`on_app_key`]). Returns whether a
 /// listener consumed a **press**; a release always answers `false`.
 ///
+/// A press is recorded by its physical `code`, and a release is offered only
+/// when its press was (then the record is cleared): a backend calls this for
+/// every press that reaches the listeners' stage and every release, and a
+/// release whose press stopped earlier is dropped here.
+///
 /// Backends call this at the place the `module docs` name, after
 /// [`dispatch_popup_key`](super::dispatch_popup_key) answered
 /// `false` and a focused render surface did not claim the key. Listeners run
@@ -153,13 +175,15 @@ pub fn on_app_key(f: impl Fn(&KeyEventData) -> bool + 'static) -> AppKeyListener
 pub fn dispatch_app_key(data: &KeyEventData) -> bool {
     if data.is_up() {
         let withheld = WITHHELD.with(|w| w.borrow_mut().remove(&data.code));
-        if withheld {
+        let pressed = PRESSED.with(|p| p.borrow_mut().remove(&data.code));
+        if withheld || !pressed {
             return false;
         }
     } else {
         // A press that reached us: whatever an earlier release left marked for
         // this key is stale (that release never arrived — a window blur).
         WITHHELD.with(|w| w.borrow_mut().remove(&data.code));
+        PRESSED.with(|p| p.borrow_mut().insert(data.code.clone()));
     }
     crate::reactive::batch(|| dispatch_unbatched(data))
 }
@@ -253,6 +277,7 @@ mod tests {
         let reaped = LISTENERS.with_mut(|l| std::mem::take(&mut **l));
         drop(reaped);
         WITHHELD.with(|w| w.borrow_mut().clear());
+        PRESSED.with(|p| p.borrow_mut().clear());
     }
 
     /// Two parties both hear a key, in registration order, and a consuming
@@ -329,11 +354,53 @@ mod tests {
         });
         withhold_app_key_release("KeyW");
         dispatch_app_key(&up("KeyW"));
-        dispatch_app_key(&up("KeyW"));
         withhold_app_key_release("KeyS");
         dispatch_app_key(&down("KeyS"));
         dispatch_app_key(&up("KeyS"));
-        assert_eq!(*log.borrow(), ["Up:KeyW", "Down:KeyS", "Up:KeyS"]);
+        assert_eq!(*log.borrow(), ["Down:KeyS", "Up:KeyS"]);
+        clear();
+    }
+
+    /// A release reaches the listeners only when its press did (#3062): one
+    /// whose press stopped ahead of them is not theirs. A delivered press's
+    /// release is offered once, and a press a listener consumed still has its
+    /// release offered to every listener.
+    #[test]
+    fn a_release_is_offered_only_after_its_press_was() {
+        clear();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let l = log.clone();
+        let _a = on_app_key(move |k| {
+            l.borrow_mut().push(format!("a:{:?}:{}", k.kind, k.code));
+            k.code == "KeyC"
+        });
+        let l = log.clone();
+        let _b = on_app_key(move |k| {
+            l.borrow_mut().push(format!("b:{:?}:{}", k.kind, k.code));
+            false
+        });
+        // KeyX's press was consumed before the listeners' stage.
+        dispatch_app_key(&up("KeyX"));
+        dispatch_app_key(&down("KeyY"));
+        dispatch_app_key(&down("KeyY"));
+        dispatch_app_key(&up("KeyY"));
+        dispatch_app_key(&up("KeyY"));
+        assert!(dispatch_app_key(&down("KeyC")));
+        dispatch_app_key(&up("KeyC"));
+        assert_eq!(
+            *log.borrow(),
+            [
+                "a:Down:KeyY",
+                "b:Down:KeyY",
+                "a:Down:KeyY",
+                "b:Down:KeyY",
+                "a:Up:KeyY",
+                "b:Up:KeyY",
+                "a:Down:KeyC",
+                "a:Up:KeyC",
+                "b:Up:KeyC",
+            ]
+        );
         clear();
     }
 

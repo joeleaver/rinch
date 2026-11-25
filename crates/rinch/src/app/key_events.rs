@@ -64,34 +64,50 @@ impl RinchApp {
     }
 
     /// Offer a key to the app-wide listeners (`rinch_core::on_app_key`, issue
-    /// #1784) — after the interceptor, the key entries, the dismiss stack and a
-    /// focused render surface's claim, before the focused element's default:
-    /// the rich-text editor's keymap included (#3062). An open native
-    /// `<select>` list never gets this far; this leaves out a key while the
-    /// built-in text context menu is open or the focused field shows an IME
-    /// composition, as [`Self::offer_element_key`] does. A focus move a
-    /// listener made is applied before the key's default, as an element
-    /// handler's is.
+    /// #1784). [`Self::handle_key_down`] calls it for a press nothing earlier
+    /// consumed — after the text context menu, an open `<select>` list, the
+    /// interceptor, the focused editor's or node view's `on_key`, the focused
+    /// element's `onkeydown` and its ancestors', the popups' key entries and
+    /// the dismiss stack, and then (by the focus arbiter's holder) a focused
+    /// registered widget's `FocusEntry::on_key` or a focused render surface's
+    /// claim — and before rinch's defaults, the rich-text editor's keymap
+    /// included (#3062). [`Self::handle_key_up`] calls it for every release,
+    /// after the interceptor and the element's `onkeyup`; `dispatch_app_key`
+    /// offers a release only when its press was offered.
+    ///
+    /// A press is left out while the built-in text context menu is open, or
+    /// while the focused field or rich-text editor shows an IME composition:
+    /// a key the input method is composing with is the input method's, as
+    /// [`Self::offer_element_key`] and `EditorHandle::offer_key` leave it. A
+    /// focus move a listener made is applied before the key's default, as an
+    /// element handler's is.
     pub(super) fn offer_app_key(&mut self, data: &events::KeyEventData) -> bool {
-        if data.is_down() {
-            if self.open_text_menu.is_some() {
-                return false;
-            }
-            if let FocusTarget::Input(id) = self.focus_target
-                && self.doc.as_ref().is_some_and(|doc| {
-                    doc.borrow()
-                        .tree
-                        .get(id)
-                        .and_then(|n| n.attributes.get("data-preedit"))
-                        .is_some_and(|p| !p.is_empty())
-                })
-            {
-                return false;
-            }
+        if data.is_down() && (self.open_text_menu.is_some() || self.ime_composing()) {
+            return false;
         }
         let consumed = events::dispatch_app_key(data);
         self.drain_focus_requests(false);
         consumed
+    }
+
+    /// Whether the keyboard's holder shows an IME composition: a focused
+    /// field's `data-preedit`, or the focused rich-text editor's preedit.
+    fn ime_composing(&self) -> bool {
+        match self.focus_target {
+            FocusTarget::Input(id) => self.doc.as_ref().is_some_and(|doc| {
+                doc.borrow()
+                    .tree
+                    .get(id)
+                    .and_then(|n| n.attributes.get("data-preedit"))
+                    .is_some_and(|p| !p.is_empty())
+            }),
+            #[cfg(feature = "windowing")]
+            FocusTarget::Editor(container) => {
+                crate::editor::editor_for_doc(self.doc_key(), container)
+                    .is_some_and(|h| h.is_composing())
+            }
+            _ => false,
+        }
     }
 
     /// A key press, offered to each handler in turn until one consumes it
@@ -519,8 +535,9 @@ impl RinchApp {
             // prevent, and a held-key tracker must see every one.
             events::dispatch_key_interceptor(&key_data);
             self.offer_element_key(&key_data);
-            // Every release reaches the app-wide listeners too, but
-            // one whose press a focused surface claimed (#1784).
+            // The app-wide listeners hear a release only when they heard
+            // its press (#1784, #3062): `dispatch_app_key` drops one whose
+            // press something above consumed or an input method composed.
             self.offer_app_key(&key_data);
             actions.push(AppAction::RequestRedraw);
         }

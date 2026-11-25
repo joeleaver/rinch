@@ -283,7 +283,8 @@ fn a_focused_field_offers_its_keys() {
 }
 
 /// Everything ahead of the listeners wins: the element's own `onkeydown`, the
-/// dismiss stack and the interceptor.
+/// dismiss stack and the interceptor. The listener hears neither the press
+/// nor its release (#3062: a release follows its press).
 #[wasm_bindgen_test]
 fn earlier_stages_that_consume_a_press_keep_it_from_the_listeners() {
     let f = Fixture::mount();
@@ -292,16 +293,16 @@ fn earlier_stages_that_consume_a_press_keep_it_from_the_listeners() {
     let app = listen("app", &log, &[]);
 
     press("F2", "F2");
-    assert_eq!(take(&log), ["app:Up:F2"]);
+    assert_eq!(take(&log), Vec::<String>::new(), "its release too (#3062)");
 
     let dismiss = push_dismiss_handler(0, || true);
     press("Escape", "Escape");
-    assert_eq!(take(&log), ["app:Up:Escape"]);
+    assert_eq!(take(&log), Vec::<String>::new(), "its release too (#3062)");
     drop(dismiss);
 
     rinch_core::set_keyboard_interceptor(|k| k.key == "F3");
     press("F3", "F3");
-    assert_eq!(take(&log), ["app:Up:F3"]);
+    assert_eq!(take(&log), Vec::<String>::new(), "its release too (#3062)");
     press("F4", "F4");
     assert_eq!(take(&log), ["app:Down:F4", "app:Up:F4"]);
     rinch_core::clear_keyboard_interceptor();

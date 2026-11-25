@@ -872,7 +872,11 @@ fn studio() -> NodeHandle {
 - **Consuming.** Listeners are offered a press in registration order; the first
   to answer `true` consumes it: no later listener and no default sees it, and on
   the web the event is `preventDefault`ed and stops propagating. A release goes
-  to every listener and the answer is ignored.
+  to every listener and the answer is ignored, but only when the listeners
+  were offered its press: a key something earlier took (or an input method
+  composed with) is not theirs on the way up either. An element's own
+  `onkeyup` is different: it hears every release while its element holds the
+  keyboard, as a browser's `keyup` does.
 - **Not offered:** a press while an input method is composing, one the
   editor's `on_key` took, and on desktop one the built-in text context menu or
   an open native `<select>` list takes while open. A key a focused render
