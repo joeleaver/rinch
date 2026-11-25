@@ -37,7 +37,7 @@ mod view;
 
 pub use clock::{__set_history_clock, history_now_ms};
 pub use component::{Editor, OVERLAY_SLOT_ATTR};
-pub use handle::{EditorHandle, REVEAL_PATIENCE, ScrollAlign, SelectionAnchor};
+pub use handle::{EditorHandle, KeyBindError, REVEAL_PATIENCE, ScrollAlign, SelectionAnchor};
 pub use images::{
     ImageHover, ImageInput, ImageInputSource, clear_image_source, set_image_source,
     sniff_image_mime,
@@ -63,6 +63,10 @@ pub use rinch_core::dom::CaretAffinity;
 /// the [`EditorHandle`] collaboration methods.
 #[cfg(feature = "collaboration")]
 pub use rinch_editor_collab::{CollabError, OversizedTable, StickyAssoc, StickyLocation};
+/// A parsed key chord ([`EditorHandle::bind_key`]'s syntax) and whether keys
+/// arrive under macOS's conventions — together, a toolbar tooltip's chord
+/// (`KeyBinding::parse("Mod-b")?.label(host_is_macos())`: `⌘B` or `Ctrl+B`).
+pub use rinch_editor_core::{KeyBinding, keymap::host_is_macos};
 // Reconciliation ([`EditorHandle::collab_state_vector`] /
 // [`EditorHandle::collab_sync_diff`]) needs no re-exported engine types: a state vector
 // and a diff are both opaque `Vec<u8>`, and a diff is applied through the same

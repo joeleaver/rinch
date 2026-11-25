@@ -33,8 +33,10 @@
 //! Cmd+Shift+Z (#3062). A binding marked with [`Keymap::exclude_on_macos`]
 //! (a plugin lists it in [`Plugin::keys_not_on_macos`](crate::Plugin::keys_not_on_macos))
 //! is looked up as unbound while [`host_is_macos`] answers `true`. The answer is
-//! read at lookup time, not when the keymap is built: native builds answer by
-//! the target OS, and rinch-web sets it from `navigator.platform` on each key it
+//! read at lookup time, not when the keymap is built: it starts as the target
+//! OS, the desktop shell sets it from its app's text keymap (the one its
+//! single-line fields read) on each key, and rinch-web sets it from
+//! `navigator.platform` (any Apple platform: macOS, iOS, iPadOS) on each key it
 //! offers the editor, before an editor created ahead of the first mount could
 //! have been built with a wrong one.
 
@@ -47,8 +49,9 @@ thread_local! {
 
 /// Whether keys on this thread arrive under macOS's conventions, which turns
 /// off the bindings marked [`Keymap::exclude_on_macos`] (the module docs,
-/// "Bindings that are not macOS's"). Native builds answer by the target OS;
-/// rinch-web sets it from `navigator.platform`.
+/// "Bindings that are not macOS's"). It starts as the target OS; the desktop
+/// shell sets it from its app's text keymap on each key, and rinch-web from
+/// `navigator.platform`.
 pub fn host_is_macos() -> bool {
     HOST_MACOS.with(Cell::get)
 }
@@ -191,6 +194,60 @@ impl KeyBinding {
             }
         }
     }
+
+    /// The chord as a menu or tooltip shows it to the user: on macOS
+    /// (`macos = true`) Apple's symbols in Apple's order (⌥, ⇧, ⌘, then the
+    /// key: `"⇧⌘S"`, `"⌥⌘1"`), elsewhere the names joined by `+`
+    /// (`"Ctrl+Shift+S"`, `"Ctrl+Alt+1"`). [`Modifiers::primary`] is ⌘ / Ctrl,
+    /// as the keymap reads it. Pass [`host_is_macos`] for the platform the
+    /// keys arrive under.
+    pub fn label(&self, macos: bool) -> String {
+        let key = self.key.label(macos);
+        let m = self.mods;
+        if macos {
+            let mut s = String::new();
+            for (on, sym) in [(m.alt, '⌥'), (m.shift, '⇧'), (m.primary, '⌘')] {
+                if on {
+                    s.push(sym);
+                }
+            }
+            s + &key
+        } else {
+            let mut parts = Vec::new();
+            for (on, name) in [(m.primary, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift")] {
+                if on {
+                    parts.push(name.to_string());
+                }
+            }
+            parts.push(key);
+            parts.join("+")
+        }
+    }
+}
+
+impl Key {
+    /// The key's name in a [`KeyBinding::label`]: a letter upper-cased, a
+    /// named key by its symbol on macOS (`"↩"`, `"⇥"`) or its name elsewhere.
+    fn label(self, macos: bool) -> String {
+        let (mac, other) = match self {
+            Key::Char(c) => return c.to_uppercase().collect(),
+            Key::Enter => ("↩", "Enter"),
+            Key::Backspace => ("⌫", "Backspace"),
+            Key::Delete => ("⌦", "Delete"),
+            Key::Tab => ("⇥", "Tab"),
+            Key::Escape => ("⎋", "Esc"),
+            Key::Space => ("Space", "Space"),
+            Key::ArrowLeft => ("←", "Left"),
+            Key::ArrowRight => ("→", "Right"),
+            Key::ArrowUp => ("↑", "Up"),
+            Key::ArrowDown => ("↓", "Down"),
+            Key::Home => ("↖", "Home"),
+            Key::End => ("↘", "End"),
+            Key::PageUp => ("⇞", "Page Up"),
+            Key::PageDown => ("⇟", "Page Down"),
+        };
+        (if macos { mac } else { other }).to_string()
+    }
 }
 
 /// A binding → command-name lookup table, aggregated from all plugins, with the
@@ -311,6 +368,21 @@ mod tests {
         let b = KeyBinding::parse("Mod--").unwrap();
         assert_eq!(b.key, Key::Char('-'));
         assert!(b.mods.primary);
+    }
+
+    /// A tooltip's chord: ⌘ on macOS, Ctrl elsewhere (#3062).
+    #[test]
+    fn labels_follow_the_platform() {
+        let label = |s: &str, mac| KeyBinding::parse(s).unwrap().label(mac);
+        assert_eq!(label("Mod-b", true), "⌘B");
+        assert_eq!(label("Mod-b", false), "Ctrl+B");
+        assert_eq!(label("Mod-Shift-s", true), "⇧⌘S");
+        assert_eq!(label("Mod-Shift-s", false), "Ctrl+Shift+S");
+        assert_eq!(label("Mod-Alt-1", true), "⌥⌘1");
+        assert_eq!(label("Mod-Alt-1", false), "Ctrl+Alt+1");
+        assert_eq!(label("Shift-Tab", true), "⇧⇥");
+        assert_eq!(label("Shift-Tab", false), "Shift+Tab");
+        assert_eq!(label("Mod-Enter", false), "Ctrl+Enter");
     }
 
     #[test]

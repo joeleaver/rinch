@@ -43,17 +43,24 @@ struct Mods {
     ctrl: bool,
     meta: bool,
     shift: bool,
+    alt: bool,
+    /// `getModifierState("AltGraph")`, as Windows reports an AltGr press.
+    alt_graph: bool,
 }
 
 const CTRL: Mods = Mods {
     ctrl: true,
     meta: false,
     shift: false,
+    alt: false,
+    alt_graph: false,
 };
 const META: Mods = Mods {
     ctrl: false,
     meta: true,
     shift: false,
+    alt: false,
+    alt_graph: false,
 };
 
 fn mouse(kind: &str, x: f32, y: f32) {
@@ -75,7 +82,13 @@ impl Fixture {
     /// One editor over `<p>abc</p>` with the page taken as macOS or not,
     /// focused by a real press on its first character.
     fn focused(mac: bool) -> Self {
-        rinch_web::__set_mac_platform(Some(mac));
+        Self::focused_on(Some(mac))
+    }
+
+    /// [`focused`](Self::focused), the platform `Some` override or, for
+    /// `None`, the browser's own answer.
+    fn focused_on(mac: Option<bool>) -> Self {
+        rinch_web::__set_mac_platform(mac);
         if let Ok(stale) = document().query_selector_all(&format!("[{HOST_MARKER}]")) {
             for i in 0..stale.length() {
                 if let Some(node) = stale.item(i)
@@ -145,6 +158,8 @@ impl Fixture {
         init.set_ctrl_key(mods.ctrl);
         init.set_meta_key(mods.meta);
         init.set_shift_key(mods.shift);
+        init.set_alt_key(mods.alt);
+        init.set_modifier_alt_graph(mods.alt_graph);
         let ev =
             web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
         self.capture().dispatch_event(&ev).unwrap();
@@ -234,4 +249,80 @@ fn on_macos_cmd_y_is_not_redo_and_cmd_shift_z_is() {
     assert_eq!(after_cmd_y, "<p>abc</p>", "Cmd+Y redoes nothing");
     assert!(shift_z, "Cmd+Shift+Z is the editor's");
     assert_eq!(redone, "<p><strong>abc</strong></p>", "Cmd+Shift+Z redoes");
+}
+
+/// Give `navigator.platform` the answer `platform` on this page (an own
+/// property shadowing the prototype's getter); `None` takes it away again.
+fn fake_platform(platform: Option<&str>) {
+    let navigator: wasm_bindgen::JsValue = web_sys::window().unwrap().navigator().into();
+    let navigator = js_sys::Object::from(navigator);
+    match platform {
+        Some(p) => {
+            let descriptor = js_sys::Object::new();
+            let getter = js_sys::Function::new_no_args(&format!("return {p:?};"));
+            js_sys::Reflect::set(&descriptor, &"get".into(), &getter).unwrap();
+            js_sys::Reflect::set(&descriptor, &"configurable".into(), &true.into()).unwrap();
+            js_sys::Object::define_property(&navigator, &"platform".into(), &descriptor);
+        }
+        None => {
+            js_sys::Reflect::delete_property(&navigator, &"platform".into()).unwrap();
+        }
+    }
+}
+
+/// iOS and iPadOS are Apple platforms too (ProseMirror's
+/// `/Mac|iP(hone|[oa]d)/`): a hardware keyboard's Cmd+B bolds there and
+/// Ctrl+B does not. Asked of the browser itself, no override.
+#[wasm_bindgen_test]
+fn on_ios_and_ipados_cmd_is_mod() {
+    for platform in ["iPhone", "iPad"] {
+        fake_platform(Some(platform));
+        let read_back = web_sys::window().unwrap().navigator().platform().unwrap();
+        let f = Fixture::focused_on(None);
+        let ctrl = f.key("b", "KeyB", CTRL);
+        let after_ctrl = f.html();
+        let cmd = f.key("b", "KeyB", META);
+        let after_cmd = f.html();
+        f.teardown();
+        fake_platform(None);
+        assert_eq!(read_back, platform, "positive control: the platform took");
+        assert!(!ctrl, "{platform}: Ctrl+B is not the editor's");
+        assert_eq!(after_ctrl, "<p>abc</p>", "{platform}: Ctrl+B bolds nothing");
+        assert!(cmd, "{platform}: Cmd+B is the editor's");
+        assert_eq!(after_cmd, "<p><strong>abc</strong></p>", "{platform}");
+    }
+}
+
+/// AltGr on Windows arrives as Ctrl+Alt with `AltGraph` held (#1291): an
+/// AltGr press that types a character is text, not the app's Mod-Alt chord.
+/// German AltGr+7 types `{` (digits are keyed physically, so it is the
+/// `Digit7` key); the app bound Mod-Alt-7 to bold. A real Ctrl+Alt+7, no
+/// `AltGraph`, is the chord (the positive control).
+#[wasm_bindgen_test]
+fn an_alt_graph_character_is_not_a_ctrl_alt_chord() {
+    let f = Fixture::focused(false);
+    f.handle
+        .bind_key("Mod-Alt-7", "toggleBold")
+        .expect("a base command");
+    let alt_gr = Mods {
+        alt: true,
+        alt_graph: true,
+        ..CTRL
+    };
+    let typed = f.key("{", "Digit7", alt_gr);
+    let after_alt_gr = f.html();
+    let chord = f.key(
+        "7",
+        "Digit7",
+        Mods {
+            alt_graph: false,
+            ..alt_gr
+        },
+    );
+    let after_chord = f.html();
+    f.teardown();
+    assert!(!typed, "the AltGr press is left to the browser to type");
+    assert_eq!(after_alt_gr, "<p>abc</p>", "AltGr+7 did not bold");
+    assert!(chord, "Ctrl+Alt+7 is the app's chord");
+    assert_eq!(after_chord, "<p><strong>abc</strong></p>", "and bolds");
 }

@@ -237,17 +237,36 @@ impl EditorHandle {
     /// `true` when the editor used it — it moved to another table cell, or ran
     /// a list binding that applied — and `false` when it did not, in which case
     /// the caller moves the focus to the next (previous) Tab stop. Always
-    /// `false` under [`TabBehavior::MoveFocus`] and in a
-    /// [read-only](Self::set_read_only) editor. Shared by every platform's
-    /// keyboard glue, which offers Tab here instead of to the keymap.
+    /// `false` in a [read-only](Self::set_read_only) editor (#833).
+    ///
+    /// The app's own binding of the key ([`bind_key`](Self::bind_key) of
+    /// `"Tab"` / `"Shift-Tab"`) is asked first, ahead of the
+    /// [`TabBehavior`]: it runs its command and keeps the key (`true`) whether
+    /// or not the command applied, as every `bind_key` binding does, under
+    /// [`TabBehavior::MoveFocus`] too. Otherwise `false` under `MoveFocus`.
+    /// Shared by every platform's keyboard glue, which offers Tab here instead
+    /// of to the keymap.
     pub fn tab_key(&self, shift: bool) -> bool {
-        if self.refuses_edits() || self.tab_behavior() == TabBehavior::MoveFocus {
+        if self.refuses_edits() {
+            return false;
+        }
+        let binding = KeyBinding::new(
+            rinch_editor_core::Key::Tab,
+            rinch_editor_core::Modifiers {
+                shift,
+                ..rinch_editor_core::Modifiers::default()
+            },
+        );
+        if let Some(command) = self.app_bound_command(&binding) {
+            self.command(&command);
+            return true;
+        }
+        if self.tab_behavior() == TabBehavior::MoveFocus {
             return false;
         }
         if self.tab_cell(shift) {
             return true;
         }
-        let binding = KeyBinding::parse(if shift { "Shift-Tab" } else { "Tab" });
-        binding.is_some_and(|b| self.dispatch_key(b) == Some(true))
+        self.dispatch_key(binding) == Some(true)
     }
 }

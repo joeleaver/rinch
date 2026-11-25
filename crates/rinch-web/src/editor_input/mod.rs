@@ -361,9 +361,19 @@ thread_local! {
 
 /// Make the editor's key handling take the page as macOS (`Some(true)`), as
 /// not macOS (`Some(false)`), or ask the browser again (`None`). Test-only.
+/// It answers both [`is_mac`] and [`keymap_mod_is_cmd`].
 #[doc(hidden)]
 pub fn __set_mac_platform(mac: Option<bool>) {
     MAC_OVERRIDE.with(|m| m.set(mac));
+}
+
+/// A `navigator` string property (`"platform"`, `"userAgent"`), or `""`.
+fn navigator_string(name: &str) -> String {
+    web_sys::window()
+        .and_then(|w| js_sys::Reflect::get(&w, &"navigator".into()).ok())
+        .and_then(|n| js_sys::Reflect::get(&n, &name.into()).ok())
+        .and_then(|p| p.as_string())
+        .unwrap_or_default()
 }
 
 /// Whether the page runs on macOS, where a Control-click is the context click
@@ -372,11 +382,40 @@ pub(crate) fn is_mac() -> bool {
     if let Some(mac) = MAC_OVERRIDE.with(std::cell::Cell::get) {
         return mac;
     }
-    web_sys::window()
-        .and_then(|w| js_sys::Reflect::get(&w, &"navigator".into()).ok())
-        .and_then(|n| js_sys::Reflect::get(&n, &"platform".into()).ok())
-        .and_then(|p| p.as_string())
-        .is_some_and(|p| p.starts_with("Mac"))
+    navigator_string("platform").starts_with("Mac")
+}
+
+/// Whether the editor keymap's `Mod` is Cmd (Meta) rather than Ctrl, and the
+/// core's not-on-macOS bindings (Mod-y's redo) are off: on every Apple
+/// platform, macOS, iOS and iPadOS alike (a hardware keyboard on an iPad
+/// sends Cmd chords, and Ctrl there is not the accelerator). Narrower
+/// questions about macOS itself (the Control-click, Page Up / Down) stay
+/// [`is_mac`]'s.
+pub(crate) fn keymap_mod_is_cmd() -> bool {
+    if let Some(mac) = MAC_OVERRIDE.with(std::cell::Cell::get) {
+        return mac;
+    }
+    apple_platform(
+        &navigator_string("platform"),
+        &navigator_string("userAgent"),
+    )
+}
+
+/// ProseMirror's Apple test, `/Mac|iP(hone|[oa]d)/` on `navigator.platform`
+/// (`"MacIntel"`, `"iPhone"`, `"iPad"`, `"iPod touch"`), read from the user
+/// agent when the platform is empty (some browsers have started to blank the
+/// deprecated property).
+fn apple_platform(platform: &str, user_agent: &str) -> bool {
+    let apple = |s: &str| {
+        ["Mac", "iPhone", "iPad", "iPod"]
+            .iter()
+            .any(|n| s.contains(n))
+    };
+    if platform.is_empty() {
+        apple(user_agent)
+    } else {
+        apple(platform)
+    }
 }
 
 // ── Caret blink ──────────────────────────────────────────────────────────────

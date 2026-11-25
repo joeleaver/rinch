@@ -48,6 +48,34 @@ impl AppKeymap {
     }
 }
 
+/// Why [`EditorHandle::bind_key`] or [`EditorHandle::unbind_key`] refused a
+/// call. A refused call changes nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyBindError {
+    /// The chord does not parse ([`KeyBinding::parse`]'s syntax:
+    /// `"Mod-Shift-s"`, `"Mod-Alt-1"`, `"Tab"`).
+    Chord(String),
+    /// The editor has no command of that name: not one of
+    /// [`EditorState::command`]'s names, nor a command of a plugin the editor
+    /// has. A plugin's command can be bound once the plugin is added.
+    UnknownCommand(String),
+}
+
+impl std::fmt::Display for KeyBindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Chord(chord) => write!(f, "`{chord}` is not a key chord"),
+            Self::UnknownCommand(name) => write!(f, "the editor has no command named `{name}`"),
+        }
+    }
+}
+
+impl std::error::Error for KeyBindError {}
+
+fn parse_chord(chord: &str) -> Result<KeyBinding, KeyBindError> {
+    KeyBinding::parse(chord).ok_or_else(|| KeyBindError::Chord(chord.to_string()))
+}
+
 impl EditorHandle {
     /// Bind `chord` (`"Mod-Shift-s"`, `"Mod-Alt-1"`; the syntax of
     /// [`KeyBinding::parse`]) to the command named `command` in this editor —
@@ -55,26 +83,48 @@ impl EditorHandle {
     /// a plugin's. The app's binding wins over every plugin's for that chord,
     /// and consumes its key whether or not the command applies, as a plugin's
     /// plain binding does. It lives on the handle: it survives a re-mount, a
-    /// load and every plugin change. Answers `false` (and binds nothing) when
-    /// `chord` does not parse.
+    /// load and every plugin change.
+    ///
+    /// A chord that does not parse is refused with [`KeyBindError::Chord`],
+    /// and a command the editor does not have with
+    /// [`KeyBindError::UnknownCommand`] (a misspelt name would otherwise bind
+    /// a key that silently does nothing); either way nothing is bound. The
+    /// command is looked up when it is bound, so bind a plugin's command after
+    /// adding the plugin. A binding whose command later leaves with its plugin
+    /// ([`remove_plugin`](Self::remove_plugin)) still owns its key and does
+    /// nothing, as a plugin's binding of a missing command does.
+    ///
+    /// `"Tab"` and `"Shift-Tab"` can be bound too, and the app's binding is
+    /// asked before the editor's [`TabBehavior`]: bound, the key runs the
+    /// command and is the editor's under [`TabBehavior::MoveFocus`] as well.
     ///
     /// The default keymap has only the keys a Chrome `contenteditable` has
     /// (#3062), so an app that wants the formatting chords of a word
     /// processor binds them here:
     ///
     /// ```ignore
-    /// handle.bind_key("Mod-Shift-s", "toggleStrike");
-    /// handle.bind_key("Mod-Shift-8", "toggleBulletList");
-    /// handle.bind_key("Mod-Alt-1", "setHeading1");
+    /// handle.bind_key("Mod-Shift-s", "toggleStrike")?;
+    /// handle.bind_key("Mod-Shift-8", "toggleBulletList")?;
+    /// handle.bind_key("Mod-Alt-1", "setHeading1")?;
     /// ```
-    pub fn bind_key(&self, chord: &str, command: &str) -> bool {
-        let Some(binding) = KeyBinding::parse(chord) else {
-            return false;
-        };
+    pub fn bind_key(&self, chord: &str, command: &str) -> Result<(), KeyBindError> {
+        let binding = parse_chord(chord)?;
         let mut core = self.core_mut();
+        if core.state.command(command).is_none() {
+            return Err(KeyBindError::UnknownCommand(command.to_string()));
+        }
         core.app_keys.unbound.remove(&binding);
         core.app_keys.bound.add(binding, command);
-        true
+        Ok(())
+    }
+
+    /// The command the app bound `binding` to with [`bind_key`](Self::bind_key),
+    /// if any (Tab's lookup, which comes before the [`TabBehavior`]).
+    pub(super) fn app_bound_command(&self, binding: &KeyBinding) -> Option<String> {
+        match self.core().app_keys.lookup(binding) {
+            AppKey::Bound(name) => Some(name),
+            AppKey::Unbound | AppKey::Plugins => None,
+        }
     }
 
     /// Take `chord` away from this editor, so its key goes on as a key the
@@ -84,20 +134,18 @@ impl EditorHandle {
     /// the chord and masks every plugin's, the base keymap's included (say,
     /// Mod-Enter, Mod-u or Mod-a), without dropping that plugin or its
     /// commands, which still run by name. A later `bind_key` of the chord binds
-    /// it again. Lives on the handle, like `bind_key`. Answers `false` (and
-    /// changes nothing) when `chord` does not parse.
+    /// it again. Lives on the handle, like `bind_key`. A chord that does not
+    /// parse is refused with [`KeyBindError::Chord`] and changes nothing.
     ///
     /// Tab and Shift+Tab are bindings too: unbinding `"Tab"` stops it indenting
     /// a list under [`TabBehavior::IndentInListsAndTables`], so it moves the
     /// focus there instead (it still moves between table cells, which no
     /// binding does).
-    pub fn unbind_key(&self, chord: &str) -> bool {
-        let Some(binding) = KeyBinding::parse(chord) else {
-            return false;
-        };
+    pub fn unbind_key(&self, chord: &str) -> Result<(), KeyBindError> {
+        let binding = parse_chord(chord)?;
         let mut core = self.core_mut();
         core.app_keys.bound.remove(&binding);
         core.app_keys.unbound.insert(binding);
-        true
+        Ok(())
     }
 }

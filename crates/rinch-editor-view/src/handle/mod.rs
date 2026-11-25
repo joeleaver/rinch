@@ -69,6 +69,7 @@ mod tests;
 
 use anchors::AnchorMap;
 pub use anchors::SelectionAnchor;
+pub use app_keymap::KeyBindError;
 
 /// An [`EditorHandle::on_link_click`] callback, with its owner (see [`Hook`]).
 type LinkClickHook = Hook<dyn Fn(&LinkClick) -> bool>;

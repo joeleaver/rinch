@@ -1019,7 +1019,10 @@ The default is Chrome's: its `contenteditable` never keeps Tab (#3062; until the
 rinch indented by default). A document editor that indents with Tab, as Google Docs
 does, opts in with `IndentInListsAndTables`. Under both, a keyboard user can
 always leave the editor by keyboard. A [read-only](#read-only) editor's Tab always
-moves the focus. An `on_key` callback sees Tab first and may claim it.
+moves the focus. An `on_key` callback sees Tab first and may claim it, and an
+app's own [`bind_key("Tab", …)`](#your-own-keys-bind_key-and-unbind_key) comes
+before the `TabBehavior`: under either, the bound Tab runs its command and stays in
+the editor.
 
 ### Colours of the caret, the selection and the composition
 
@@ -1599,8 +1602,12 @@ The editor's keys are the ones Chrome's `contenteditable` itself has, and no mor
 would from a `contenteditable`. Every binding below comes from the **editor-core
 keymap** (`BaseCommandsPlugin`/`HistoryPlugin`), which the desktop and web views
 consult through one path. `Mod` = Ctrl on Windows/Linux, Cmd on macOS (on the web,
-from `navigator.platform`: on a Mac, Ctrl+B is the browser's caret key, and off a
-Mac the Windows key is not `Mod`).
+from `navigator.platform`, Cmd on every Apple platform, iOS and iPadOS with a
+hardware keyboard included: on a Mac, Ctrl+B is the browser's caret key, and off a
+Mac the Windows key is not `Mod`). On desktop the editor and the text fields read
+the same answer, so their macOS-only rules (Cmd+Y is not redo) always agree. On the
+web, a key typed through AltGr (Windows reports it as Ctrl+Alt: German AltGr+7 is
+`{`) is text, never a Ctrl+Alt chord.
 
 | Shortcut | Action |
 |----------|--------|
@@ -1652,19 +1659,30 @@ handle:
 
 ```rust
 let editor = create_editor();
-editor.bind_key("Mod-Shift-s", "toggleStrike");
-editor.bind_key("Mod-Alt-1", "setHeading1");
-editor.unbind_key("Mod-u"); // Ctrl/Cmd+U is the app's now
+editor.bind_key("Mod-Shift-s", "toggleStrike")?;
+editor.bind_key("Mod-Alt-1", "setHeading1")?;
+editor.unbind_key("Mod-u")?; // Ctrl/Cmd+U is the app's now
 ```
 
-A chord is written as the keymap writes it (`Mod-Shift-8`, `Mod-Alt-1`, `Ctrl-k`;
-both calls answer `false` for one that does not parse). The app's keys come first:
+A chord is written as the keymap writes it (`Mod-Shift-8`, `Mod-Alt-1`, `Ctrl-k`).
+Both calls return `Result<(), KeyBindError>` and change nothing when they refuse:
+`KeyBindError::Chord` for a chord that does not parse, and, from `bind_key`,
+`KeyBindError::UnknownCommand` for a command the editor does not have (a misspelt
+`"toggleStrikethrough"`). The command is looked up when you bind it, so bind a
+plugin's command after `add_plugin`. The app's keys come first:
 `bind_key` wins over every plugin's binding of the chord, and `unbind_key` leaves
 the key to your app and the browser even where a plugin binds it, until the chord
 is bound again. A bound chord is consumed wherever the caret is, as the editor's
-own are. The app's keys belong to the handle, so they survive `add_plugin`, a
+own are. `"Tab"` and `"Shift-Tab"` can be bound too, and your binding comes before
+the [`TabBehavior`](#tab): bound, Tab runs your command and stays in the editor
+even under `MoveFocus` (except in a read-only editor, which always lets Tab go).
+The app's keys belong to the handle, so they survive `add_plugin`, a
 placeholder change and every load. A plugin that brings its own keys does so with
 `Plugin::keymap`; `Keymap::remove` takes a binding out of a keymap a plugin builds.
+
+A toolbar tooltip can name the chord the way the platform does:
+`KeyBinding::parse("Mod-Shift-s").unwrap().label(host_is_macos())` is `⇧⌘S` on
+macOS and `Ctrl+Shift+S` elsewhere (both from `rinch::editor`).
 
 Some chords are the browser's or the platform's before they are the page's, and
 binding one does not take it from them: Chrome keeps Ctrl+Shift+J (and

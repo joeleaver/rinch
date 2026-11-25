@@ -375,7 +375,9 @@ fn ctrl_shift_r_is_the_pages_unless_the_app_binds_it() {
     let heard_unbound = *page_heard.borrow();
     // Bound by the app: the first press applies (the paragraph becomes
     // right-aligned), and the second, with nothing to do, is still consumed.
-    assert!(f.handle.bind_key("Mod-Shift-r", "setTextAlignRight"));
+    f.handle
+        .bind_key("Mod-Shift-r", "setTextAlignRight")
+        .expect("the command exists");
     let first = f.key("R", "KeyR", true, true);
     let aligned = !f.handle.doc().same_ref(&before);
     let after_first = f.handle.doc();
@@ -416,7 +418,9 @@ fn mod_e_is_the_browsers_unless_the_app_binds_it() {
     let start = f.handle.doc();
     let unbound = f.key("e", "KeyE", false, true);
     let untouched = f.handle.doc().same_ref(&start);
-    assert!(f.handle.bind_key("Mod-e", "toggleCode"));
+    f.handle
+        .bind_key("Mod-e", "toggleCode")
+        .expect("the command exists");
     f.handle.set_selection(Selection::text(Pos(4), Pos(6)));
     let in_code = f.key("e", "KeyE", false, true);
     f.handle.set_read_only(true);

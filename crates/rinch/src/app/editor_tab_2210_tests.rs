@@ -220,6 +220,27 @@ fn indenting_moves_between_table_cells() {
     );
 }
 
+/// The app's `bind_key("Tab")` / `bind_key("Shift-Tab")` is asked before
+/// the `TabBehavior` (#3062): under the default `MoveFocus` the bound key
+/// runs its command and the keyboard stays in the editor.
+#[test]
+fn an_app_bound_tab_runs_under_the_default() {
+    let mut p = page(IN_SECOND_ITEM);
+    assert_eq!(p.handle.tab_behavior(), TabBehavior::MoveFocus);
+    p.handle.bind_key("Tab", "sinkListItem").unwrap();
+    p.handle.bind_key("Shift-Tab", "liftListItem").unwrap();
+    tab(&mut p.app, false);
+    assert_eq!(p.app.focus_target, FocusTarget::Editor(p.container));
+    assert_eq!(top_level_items(&p.handle), 1, "the app's Tab nested it");
+    tab(&mut p.app, true);
+    assert_eq!(p.app.focus_target, FocusTarget::Editor(p.container));
+    assert_eq!(
+        top_level_items(&p.handle),
+        2,
+        "the app's Shift+Tab lifted it"
+    );
+}
+
 /// Under the default, Tab in a table cell leaves the editor, as in Chrome.
 #[test]
 fn the_default_lets_tab_leave_a_table_cell() {

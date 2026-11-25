@@ -86,8 +86,12 @@ fn editor_body(__scope: &mut RenderScope) -> NodeHandle {
     // a showcase opts into the rest. Tab nests list items and moves between
     // table cells, and two chords reach the toolbar's strike and code.
     editor.set_tab_behavior(rinch::editor::TabBehavior::IndentInListsAndTables);
-    editor.bind_key("Mod-Shift-s", "toggleStrike");
-    editor.bind_key("Mod-e", "toggleCode");
+    editor
+        .bind_key("Mod-Shift-s", "toggleStrike")
+        .expect("a base command");
+    editor
+        .bind_key("Mod-e", "toggleCode")
+        .expect("a base command");
 
     // One handle clone per toolbar action (EditorHandle is cheap to clone).
     let ed_bold = editor.clone();

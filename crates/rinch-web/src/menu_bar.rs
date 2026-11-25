@@ -115,7 +115,7 @@ fn key_target_owner(event: &web_sys::KeyboardEvent) -> rinch::menu::KeyOwner {
 /// Windows as Ctrl+Alt, and says which it was through
 /// `getModifierState("AltGraph")`; the press typed a character when its `key`
 /// is one printable character rather than a key name.
-fn web_alt_graph_text(event: &web_sys::KeyboardEvent) -> bool {
+pub(crate) fn web_alt_graph_text(event: &web_sys::KeyboardEvent) -> bool {
     if !event.get_modifier_state("AltGraph") {
         return false;
     }

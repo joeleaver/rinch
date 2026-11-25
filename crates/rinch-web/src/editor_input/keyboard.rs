@@ -91,7 +91,7 @@ fn offer_node_view_key(event: &web_sys::KeyboardEvent) -> Option<bool> {
     let key = event.key();
     let offered = rinch_editor_view::EditorKey {
         key: &key,
-        primary: if is_mac() {
+        primary: if keymap_mod_is_cmd() {
             event.meta_key()
         } else {
             event.ctrl_key()
@@ -225,7 +225,7 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     if key != "Unidentified" && key != "Process" {
         let offered = rinch_editor_view::EditorKey {
             key: &key,
-            primary: if is_mac() {
+            primary: if keymap_mod_is_cmd() {
                 event.meta_key()
             } else {
                 event.ctrl_key()
@@ -248,13 +248,18 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     let ctrl = event.ctrl_key() || event.meta_key();
     let shift = event.shift_key();
     let alt = event.alt_key();
-    // The keymap's `Mod` (#3062, E21): Cmd on macOS, Ctrl elsewhere, as
-    // ProseMirror reads `navigator.platform`. The other one (Ctrl on a Mac,
-    // where Ctrl+A/E/B are Cocoa's caret keys; the Windows key elsewhere)
-    // matches no binding, so its chords stay the browser's. The core's
-    // not-on-macOS bindings (Mod-y) are told the same platform, per key, as
-    // the wheel's sideways rule is.
-    let mac = is_mac();
+    // The keymap's `Mod` (#3062, E21): Cmd on Apple platforms (macOS, iOS,
+    // iPadOS), Ctrl elsewhere, as ProseMirror reads `navigator.platform`. The
+    // other one (Ctrl on a Mac, where Ctrl+A/E/B are Cocoa's caret keys; the
+    // Windows key elsewhere) matches no binding, so its chords stay the
+    // browser's. The core's not-on-macOS bindings (Mod-y) are told the same
+    // platform, per key, as the wheel's sideways rule is.
+    let mac = keymap_mod_is_cmd();
+    // AltGr (#1291): Windows reports it as Ctrl+Alt, so Polish AltGr+C (`ć`)
+    // or German AltGr+7 (`{`) would read as a Mod-Alt chord. A press that
+    // typed a character through AltGr is text: it skips the keymap and goes
+    // on, unconsumed, to the browser, whose input lands through `beforeinput`.
+    let alt_graph_text = crate::menu_bar::web_alt_graph_text(event);
     rinch_editor_core::keymap::set_host_is_macos(mac);
     let (mod_key, other_mod) = if mac {
         (event.meta_key(), event.ctrl_key())
@@ -391,6 +396,7 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
             //    base keymap's Mod+Enter in a paragraph), which is left unconsumed so
             //    the page's `keydown` listeners hear it (#2993).
             if !other_mod
+                && !alt_graph_text
                 && let Some(binding) = editor_key_binding(&key, &code, mod_key, shift, alt)
                 && handle.dispatch_key(binding).is_some()
             {

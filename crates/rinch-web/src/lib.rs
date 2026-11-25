@@ -156,9 +156,9 @@ pub fn __leading_floors() -> bool {
 // `editor_input`, installed once alongside event delegation.
 pub use rinch_editor_view::{
     CaretAffinity, CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, ImageInput,
-    ImageInputSource, LinkClick, LinkHover, LinkSpan, MarginAnchor, MarginAssoc, MarginAt,
-    MarginLine, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration, NodeViewRender, NodeViewSpec,
-    OVERLAY_SLOT_ATTR, ScrollAlign, SelectionAnchor, TabBehavior, clear_image_source,
+    ImageInputSource, KeyBindError, LinkClick, LinkHover, LinkSpan, MarginAnchor, MarginAssoc,
+    MarginAt, MarginLine, NODE_VIEW_ATTR, NodeViewCtx, NodeViewRegistration, NodeViewRender,
+    NodeViewSpec, OVERLAY_SLOT_ATTR, ScrollAlign, SelectionAnchor, TabBehavior, clear_image_source,
     create_editor, history_now_ms, set_image_source,
 };
 
