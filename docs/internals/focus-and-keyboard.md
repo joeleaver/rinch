@@ -114,7 +114,7 @@ blink also wait for the enter now. Web: four capture listeners on the document
 web editor's keyboard is a capture `<textarea>` under `<body>`, so an editor
 container hears none of the four on the web. Pins:
 `app/focus_events_2731_tests.rs`, `rinch-web/tests/focus_events_2731.rs`,
-`shell/rinch_runtime.rs` `a_shell_window_starts_unfocused_2731`.
+`shell/rinch_runtime/bundled_font_tests.rs` `a_shell_window_starts_unfocused_2731`.
 
 **A window focus change repaints nothing a focus change does not alter**
 (#2763). The field keeps its claim, its caret and its text across a window

@@ -269,7 +269,7 @@ pub(crate) enum NamedKeyDown {
 impl RinchApp {
     /// Press the key `key` names with `modifiers` held: check the menu
     /// shortcuts first — exactly as the real winit `WindowEvent::KeyboardInput`
-    /// arm does in `rinch_runtime.rs` (issue #533) — and otherwise dispatch a
+    /// arm does in `rinch_runtime/window_events.rs` (issue #533) — and otherwise dispatch a
     /// `PlatformEvent::KeyDown` through `handle_event`. The actions it asked
     /// for are appended to `actions`. The chord check is
     /// `RinchApp::try_menu_shortcut`'s: no chord under an open runtime popup

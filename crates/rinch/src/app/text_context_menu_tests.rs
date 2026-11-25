@@ -40,7 +40,7 @@ fn left_press(app: &mut RinchApp, x: f32, y: f32) -> Vec<AppAction> {
 
 /// A press as the desktop shell delivers one: the pointer's move first, then
 /// the press and release at the position the app recorded for that move
-/// (`cursor_pos`), which is all the shell passes on (`rinch_runtime.rs`).
+/// (`cursor_pos`), which is all the shell passes on (`rinch_runtime/window_events.rs`).
 fn shell_press(app: &mut RinchApp, x: f32, y: f32, button: MouseButton) -> Vec<AppAction> {
     let mut actions = ev(app, PlatformEvent::MouseMove { x, y });
     let (x, y) = app.cursor_pos.expect("a move records where the pointer is");

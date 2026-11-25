@@ -801,7 +801,7 @@ Press F12 to toggle the DevTools panel which shows:
 and off (`DevToolsStore::toggle_inspect_mode`, which drops the hovered node on
 the way off, so its highlight goes); while it is on, the main window's pointer
 moves set `hovered_node_id` (the outline) and a left click selects the node
-under it, opens the Elements tab and ends it (`rinch_runtime.rs`, the
+under it, opens the Elements tab and ends it (`rinch_runtime/window_events.rs`, the
 `PointerButton` arm). It used to be Alt+I as well, answered in the key fallback
 with `AppAction::ToggleInspectMode`; that beat text input in a focused field in
 a debug build (on macOS Option+I is the circumflex dead key), and rinch claims
