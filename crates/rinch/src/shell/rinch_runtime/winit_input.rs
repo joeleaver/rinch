@@ -419,6 +419,12 @@ impl RinchRuntime {
         let lock_escape = key_code == WK::Escape && pointer_locked;
         if !lock_escape && app.try_menu_shortcut(mods, key_code, &event.key_without_modifiers, text)
         {
+            // The chord never reaches `handle_event`, which reports every other
+            // fresh press to the app-wide key listeners (#3062): a stale record
+            // of this key is dropped here, so the chord's release is not theirs.
+            if !event.repeat {
+                rinch_core::note_fresh_key_press(&format!("{:?}", Self::translate_key(key_code)));
+            }
             return KeyRoute::ShortcutRan;
         }
         // Under Ctrl+Alt the text survives only when AltGr typed it (Windows

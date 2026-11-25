@@ -871,12 +871,18 @@ fn studio() -> NodeHandle {
   [Who hears a key first](#who-hears-a-key-first).
 - **Consuming.** Listeners are offered a press in registration order; the first
   to answer `true` consumes it: no later listener and no default sees it, and on
-  the web the event is `preventDefault`ed and stops propagating. A release goes
-  to every listener and the answer is ignored, but only when the listeners
-  were offered its press: a key something earlier took (or an input method
-  composed with) is not theirs on the way up either. An element's own
-  `onkeyup` is different: it hears every release while its element holds the
-  keyboard, as a browser's `keyup` does.
+  the web the event is `preventDefault`ed and stops propagating. A release
+  reaches exactly the listeners that heard its press, and the answer is
+  ignored: a key something earlier took (or an input method composed with) is
+  not theirs on the way up, and a listener after the one that consumed a press
+  does not hear its release either. A held-key tracker can rely on it: every
+  key it saw go down comes up, even when the key is let go in another of the
+  app's windows or while a menu window holds the keyboard, and it never hears
+  a release whose press it did not see. If a release is lost entirely (the key
+  let go in another app), the listener hears no release for that press, and
+  the next fresh press of the key starts its pairing over. An element's own `onkeyup` is different: it hears
+  every release while its element holds the keyboard, as a browser's `keyup`
+  does.
 - **Not offered:** a press while an input method is composing, one the
   editor's `on_key` took, and on desktop one the built-in text context menu or
   an open native `<select>` list takes while open. A key a focused render
@@ -890,7 +896,8 @@ fn studio() -> NodeHandle {
   dropping the handle releases nothing.
 - **Which document's keys.** On desktop, a listener registered while a
   document's code runs (its render, an effect, a handler) hears only that
-  document's keys; one registered from `main` hears every document on the
+  document's presses (and the release of each, wherever it comes); one
+  registered from `main` hears every document on the
   thread — the DevTools window's included. On `rinch-web` a listener hears
   every key the page's `document` sees, whichever root registered it: every
   island's (`mount_into` roots) and keys typed into page inputs outside any

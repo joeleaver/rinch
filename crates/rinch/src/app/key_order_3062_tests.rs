@@ -516,45 +516,68 @@ fn on_app_key_hears_a_release_only_after_its_press() {
     listener.remove();
 }
 
-/// A window that loses the keyboard forgets the presses `on_app_key` was
-/// offered: the release of a key held across the blur goes to the window that
-/// took the keyboard, so the next release of that key here belongs to a later
-/// press. Before the fix a press the input's `onkeydown` consumed after the
-/// window came back had its release offered to the listener, paired with the
-/// press made before the blur.
+/// The round-2 scenario under per-listener pairing: a press the listener
+/// heard loses its release (the key let go in another app while the window
+/// was away), then a fresh press of that key is consumed by the input's
+/// `onkeydown`. Its release is not the listener's: the fresh press dropped
+/// the stale record (`note_fresh_key_press`), and a window blur forgets
+/// nothing any more, so this holds with or without one. The control: an
+/// auto-repeat of a held key is no fresh press, and the listener that heard
+/// the key go down still hears it come up.
 #[test]
-fn a_window_blur_forgets_the_presses_on_app_key_was_offered() {
+fn a_fresh_press_consumed_after_a_lost_release_is_not_released_to_the_listener() {
     clear_keyboard_interceptor();
     let log: Log = Default::default();
     let mut f = fields(&log);
     let listener = log_app_keys(&log);
-    let focus = |app: &mut RinchApp, focused| {
-        app.handle_event(PlatformEvent::WindowFocus(focused), VP, 1.0);
+    let send = |app: &mut RinchApp, event| {
+        app.handle_event(event, VP, 1.0);
     };
-    focus(&mut f.app, true);
+    let key_down = |key, repeat| PlatformEvent::KeyDown {
+        key,
+        logical_key: None,
+        text: None,
+        modifiers: Modifiers::default(),
+        repeat,
+    };
+    let key_up = |key| PlatformEvent::KeyUp {
+        key,
+        logical_key: None,
+        modifiers: Modifiers::default(),
+    };
+    send(&mut f.app, PlatformEvent::WindowFocus(true));
 
     // F2 pressed with nothing focused reaches the listener; its release is
     // lost with the keyboard.
-    f.app.handle_event(
-        PlatformEvent::KeyDown {
-            key: KeyCode::F2,
-            logical_key: None,
-            text: None,
-            modifiers: Modifiers::default(),
-            repeat: KeyRepeat::Unknown,
-        },
-        VP,
-        1.0,
-    );
+    send(&mut f.app, key_down(KeyCode::F2, KeyRepeat::Fresh));
     assert_eq!(take(&log), ["app:down:F2"]);
-    focus(&mut f.app, false);
-    focus(&mut f.app, true);
+    send(&mut f.app, PlatformEvent::WindowFocus(false));
+    send(&mut f.app, PlatformEvent::WindowFocus(true));
 
-    // Back in the window, the input's `onkeydown` takes F2: neither the press
-    // nor its release is the listener's.
+    // Back in the window, the input's `onkeydown` takes a fresh F2: neither
+    // the press nor its release is the listener's.
     f.focus_input();
     take(&log);
-    press(&mut f.app, KeyCode::F2, None);
+    send(&mut f.app, key_down(KeyCode::F2, KeyRepeat::Fresh));
+    send(&mut f.app, key_up(KeyCode::F2));
     assert_eq!(take(&log), ["element:down:F2", "element:up:F2"]);
+
+    // Control: F2 goes down where the listener hears it, then the input
+    // takes its auto-repeats. A repeat is no fresh press, so F2's release is
+    // still the listener's.
+    f.app.set_focus_target(FocusTarget::None);
+    send(&mut f.app, key_down(KeyCode::F2, KeyRepeat::Fresh));
+    f.focus_input();
+    send(&mut f.app, key_down(KeyCode::F2, KeyRepeat::Repeat));
+    send(&mut f.app, key_up(KeyCode::F2));
+    assert_eq!(
+        take(&log),
+        [
+            "app:down:F2",
+            "element:down:F2",
+            "element:up:F2",
+            "app:up:F2"
+        ]
+    );
     listener.remove();
 }

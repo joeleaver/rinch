@@ -247,8 +247,10 @@ fn listeners_hear_in_order_and_a_consumed_press_stops_the_later_one() {
         ["branch:q", "app:Down:q", "branch:q", "app:Up:q"]
     );
     take(&late_log);
+    // `app` consumed the press, so `late` never heard it, nor its release
+    // (#3062: a release reaches exactly the listeners that heard its press).
     press("Escape", "Escape");
-    assert_eq!(take(&late_log), ["late:Up:Escape"]);
+    assert!(take(&late_log).is_empty());
     a.remove();
     late.remove();
     f.teardown();
@@ -338,6 +340,23 @@ fn unmounting_the_registering_component_releases_its_listener() {
     f.show.set(false);
     assert_eq!(app_key_listener_count(), before - 1);
     press("q", "KeyQ");
+    assert!(take(&f.branch_log).is_empty());
+    f.teardown();
+}
+
+/// Unmounting the component that registered a listener drops the presses it
+/// held: a listener mounted in its place is not handed the release of a press
+/// it never heard. Before, the press stayed in a thread-wide record and the
+/// new listener heard the release.
+#[wasm_bindgen_test]
+fn unmounting_a_listener_drops_the_presses_it_held() {
+    let f = Fixture::mount();
+    blur_all();
+    key("keydown", "q", "KeyQ");
+    assert_eq!(take(&f.branch_log), ["branch:q"]);
+    f.show.set(false);
+    f.show.set(true);
+    key("keyup", "q", "KeyQ");
     assert!(take(&f.branch_log).is_empty());
     f.teardown();
 }

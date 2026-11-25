@@ -286,6 +286,17 @@ impl RinchApp {
         // `resolve_and_repaint` below.
         let (vp_w, vp_h) = Self::layout_viewport(window_size, scale_factor);
 
+        // A fresh press drops any stale record of its key among the app-wide
+        // key listeners, before anything below can consume it (#3062).
+        if let PlatformEvent::KeyDown {
+            key,
+            repeat: KeyRepeat::Fresh,
+            ..
+        } = &event
+        {
+            rinch_core::note_fresh_key_press(&format!("{key:?}"));
+        }
+
         // Pointer lock (#2092). A lock whose element left the document ends
         // here, on whatever event comes next (`AboutToWait` ends every turn of
         // the desktop loop); a window that lost focus gives the pointer back,
@@ -1713,11 +1724,10 @@ impl RinchApp {
                             self.close_select_popup_returning_focus();
                         }
                         rinch_core::notify_window_blurred(self.doc_key());
-                        // The release of a key held across the blur goes to the
-                        // window that took the keyboard: forget the presses
-                        // `on_app_key` was offered, or the next release of that
-                        // key here would be paired with a stale press (#3062).
-                        rinch_core::forget_app_key_presses();
+                        // The app-wide key listeners forget nothing here: the
+                        // release of a key held across the blur may come in
+                        // another of the app's windows, and goes to the
+                        // listeners that heard its press (#3062).
                         // The matching `KeyUp` of anything held across the blur
                         // goes to the window that took the keyboard, so the
                         // Enter/Space activation latch (issue #228) would stay

@@ -23,7 +23,7 @@
 //! Each backs off a press whose default is already prevented: the page's own
 //! listener (or rinch's, earlier on the path) has taken it.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -41,6 +41,30 @@ thread_local! {
     /// The `window` key listeners are page-global, installed exactly once
     /// however many roots mount.
     static WINDOW_KEYS_INSTALLED: Cell<bool> = const { Cell::new(false) };
+    /// Physical codes whose press a focused render surface claimed and whose
+    /// release has not come yet: that release is the surface's too, so its
+    /// propagation is stopped as the press's was (#1784, #3062). Dropped by the
+    /// release, or by the next fresh press of the key (its release was lost).
+    static SURFACE_CLAIMED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Note that the focused surface claimed the press of `code`.
+fn claim_for_surface(code: &str) {
+    SURFACE_CLAIMED.with(|c| {
+        let mut c = c.borrow_mut();
+        if !c.iter().any(|k| k == code) {
+            c.push(code.to_string());
+        }
+    });
+}
+
+/// Take the surface's claim on `code`, answering whether there was one.
+fn take_surface_claim(code: &str) -> bool {
+    SURFACE_CLAIMED.with(|c| {
+        let mut c = c.borrow_mut();
+        let at = c.iter().position(|k| k == code);
+        at.map(|i| c.swap_remove(i)).is_some()
+    })
 }
 
 /// The expando a press carries once [`offer_popup_and_app_keys`] has offered
@@ -62,6 +86,12 @@ fn key_data(event: &web_sys::KeyboardEvent, kind: events::KeyEventKind) -> event
 /// Install the `window` capture-phase `keydown` and `keyup` listeners, once
 /// per page: from `setup_event_delegation` and from a root's menu bar
 /// (`menu_bar::wrap`), whichever comes first.
+///
+/// Every fresh press (`repeat` false), prevented or not, first drops the stale
+/// records of its key: the presses `on_app_key` listeners hold
+/// (`events::note_fresh_key_press`) and a surface's claim. A key still
+/// recorded when it is pressed afresh lost its release (let go in another
+/// window or app), and its new release belongs to whoever hears this press.
 ///
 /// A press, unless its default is already prevented, goes to: the menu bar's
 /// chord (`menu_bar::dispatch_menu_chord`), `preventDefault`ed and stopped;
@@ -92,6 +122,11 @@ pub(crate) fn ensure_window_key_capture() {
     };
     let window: web_sys::EventTarget = window.into();
     add_capture_on(&window, "keydown", |event: web_sys::KeyboardEvent| {
+        if !event.repeat() {
+            let code = event.code();
+            events::note_fresh_key_press(&code);
+            take_surface_claim(&code);
+        }
         if event.default_prevented() {
             return;
         }
@@ -117,16 +152,6 @@ pub(crate) fn ensure_window_key_capture() {
     add_capture_on(&window, "keyup", |event: web_sys::KeyboardEvent| {
         let _root = crate::mark_event_root(&event);
         events::dispatch_key_interceptor(&key_data(&event, events::KeyEventKind::Up));
-    });
-    // The window losing the keyboard: the release of a key held across it goes
-    // elsewhere, so the presses `on_app_key` was offered are forgotten, or the
-    // next release of that key would be paired with a stale press (#3062). A
-    // capture listener on `window` also sees every element's `blur` on its way
-    // down; only the one aimed at `window` itself counts.
-    add_capture_on(&window, "blur", |event: web_sys::Event| {
-        if event.event_phase() == web_sys::Event::AT_TARGET {
-            events::forget_app_key_presses();
-        }
     });
 }
 
@@ -257,8 +282,14 @@ pub(super) fn install_key_delegation(browser_doc: &web_sys::Document) {
                 );
             }
             if rinch::render_surface::dispatch_surface_key_event(surface_id, &surface_key_data) {
-                // A claimed key is the surface's, release and all (#1784).
-                events::withhold_app_key_release(&surface_key_data.code);
+                // A claimed key is the surface's, release and all (#1784):
+                // the app-wide listeners did not hear this press, so they do
+                // not hear its release, and the page does not either. Only a
+                // fresh press claims the release: a key held into the surface
+                // went down where the page heard it.
+                if !event.repeat() {
+                    claim_for_surface(&surface_key_data.code);
+                }
                 event.prevent_default();
                 event.stop_propagation();
                 return;
@@ -345,29 +376,27 @@ pub(super) fn install_key_delegation(browser_doc: &web_sys::Document) {
             let _root = crate::mark_event_root(event);
             offer_element_key(event, "data-onkeyup", &key_data);
         }
-        // The app-wide listeners hear a release only when they were offered its
-        // press (#3062): not one whose press a focused surface claimed (#1784)
-        // or something ahead of them consumed, and none after a window blur.
-        // As no root's: they hear the page. The surface's mark is asked first,
-        // as the dispatch clears it.
-        let claimed = events::app_key_release_withheld(&key_data.code);
+        // The app-wide listeners that heard its press, and only those, hear
+        // a release (#3062): not one whose press a focused surface claimed
+        // (#1784) or something ahead of them consumed. As no root's: they
+        // hear the page.
         events::dispatch_app_key(&key_data);
+        // Only the release of a press the surface claimed is the surface's
+        // (#3062, W1): the rest bubble on to the page's own `window`
+        // listeners, as a `<canvas>`'s keyups do. This used to stop every
+        // release while a surface held the keyboard, so the page's keyup
+        // listeners went deaf. A claimed press's release is stopped wherever
+        // focus went meanwhile: the page never heard that press.
+        if take_surface_claim(&key_data.code) {
+            event.prevent_default();
+            event.stop_propagation();
+        }
 
         if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
             rinch::render_surface::dispatch_surface_event(
                 surface_id,
                 rinch::render_surface::SurfaceEvent::KeyUp(surface_key_data(event)),
             );
-            // Only the release of a press the surface claimed is the
-            // surface's (#3062, W1): the rest bubble on to the page's own
-            // `window` listeners, as a `<canvas>`'s keyups do. This used to
-            // stop every release while a surface held the keyboard, so the
-            // page's keyup listeners went deaf; the desktop withholds only a
-            // claimed key's release from the app's listeners.
-            if claimed {
-                event.prevent_default();
-                event.stop_propagation();
-            }
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc

@@ -47,28 +47,56 @@ Pins: `app/element_key_1678_tests.rs`,
 `set_keyboard_interceptor` (whose one slot per document, second call replaces,
 stays as it was). Offered every key press the stages above left, in
 registration order, the first `true` consuming it (no later listener, no
-default; web `preventDefault` + `stopPropagation`); a release goes to every
-listener, answer ignored, **only when its press was offered to them** (#3062):
-`dispatch_app_key` records each press's physical `code` (`PRESSED`) and drops a
-release with no record, so a key whose press the interceptor, an element's
-`onkeydown`, the editor's `on_key`, a key entry or a focused surface took — or
-that an input method composed with — is not the listeners' on the way up
-either. A focused surface's claim also marks the code
-(`withhold_app_key_release`), which rinch-web reads
-(`app_key_release_withheld`) to stop only that release's propagation. The
-element's own `onkeyup` is deliberately **not** paired: it hears every release
-while its element holds the keyboard, whoever took the press, as a browser's
-`keyup` does (a `keydown` handler's `preventDefault` does not cancel the
-`keyup`). **A window blur forgets both records** (`forget_app_key_presses`,
-desktop from `WindowFocus(false)` in `event_dispatch.rs`, rinch-web from a
-`window` `blur` in `event_delegation/keys.rs`): the release of a key held
-across the blur goes to whatever took the keyboard, so without it a later
-press of that key consumed ahead of the listeners would have its release
-offered, paired with the stale press. The records are the thread's, not a
-document's: a blur clears them for every window. Known gap: a focus change
-whose blur is held or arrives after the release (a menu window taking its
-parent's keyboard, #2552) leaves the press recorded, so its release in the
-newly focused window reaches that document's listeners. Entries are keyed by
+default; web `preventDefault` + `stopPropagation`). **A release reaches
+exactly the listeners that heard its press** (#3062, #3082), answer ignored,
+whichever window or document it arrives in. Pairing is per listener: each
+`Entry` keeps `held`, the physical codes of the presses it was offered (recorded
+before it runs, whatever it answers); a release goes, in registration order, to
+the entries holding its code — `doc_matches` is not asked, since the press
+already was — and clears them. So a key whose press the interceptor, an
+element's `onkeydown`, the editor's `on_key`, a key entry or a focused surface
+took, or an input method composed with, is not the listeners' on the way up; a
+listener after the one that consumed a press does not hear its release; and a
+key held in window A and let go in window B (a click into B, a menu or overlay
+window taking its parent's keyboard, #2552, where no blur comes at all)
+releases to the `main`-registered listeners and A's own, and to none of B's. The
+records live in the entry, so `remove`, scope disposal, a dead owner's pruning
+and the document sweep drop them with it; each holds a code once, so it is
+bounded by the keyboard. **Stale records** (a release that never comes: the key
+let go in another app) are dropped by the next *fresh* press of that key,
+wherever it lands: `note_fresh_key_press(code)` clears the code from every
+entry, called before anything can consume the press — desktop at the top of
+`handle_event` for `KeyRepeat::Fresh`, from the winit shell's menu-chord path
+and `dispatch_named_key_down`'s chord path (both bypass `handle_event`);
+rinch-web first thing in its `window` capture `keydown` when `event.repeat()`
+is false. The listeners the press then reaches record it again. An auto-repeat
+is no fresh press: a key held into a field or a surface that consumes its
+repeats still releases to the listener that heard it go down. A host answering
+`KeyRepeat::Unknown` (embed hosts that leave it unset; every shipped backend
+reports it) does not report, as dropping a held key's record on a repeat would
+lose that listener's release: there a stale record can let one extra release
+through to a listener that heard an earlier press of the key, and only one, and
+never blocks a key. **A window blur clears nothing** (it used to clear
+thread-wide `PRESSED`/`WITHHELD` sets, round 2 of #3073): a key held across a
+blur may come back up in another of the app's windows, where the listener that
+heard it must hear it; clearing a `main` listener's records on one window's blur
+stuck that key for good (macOS sends no synthetic focus-in press), clearing a
+document listener's records on its own blur stuck it the same way, and a blur
+arriving after the next window's press erased that press. The fresh-press rule
+covers what the blur clearing was for. A focused surface's claim needs no
+record of its own on desktop (the listeners were not offered the press);
+rinch-web keeps one (`SURFACE_CLAIMED` in `event_delegation/keys.rs`), set by a
+claimed *fresh* press and taken by its release, whose propagation it stops
+wherever focus went meanwhile — the page never heard that press — and dropped
+by the next fresh press of the key; a key that went down where the page heard
+it and was held into the surface releases to the page. The element's own
+`onkeyup` is deliberately **not** paired: it hears every release while its
+element holds the keyboard, whoever took the press, as a browser's `keyup`
+does (a `keydown` handler's `preventDefault` does not cancel the `keyup`).
+Known gap: the winit shell forwards an X11 synthetic focus-in press
+(`is_synthetic`) as a fresh one, so if the newly focused window consumes it
+ahead of the listeners, a listener that heard the key go down in the first
+window loses the release. Entries are keyed by
 `current_dispatching_doc` at registration (`doc_matches`), carry their owner
 (dead owner skipped and pruned, `on_cleanup` removes at disposal), run
 untracked inside it; the handle's drop releases nothing (`remove()` does).

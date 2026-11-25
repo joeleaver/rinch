@@ -486,37 +486,113 @@ fn a_read_only_editors_printable_key_reaches_the_page() {
     f.teardown();
 }
 
-/// A `window` `blur` forgets the presses the app-wide listeners were offered:
-/// the release of a key held across it goes elsewhere, so the next release of
-/// that key belongs to a later press. Before the fix a press the input's
-/// `onkeydown` took after the window came back had its release offered to the
-/// listeners, paired with the press made before the blur.
-#[wasm_bindgen_test]
-fn a_window_blur_forgets_the_presses_on_app_key_was_offered() {
-    let f = Fields::mount();
-    let l = f.log.clone();
-    let app = on_app_key(move |k: &KeyEventData| {
+/// A held key's auto-repeat, dispatched at `target` (`repeat` set).
+fn repeat_at(target: &web_sys::EventTarget, key: &str, code: &str) -> bool {
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_key(key);
+    init.set_code(code);
+    init.set_repeat(true);
+    let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    target.dispatch_event(&ev).unwrap();
+    ev.default_prevented()
+}
+
+/// An app-wide listener logging `app:down:KEY` / `app:up:KEY`.
+fn log_both(log: &Log) -> AppKeyListener {
+    let l = log.clone();
+    on_app_key(move |k: &KeyEventData| {
         let phase = if k.is_up() { "up" } else { "down" };
         l.borrow_mut().push(format!("app:{phase}:{}", k.key));
         false
-    });
+    })
+}
 
-    // F2 pressed on `<body>` reaches the listener; its release is lost with
-    // the keyboard.
+/// A press the listener heard loses its release (let go in another app),
+/// then a fresh press of that key is taken by the input's `onkeydown`: its
+/// release is not the listener's, as the fresh press dropped the stale record
+/// (#3062). Before per-listener pairing only a `window` blur dropped it, so
+/// with no blur between, the release was offered to the listener. The
+/// control: an auto-repeat is no fresh press, so a held key's release still
+/// reaches the listener that heard it go down.
+#[wasm_bindgen_test]
+fn a_fresh_press_consumed_after_a_lost_release_is_not_released_to_the_listener() {
+    let f = Fields::mount();
+    let app = log_both(&f.log);
     f.input().blur().unwrap();
     let body: web_sys::EventTarget = document().body().unwrap().into();
     key_at(&body, "keydown", "F2", "F2");
     assert_eq!(take(&f.log), ["app:down:F2"]);
+
+    f.input().focus().unwrap();
+    assert!(press("F2", "F2"));
+    assert_eq!(take(&f.log), ["element:F2"]);
+
+    // Control: F2 down on `<body>`, then its repeats taken by the input.
+    f.input().blur().unwrap();
+    key_at(&body, "keydown", "F2", "F2");
+    f.input().focus().unwrap();
+    let input: web_sys::EventTarget = f.input().into();
+    assert!(repeat_at(&input, "F2", "F2"));
+    key_at(&input, "keyup", "F2", "F2");
+    assert_eq!(take(&f.log), ["app:down:F2", "element:F2", "app:up:F2"]);
+    app.remove();
+    f.teardown();
+}
+
+/// A `window` blur forgets nothing: the release of a key held across it may
+/// come back to this page, and is the listener's. Before, the blur erased the
+/// press and the release was withheld, leaving the key down for good.
+#[wasm_bindgen_test]
+fn a_window_blur_keeps_a_held_keys_release() {
+    let f = Fields::mount();
+    let app = log_both(&f.log);
+    f.input().blur().unwrap();
+    let body: web_sys::EventTarget = document().body().unwrap().into();
+    key_at(&body, "keydown", "F4", "F4");
     let window: web_sys::EventTarget = web_sys::window().unwrap().into();
     window
         .dispatch_event(&web_sys::Event::new("blur").unwrap())
         .unwrap();
-
-    // Back in the input, its `onkeydown` takes F2: neither the press nor its
-    // release is the listener's.
-    f.input().focus().unwrap();
-    assert!(press("F2", "F2"));
-    assert_eq!(take(&f.log), ["element:F2"]);
+    key_at(&body, "keyup", "F4", "F4");
+    assert_eq!(take(&f.log), ["app:down:F4", "app:up:F4"]);
     app.remove();
+    f.teardown();
+}
+
+/// The release of a press a surface claimed is the surface's wherever focus
+/// went meanwhile: the page never heard that press, so it does not hear the
+/// release. A key that went down where the page heard it and was then held
+/// into the surface (its repeats claimed) releases to the page. Before, the
+/// first release reached the page once the surface lost focus, and the second
+/// was stopped.
+#[wasm_bindgen_test]
+fn a_surfaces_claim_follows_the_press_not_the_focus() {
+    let f = Fields::mount();
+    page_listeners();
+    f.input().blur().unwrap();
+    f.surface.set_key_handler(|k| k.code == "KeyW");
+    let body: web_sys::EventTarget = document().body().unwrap().into();
+    page_heard();
+
+    set_focused_surface(Some(f.surface.id()));
+    assert!(
+        key_at(&body, "keydown", "w", "KeyW"),
+        "the surface claimed it"
+    );
+    set_focused_surface(None);
+    key_at(&body, "keyup", "w", "KeyW");
+    assert!(page_heard().is_empty(), "both legs are the surface's");
+
+    key_at(&body, "keydown", "w", "KeyW");
+    assert_eq!(page_heard(), ["down:w"], "no surface: the page's key");
+    set_focused_surface(Some(f.surface.id()));
+    assert!(
+        repeat_at(&body, "w", "KeyW"),
+        "the surface claims the repeat"
+    );
+    key_at(&body, "keyup", "w", "KeyW");
+    assert_eq!(page_heard(), ["up:w"], "the press was the page's");
     f.teardown();
 }

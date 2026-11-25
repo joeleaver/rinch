@@ -185,7 +185,8 @@ fn with_nothing_focused_a_listener_hears_presses_and_releases() {
 
 /// Two parties: both hear a key, in registration order (the branch's listener
 /// was registered at mount, before this one), and the first to consume a press
-/// stops the later one — and the release still reaches both.
+/// stops the later one, release included: a release reaches exactly the
+/// listeners that heard its press (#3062).
 #[test]
 fn two_listeners_hear_in_order_and_a_consumed_press_stops_the_later_one() {
     let mut f = mount();
@@ -202,10 +203,9 @@ fn two_listeners_hear_in_order_and_a_consumed_press_stops_the_later_one() {
     let late: Log = Default::default();
     listen("late", &late, &[]);
     f.press(KeyCode::Escape, None);
-    assert_eq!(
-        take(&late),
-        ["late:Up:Escape"],
-        "the press stopped at \"app\""
+    assert!(
+        take(&late).is_empty(),
+        "the press stopped at \"app\", so its release is not \"late\"'s"
     );
 }
 

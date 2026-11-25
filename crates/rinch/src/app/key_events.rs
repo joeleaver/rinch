@@ -73,7 +73,7 @@ impl RinchApp {
     /// claim — and before rinch's defaults, the rich-text editor's keymap
     /// included (#3062). [`Self::handle_key_up`] calls it for every release,
     /// after the interceptor and the element's `onkeyup`; `dispatch_app_key`
-    /// offers a release only when its press was offered.
+    /// offers a release to the listeners that heard its press.
     ///
     /// A press is left out while the built-in text context menu is open, or
     /// while the focused field or rich-text editor shows an IME composition:
@@ -408,8 +408,9 @@ impl RinchApp {
                 if crate::render_surface::dispatch_surface_key_event(surface_id, &surface_key_data)
                 {
                     // A claimed key is the surface's, release and all
-                    // (issue #1784).
-                    events::withhold_app_key_release(&surface_key_data.code);
+                    // (issue #1784): the listeners did not hear this press,
+                    // so its release reaches only one that heard the key go
+                    // down before (a repeat of a key held into the surface).
                     actions.push(AppAction::RequestRedraw);
                 } else if key_data.as_ref().is_some_and(|kd| self.offer_app_key(kd)) {
                     self.resolve_and_repaint(vp_w, vp_h);
@@ -535,9 +536,9 @@ impl RinchApp {
             // prevent, and a held-key tracker must see every one.
             events::dispatch_key_interceptor(&key_data);
             self.offer_element_key(&key_data);
-            // The app-wide listeners hear a release only when they heard
-            // its press (#1784, #3062): `dispatch_app_key` drops one whose
-            // press something above consumed or an input method composed.
+            // The app-wide listeners that heard its press, and only those,
+            // hear a release (#1784, #3062), whichever window it comes in:
+            // `dispatch_app_key` pairs them per listener.
             self.offer_app_key(&key_data);
             actions.push(AppAction::RequestRedraw);
         }

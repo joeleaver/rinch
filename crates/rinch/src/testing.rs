@@ -396,6 +396,8 @@ use crate::window::WindowFacts;
 use rinch_core::timer::virtual_time;
 
 #[cfg(test)]
+mod app_key_windows_tests;
+#[cfg(test)]
 mod idle_trim_perf_2852_tests;
 #[cfg(test)]
 mod perf_tests;
