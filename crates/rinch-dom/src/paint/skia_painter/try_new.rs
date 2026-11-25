@@ -108,7 +108,14 @@ mod tests {
     /// counted 512 times. The advice comes after the allocator wrote its
     /// header, which may already have faulted in the huge page holding it,
     /// so the count leaves out the buffer's head, up to the first huge-page
-    /// boundary at or past its start: no header lies past that.
+    /// boundary at or past its start: no header lies past that. The buffer
+    /// is at least four huge pages long, so the body is most of it wherever
+    /// it starts, also where a huge page is 512 MiB (aarch64 with 64 KiB
+    /// pages).
+    ///
+    /// Not covered: `GLIBC_TUNABLES=glibc.malloc.hugetlb=2` with hugetlbfs
+    /// pages reserved maps the buffer with `MAP_HUGETLB`, which the advice
+    /// does not change; there the one write counts as a whole huge page.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_buffer_is_not_written_to_be_zeroed() {
@@ -137,12 +144,14 @@ mod tests {
             assert_eq!(rc, 0, "mincore: {}", std::io::Error::last_os_error());
             vec.iter().filter(|b| *b & 1 != 0).count()
         }
-        const LEN: usize = 512 << 20;
-        let mut buf = try_zeroed(LEN).expect("512 MiB of address space");
-        assert_eq!(buf.len(), LEN);
         let page = page_size();
+        let huge = huge_page_size().unwrap_or(page);
+        // 512 MiB, or four huge pages where those are larger.
+        let len: usize = (512 << 20).max(4 * huge);
+        let mut buf = try_zeroed(len).expect("the buffer's address space");
+        assert_eq!(buf.len(), len);
         let first = buf.as_ptr() as usize;
-        let end = first + LEN;
+        let end = first + len;
         // The pages the buffer lies in: the one holding its first byte,
         // through the one holding its last.
         let start = first & !(page - 1);
@@ -167,20 +176,19 @@ mod tests {
         }
         // Past the head: from the first huge-page boundary at or past the
         // buffer's start (its first page boundary, without huge pages).
-        let huge = huge_page_size().unwrap_or(page);
         let body = first.next_multiple_of(huge);
         assert!(
-            body < first + LEN / 2,
+            body < first + len / 2,
             "a huge page of {huge} bytes leaves no body"
         );
         let resident = resident_pages(body, end);
         assert_eq!(resident, 0, "pages past the head became resident");
         // The count sees a page that is written, and only that page.
-        buf[LEN / 2] = 1;
+        buf[len / 2] = 1;
         assert_eq!(resident_pages(body, end), 1, "the written page");
         // Spot-read a few pages: zeros.
-        buf[LEN / 2] = 0;
-        assert!((0..LEN).step_by(LEN / 8).all(|i| buf[i] == 0));
+        buf[len / 2] = 0;
+        assert!((0..len).step_by(len / 8).all(|i| buf[i] == 0));
     }
 
     /// An ordinary size is a transparent surface of that size.
