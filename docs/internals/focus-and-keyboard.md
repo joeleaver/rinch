@@ -105,8 +105,10 @@ the `main`-registered ones) hear W come up early, at the focus-out, which
 closes their records; B then gets a fresh press the user never made
 (reported to `note_fresh_key_press` and offered to B's listeners and
 `main`'s, which record it unless something ahead of them consumes it), and
-the real release pairs with that. The two balance: each listener hears one
-press and one release, and none is left holding the key. On **Wayland**
+the real release pairs with that. The two balance: every press a listener
+hears is matched by one release (a `main` listener hears two pairs, the
+real press with the focus-out release and the focus-in press with the real
+release), and none is left holding the key. On **Wayland**
 (`winit-wayland`'s `WlKeyboardEvent::Enter`/`Leave` drop the key repeat and
 send no key events; the keys the enter reports held are ignored) and
 **macOS** (`winit-appkit` synthesises no key events on a focus change, only
