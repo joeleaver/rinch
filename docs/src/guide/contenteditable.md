@@ -1632,7 +1632,15 @@ key; on a layout where AltGr+1 types `1` itself (Lithuanian), that press runs an
 app's `Mod-Alt-1` instead of typing, until the user has typed on the digit row
 once. After that the press is text: with no character to compare against, the
 page takes AltGr text at its word, because a missed shortcut still has its menu
-entry or button, while a swallowed character has no other way in.
+entry or button, while a swallowed character has no other way in. Chrome's
+layout map gives only what each key types with no modifier, so what a key types
+with Shift is learned from Shift presses alone, and until then the US character
+is assumed: on a German layout, AltGr+Shift+2 types nothing and reports the
+key's `"`, which is not the US `@`, so that press is text and an app's
+`Mod-Alt-Shift-2` misses it until the user has typed Shift+2 once (the same safe
+direction). The page learns nothing from a press with CapsLock on, nor from the
+press after a dead key, whose character is the composed one (`'` then `a`
+reports `á` on Windows US-International, which AltGr+A types too).
 
 | Shortcut | Action |
 |----------|--------|

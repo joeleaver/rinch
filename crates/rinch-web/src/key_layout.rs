@@ -9,12 +9,20 @@
 //! `key_without_modifiers`). A browser reports no such field, so this module
 //! keeps the page's own answer per physical key (`code`):
 //!
-//! - **learned** from every plain press (no Ctrl, Alt, Meta, AltGraph, not
-//!   composing), and from every Shift-only press for the Shift level — a
-//!   learned entry follows a layout switch, so it always wins;
+//! - **learned** from every plain press (no Ctrl, Alt, Meta, AltGraph), and
+//!   from every Shift-only press for the Shift level — a learned entry
+//!   follows a layout switch, so it always wins. Not from a press whose `key`
+//!   is not what the key types: a composing one (the input method's), the
+//!   press after a dead key (the composed character: `'` then `a` reports
+//!   `á` on Windows US-International), or one with CapsLock on (French
+//!   AZERTY's digit row then types digits);
 //! - **seeded** once per page, at the first mount, from
 //!   `navigator.keyboard.getLayoutMap()` where the browser has it (Chromium;
-//!   Firefox and Safari do not). A seed never replaces a learned entry;
+//!   Firefox and Safari do not). A seed never replaces a learned entry. The
+//!   map has only the plain level, so the Shift level is learned or the
+//!   fallback: German AltGr+Shift+2 reports the key's `"`, not the US `@`,
+//!   and is text until a Shift+2 press taught the page, a missed chord (the
+//!   safe direction, below);
 //! - else a **US fallback** for letter and digit keys (`KeyQ` → `q`,
 //!   `Digit1` → `1`, and Shift+`Digit1` → `!`), right for the letters and
 //!   digits of most layouts. The digit fallback is dropped once a plain press
@@ -57,6 +65,9 @@ pub(crate) struct Press<'a> {
     pub alt_graph: bool,
     /// `KeyboardEvent.isComposing`: an input method owns the press.
     pub composing: bool,
+    /// `getModifierState("CapsLock")`: what the press typed may not be what
+    /// the key types at its Shift level.
+    pub caps_lock: bool,
 }
 
 impl<'a> Press<'a> {
@@ -70,6 +81,7 @@ impl<'a> Press<'a> {
             meta: event.meta_key(),
             alt_graph: event.get_modifier_state("AltGraph"),
             composing: event.is_composing(),
+            caps_lock: event.get_modifier_state("CapsLock"),
         }
     }
 }
@@ -82,6 +94,12 @@ pub(crate) struct KeyLayout {
     plain: HashMap<String, String>,
     /// `code` → the character it types with Shift alone.
     shifted: HashMap<String, String>,
+    /// The last press that was not a modifier's own keydown was a dead key,
+    /// so the next press's `key` is the character it composes.
+    after_dead_key: bool,
+    /// Advanced by [`KeyLayout::forget`], so a layout map asked before a
+    /// forget that resolves after it seeds nothing.
+    generation: u64,
 }
 
 /// US Shift+digit, `Digit0` through `Digit9`.
@@ -89,11 +107,26 @@ const US_SHIFTED_DIGITS: [char; 10] = [')', '!', '@', '#', '$', '%', '^', '&', '
 
 impl KeyLayout {
     /// Learn from `press` what its key types, when the press says so: Shift
-    /// at most, not composing, and a `key` that is one printable character
-    /// (not `"Dead"`, `"Process"` or a key name). A composing press is the
-    /// input method's: its `key` is not what the key types.
+    /// at most, not composing, not right after a dead key, CapsLock off, and
+    /// a `key` that is one printable character (not `"Dead"`, `"Process"` or
+    /// a key name). A composing press is the input method's, the press after
+    /// a dead key reports the character the two compose, and CapsLock changes
+    /// what some keys type: none of their `key`s is what the key types.
     pub(crate) fn learn(&mut self, press: &Press) {
-        if press.ctrl || press.alt || press.meta || press.alt_graph || press.composing {
+        // A modifier's own keydown types nothing and leaves a dead key
+        // pending: `'` then Shift then `A` composes `Á`.
+        if is_modifier_key(press.key) {
+            return;
+        }
+        let after_dead_key = std::mem::replace(&mut self.after_dead_key, press.key == "Dead");
+        if after_dead_key
+            || press.ctrl
+            || press.alt
+            || press.meta
+            || press.alt_graph
+            || press.composing
+            || press.caps_lock
+        {
             return;
         }
         if press.code.is_empty() || !is_one_printable_char(press.key) {
@@ -116,6 +149,28 @@ impl KeyLayout {
         self.plain
             .entry(code.to_owned())
             .or_insert_with(|| key.to_owned());
+    }
+
+    /// [`KeyLayout::seed`], for a layout map asked at `generation`: a map
+    /// asked before the last [`KeyLayout::forget`] seeds nothing.
+    pub(crate) fn seed_from_map(&mut self, generation: u64, code: &str, key: &str) {
+        if generation == self.generation {
+            self.seed(code, key);
+        }
+    }
+
+    /// The generation a layout map asked now belongs to.
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Forget every key learned or seeded, and a pending dead key, and start
+    /// a new generation.
+    pub(crate) fn forget(&mut self) {
+        *self = KeyLayout {
+            generation: self.generation + 1,
+            ..KeyLayout::default()
+        };
     }
 
     /// Whether this layout's digit row may be taken to type digits: no plain
@@ -182,6 +237,28 @@ impl KeyLayout {
     }
 }
 
+/// Whether `key` is a modifier key's name, `KeyboardEvent.key` for the
+/// keydown of the modifier itself.
+fn is_modifier_key(key: &str) -> bool {
+    matches!(
+        key,
+        "Shift"
+            | "Control"
+            | "Alt"
+            | "AltGraph"
+            | "Meta"
+            | "CapsLock"
+            | "Fn"
+            | "FnLock"
+            | "Hyper"
+            | "Super"
+            | "Symbol"
+            | "SymbolLock"
+            | "NumLock"
+            | "ScrollLock"
+    )
+}
+
 pub(crate) fn is_one_printable_char(key: &str) -> bool {
     let mut chars = key.chars();
     chars
@@ -193,11 +270,28 @@ thread_local! {
     /// The page's [`KeyLayout`].
     static LAYOUT: RefCell<KeyLayout> = RefCell::new(KeyLayout::default());
     static LAYOUT_MAP_ASKED: Cell<bool> = const { Cell::new(false) };
+    /// The keydown [`note_press`] last learned from.
+    static LAST_NOTED: RefCell<Option<web_sys::KeyboardEvent>> = const { RefCell::new(None) };
 }
 
 /// Learn from `event` what its key types ([`KeyLayout::learn`]). Every keydown
-/// listener that asks [`web_alt_graph_text`] calls this first.
+/// listener that asks [`web_alt_graph_text`] calls this first, so one keydown
+/// may reach it once per listener (the menu bar's and the editor's): it
+/// learns from each keydown once, or the second listener's call would find
+/// the dead key before it already spent and learn the composed character.
 pub(crate) fn note_press(event: &web_sys::KeyboardEvent) {
+    let first = LAST_NOTED.with(|last| {
+        let mut last = last.borrow_mut();
+        // `==` on a JS object is identity (`===`).
+        if last.as_ref() == Some(event) {
+            return false;
+        }
+        *last = Some(event.clone());
+        true
+    });
+    if !first {
+        return;
+    }
     let (code, key) = (event.code(), event.key());
     LAYOUT.with(|l| l.borrow_mut().learn(&Press::of(event, &code, &key)));
 }
@@ -217,10 +311,11 @@ pub fn __known_unmodified_key(code: &str) -> Option<String> {
 }
 
 /// Forget every key the page learned or seeded, so a test's layout starts
-/// from the fallbacks. Test-only.
+/// from the fallbacks. A layout map asked before the forget seeds nothing
+/// when it resolves (`KeyLayout::forget`). Test-only.
 #[doc(hidden)]
 pub fn __forget_key_layout() {
-    LAYOUT.with(|l| *l.borrow_mut() = KeyLayout::default());
+    LAYOUT.with(|l| l.borrow_mut().forget());
 }
 
 /// Seed the page's layout from `navigator.keyboard.getLayoutMap()`, once per
@@ -254,17 +349,19 @@ pub(crate) fn ask_layout_map_once() {
     else {
         return;
     };
+    let generation = LAYOUT.with(|l| l.borrow().generation());
     let on_map = Closure::once(move |map: JsValue| {
         let Some(for_each) =
             get(&map, "forEach").and_then(|f| f.dyn_into::<js_sys::Function>().ok())
         else {
             return;
         };
-        let seed = Closure::<dyn FnMut(JsValue, JsValue)>::new(|key: JsValue, code: JsValue| {
-            if let (Some(key), Some(code)) = (key.as_string(), code.as_string()) {
-                LAYOUT.with(|l| l.borrow_mut().seed(&code, &key));
-            }
-        });
+        let seed =
+            Closure::<dyn FnMut(JsValue, JsValue)>::new(move |key: JsValue, code: JsValue| {
+                if let (Some(key), Some(code)) = (key.as_string(), code.as_string()) {
+                    LAYOUT.with(|l| l.borrow_mut().seed_from_map(generation, &code, &key));
+                }
+            });
         let _ = for_each.call1(&map, seed.as_ref());
     });
     // A refusal (a cross-origin frame, a denied permission) leaves the

@@ -19,7 +19,7 @@ use rinch_core::dom::RenderScope;
 use rinch_core::element::ThemeProviderProps;
 use rinch_editor_core::serialize::node_to_html;
 use rinch_editor_core::{Pos, Selection};
-use rinch_web::{EditorHandle, RootHandle, create_editor};
+use rinch_web::{EditorHandle, Menu, RootHandle, create_editor};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
@@ -46,6 +46,8 @@ struct Mods {
     alt: bool,
     /// `getModifierState("AltGraph")`, as Windows reports an AltGr press.
     alt_graph: bool,
+    /// `getModifierState("CapsLock")`.
+    caps_lock: bool,
 }
 
 const CTRL: Mods = Mods {
@@ -54,6 +56,7 @@ const CTRL: Mods = Mods {
     shift: false,
     alt: false,
     alt_graph: false,
+    caps_lock: false,
 };
 const META: Mods = Mods {
     ctrl: false,
@@ -61,6 +64,7 @@ const META: Mods = Mods {
     shift: false,
     alt: false,
     alt_graph: false,
+    caps_lock: false,
 };
 
 fn mouse(kind: &str, x: f32, y: f32) {
@@ -160,6 +164,7 @@ impl Fixture {
         init.set_shift_key(mods.shift);
         init.set_alt_key(mods.alt);
         init.set_modifier_alt_graph(mods.alt_graph);
+        init.set_modifier_caps_lock(mods.caps_lock);
         let ev =
             web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
         self.capture().dispatch_event(&ev).unwrap();
@@ -336,6 +341,7 @@ const ALT_GR: Mods = Mods {
     shift: false,
     alt: true,
     alt_graph: true,
+    caps_lock: false,
 };
 
 /// An AltGr press that types nothing new is the chord, as on desktop
@@ -464,4 +470,81 @@ fn a_chord_label_rendered_at_mount_knows_the_platform() {
         "⇧⌘S"
     );
     assert!(!linux, "positive control: elsewhere it does not");
+}
+
+/// Windows US-International (#3074 review): `'` is a dead key, and `'` then
+/// `a` types `á`, which the `KeyA` keydown reports as its `key`. AltGr+A types
+/// `á` too, so had the page learned `á` as what `KeyA` types, the AltGr press
+/// would type nothing new and the app's Mod-Alt-A chord would take it. The
+/// press after a dead key teaches nothing, and a keydown is learned from once
+/// however many listeners see it: a menu bar's `window` listener sees each
+/// key here before the editor's, and the editor's used to find the dead key
+/// already spent and learn `á`. The positive controls: a real Ctrl+Alt+A is
+/// the chord, and a plain `a` afterwards is learned.
+#[wasm_bindgen_test]
+fn the_press_after_a_dead_key_teaches_nothing() {
+    rinch_web::__forget_key_layout();
+    // The editor first: the bar's root is a viewport tall, and below it the
+    // editor would be out of reach of the fixture's focusing press.
+    let f = Fixture::focused(false);
+    let bar_host = document().create_element("div").unwrap();
+    document().body().unwrap().append_child(&bar_host).unwrap();
+    let bar = rinch_web::mount_into_with_menu_bar(
+        &bar_host,
+        ThemeProviderProps::default(),
+        vec![("File", Menu::new())],
+        |scope: &mut RenderScope| scope.create_element("div"),
+    );
+    f.handle
+        .bind_key("Mod-Alt-a", "toggleBold")
+        .expect("a base command");
+    f.key("Dead", "Quote", Mods::default());
+    f.key("\u{e1}", "KeyA", Mods::default());
+    let learned_after_dead = rinch_web::__known_unmodified_key("KeyA");
+    let typed = f.html();
+    f.handle.set_selection(Selection::text(Pos(1), Pos(2)));
+    let alt_gr = f.key("\u{e1}", "KeyA", ALT_GR);
+    let after_alt_gr = f.html();
+    let chord = f.key(
+        "a",
+        "KeyA",
+        Mods {
+            alt_graph: false,
+            ..ALT_GR
+        },
+    );
+    let after_chord = f.html();
+    f.key("a", "KeyA", Mods::default());
+    let learned_plain = rinch_web::__known_unmodified_key("KeyA");
+    f.teardown();
+    bar.unmount();
+    bar_host.remove();
+    assert_eq!(typed, "<p>\u{e1}</p>", "positive control: the press typed");
+    assert_eq!(learned_after_dead, None, "the press after a dead key");
+    assert!(!alt_gr, "AltGr+A typing `á` is text, left to the browser");
+    assert_eq!(after_alt_gr, "<p>\u{e1}</p>", "and bolds nothing");
+    assert!(chord, "Ctrl+Alt+A is the app's chord");
+    assert_eq!(after_chord, "<p><strong>\u{e1}</strong></p>", "and bolds");
+    assert_eq!(learned_plain.as_deref(), Some("a"), "a plain press teaches");
+}
+
+/// CapsLock changes what some keys type (French AZERTY's digit row types
+/// digits with it on), so a press with CapsLock on teaches nothing. Read
+/// from the event's own `getModifierState("CapsLock")`; the positive
+/// control: the same press with CapsLock off is learned.
+#[wasm_bindgen_test]
+fn a_press_with_caps_lock_on_teaches_nothing() {
+    rinch_web::__forget_key_layout();
+    let f = Fixture::focused(false);
+    let caps_lock = Mods {
+        caps_lock: true,
+        ..Mods::default()
+    };
+    f.key("1", "Digit1", caps_lock);
+    let learned_with_caps_lock = rinch_web::__known_unmodified_key("Digit1");
+    f.key("1", "Digit1", Mods::default());
+    let learned = rinch_web::__known_unmodified_key("Digit1");
+    f.teardown();
+    assert_eq!(learned_with_caps_lock, None, "CapsLock on: nothing learned");
+    assert_eq!(learned.as_deref(), Some("1"), "CapsLock off: learned");
 }

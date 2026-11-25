@@ -13,6 +13,7 @@ fn plain<'a>(code: &'a str, key: &'a str) -> Press<'a> {
         meta: false,
         alt_graph: false,
         composing: false,
+        caps_lock: false,
     }
 }
 
@@ -217,4 +218,107 @@ fn a_key_name_is_never_alt_graph_text() {
     let layout = KeyLayout::default();
     assert!(!layout.is_alt_graph_text(&alt_gr("ArrowLeft", "ArrowLeft")));
     assert!(!layout.is_alt_graph_text(&alt_gr("Digit1", "Dead")));
+}
+
+/// Windows US-International: `'` is a dead key, and `'` then `a` types `á`,
+/// which the `KeyA` keydown reports as its `key` (not composing). AltGr+A
+/// types `á` too, so learning `á` as what `KeyA` types would read that AltGr
+/// press as typing nothing new: the app's Mod-Alt-A chord would take it and
+/// the character would be lost. The press after a dead key teaches nothing,
+/// and a dead key itself is never learned.
+#[test]
+fn the_press_after_a_dead_key_teaches_nothing() {
+    let mut layout = KeyLayout::default();
+    layout.learn(&plain("Quote", "Dead"));
+    layout.learn(&plain("KeyA", "á"));
+    assert_eq!(known_or_none(&layout, "KeyA"), None);
+    assert_eq!(known_or_none(&layout, "Quote"), None, "a dead key itself");
+    assert!(
+        layout.is_alt_graph_text(&alt_gr("KeyA", "á")),
+        "US-International AltGr+A types `á`: text, not the chord"
+    );
+    // Only the one press: the key's next plain press is learned (the
+    // positive control).
+    layout.learn(&plain("KeyA", "a"));
+    assert_eq!(known_or_none(&layout, "KeyA").as_deref(), Some("a"));
+}
+
+/// A modifier's own keydown between the dead key and the key it composes
+/// with (Shift, for `'` then Shift+A, `Á`) leaves the dead key pending.
+#[test]
+fn a_dead_key_stays_pending_across_a_modifier_keydown() {
+    let mut layout = KeyLayout::default();
+    layout.learn(&plain("Quote", "Dead"));
+    layout.learn(&shifted(plain("ShiftLeft", "Shift")));
+    layout.learn(&shifted(plain("KeyA", "Á")));
+    assert_eq!(layout.shifted.get("KeyA"), None);
+    // The positive control: with no dead key before it, the same press
+    // teaches the Shift level.
+    layout.learn(&shifted(plain("KeyA", "Á")));
+    assert_eq!(layout.shifted.get("KeyA").map(String::as_str), Some("Á"));
+}
+
+/// A dead circumflex (Shift+6 on US-International) then `2` composes `²`,
+/// reported as the `Digit2` press's `key`. Learned, it would say this
+/// layout's digit row is not digits and drop the digit fallback: German and
+/// Polish right-Alt+1, which report `"1"`, would stop being the chord.
+#[test]
+fn a_dead_key_composition_on_the_digit_row_keeps_the_digit_fallback() {
+    let mut layout = KeyLayout::default();
+    layout.learn(&shifted(plain("Digit6", "Dead")));
+    layout.learn(&plain("Digit2", "²"));
+    assert_eq!(known_or_none(&layout, "Digit2"), None);
+    assert_eq!(layout.base("Digit1", false).as_deref(), Some("1"));
+    assert!(
+        !layout.is_alt_graph_text(&alt_gr("Digit1", "1")),
+        "the chord"
+    );
+}
+
+/// CapsLock changes what some keys type: on French AZERTY it makes the digit
+/// row type digits (and Shift then gives the symbols). A press with CapsLock
+/// on would teach the digits over the seeded `&`, and the symbols as the
+/// Shift level, so it teaches nothing.
+#[test]
+fn a_press_with_caps_lock_on_teaches_nothing() {
+    let mut layout = KeyLayout::default();
+    layout.seed("Digit1", "&");
+    let caps = |press: Press<'static>| Press {
+        caps_lock: true,
+        ..press
+    };
+    layout.learn(&caps(plain("Digit1", "1")));
+    layout.learn(&caps(shifted(plain("Digit1", "&"))));
+    assert_eq!(layout.base("Digit1", false).as_deref(), Some("&"));
+    assert_eq!(layout.shifted.get("Digit1"), None);
+    // So French AltGr+1, reporting the key's own `&`, stays the chord.
+    assert!(!layout.is_alt_graph_text(&alt_gr("Digit1", "&")));
+    // The positive control: the same plain press, CapsLock off, is learned.
+    layout.learn(&plain("Digit1", "1"));
+    assert_eq!(known_or_none(&layout, "Digit1").as_deref(), Some("1"));
+}
+
+/// A layout map asked before `__forget_key_layout` that resolves after it
+/// seeds nothing: the forget started a new generation.
+#[test]
+fn a_layout_map_from_before_a_forget_seeds_nothing() {
+    let mut layout = KeyLayout::default();
+    let asked = layout.generation();
+    layout.forget();
+    layout.seed_from_map(asked, "KeyQ", "a");
+    assert_eq!(known_or_none(&layout, "KeyQ"), None);
+    // The positive control: a map asked in this generation seeds.
+    let asked = layout.generation();
+    layout.seed_from_map(asked, "KeyQ", "a");
+    assert_eq!(known_or_none(&layout, "KeyQ").as_deref(), Some("a"));
+}
+
+/// A forget also drops a pending dead key: a test's first press is learned.
+#[test]
+fn a_forget_drops_a_pending_dead_key() {
+    let mut layout = KeyLayout::default();
+    layout.learn(&plain("Quote", "Dead"));
+    layout.forget();
+    layout.learn(&plain("KeyA", "a"));
+    assert_eq!(known_or_none(&layout, "KeyA").as_deref(), Some("a"));
 }

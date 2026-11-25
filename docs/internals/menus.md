@@ -220,11 +220,27 @@ Shift applied (German AltGr+Shift+1 reports `"!"`), and desktop, whose `text` is
 then empty, reads that press as the chord, so the web compares `"!"` with the
 key's Shift character, not with `"1"`. The table is learned per `code` from
 the layout's own presses (`key_layout::note_press`, called by both keydown
-listeners: plain presses for the plain level, Shift-only ones for the Shift
-level; never a composing press, whose `key` is the input method's), seeded
-from `navigator.keyboard.getLayoutMap()` where it exists (Chromium) — asked
-at the first mount (`install_before_build`), so the map is in before the
-page's first key — and a seed never replaces a learned entry. Else the US
+listeners, and noted once per keydown however many listeners see it: plain
+presses for the plain level, Shift-only ones for the Shift level). Three kinds
+of press teach nothing, because their `key` is not what the key types: a
+composing press (the input method's); the press after a dead key (its `key` is
+the composed character: on Windows US-International `'` then `a` reports
+`"á"` for `KeyA`, which AltGr+A types too, so learning it would turn that
+AltGr text into the Mod-Alt-A chord; `^` then `2` reports `"²"` and would drop
+the digit fallback), while modifier keydowns in between keep the dead key
+pending; and any press with CapsLock on (French AZERTY's CapsLock makes the
+digit row type digits, over the seeded `&`, and inverts the Shift level). The
+table is seeded from `navigator.keyboard.getLayoutMap()` where it exists
+(Chromium) — asked at the first mount (`install_before_build`), so the map is
+in before the page's first key — and a seed never replaces a learned entry.
+The map has **only the plain level**, so the Shift level is learned from
+Shift-only presses alone, and until then it is the US fallback: German
+AltGr+Shift+2 types nothing and Chrome reports the key's Shift character
+`"`, which differs from the US fallback `@`, so before a Shift+2 press has
+taught the page that press is text and the app's Mod-Alt-Shift-2 chord is
+missed — the safe direction (below). `__forget_key_layout` (tests) also
+advances the table's generation, so a layout map asked before the forget that
+resolves after it seeds nothing. Else the US
 character of a `KeyX` / `DigitN` code (Shift+`DigitN`: `!@#…`), except that
 the digit fallback is dropped once any plain digit-row press typed a
 non-digit (Lithuanian `ą č ę …`, French `& é " …`). **Which way an unknown key
