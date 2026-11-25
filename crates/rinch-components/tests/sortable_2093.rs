@@ -2,7 +2,7 @@
 //! that answers no `bounding_rect` and has no runtime behind it, driven by
 //! dispatching the handler attributes alone — the position of a plugin host
 //! that proxies `data-*` handlers and nothing else. The desktop event path is
-//! `rinch/src/app/sortable_2091_tests.rs`.
+//! `rinch/src/app/sortable_2091_tests/`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -53,10 +53,12 @@ fn list(
     .render(scope, items)
 }
 
+/// A list whose keyboard drag is on: most tests here drive it by key.
 fn cards(group: &str, id: &str) -> SortableList {
     SortableList {
         group: group.into(),
         id: id.into(),
+        keyboard: true,
         ..Default::default()
     }
 }

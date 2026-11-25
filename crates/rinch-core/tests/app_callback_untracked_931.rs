@@ -9,7 +9,7 @@
 //! keyboard and paste interceptors. A callback's reads used to be recorded on
 //! whatever effect made the call. (The child observers,
 //! which every `for` reconcile reaches from inside its effect, are pinned in
-//! `dom/late_child.rs`'s unit tests: they need the crate-private mock.)
+//! `dom/late_child/`'s unit tests: they need the crate-private mock.)
 //!
 //! Every fixture calls from an effect created **inside another effect's run**,
 //! so the call sits two observer runs deep. That told the fix apart from plain

@@ -302,6 +302,7 @@ Excluded, as the brief says: SortableItem drag ghost, preview and gap-reflow (#2
   - *Can the app change it today?* Partly. `handle_key` can consume PageUp and PageDown and move the cursor with `TreeController::set_cursor`.
   - *Proposed option:* `page_rows: usize`, **default `0`, meaning "by the visible height"** (Chrome). `10` gives today's behaviour.
   - *Likelihood:* Low-Medium. In a tall tree, a 10-row page feels wrong.
+  - *Since #3062:* the tree no longer takes PageUp or PageDown at all (they are not in the WAI-ARIA tree pattern), so the item is moot; an app that wants paging binds it in `handle_key`.
 
 - **Differs from Chrome:** the buffer here is 700 ms, where Chromium's is 1 s. **`tree.rs:2247`: type-ahead has a fixed 700 ms buffer (`TYPE_AHEAD_MS`, timer at `tree.rs:2826`) and cannot be switched off.**
   - *Chrome:* a native `<select>` / listbox has type-ahead find. Chromium's `TypeAhead` resets the buffer after 1 second without a key. That is from memory of the Chromium source; confirm before changing.

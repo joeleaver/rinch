@@ -3,7 +3,7 @@
 Drag items within and between ordered lists — a kanban's cards across
 columns, the columns themselves, lanes of columns — with a judge that can
 refuse a drop (and say why) before the release, an insertion caret, edge
-auto-scroll on both axes, and a keyboard flow. `rinch-components/src/sortable.rs`.
+auto-scroll on both axes, and a keyboard flow. `rinch-components/src/sortable/`.
 
 ## Requirements from the kanban use
 
@@ -48,14 +48,15 @@ SortableList {
 
 - `SortableList` — `group`, `id`, `axis` (`Vertical` | `Horizontal`),
   `judge`, `ondrop`, `ondropchange`, `drag_keys`, `label`, `disabled`,
-  `lift_keys`, `class`, `style`.
+  `keyboard` (off by default since #3062), `lift_keys`, `class`, `style`.
   Its element carries `data-sortable-list` (a per-render token) and the
   `rinch-sortable` classes; an `aria-live` region inside it announces the
   keyboard flow.
 - `SortableItem` — `value` (the key), `handle` (drag only by a
   `SortableHandle` inside), `label` (for announcements), `disabled`, `class`,
   `style`. Its
-  element carries `data-sortable-key`, `tabindex="0"` and the drag handlers.
+  element carries `data-sortable-key` and the drag handlers; a `keyboard`
+  list adds `tabindex="0"` (#3062).
 - `SortableHandle` — `draggable="true"` and nothing else: the handlers are the
   item's, found by the runtime's walk up from the draggable node.
 - `SortMove { group, keys, from_list, to_list, place }`,
@@ -117,7 +118,8 @@ acting only when the item itself is focused:
   the same group in that direction (by on-screen boxes), at the same index or
   the near end. The caret's item is scrolled into view.
 - Space / Enter drops (an accepted place calls `ondrop`; the item is focused
-  again once the app re-rendered it), Escape cancels.
+  again once the app's re-render puts it where the drop placed it, now or
+  later: the lifted node, still where it was, does not count), Escape cancels.
 
 Escape is answered by the item's own handler rather than by a dismiss-stack
 entry: element handlers run before the dismiss stack, so it still beats an
@@ -152,7 +154,10 @@ a node or a registration token surviving:
 - without `bounding_rect`, over an item the drag passes it in the direction
   it is moving, and lists follow document order;
 - a key counts only when sent to the item itself (`KeyEventData::target`);
-- the dropped item is focused at its render in its new list (no timer needed);
+- the dropped item is focused at its render in its new list (no timer
+  needed) once the list's order shows the drop applied, every carried item in
+  place; a redraw in the order at the drop does not count, and another order
+  (the app placed it its own way) ends the request on the item;
 - styling is inherited custom properties (a guest's only lever), and the
   parts stay quiet without the stylesheet;
 - `data-drag-ghost="false"` lets a painting host hide its ghost (on the list

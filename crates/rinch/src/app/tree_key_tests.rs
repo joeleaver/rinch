@@ -22,6 +22,22 @@ struct Fixture {
     rested: Rc<RefCell<Vec<String>>>,
     moves: Rc<RefCell<Vec<TreeDrop>>>,
     seen: Rc<RefCell<Vec<String>>>,
+    /// Each key press an app-wide listener (`on_app_key`) heard. Those run
+    /// after the element handlers, so this holds only keys the tree left
+    /// unconsumed — unlike `seen`, which `handle_key` is offered first.
+    app_heard: Rc<RefCell<Vec<String>>>,
+}
+
+/// Log, as `chord` writes it, each key press that reaches an app-wide
+/// listener: a key nothing ahead of it (the tree among them) consumed.
+fn hear_app_keys(log: &Rc<RefCell<Vec<String>>>) {
+    let log = log.clone();
+    rinch_core::on_app_key(move |k| {
+        if k.kind == rinch_core::events::KeyEventKind::Down {
+            log.borrow_mut().push(chord(k.ctrl, &k.key));
+        }
+        false
+    });
 }
 
 /// a (open: a1, a2), b, c; and a box outside the tree to click away to.
@@ -30,13 +46,20 @@ fn fixture() -> Fixture {
     let rested: Rc<RefCell<Vec<String>>> = Rc::default();
     let moves: Rc<RefCell<Vec<TreeDrop>>> = Rc::default();
     let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+    let app_heard: Rc<RefCell<Vec<String>>> = Rc::default();
     let state = UseTreeReturn::new(UseTreeOptions {
         initial_expanded: ["a".to_string()].into_iter().collect(),
         ..Default::default()
     });
-    let (r, m, s) = (rested.clone(), moves.clone(), seen.clone());
+    let (r, m, s, h) = (
+        rested.clone(),
+        moves.clone(),
+        seen.clone(),
+        app_heard.clone(),
+    );
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
         let (r, m, s) = (r.clone(), m.clone(), s.clone());
+        hear_app_keys(&h);
         let tree = Tree {
             data: vec![
                 TreeNodeData::new("a", "Apples").with_children(vec![
@@ -94,6 +117,7 @@ fn fixture() -> Fixture {
         rested,
         moves,
         seen,
+        app_heard,
     }
 }
 
@@ -266,17 +290,36 @@ fn the_app_sees_keys_first_and_moves_rows_with_them() {
 
 type Log<T> = Rc<RefCell<Vec<T>>>;
 
-/// A tree with `multiple` selection: a, b, c, d at the top level.
+/// The key a log records: `Ctrl+a` for a chord.
+fn chord(ctrl: bool, key: &str) -> String {
+    if ctrl {
+        format!("Ctrl+{key}")
+    } else {
+        key.to_string()
+    }
+}
+
+/// A tree with `multiple` selection: a, b, c, d at the top level. Its
+/// `seen` log records each key the app's `handle_key` is offered (it takes
+/// none).
 fn multi_fixture() -> (Fixture, Log<Vec<String>>, Log<String>) {
     let changes: Log<Vec<String>> = Rc::default();
     let opened: Log<String> = Rc::default();
+    let seen: Log<String> = Rc::default();
+    let app_heard: Log<String> = Rc::default();
     let state = UseTreeReturn::new(UseTreeOptions {
         multiple: true,
         ..Default::default()
     });
-    let (c, o) = (changes.clone(), opened.clone());
+    let (c, o, s, h) = (
+        changes.clone(),
+        opened.clone(),
+        seen.clone(),
+        app_heard.clone(),
+    );
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
-        let (c, o) = (c.clone(), o.clone());
+        let (c, o, s) = (c.clone(), o.clone(), s.clone());
+        hear_app_keys(&h);
         let tree = Tree {
             data: ["a", "b", "c", "d"]
                 .iter()
@@ -290,6 +333,10 @@ fn multi_fixture() -> (Fixture, Log<Vec<String>>, Log<String>) {
             onselect: Some(ValueCallback::new(move |v| o.borrow_mut().push(v))),
             onselectionchange: Some(ValueCallback::new(move |values| {
                 c.borrow_mut().push(values)
+            })),
+            handle_key: Some(Rc::new(move |key: &TreeKey| {
+                s.borrow_mut().push(chord(key.ctrl, &key.key));
+                false
             })),
             ..Default::default()
         }
@@ -316,7 +363,8 @@ fn multi_fixture() -> (Fixture, Log<Vec<String>>, Log<String>) {
             state,
             rested: Rc::default(),
             moves: Rc::default(),
-            seen: Rc::default(),
+            seen,
+            app_heard,
         },
         changes,
         opened,
@@ -423,7 +471,10 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
         },
     );
     assert_eq!(selection(&f), ["b", "c"], "a run from b, where Space was");
-    // Ctrl+A: the cursor row's siblings.
+    // Ctrl+A is not the tree's (#3062): the tree leaves it unconsumed, so it
+    // goes on to the app (whose `handle_key` binds select-all if it wants
+    // one), and the selection stays.
+    f.app_heard.borrow_mut().clear();
     press(
         &mut f,
         KeyCode::KeyA,
@@ -433,7 +484,40 @@ fn ctrl_and_shift_clicks_select_several_rows_and_open_nothing() {
             ..Default::default()
         },
     );
-    assert_eq!(selection(&f), ["a", "b", "c", "d"]);
+    assert_eq!(selection(&f), ["b", "c"]);
+    assert_eq!(
+        *f.app_heard.borrow(),
+        ["Ctrl+a"],
+        "the tree consumed Ctrl+A"
+    );
+}
+
+/// #3062: PageUp and PageDown are not in the WAI-ARIA tree pattern. The tree
+/// leaves them unconsumed, for the app, and the cursor where it is; the
+/// pattern's End and Home still move it.
+#[test]
+fn page_up_and_page_down_leave_the_cursor_to_the_app() {
+    let mut f = fixture();
+    let a = centre(&f.app, row(&f.app, "a"));
+    click(&mut f, a);
+    assert_eq!(f.state.cursor.get().as_deref(), Some("a"));
+
+    press(&mut f, KeyCode::PageDown, None, Modifiers::default());
+    assert_eq!(
+        f.app_heard.borrow().last().map(String::as_str),
+        Some("PageDown")
+    );
+    assert_eq!(f.state.cursor.get().as_deref(), Some("a"), "PageDown");
+    press(&mut f, KeyCode::End, None, Modifiers::default());
+    assert_eq!(f.state.cursor.get().as_deref(), Some("c"), "End");
+    press(&mut f, KeyCode::PageUp, None, Modifiers::default());
+    assert_eq!(
+        f.app_heard.borrow().last().map(String::as_str),
+        Some("PageUp")
+    );
+    assert_eq!(f.state.cursor.get().as_deref(), Some("c"), "PageUp");
+    press(&mut f, KeyCode::Home, None, Modifiers::default());
+    assert_eq!(f.state.cursor.get().as_deref(), Some("a"), "Home");
 }
 
 #[test]
