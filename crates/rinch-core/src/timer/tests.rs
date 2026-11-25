@@ -549,6 +549,7 @@ mod cleared_timers_2832 {
 
 /// Native always runs a timeout: the built-in scheduler stands in for a
 /// missing backend, so code that defers a check may rely on it here.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn timers_fire_on_native() {
     assert!(timers_fire());

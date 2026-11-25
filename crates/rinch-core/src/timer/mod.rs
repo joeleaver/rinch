@@ -99,7 +99,9 @@ pub fn set_timeout(delay_ms: u32, cb: impl FnOnce() + 'static) -> TimeoutHandle 
 }
 
 /// Whether a [`set_timeout`] armed now on this thread will ever run: `true`
-/// on native (the built-in scheduler stands in for a missing backend), under
+/// on native (the built-in scheduler stands in for a missing backend; its
+/// callback is delivered through the main-callback queue, so it runs only on a
+/// host that drains that queue, as the rinch runtime and `TestApp` do), under
 /// a test's virtual clock, and on the web once a backend is installed
 /// ([`set_timer_backend`]). `false` only on wasm32 with no backend, where a
 /// timeout is parked and never fires.
