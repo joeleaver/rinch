@@ -178,7 +178,7 @@ pub fn line_boundary(doc: &Node, head: Pos, forward: bool) -> Option<Pos> {
 /// of the next word, as on Linux and macOS. An inline atom is a segment of its
 /// own, so the motion stops on either side of it (#938), and a run of
 /// punctuation is one apart from the letters beside it (#939). The word deletes
-/// remove exactly this range (`commands::word_delete_range`).
+/// remove exactly this range (`commands::delete::word_delete_range`).
 pub fn word_boundary(doc: &Node, head: Pos, forward: bool) -> Option<Pos> {
     let r = doc.resolve(head).ok()?;
     if !r.parent().is_textblock() {

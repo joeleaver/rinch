@@ -259,12 +259,15 @@ fn inside_a_trap_tab_from_a_read_only_editor_wraps_within_the_trap() {
     }
 }
 
-/// The control, and the switch going off again: an editable editor keeps Tab
-/// and nests the item, and Shift+Tab lifts it back.
+/// The control, and the switch going off again: an editable editor that
+/// indents (`IndentInListsAndTables`, opt-in since #3062) keeps Tab and nests
+/// the item, and Shift+Tab lifts it back.
 #[wasm_bindgen_test]
 fn an_editable_editor_still_indents_on_tab_also_after_read_only_is_switched_off() {
     for was_read_only in [false, true] {
         let f = Fixture::new(Layout::Page, was_read_only);
+        f.handle
+            .set_tab_behavior(rinch_web::TabBehavior::IndentInListsAndTables);
         f.handle.set_read_only(false);
         f.handle.set_selection(Selection::cursor(Pos(11)));
         assert_eq!(f.top_level_items(), 2, "precondition");
@@ -351,6 +354,8 @@ fn with_two_traps_tab_stays_in_the_editors_trap() {
 #[wasm_bindgen_test]
 fn an_editable_editor_lets_go_of_a_tab_it_has_no_use_for() {
     let f = Fixture::new(Layout::Page, false);
+    f.handle
+        .set_tab_behavior(rinch_web::TabBehavior::IndentInListsAndTables);
     // "one", in the first item: Tab cannot sink it.
     f.handle.set_selection(Selection::cursor(Pos(4)));
     let doc = f.handle.doc();
@@ -364,12 +369,17 @@ fn an_editable_editor_lets_go_of_a_tab_it_has_no_use_for() {
     f.teardown();
 }
 
-/// #2210: `TabBehavior::MoveFocus` is Chrome's `contenteditable`: even in an
-/// item that Tab could nest, the focus moves on and nothing is edited.
+/// #2210: `TabBehavior::MoveFocus` is Chrome's `contenteditable`, and the
+/// default since #3062: even in an item that Tab could nest, the focus moves
+/// on and nothing is edited.
 #[wasm_bindgen_test]
 fn move_focus_lets_every_tab_go() {
     let f = Fixture::new(Layout::Page, false);
-    f.handle.set_tab_behavior(rinch_web::TabBehavior::MoveFocus);
+    assert_eq!(
+        f.handle.tab_behavior(),
+        rinch_web::TabBehavior::MoveFocus,
+        "the default"
+    );
     f.handle.set_selection(Selection::cursor(Pos(11)));
     let doc = f.handle.doc();
     assert!(tab(false), "rinch moves the focus itself");

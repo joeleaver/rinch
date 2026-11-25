@@ -342,14 +342,18 @@ fn mod_enter_outside_a_code_block_reaches_the_page() {
     );
 }
 
-/// #2993's second review: Ctrl/Cmd+Shift+R on a paragraph that is already
-/// right-aligned (`setTextAlignRight` answers `false`) is still the editor's
-/// key — left to Chrome it hard-reloads the page and the unsaved edits are
-/// lost. It is `preventDefault`ed and a page `keydown` listener never hears
-/// it. At b7d5350ad (every binding but a declared few fell through where
-/// inapplicable) the second press was left to the browser.
+/// #2993's second review: a binding consumes its key where its command does
+/// not apply. Ctrl/Cmd+Shift+R on a paragraph that is already right-aligned
+/// (`setTextAlignRight` answers `false`) left to Chrome hard-reloads the page,
+/// so a chord the editor advertises is `preventDefault`ed and a page `keydown`
+/// listener never hears it. At b7d5350ad (every binding but a declared few
+/// fell through where inapplicable) the second press was left to the browser.
+///
+/// Since #3062 the editor advertises no alignment chord: unbound, the press
+/// reaches the page (and so, for real keys, the browser's reload). An app that
+/// binds it (`bind_key`) owns it again, the no-op press included.
 #[wasm_bindgen_test]
-fn ctrl_shift_r_on_a_right_aligned_paragraph_is_the_editors() {
+fn ctrl_shift_r_is_the_pages_unless_the_app_binds_it() {
     use std::cell::RefCell;
     use std::rc::Rc;
     use wasm_bindgen::closure::Closure;
@@ -368,11 +372,18 @@ fn ctrl_shift_r_on_a_right_aligned_paragraph_is_the_editors() {
         .unwrap();
     f.handle.set_selection(Selection::cursor(Pos(1)));
     let before = f.handle.doc();
-    // The control: the first press applies (the paragraph becomes right-aligned).
+    // Unbound: left to the page, nothing edited.
+    let unbound = f.key("R", "KeyR", true, true);
+    let untouched = f.handle.doc().same_ref(&before);
+    let heard_unbound = *page_heard.borrow();
+    // Bound by the app: the first press applies (the paragraph becomes
+    // right-aligned), and the second, with nothing to do, is still consumed.
+    f.handle
+        .bind_key("Mod-Shift-r", "setTextAlignRight")
+        .expect("the command exists");
     let first = f.key("R", "KeyR", true, true);
     let aligned = !f.handle.doc().same_ref(&before);
     let after_first = f.handle.doc();
-    // Now the command has nothing to do.
     let second = f.key("R", "KeyR", true, true);
     let unchanged = f.handle.doc().same_ref(&after_first);
     let heard = *page_heard.borrow();
@@ -382,24 +393,37 @@ fn ctrl_shift_r_on_a_right_aligned_paragraph_is_the_editors() {
     let blocks = f.blocks();
     f.teardown();
 
-    assert!(first && aligned, "control: the first press aligns right");
+    assert!(
+        !unbound && untouched,
+        "unbound: not preventDefaulted, no edit"
+    );
+    assert_eq!(heard_unbound, 1, "unbound: the page hears it");
+    assert!(first && aligned, "control: the bound press aligns right");
     assert!(
         second,
         "the second press is consumed although it does nothing"
     );
     assert!(unchanged, "and changes nothing");
-    assert_eq!(heard, 0, "the page hears neither press");
+    assert_eq!(heard, 1, "the page hears neither bound press");
     assert_eq!(blocks, [b("p", "x"), b("pre", "abcd"), b("p", "y")]);
 }
 
-/// Mod+E where `toggleCode` refuses — a read-only editor — is still the
-/// editor's key; left to Chrome, Ctrl+E focuses the address bar. At
-/// b7d5350ad it was not `preventDefault`ed. In a code block it is consumed
-/// too (there `toggleCode` applies: rinch's mark toggles do not check the
-/// parent's allowed marks).
+/// Mod+E: left to Chrome, Ctrl+E focuses the address bar (Cmd+E on a Mac
+/// puts the selection in Find). Since #3062 the editor has no binding for it,
+/// so it is not `preventDefault`ed and changes nothing. Bound by the app, it is
+/// the editor's even where `toggleCode` refuses — a read-only editor — and in
+/// a code block (there `toggleCode` applies: rinch's mark toggles do not check
+/// the parent's allowed marks).
 #[wasm_bindgen_test]
-fn mod_e_in_a_read_only_editor_or_a_code_block_is_the_editors() {
+fn mod_e_is_the_browsers_unless_the_app_binds_it() {
     let f = Fixture::focused(DOC);
+    f.handle.set_selection(Selection::text(Pos(1), Pos(2)));
+    let start = f.handle.doc();
+    let unbound = f.key("e", "KeyE", false, true);
+    let untouched = f.handle.doc().same_ref(&start);
+    f.handle
+        .bind_key("Mod-e", "toggleCode")
+        .expect("the command exists");
     f.handle.set_selection(Selection::text(Pos(4), Pos(6)));
     let in_code = f.key("e", "KeyE", false, true);
     f.handle.set_read_only(true);
@@ -412,8 +436,12 @@ fn mod_e_in_a_read_only_editor_or_a_code_block_is_the_editors() {
     let editable = f.key("e", "KeyE", false, true);
     let toggled = !f.handle.doc().same_ref(&before);
     f.teardown();
-    assert!(in_code, "Mod+E in a code block is preventDefaulted");
-    assert!(read_only, "Mod+E in a read-only editor is preventDefaulted");
+    assert!(!unbound && untouched, "unbound: left to the browser");
+    assert!(in_code, "bound Mod+E in a code block is preventDefaulted");
+    assert!(
+        read_only,
+        "bound Mod+E in a read-only editor is preventDefaulted"
+    );
     assert!(unchanged, "and changes nothing");
     assert!(editable && toggled, "control: applies when editable");
 }

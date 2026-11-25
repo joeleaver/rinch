@@ -19,6 +19,8 @@ use std::cell::Cell;
 use rinch::menu::Menu;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
+use wasm_bindgen::JsCast;
+
 thread_local! {
     /// Whether any root has mounted a menu bar: until then the window key
     /// listener matches no chord.
@@ -74,7 +76,6 @@ pub(crate) fn wrap(
 /// Chrome 153). `activeElement` is the fallback for an event with no path.
 fn key_target_owner(event: &web_sys::KeyboardEvent) -> rinch::menu::KeyOwner {
     use rinch::menu::KeyOwner;
-    use wasm_bindgen::JsCast;
     let target = event
         .composed_path()
         .get(0)
@@ -108,21 +109,6 @@ fn key_target_owner(event: &web_sys::KeyboardEvent) -> rinch::menu::KeyOwner {
         "body" | "html" => KeyOwner::None,
         _ => KeyOwner::Activator,
     }
-}
-
-/// Whether AltGr typed `event.key` (#1291): the browser reports AltGr on
-/// Windows as Ctrl+Alt, and says which it was through
-/// `getModifierState("AltGraph")`; the press typed a character when its `key`
-/// is one printable character rather than a key name.
-fn web_alt_graph_text(event: &web_sys::KeyboardEvent) -> bool {
-    if !event.get_modifier_state("AltGraph") {
-        return false;
-    }
-    let key = event.key();
-    let mut chars = key.chars();
-    chars
-        .next()
-        .is_some_and(|c| !c.is_control() && chars.next().is_none())
 }
 
 /// The single ASCII letter `key` (a `KeyboardEvent.key`) spells, lowercased —
@@ -182,6 +168,8 @@ pub(crate) fn dispatch_menu_chord(event: &web_sys::KeyboardEvent) -> bool {
     if !SHORTCUTS_ARMED.with(|f| f.get()) {
         return false;
     }
+    // What an unmodified press types, for the AltGr question below.
+    crate::key_layout::note_press(event);
     // `code` is the physical key's W3C name — "KeyK", "Digit0", "F5" — which
     // is exactly what a shortcut string parses into, so no translation.
     // It is still the only thing a *digit or punctuation* chord
@@ -205,7 +193,7 @@ pub(crate) fn dispatch_menu_chord(event: &web_sys::KeyboardEvent) -> bool {
         event.meta_key(),
         event.alt_key(),
         &code,
-        web_alt_graph_text(event),
+        crate::key_layout::web_alt_graph_text(event),
     ) {
         return false;
     }

@@ -1,13 +1,15 @@
 //! Tab in an editable editor (#2210): a Tab the editor has no use for moves
-//! the focus on, and `TabBehavior::MoveFocus` makes every Tab do so.
+//! the focus on, and `TabBehavior::MoveFocus` makes every Tab do so. Since
+//! #3062 `MoveFocus` is the default, as in Chrome, and
+//! `TabBehavior::IndentInListsAndTables` opts into the list and table keys.
 //!
 //! Before, an editable editor offered Tab to its keymap (`Tab` →
 //! `sinkListItem`, `Shift-Tab` → `liftListItem`) and consumed the matched
 //! binding whether or not the command applied, so in a plain paragraph Tab
 //! did nothing and the keyboard could not leave: a trap (WCAG 2.1.2). Chrome's
-//! `contenteditable` never keeps Tab; rinch keeps it where it does something
-//! (a list item, a table cell), the default `TabBehavior`, and lets it go
-//! everywhere else.
+//! `contenteditable` never keeps Tab; under `IndentInListsAndTables` rinch
+//! keeps it where it does something (a list item, a table cell), and lets it
+//! go everywhere else.
 //!
 //! Driven through the real `PlatformEvent` path with a Tab stop on each side
 //! of the editor (the #833 file's set-up), so "focus left" is also "in the
@@ -97,6 +99,14 @@ fn page(caret: Pos) -> Page {
     page_with(CONTENT, caret)
 }
 
+/// [`page`] with the list and table keys turned on.
+fn indenting_page(caret: Pos) -> Page {
+    let p = page(caret);
+    p.handle
+        .set_tab_behavior(TabBehavior::IndentInListsAndTables);
+    p
+}
+
 fn ev(app: &mut RinchApp, event: PlatformEvent) -> Vec<AppAction> {
     app.handle_event(event, VP, 1.0)
 }
@@ -137,7 +147,7 @@ fn top_level_items(handle: &crate::editor::EditorHandle) -> usize {
 #[test]
 fn tab_in_a_plain_paragraph_moves_the_focus_on() {
     for shift in [false, true] {
-        let mut p = page(IN_PLAIN);
+        let mut p = indenting_page(IN_PLAIN);
         let doc = p.handle.doc();
         tab(&mut p.app, shift);
         let want = if shift { p.before } else { p.after };
@@ -154,19 +164,18 @@ fn tab_in_a_plain_paragraph_moves_the_focus_on() {
 /// trap in a list: the binding runs, does nothing, and the key moves on.
 #[test]
 fn tab_in_a_first_list_item_that_cannot_sink_moves_the_focus_on() {
-    let mut p = page(IN_FIRST_ITEM);
+    let mut p = indenting_page(IN_FIRST_ITEM);
     let doc = p.handle.doc();
     tab(&mut p.app, false);
     assert_eq!(p.app.focus_target, FocusTarget::Node(p.after));
     assert!(p.handle.doc().same_ref(&doc), "no edit");
 }
 
-/// The default keeps the list behaviour: Tab nests the second item and
-/// Shift+Tab lifts it back, the keyboard staying in the editor.
+/// `IndentInListsAndTables` keeps the list behaviour: Tab nests the second
+/// item and Shift+Tab lifts it back, the keyboard staying in the editor.
 #[test]
-fn the_default_still_indents_a_list_item_that_can_sink() {
-    let mut p = page(IN_SECOND_ITEM);
-    assert_eq!(p.handle.tab_behavior(), TabBehavior::IndentInListsAndTables);
+fn indenting_nests_a_list_item_that_can_sink() {
+    let mut p = indenting_page(IN_SECOND_ITEM);
     assert_eq!(top_level_items(&p.handle), 2, "precondition");
     tab(&mut p.app, false);
     assert_eq!(p.app.focus_target, FocusTarget::Editor(p.container));
@@ -176,13 +185,13 @@ fn the_default_still_indents_a_list_item_that_can_sink() {
     assert_eq!(top_level_items(&p.handle), 2, "Shift+Tab lifted it back");
 }
 
-/// `MoveFocus` is Chrome's `contenteditable`: even where Tab could indent,
-/// it moves the focus and edits nothing.
+/// `MoveFocus` is Chrome's `contenteditable`, and the default (#3062): even
+/// where Tab could indent, it moves the focus and edits nothing.
 #[test]
-fn move_focus_lets_every_tab_go_even_in_a_list() {
+fn the_default_lets_every_tab_go_even_in_a_list() {
     for shift in [false, true] {
         let mut p = page(IN_SECOND_ITEM);
-        p.handle.set_tab_behavior(TabBehavior::MoveFocus);
+        assert_eq!(p.handle.tab_behavior(), TabBehavior::MoveFocus);
         let doc = p.handle.doc();
         tab(&mut p.app, shift);
         let want = if shift { p.before } else { p.after };
@@ -191,13 +200,15 @@ fn move_focus_lets_every_tab_go_even_in_a_list() {
     }
 }
 
-/// Table cells keep Tab under the default: it goes to the next cell, not out.
+const TABLE: &str = "<p>plain</p><table><tr><td><p>a</p></td><td><p>b</p></td></tr></table>";
+
+/// Table cells keep Tab under `IndentInListsAndTables`: it goes to the next
+/// cell, not out.
 #[test]
-fn the_default_still_moves_between_table_cells() {
-    let mut p = page_with(
-        "<p>plain</p><table><tr><td><p>a</p></td><td><p>b</p></td></tr></table>",
-        IN_PLAIN,
-    );
+fn indenting_moves_between_table_cells() {
+    let mut p = page_with(TABLE, IN_PLAIN);
+    p.handle
+        .set_tab_behavior(TabBehavior::IndentInListsAndTables);
     // Into the first cell's text: table 7, row 8, cell 9, p 10, "a" at 11.
     p.handle.set_selection(Selection::cursor(Pos(11)));
     tab(&mut p.app, false);
@@ -207,4 +218,36 @@ fn the_default_still_moves_between_table_cells() {
         "the caret went to the second cell, at {:?}",
         p.handle.selection()
     );
+}
+
+/// The app's `bind_key("Tab")` / `bind_key("Shift-Tab")` is asked before
+/// the `TabBehavior` (#3062): under the default `MoveFocus` the bound key
+/// runs its command and the keyboard stays in the editor.
+#[test]
+fn an_app_bound_tab_runs_under_the_default() {
+    let mut p = page(IN_SECOND_ITEM);
+    assert_eq!(p.handle.tab_behavior(), TabBehavior::MoveFocus);
+    p.handle.bind_key("Tab", "sinkListItem").unwrap();
+    p.handle.bind_key("Shift-Tab", "liftListItem").unwrap();
+    tab(&mut p.app, false);
+    assert_eq!(p.app.focus_target, FocusTarget::Editor(p.container));
+    assert_eq!(top_level_items(&p.handle), 1, "the app's Tab nested it");
+    tab(&mut p.app, true);
+    assert_eq!(p.app.focus_target, FocusTarget::Editor(p.container));
+    assert_eq!(
+        top_level_items(&p.handle),
+        2,
+        "the app's Shift+Tab lifted it"
+    );
+}
+
+/// Under the default, Tab in a table cell leaves the editor, as in Chrome.
+#[test]
+fn the_default_lets_tab_leave_a_table_cell() {
+    let mut p = page_with(TABLE, IN_PLAIN);
+    p.handle.set_selection(Selection::cursor(Pos(11)));
+    let doc = p.handle.doc();
+    tab(&mut p.app, false);
+    assert_eq!(p.app.focus_target, FocusTarget::Node(p.after));
+    assert!(p.handle.doc().same_ref(&doc), "no edit");
 }

@@ -170,6 +170,8 @@ mod editor_hanging_space_caret_1041_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_home_end_image_1116_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_host_keymap_3062_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_image_drop_review_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_image_drop_tests;

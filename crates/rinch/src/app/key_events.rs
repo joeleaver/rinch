@@ -150,6 +150,11 @@ impl RinchApp {
         let shift = modifiers.shift;
         let ctrl = modifiers.primary();
         let alt = modifiers.alt;
+        // The editor's keymap and the fields agree on the platform
+        // (#3062): the editor's not-on-macOS bindings (Mod-y's redo)
+        // follow this app's `text_keymap`, the one the fields read.
+        #[cfg(feature = "windowing")]
+        rinch_editor_core::keymap::set_host_is_macos(self.text_keymap == TextKeymap::MacOs);
 
         // Build key string for the user keyboard hook + global fallback.
         let key_str: Option<String> = hook_key_str(key, text.as_deref(), logical_key.as_deref());
