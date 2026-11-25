@@ -117,7 +117,7 @@ const EVERY_KIND: [&str; 25] = [
     "rinch_core::events::selection::SAVED_SELECTION",
     "rinch_core::events::selection::SELECTION_CALLBACK",
     "rinch_core::events::selection::SELECTION_SYNC_CALLBACK",
-    "rinch_core::reactive::DOC_COUNTERS",
+    "rinch_core::reactive::counters::DOC_COUNTERS",
     "rinch_editor_view::blink::CLOCKS",
     "rinch_editor_view::registry::DRAG",
     "rinch_editor_view::registry::EDITORS",

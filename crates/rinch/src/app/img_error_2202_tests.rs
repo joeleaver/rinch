@@ -70,7 +70,7 @@ fn has_class(app: &RinchApp, class: &str) -> bool {
         n.attributes
             .get("class")
             .is_some_and(|c| c.split_whitespace().any(|one| one == class))
-            && rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(id))
+            && rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(id))
     })
 }
 
@@ -82,7 +82,7 @@ fn img_srcs(app: &RinchApp) -> Vec<String> {
         .iter()
         .filter(|(id, n)| {
             n.tag() == Some("img")
-                && rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(*id))
+                && rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(*id))
         })
         .filter_map(|(_, n)| n.attributes.get("src").cloned())
         .collect()
@@ -167,11 +167,11 @@ fn an_avatar_whose_image_fails_shows_its_initials() {
                 n.attributes
                     .get("class")
                     .is_some_and(|c| c.contains("rinch-avatar__placeholder"))
-                    && rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(*id))
+                    && rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(*id))
             })
             .map(|(id, _)| id)
             .expect("placeholder");
-        rinch_core::dom::DomDocument::text_content(&*d, rinch_core::dom::NodeId(id))
+        rinch_core::dom::DomContent::text_content(&*d, rinch_core::dom::NodeId(id))
     };
     assert_eq!(text.as_deref(), Some("AL"));
 }

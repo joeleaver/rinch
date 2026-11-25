@@ -162,7 +162,7 @@ fn has_class(node: &NodeHandle, class: &str) -> bool {
 mod tests {
     use super::*;
     use rinch_core::dom::mock::MockDomDocument;
-    use rinch_core::dom::traits::DomDocument;
+    use rinch_core::dom::traits::{DomDocument, DomTree};
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 

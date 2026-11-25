@@ -72,7 +72,7 @@
 //! `calc_tests::calc_letter_and_word_spacing_resolve_percentage_against_font_size`
 //! pins the mixed-`calc()` case this file's own `CASES` don't cover.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 400.0;

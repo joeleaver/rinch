@@ -19,16 +19,10 @@ bool` (registered with `register_key_handler`, written to `data-onkeydown` /
 after it hears the press. Offered to the arbiter's `FocusTarget::Input` /
 `Node` node (web: the event target) and its ancestors, nearest first, stopping
 at the first that consumes (`dispatch_key_handler_chain`; ids read before any
-runs). Order, both backends: (desktop and embed) an Escape while the pointer
-is locked, which ends the lock and goes nowhere else, nor do its repeats until
-its release (#2092, the requesting app's only: `handle_event`'s
-first step, ahead of DnD's Escape; the desktop shell also skips the menu chords
-for it; the browser handles its own) → menu chords → the editor's / a node view's
-`on_key` → **element handlers** → `set_keyboard_interceptor` → key entries →
-dismiss stack → (desktop) a focused registered widget's `FocusEntry::on_key`
-→ a focused render surface's claim → **app key listeners**
-(#1784) → the element's own handling (`RinchApp::offer_element_key`,
-`event_delegation::offer_element_key`). Focus requests a handler made are
+runs). They come after the interceptor and before the key entries and the
+dismiss stack, on both backends: the full order is "The key handler order"
+below (#3062; before it the element handlers ran ahead of the interceptor).
+`RinchApp::offer_element_key`, `event_delegation::keys::offer_element_key`. Focus requests a handler made are
 applied before the key's default, so an unconsumed key lands in the field a
 handler focused, as in Chrome. A raw `<input>`/`<textarea>` with only a key
 handler gets the desktop text-field shim (it focuses and takes text, as on
@@ -53,24 +47,94 @@ Pins: `app/element_key_1678_tests.rs`,
 `set_keyboard_interceptor` (whose one slot per document, second call replaces,
 stays as it was). Offered every key press the stages above left, in
 registration order, the first `true` consuming it (no later listener, no
-default; web `preventDefault` + `stopPropagation`); every release goes to every
-listener, answer ignored — except a release whose press a focused render
-surface claimed (`withhold_app_key_release`, cleared by that release or the
-next delivered press of the code). Entries are keyed by
+default; web `preventDefault` + `stopPropagation`). **A release reaches
+exactly the listeners that heard its press** (#3062, #3082), answer ignored,
+whichever window or document it arrives in. Pairing is per listener: each
+`Entry` keeps `held`, the physical codes of the presses it was offered (recorded
+before it runs, whatever it answers); a release goes, in registration order, to
+the entries holding its code — `doc_matches` is not asked, since the press
+already was — and clears them. So a key whose press the interceptor, an
+element's `onkeydown`, the editor's `on_key`, a key entry or a focused surface
+took, or an input method composed with, is not the listeners' on the way up; a
+listener after the one that consumed a press does not hear its release; and a
+key held in window A and let go in window B (a click into B, a menu or overlay
+window taking its parent's keyboard, #2552, where no blur comes at all)
+releases to the `main`-registered listeners and A's own, and to none of B's. The
+records live in the entry, so `remove`, scope disposal, a dead owner's pruning
+and the document sweep drop them with it; each holds a code once, so it is
+bounded by the keyboard. **Stale records** (a release that never comes: the key
+let go in another app) are dropped by the next *fresh* press of that key,
+wherever it lands: `note_fresh_key_press(code)` clears the code from every
+entry, called before anything can consume the press — desktop at the top of
+`handle_event` for `KeyRepeat::Fresh`, from the winit shell's menu-chord path
+and `dispatch_named_key_down`'s chord path (both bypass `handle_event`);
+rinch-web first thing in its `window` capture `keydown` when `event.repeat()`
+is false. The listeners the press then reaches record it again. An auto-repeat
+is no fresh press: a key held into a field or a surface that consumes its
+repeats still releases to the listener that heard it go down. A host answering
+`KeyRepeat::Unknown` (embed hosts that leave it unset; every shipped backend
+reports it) does not report, as dropping a held key's record on a repeat would
+lose that listener's release: there a stale record can let one extra release
+through to a listener that heard an earlier press of the key, and only one, and
+never blocks a key. **A window blur clears nothing** (it used to clear
+thread-wide `PRESSED`/`WITHHELD` sets, round 2 of #3073): a key held across a
+blur may come back up in another of the app's windows, where the listener that
+heard it must hear it; clearing a `main` listener's records on one window's blur
+stuck that key for good (Wayland and macOS send no synthetic focus-in press), clearing a
+document listener's records on its own blur stuck it the same way, and a blur
+arriving after the next window's press erased that press. The fresh-press rule
+covers what the blur clearing was for. A focused surface's claim needs no
+record of its own on desktop (the listeners were not offered the press);
+rinch-web keeps one (`SURFACE_CLAIMED` in `event_delegation/keys.rs`), set by a
+claimed *fresh* press and taken by its release, whose propagation it stops
+wherever focus went meanwhile — the page never heard that press — and dropped
+by the next fresh press of the key; a key that went down where the page heard
+it and was held into the surface releases to the page. The element's own
+`onkeyup` is deliberately **not** paired: it hears every release while its
+element holds the keyboard, whoever took the press, as a browser's `keyup`
+does (a `keydown` handler's `preventDefault` does not cancel the `keyup`).
+**Focus changes, per platform** (pinned winit fork; the shell's
+`KeyboardInput` arm in `rinch_runtime.rs` ignores `is_synthetic` and hands
+every event to `route_key_event` in `winit_input.rs`). On **X11 and Windows**
+winit synthesises a *release* of every held key when a window loses the
+keyboard (`winit-x11` `xinput2_unfocused` → `handle_pressed_keys(Released)`;
+`winit-win32` `WM_KILLFOCUS`) and a *press* of every held key, built with
+`repeat: false`, when a window gains it (`xinput2_focused`; `WM_SETFOCUS`).
+So with W held in window A and the keyboard moved to B, A's listeners (and
+the `main`-registered ones) hear W come up early, at the focus-out, which
+closes their records; B then gets a fresh press the user never made
+(reported to `note_fresh_key_press` and offered to B's listeners and
+`main`'s, which record it unless something ahead of them consumes it), and
+the real release pairs with that. The two balance: every press a listener
+hears is matched by one release (a `main` listener hears two pairs, the
+real press with the focus-out release and the focus-in press with the real
+release), and none is left holding the key. On **Wayland**
+(`winit-wayland`'s `WlKeyboardEvent::Enter`/`Leave` drop the key repeat and
+send no key events; the keys the enter reports held are ignored) and
+**macOS** (`winit-appkit` synthesises no key events on a focus change, only
+a `ModifiersChanged` reset in `windowDidResignKey`) the real press and
+release are all there is: the release arrives in whichever of the app's
+windows has the keyboard when the key comes up, and the per-listener records
+route it to the listeners that heard the press. So a key let go in another
+app leaves a stale record only on Wayland and macOS; on X11 and Windows the
+focus-out release closes it. Entries are keyed by
 `current_dispatching_doc` at registration (`doc_matches`), carry their owner
 (dead owner skipped and pruned, `on_cleanup` removes at disposal), run
 untracked inside it; the handle's drop releases nothing (`remove()` does).
-Desktop: `RinchApp::offer_app_key`, called in `event_dispatch.rs`'s KeyDown arm
-for `FocusTarget::Input/None/Node` after `offer_registered_node_key` (the
-#147 registry's first refusal, moved out of `handle_unclaimed_key_fallback`)
-and before the fallback, in
-the `Surface` arm for an unclaimed key, and after the interceptor on every
-KeyUp; not for `Editor` or `Select`, nor while the text context menu is open or
-the focused field shows a `data-preedit`. Web: the document bubble keydown
-delegate (a key with nothing focused targets `<body>` and bubbles there) after
-the surface block and before the Tab trap, skipping `isComposing`/`Process`
-and a key whose target is an editor's (`key_target_is_editor`); the keyup
-delegate after the interceptor. rinch-web offers the key to the listeners as
+Desktop: `RinchApp::offer_app_key`, called from `key_events.rs`'s
+`handle_key_down` for `FocusTarget::Input/None/Node` after
+`offer_registered_node_key` (the #147 registry's first refusal, moved out of
+`handle_unclaimed_key_fallback`) and before the fallback, in the `Surface` arm
+for an unclaimed key, in the `Editor` arm before its Tab handling and keymap
+(#3062), and on every KeyUp after the element's `onkeyup`; not while an open
+`<select>` list or the text context menu has the key, nor while the focused
+field shows a `data-preedit` or the focused rich-text editor a preedit
+(`EditorHandle::is_composing`). Web: the document bubble keydown delegate (a key
+with nothing focused targets `<body>` and bubbles there) after the surface
+block and before the Tab trap, skipping `isComposing`/`Process`; for a key on
+an editor's capture textarea the editor's own listener asks them, between its
+`on_key` and its keymap (`offer_popup_and_app_keys`); the keyup delegate after
+the element's `onkeyup`. See "The key handler order". rinch-web offers the key to the listeners as
 no root's (it pushes document `0` around `dispatch_app_key`, while the rest of
 the key runs as the target's root's, #2811), so a web listener hears every
 island's keys and page inputs' outside any root, whichever root registered it;
@@ -114,7 +178,7 @@ blink also wait for the enter now. Web: four capture listeners on the document
 web editor's keyboard is a capture `<textarea>` under `<body>`, so an editor
 container hears none of the four on the web. Pins:
 `app/focus_events_2731_tests.rs`, `rinch-web/tests/focus_events_2731.rs`,
-`shell/rinch_runtime.rs` `a_shell_window_starts_unfocused_2731`.
+`shell/rinch_runtime/bundled_font_tests.rs` `a_shell_window_starts_unfocused_2731`.
 
 **A window focus change repaints nothing a focus change does not alter**
 (#2763). The field keeps its claim, its caret and its text across a window
@@ -163,7 +227,7 @@ applies `autofocus` natively.
 **`NodeHandle::selection_range()` / `caret_rect()` / `caret_rect_at(offset)`**
 (#1678), the read half of the paragraph below: `(start, end,
 SelectionDirection)` in UTF-16 units, `start <= end`
-(`DomDocument::text_selection_range`; web: the element's properties; desktop:
+(`DomFocus::text_selection_range`; web: the element's properties; desktop:
 a posted request (`peek_pending_text_selection_request`), else the focused
 field's `data-selection-start`/`data-cursor-pos` bytes, else
 `NodeTree::text_selections` — written at blur by `clear_input_focus_attrs` and
@@ -174,7 +238,7 @@ Forward)`, Chrome 155's answer for a parsed or default value; a `None`
 direction reads `Forward` (Chrome on Linux/Windows; macOS unmeasured); a
 programmatic or Tab focus shows exactly this selection (`try_focus_input`);
 a posted request is cancelled by such a value write; `None` for a non-text control and, as Chrome, for
-`email`/`number`/date types). The caret rect (`DomDocument::text_caret_rect`,
+`email`/`number`/date types). The caret rect (`DomFocus::text_caret_rect`,
 `None` unless rendered) is width 0 in logical window px on desktop
 (`form_control::painted_caret_rect`, shaped by the builder paint draws with,
 `form_control::field_text_layout`, at the origin paint uses,
@@ -196,7 +260,7 @@ stashed for the next time it gains it, the same thing a browser's own
 `setSelectionRange()`/`select()` does on an unfocused control — so
 `focus()` and `select()` posted together from one effect do not need to run
 in either particular order. Desktop posts both through a channel keyed
-**per node** (`DomDocument::set_selection_range`,
+**per node** (`DomFocus::set_selection_range`,
 `rinch_core::post_text_selection_request`/`take_pending_text_selection_requests`) —
 **separate** from `FocusRequest`'s own single slot, since folding the two
 together would let a `select()` posted right after a `focus()` silently
@@ -221,7 +285,7 @@ any stash for that node too, not only consult-and-clear it — otherwise a
 stale pre-click stash reappears on the *next* programmatic/Tab focus
 (review of #1325, finding 1). A stash entry for a node that is removed
 before ever being focused is pruned by connectivity
-(`DomDocument::is_connected`, not slab presence — `discard()`/`remove()`
+(`DomTree::is_connected`, not slab presence — `discard()`/`remove()`
 are both a detach on desktop today, #723) on every drain, which does not
 close the #304 recycled-slab-id hazard for a node-keyed registry: a freed
 id handed to an unrelated new node before the next prune would inherit a
@@ -378,8 +442,8 @@ through a **key entry** on the dismiss stack. A closed `Select` consumes no key.
 || bool)` hears Escape only; `push_key_handler(owner: &NodeHandle, on_key:
 |&KeyEventData| -> bool, on_focus_leave: || ())` (in `rinch_core` and the
 `rinch` prelude, #434) hears **every key press** (never a release), ahead of the
-Escape scan, from `dispatch_keyboard_event` — so both backends, no backend
-branch; a consumed key is `preventDefault`ed on the web. **Focus is part of the
+Escape scan, from `dispatch_popup_key` (step 4 of "The key handler order") —
+so both backends, no backend branch; a consumed key is `preventDefault`ed on the web. **Focus is part of the
 contract** (the review of #1165, where an open `Select` ate every key in the
 document — a field focused by a "/" shortcut got none, Enter there committed the
 `Select`, and on the web a page `<input>` outside the mount was prevented): an
@@ -480,7 +544,7 @@ connected**, and otherwise releases the claim rather than focusing into a
 detached subtree; focus the user moved outside the overlay is left alone. The
 memory is per-overlay, which is the whole of nesting: the inner remembers what
 the outer focused. `rinch-components`' `overlay_focus::arm_overlay_focus` is the
-policy and it is the *only* copy; what it rests on is three `DomDocument`
+policy and it is the *only* copy; what it rests on is three `DomFocus`
 methods — `active_element`, `focus_into`, `restore_focus` — reachable on any
 `NodeHandle` and defaulted so `MockDomDocument` keeps compiling. There is no
 bare `blur()`: releasing the keyboard is only ever the fallback half of a
@@ -499,7 +563,7 @@ above), so a fixture that wants a parked move left unapplied drops it
 (`trap_focus_tests::settle`). `rinch-web` answers on the
 spot and lets the browser refuse what it should refuse — after `NodeHandle`
 has released its document borrow and before the call returns
-(`DomDocument::take_after_borrow`), because a browser `focus()`/`blur()` runs
+(`DomFocus::take_after_borrow`), because a browser `focus()`/`blur()` runs
 every focus listener synchronously and rinch's own listeners touch the document
 (an editor's caret on `blur`, the key entries on `focusin`); under the borrow
 they panicked "RefCell already borrowed" inside the listener, which aborted it.
@@ -508,7 +572,7 @@ focus go first** (#1478): Chrome fires `focusout`/`blur`/`change` inside
 `removeChild`, a move, `innerHTML =` and `textContent =` over a focused node,
 so `remove`, `discard`, `remove_child`, `replace_with`, `set_inner_html`,
 `set_text` and the insertion verbs (for a child that is already somewhere) ask
-`DomDocument::release_focus_within(node, children_only)` with no borrow held
+`DomFocus::release_focus_within(node, children_only)` with no borrow held
 (`rinch_core::dom::release_focus_within`, up to `FOCUS_RELEASE_ROUNDS` times,
 since a listener may focus something else in there) and `rinch-web` answers a
 `blur()` of the focused element inside the part that goes; then the verb
@@ -533,7 +597,7 @@ own state, keyed by node): `WebDocument::append_child` / `insert_before` /
 (the method exists, looked up once per page; child and parent both connected,
 one document; the parent an element, the child an element or character data),
 and the `NodeHandle` insertion verbs ask the same predicate through
-`DomDocument::moves_keeping_focus` (default `false`) and release nothing — the
+`DomFocus::moves_keeping_focus` (default `false`) and release nothing — the
 two must stay one predicate, or the old call runs listeners under the borrow.
 Measured in Chrome 153, and in CI's Firefox 157: no `blur`/`focusout`,
 selection kept, an open `Select`'s list and key entry live, an `<iframe>` not
@@ -560,7 +624,7 @@ element focusable only through it (measured in 153; `disabled`, `inert`,
 `display: none` and any of them on an ancestor fire nothing inside the write)
 — and only the browser knows which write is one, so for those names
 (`is_focus_revoking_attribute`) `NodeHandle::set_attribute` /
-`remove_attribute` first run `DomDocument::before_attribute_write`, which on
+`remove_attribute` first run `DomFocus::before_attribute_write`, which on
 the web is the literal browser write made outside the borrow; the write under
 the borrow repeats it and changes nothing. `RootHandle::unmount` releases the
 focus itself (`NodeHandle::release_focus_before_detach`). **A direct
@@ -708,7 +772,7 @@ register_focus_target(
   latch must clear regardless). `KeyEventData` is `#[non_exhaustive]` — build
   one with `KeyEventData::new(key, code)` plus `with_modifiers`/`with_kind`.
   `set_keyboard_interceptor` is unrelated — a document-level capture-phase hook
-  dispatched *before* the arbiter. **It is the wrong registry for Escape**
+  dispatched *before* the arbiter and every element handler (#3062). **It is the wrong registry for Escape**
   (#474): it is one slot per document, so a second overlay registering there
   disables the first and its unmount clears the slot rather than restoring what
   it displaced. Escape goes through the **dismiss stack** instead —
@@ -716,8 +780,9 @@ register_focus_target(
   LIFO, per document (`doc_matches`: only two differing `Some` keys are
   refused, so a backend that marks none — rinch-web — reaches every handler),
   owner-checked at dispatch, dispatched from inside
-  `dispatch_keyboard_event` for an Escape *press* after the interceptor (so
-  both backends get it with no edit). `Modal`/`Drawer`/`Popover`'s
+  `dispatch_popup_key` for an Escape *press*, after the interceptor and the
+  focused element's handlers (so both backends get it with no edit;
+  `dispatch_keyboard_event` is the interceptor then `dispatch_popup_key`). `Modal`/`Drawer`/`Popover`'s
   `close_on_escape` rides it, and so does the **DOM menu bar**, which is the
   stack's first non-component member and registers on both backends from one
   `build_overlay`; a custom overlay should too — **and there are two
@@ -783,7 +848,7 @@ register_focus_target(
   behind it (measured, Chrome 150), which rinch does not model.
 - **`lock_scroll` gates the gesture on desktop and the style on web** (#474).
   `Modal`/`Drawer`'s prop reaches
-  `DomDocument::set_scroll_locked(locked, root)` through
+  `DomScroll::set_scroll_locked(locked, root)` through
   `NodeHandle::set_scroll_locked`; it takes the overlay's **root node**, not
   just a bool, because desktop has to know which subtree may still scroll.
   Desktop records the locking roots on `NodeTree` and refuses a container
@@ -853,8 +918,8 @@ register_focus_target(
   `None`), and since the popup opens *after* the modal mounted, LIFO puts it on
   top with no precedence special case anywhere. A dismiss handler is an
   `Fn() -> bool` and closing the popup needs `&mut RinchApp`, so the handler
-  only sets a flag and consumes; `handle_event` drains it the moment
-  `dispatch_keyboard_event` returns — the `PendingFocusWork` shape. On that path
+  only sets a flag and consumes; `handle_key_down` drains it the moment
+  `dispatch_popup_key` returns — the `PendingFocusWork` shape. On that path
   the flag cannot be left set: only a handler that returns `true` sets it, and
   `true` is exactly when the drain site runs. That holds for the Escape path,
   not for the flag as such — `dispatch_dismiss` is public and a shell calling it
@@ -928,7 +993,7 @@ beside it:
   the menu at the new point on a field (GTK, Chrome) or opens whatever context
   menu is there; other presses outside are still swallowed.
 - **A field disabled under its open menu closes it** (`text_menu_target_is_live`).
-- F12 / Alt+I, Tab and every other key stay swallowed while a popup is open.
+- F12, Tab and every other key stay swallowed while a popup is open.
 Pins: `app/runtime_popup_822_tests.rs`.
 
 **Key auto-repeat: the press says so** (#463). Enter/Space on a focused
@@ -969,6 +1034,46 @@ track held keys by `k.code`. But a second event can be swallowed too; a fact car
 press being judged** cannot. `RinchApp::press_is_fresh` is the one place that
 decides, and `Fresh` is authoritative *over* the latch — that is the repair, not
 a tie-break.
+
+**What Android is told about each key** (#3062). android-activity asks the
+input callback for an `InputStatus` per event, and the shell used to answer
+`Handled` for everything, so the system's default for a key never ran: the
+volume and media keys did nothing, and Back never left the app. Now
+`android_runtime/input.rs` dispatches each key **inside** that callback and
+answers from `shell/android_key_status.rs` (`KeyAnswers`, host-compiled and
+unit-tested):
+
+- A key the translator drops (no rinch `KeyCode` and no character) and an
+  action rinch does not read (`ACTION_MULTIPLE`) are `Unhandled`. A dead key
+  is not dropped in that sense: the translator keeps its accent, so it stays
+  `Handled`.
+- Back reaches the app as Escape, so a dismiss entry, an app key listener or a
+  handler takes it first, the way Chrome on Android closes the top popup
+  before it goes back. The press is `Unhandled` when
+  `RinchApp::key_down_unused` says nothing used it, and the release follows
+  its press: the system goes back on the release, and only for a press it saw
+  unhandled.
+- Every other delivered key stays `Handled`, used or not. That includes a
+  hardware Escape, because Android's generic key map turns an unhandled
+  Escape into a Back.
+
+`RinchApp::key_down_unused` is set only where key handling ends with nothing
+done: the unclaimed-key fallback when its default action did nothing, a focused
+editor that had no binding or text for the key (or a Tab that neither the
+editor nor `handle_tab` used), a `<select>` claim with no popup open, and an
+unmounted editor. In the fallback each default action answers whether it acted
+(PR #3072's review): `handle_tab` (moved the focus, or a `trap_focus` overlay
+kept it; nothing focusable and no trap is unused), `handle_text_key` (extended
+the read-only selection, or a live field holds the keyboard and the keymap
+gives the key an action), `handle_enter` (fired change or submit, or inserted a
+line break in an editable `<textarea>`), a focused node's Enter/Space
+(`press_is_fresh`: an auto-repeat is unused), a keyboard scroll, and text typed
+into a field. The clipboard, select-all and undo chords count as used whatever
+they found. A focused `RenderSurface` uses a key only by claiming it with
+`set_key_handler`; an unclaimed one goes through the fallback like any other,
+so Back can leave a game. It is reset by every `KeyDown`, and a `KeyUp` leaves
+it alone. Tests are in `app/key_down_unused_3062_tests.rs` and
+`app/key_down_unused_review_3072_tests.rs`. Not checked on a device.
 
 Not carried to `KeyEventData`, so a registered node's `on_key` still cannot tell
 a repeat from a press: the honest field is the same three-state one, and
@@ -1015,7 +1120,7 @@ front of the low surrogate that starts the next press's: the first press has
 no text, and the second has the whole character in `text` and
 `text_with_all_modifiers`. Any other press, or focus leaving, drops the held
 unit; a lone surrogate gives no text. Pins: the fork's `keyboard::tests`, the
-`winit_input.rs` `text_only_key_translation` tests and
+`winit_input/text_only_key_translation.rs` tests and
 `shell/rinch_runtime/text_only_key_2848_tests.rs`.
 
 **Read-only text selection** (desktop; #2229, #2240). `user-select` comes
@@ -1185,6 +1290,99 @@ fallback for a drag over no text) is not drawn to them.
   tab.
 - The walk runs only on copy; a drag's move reads `runs` and the roots
   cache, never the walk.
+
+## The key handler order
+
+Issue #3062. The rule is Chrome's: **rinch keeps only what Chrome itself does
+with a key, and the app can always take a key first.** Everything rinch does
+with a key (a field's editing, Tab, activation, `onsubmit`, the editor's
+keymap, the DevTools keys) is a *default action*. It runs only after every app
+hook has had the key and left it. The app loses a key only where Chrome beats
+the page too: its own shortcuts (here, the app's menu accelerators), Escape
+ending a drag, and an open native popup.
+
+**Desktop** (`RinchApp::handle_key_down`, `app/key_events.rs`). A press is
+offered in this order, and the first party that consumes it ends the walk:
+
+| Step | Who | Where |
+|---|---|---|
+| 0a | An Escape while the pointer is locked ends the lock and goes nowhere else, nor do its repeats until its release (#2092). The shell skips the menu chords for it. | `handle_event`'s first step |
+| 0b | The menu accelerators. Skipped while an open `<select>` list or the text context menu holds the keyboard. | the shell (`try_menu_shortcut` in `winit_input.rs`), ahead of the `KeyDown` event |
+| 1 | Escape ending an element drag (a pending one too), then an open text context menu (#813), then an open `<select>` list. Each of the popups takes every key while open. | `cancel_active_dnd`, `handle_text_menu_key`, `handle_select_key` |
+| 2 | The keyboard interceptor (`set_keyboard_interceptor`). | `events::dispatch_key_interceptor` |
+| 3 | The target phase: the focused editor's `EditorHandle::on_key`, a node view's `on_key`, or the focused element's `onkeydown` and then its ancestors'. | `offer_key`, `offer_node_view_key`, `offer_element_key` |
+| 4 | The open popups' key entries (`push_key_handler`), then for Escape the dismiss stack. | `events::dispatch_popup_key` |
+| 5 | By the focus arbiter. Editor: the app-wide listeners (`on_app_key`), then its Tab handling and keymap (only while the editor still holds the keyboard). Surface: its `set_key_handler` claim, then the app-wide listeners. Input / Node / nothing: a registered widget's `FocusEntry::on_key` (#147), then the app-wide listeners. | `offer_app_key` |
+| 6 | Rinch's defaults: the field's editing, Tab, activation, `onsubmit`, the DevTools keys. | `handle_unclaimed_key_fallback` |
+
+A release goes to the interceptor, then the element's `onkeyup` (whose
+consumption stops only its ancestors), then the app-wide listeners — only when
+they were offered its press (`dispatch_app_key`'s `PRESSED` record), so a key
+an earlier step took, or an input method composed with, is not theirs on the
+way up. The element's `onkeyup` is not paired: it hears every release, as a
+browser's `keyup` does.
+
+Steps 0a, 0b and 1 beat the interceptor deliberately (#3062). An accelerator on
+Escape runs before Escape ends a drag because the shell asks the accelerators
+before it makes the `KeyDown` event at all, as a browser's own shortcuts run
+before the page. The app owns its accelerators, so it can leave Escape unbound.
+The popups beat the interceptor as a browser's native popup takes the keyboard
+before the page sees a key. Before #3062 an interceptor that took every key
+left an open list unable to close. Pins: `app/key_order_3062_tests.rs`, and the
+menu-chord suppression in `shell/rinch_runtime/focus.rs`'s tests.
+
+**Web** (`rinch-web/src/event_delegation/keys.rs`). Three listeners carry the
+same order. Each backs off a press whose `defaultPrevented` is already set: the
+page has taken it, and Chrome runs no default for it.
+
+| Listener | Order |
+|---|---|
+| `window`, capture (`ensure_window_key_capture`) | The menu bar's chords (`menu_bar::dispatch_menu_chord`), then Escape ending an element drag (`preventDefault` only, so every later rinch listener backs off), then the interceptor. |
+| `document`, capture (`editor_input`, only for a key on the capture textarea) | A node view's `on_key`, the editor's `on_key`, then the key entries, the dismiss stack and the app-wide listeners (`offer_popup_and_app_keys`, which marks the event so they are not asked twice), then the keymap. |
+| `document`, bubble (`install_key_delegation`) | The element's `onkeydown` and its ancestors', the key entries and the dismiss stack, a focused surface, the app-wide listeners, then the Tab trap, activation and `onsubmit`. |
+
+The web has no step 1 popups: the browser's own `<select>` list and context
+menu take their keys before the page. A page's `window` capture listener added
+before the first root mounted runs ahead of rinch's and can `preventDefault` a
+key away from all of it, menu chords included. One added later runs after the
+interceptor, since listeners on one node run in the order they were added.
+
+Releases are not subject to the `defaultPrevented` check: a release has no
+default for rinch to yield, and a held-key tracker must see every one. The
+interceptor hears a release from `window`. The bubble delegate gives it to the
+element's `onkeyup` and the app-wide listeners, then to a focused surface. Only
+the release of a press the surface claimed is `preventDefault`ed and stopped
+(W1). Before #3062 every keyup was stopped while a surface held the keyboard,
+so the page's own keyup listeners heard nothing.
+
+A read-only editor refuses a typed letter and `preventDefault`s it so that
+Space does not scroll the page, but it no longer stops it (E19): the `keydown`
+goes on to the page's listeners, as a `readonly` field's does.
+
+Pins: `rinch-web/tests/key_order_3062.rs`, `element_key_1678.rs`,
+`app_key_1784.rs`.
+
+**Breaking changes in #3062**, for the release notes:
+- The interceptor runs before the focused element's `onkeydown` / `onkeyup`
+  and before the editor's `on_key`. On the web it is a `window` capture
+  listener, so it hears keys that a page element's own listener stopped.
+- `on_app_key` listeners hear the rich-text editor's keys, after `on_key` and
+  before the keymap, and can take a key from the keymap.
+- An open `<select>` list or text context menu takes its keys before the
+  interceptor (desktop).
+- On the web, a key the page `preventDefault`ed is ignored by every rinch
+  listener, menu chords included.
+- On the web, keyups are no longer stopped while a surface is focused, unless
+  the surface claimed the press.
+- On the web, a read-only editor's printable keys propagate to the page.
+- `on_app_key` listeners hear a release only when they heard its press: a key
+  the interceptor, an element's `onkeydown`, the editor's `on_key`, a key entry
+  or a focused surface took, or an input method composed with, no longer
+  reaches them on release (both backends). The element's own `onkeyup` still
+  hears every release while its element holds the keyboard, whoever took the
+  press; pair presses and releases there by tracking your own `onkeydown`.
+- On desktop, `on_app_key` is not offered a key while the rich-text editor
+  shows an IME composition (it already was not for a composing field).
 
 ## Keyboard scrolling (#2977)
 

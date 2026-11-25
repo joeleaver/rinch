@@ -1,6 +1,6 @@
 //! Native `<select>` closed-control model + layout (issue #121, PR1).
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::select::resolve_select_model;
 

@@ -234,7 +234,7 @@ observers registered on the freed nodes, whose ids `rinch-dom` re-issues to the
 markup it parses). Each fires once, with the node whose children went, and
 neither fires the insertion half for what arrives. While no removal observer is
 registered on the thread `set_text` pays one `Cell` read; with one, a text node
-(every reactive `{|| text}`) pays a kind check (`DomDocument::is_text_node`,
+(every reactive `{|| text}`) pays a kind check (`DomTree::is_text_node`,
 default `false`; one JS getter on the web) and no child-list read, an element
 one read, two when it had children. `MockDomDocument` orphans / retires the
 children as the backends do. Not notified: a batched `DomUpdate::SetText` over

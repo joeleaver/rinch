@@ -8,7 +8,7 @@
 
 use base64::Engine;
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::{decode_data_uri, decode_image_bytes};
 use rinch_dom::svg_image::{self, MAX_DEPTH, MAX_NODES, MAX_RASTER_PX, decode_svg, sniff_svg};

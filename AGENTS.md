@@ -246,12 +246,12 @@ functions `show_dom()` / `for_each_dom_typed()` / `match_dom()`).
 `reactive/scope.rs` (ownership, disposal, the dispose fixpoint) and `reactive/mod.rs`
 (the runtime, subscriber sets, flush) are the most dangerous files in the workspace: a
 bug there breaks every app. `reactive/signal.rs`, `effect.rs`, `memo.rs` sit on top.
-`dom/traits.rs` (`DomDocument`), `dom/mod.rs` (`NodeHandle`) and `dom/render_scope.rs`
+`dom/traits/` (`DomDocument` and its supertraits), `dom/mod.rs` (`NodeHandle`) and `dom/render_scope.rs`
 (`RenderScope`) are the contract between the reactive layer and every renderer, so a
 signature change there ripples into `rinch-dom`, `rinch-web`, `rinch-editor-view` and
 `rinch` at once.
 
-`dom/mock.rs` (`MockDomDocument`, behind the `test-util` feature) is how downstream
+`dom/mock/` (`MockDomDocument`, behind the `test-util` feature) is how downstream
 crates test against the seam without a renderer. Prefer it over reaching for
 `rinch-dom` in a test.
 
@@ -385,7 +385,7 @@ it with rinch's.
    callback), cancel it on unmount or explicitly `.leak()` it.
 6. **Thread-local registries keyed by bare node id.** Node ids are per-document slab
    indices and collide across documents on one thread (two windows, two embedded
-   contexts). Always key by `DomDocument::doc_key()` too.
+   contexts). Always key by `DomTree::doc_key()` too.
 7. **`app/event_dispatch.rs` coupling.** Event handling, hit testing, focus and
    rendering interact; changes there have non-obvious reach.
 8. **Stylo complexity.** The Firefox CSS engine integration has many trait impls with

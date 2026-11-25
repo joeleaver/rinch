@@ -34,7 +34,7 @@
 //! ```
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{CaretAffinity, DomDocument, NodeId, RenderScope};
+use rinch_core::dom::{CaretAffinity, DomContent, DomLayout, DomTree, NodeId, RenderScope};
 use rinch_core::element::ThemeProviderProps;
 use rinch_editor_core::Pos;
 use rinch_web::{EditorHandle, RootHandle, WebDocument, create_editor};

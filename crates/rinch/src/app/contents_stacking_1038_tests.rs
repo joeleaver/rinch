@@ -8,7 +8,7 @@
 //! `elementFromPoint` in Chrome 153 answers `t` at every probe below.
 
 use super::hit_testing::hit_test;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 fn doc_of(html: &str) -> RinchDocument {

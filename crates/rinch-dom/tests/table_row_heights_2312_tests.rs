@@ -26,7 +26,7 @@
 //! depends on the host's fonts. rinch rounds each box's edges to whole
 //! pixels, so Chrome's numbers are compared rounded the same way.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 fn doc(html: &str) -> RinchDocument {

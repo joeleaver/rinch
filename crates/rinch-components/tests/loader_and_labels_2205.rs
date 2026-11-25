@@ -14,7 +14,7 @@ use rinch_components::close_button::CloseButton;
 use rinch_components::stepper::StepperStep;
 use rinch_components::{Button, Loader, LoaderDefaults, SectionRenderer};
 use rinch_core::Component;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle};
 

@@ -92,7 +92,7 @@ fn offer_link_click(
     let (ctrl, meta) = (event.ctrl_key(), event.meta_key());
     handle.dispatch_link_click(&LinkClick {
         link,
-        primary: if is_mac() { meta } else { ctrl },
+        primary: if keymap_mod_is_cmd() { meta } else { ctrl },
         ctrl,
         meta,
         shift: event.shift_key(),
@@ -234,7 +234,7 @@ pub(super) fn handle_link_click(event: &web_sys::MouseEvent) {
         let (ctrl, meta) = (event.ctrl_key(), event.meta_key());
         let claimed = handle.dispatch_link_click(&LinkClick {
             link,
-            primary: if is_mac() { meta } else { ctrl },
+            primary: if keymap_mod_is_cmd() { meta } else { ctrl },
             ctrl,
             meta,
             shift: event.shift_key(),

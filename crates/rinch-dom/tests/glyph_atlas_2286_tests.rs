@@ -14,7 +14,7 @@
 #![cfg(feature = "glyph-atlas")]
 
 use peniko::{Blob, Brush, FontData};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::glyph_atlas::{GlyphAtlas, SharedAtlas};
 use rinch_dom::paint::painter::{PaintGlyph, Painter};

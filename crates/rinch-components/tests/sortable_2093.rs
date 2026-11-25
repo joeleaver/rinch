@@ -11,7 +11,7 @@ use rinch_components::{
     SortAxis, SortMove, SortVerdict, SortableItem, SortableList, sortable_drag_group,
 };
 use rinch_core::Component;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::element::ValueCallback;
 use rinch_core::events::{self, ClickContext, EventHandlerId, KeyEventData};

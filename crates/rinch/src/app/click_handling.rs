@@ -839,7 +839,7 @@ impl RinchApp {
         let rid = {
             let d = doc.borrow();
             let still_labels =
-                rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(label))
+                rinch_core::dom::DomTree::is_connected(&*d, rinch_core::dom::NodeId(label))
                     && d.tree.get(label).and_then(|n| n.tag()) == Some("label")
                     && Self::labeled_control(&d.tree, label) == Some(control);
             if !still_labels || Self::node_is_disabled_in_tree(&d.tree, control) {

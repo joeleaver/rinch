@@ -18,7 +18,7 @@
 #[path = "support/inline_fragments_2597.rs"]
 mod scene;
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomLayout, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::testing::query_selector;

@@ -23,7 +23,7 @@
 //! two coincide: a parent-resolved `inset: 0` is `(30, 20, 300, 200)` here, the
 //! containing-block answer `(0, 0, 400, 300)`.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

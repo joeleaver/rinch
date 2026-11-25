@@ -14,7 +14,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// `body > p#live > "text"`, and `p`'s slot one generation on.

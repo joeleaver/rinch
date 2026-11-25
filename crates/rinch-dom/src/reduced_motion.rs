@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn a_style_elements_old_sheets_are_forgotten() {
         use crate::RinchDocument;
-        use rinch_core::dom::DomDocument;
+        use rinch_core::dom::{DomContent, DomTree};
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let style = doc.create_element("style");

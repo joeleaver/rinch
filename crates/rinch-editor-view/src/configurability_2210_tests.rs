@@ -301,22 +301,23 @@ fn overlay_colours_are_variables_with_chrome_like_fallbacks() {
 // ── Tab ─────────────────────────────────────────────────────────────────────
 
 /// `tab_key`: a plain paragraph has no use for Tab; a list item that can
-/// sink does, unless `MoveFocus`; a read-only editor never does.
+/// sink does, under `IndentInListsAndTables` only; a read-only editor never
+/// does. A fresh editor moves the focus, as Chrome does (#3062).
 #[test]
 fn tab_key_reports_whether_the_editor_used_tab() {
     let html = "<p>plain</p><ul><li><p>one</p></li><li><p>two</p></li></ul>";
     let h = editor_with(html);
-    h.set_selection(Selection::cursor(Pos(3)));
-    assert!(!h.tab_key(false), "plain paragraph");
-    assert!(!h.tab_key(true), "plain paragraph, Shift");
-
+    assert_eq!(h.tab_behavior(), TabBehavior::MoveFocus, "the default");
     h.set_selection(Selection::cursor(Pos(18)));
-    h.set_tab_behavior(TabBehavior::MoveFocus);
     let doc = h.doc();
-    assert!(!h.tab_key(false), "MoveFocus");
+    assert!(!h.tab_key(false), "MoveFocus, by default");
     assert!(h.doc().same_ref(&doc));
 
     h.set_tab_behavior(TabBehavior::IndentInListsAndTables);
+    h.set_selection(Selection::cursor(Pos(3)));
+    assert!(!h.tab_key(false), "plain paragraph");
+    assert!(!h.tab_key(true), "plain paragraph, Shift");
+    h.set_selection(Selection::cursor(Pos(18)));
     h.set_read_only(true);
     assert!(!h.tab_key(false), "read-only");
     h.set_read_only(false);

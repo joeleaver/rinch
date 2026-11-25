@@ -11,7 +11,7 @@
 //! (`rinch::app::text_selection::resolved_user_select`). These fixtures read
 //! the computed value; the selection consequences are pinned in the shell.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::UserSelectValue as U;
 

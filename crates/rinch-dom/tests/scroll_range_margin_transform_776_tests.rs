@@ -74,7 +74,7 @@
 //! inset (`top: 20px` scrolls 0x20 here, 0x0 in Chrome, before #776 too), so
 //! no row pins sticky: it would pin rinch's own wrong layout.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::scrollbars;
 

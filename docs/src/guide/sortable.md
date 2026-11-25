@@ -444,7 +444,7 @@ drives it. What such a host must also give the guest:
 - **The press point** in `data-ondragstart`'s click context (`mouse_x/y`; both
   runtimes set it, #2154), for the preview's grab offset; without it the
   preview is held by the item's middle.
-- **`DomDocument::attribute_list`, `node_type` and `text_content`** for a
+- **`DomContent::attribute_list`, `node_type` and `text_content`** for a
   `SortPreview::Clone` copy; a host without them copies nothing (the preview
   is an empty box).
 - **The end of a drag.** Each backend tells `rinch_core::on_element_drag_end`

@@ -8,7 +8,7 @@
 //! An **empty** code block has no text to ask, and the view placed its caret
 //! at the block's border-box corner, as tall as the padded box, on both
 //! backends; it now goes to the content origin
-//! (`DomDocument::content_box_inset`), one line tall.
+//! (`DomLayout::content_box_inset`), one line tall.
 //!
 //! ```text
 //! CHROMEDRIVER=/path/to/chromedriver \

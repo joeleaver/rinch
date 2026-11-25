@@ -56,7 +56,7 @@ pointer events is a `Pinch`; desktop negates winit's `delta_y` so the direction 
 browser's `deltaY` (`wheel_zoom_scale` takes the DOM sign). Pointer ids: desktop mouse `1`,
 tablet tool `2`, fingers above `1 << 32`; the web passes `pointerId` through; Android and
 embed report every pointer as the mouse. Pins: `app/surface_pointer_tests.rs`,
-`shell/rinch_runtime/winit_input.rs` `pointer_source_tests`, `rinch-web/tests/render_surface_pointer_events.rs`.
+`shell/rinch_runtime/winit_input/pointer_source_tests.rs`, `rinch-web/tests/render_surface_pointer_events.rs`.
 
 **Pointer lock on a surface** (#2092). `RenderSurfaceHandle::request_pointer_lock`
 is the window's lock held by the surface's element (`element`, set by
@@ -95,7 +95,7 @@ unaffected. `set_key_handler(|key: &SurfaceKeyData| -> bool)` answers a separate
 question asked *after*: should this key stop at the surface, or continue past it? Leave it
 unset (the default) and the surface claims nothing, so a host's own `window`-level
 keybindings (and, on the web, the browser's own shortcuts — reload, find, …) keep working
-the moment a canvas takes focus, and on desktop so do DevTools (F12), inspect mode (Alt+I)
+the moment a canvas takes focus, and on desktop so do DevTools (F12)
 and Tab. Return `true` only for a key the surface genuinely uses (WASD steering a
 character, Space to jump):
 
@@ -422,7 +422,7 @@ desktop, the CPU callback's rAF loop unchanged (D6).
   `run_web_frame` on `DeviceFor::Unavailable`): a canvas keeps the first kind of context made
   on it, so one that drew GPU frames (`web_gpu_canvas` is `Ready`) would refuse the fallback's
   2D context and every `submit_frame` would be dropped. The surface's node gets a fresh
-  backing element through `DomDocument::renew_element` (`WebDocument`: a shallow
+  backing element through `DomTree::renew_element` (`WebDocument`: a shallow
   `cloneNode`, same id and attributes, put in its place, the node id moved to it in both
   node maps); then `teardown_web_surface` and `schedule_canvas_init` set it up as on a
   mount, and the render callback draws on it from the next frame. CI's
@@ -604,15 +604,16 @@ allocated. The measurement is the issue's table, summed up beside the constant. 
 keep `MemoryHints::Performance` (not measured), and `external_gpu`'s device is the app's own.
 Pin: `gpu_memory_blocks_stay_at_8_mib_2473` (`#[ignore]`d, lavapipe in CI: ten 3 MiB buffers
 open several blocks, none larger than 8 MiB).
-- `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
+- `crates/rinch/src/app_builder/` — the `App` builder (`gpu_config` / `external_gpu` in `render_options.rs`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API
 
 Your game owns the window and wgpu device. Rinch runs headless — you feed it events, it produces a Vello scene.
 
 **Enable it — the module is feature-gated and the gate is not `desktop`.** `rinch::embed` is
-`#[cfg(any(feature = "gpu-renderer", feature = "embed"))]` (`crates/rinch/src/lib.rs`; `gpu` implies `gpu-renderer`), so on default
-features every type below is a compile error rather than the documented behaviour. Use
+`#[cfg(any(feature = "gpu-renderer", feature = "embed"))]` (`crates/rinch/src/lib.rs`; `gpu` implies `gpu-renderer`).
+The default features include `gpu`, so it is there by default; on `default-features = false,
+features = ["desktop"]` every type below is a compile error rather than the documented behaviour. Use
 `features = ["embed"]` for the headless case this section describes — it pulls in `rinch-dom`,
 `parley`, `peniko`, `vello` and `wgpu` without the desktop shell — or nothing extra if you already
 build with `"gpu"` or `"gpu-renderer"`.
@@ -621,7 +622,7 @@ build with `"gpu"` or `"gpu-renderer"`.
 
 | Type | Purpose |
 |------|---------|
-| `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomDocument::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
+| `RinchContext` | Main handle — `new()`, `update()`, `scene()`. Multiple contexts can coexist on one thread (#134): each holds its own `subscribe_signal_change` guard, and bounds signals / editor registrations / focus requests are scoped per document via `DomTree::doc_key()`. Stores/contexts are namespaced per context with a thread-global fallback (#136): `create_store` inside a context lands in that context's namespace (cleared on drop), its effects/handlers resolve it first, and lookups fall back to stores created outside any context. |
 | `RinchContextConfig` | Width, height, scale factor, optional theme, and `fonts: Vec<FontData>` registered before the mount (owned or `'static`, #2101; font data, so it fills only empty generic slots, #2102). After the mount: `register_font(impl Into<FontData>)`, and `register_app_font(AppFont)` for a face that claims a generic |
 | `RinchOverlayRenderer` | Renders a context's UI to a texture: `render(device, queue, &mut ctx)` (since #1866; it took `ctx.scene()` before). Its `GameViewport`s are cut out by the split compositor, exactly; a host rendering `ctx.scene()` with its own Vello gets an in-scene erase, approximate inside clips. A renderer that does not hold the context's last sliced frame (new after a device loss, or another renderer or context took a turn) has the frame painted again: the stamp check below (#1976) |
 | `OverlayCheck` | From `RinchOverlayRenderer::check_frames(device)`, never waiting (#2071). `render` calls it, so a host rendering every frame can ignore it; an event-driven host must call it, because a lost frame is the renderer's and `needs_update` belongs to the context, of which several renderers may take turns. `needs_render` stays true until a `render`; `check_again_at` until Vello's counters are in. On a lost frame `fed` goes to 0, which repaints the slices. Pin: `gpu_an_event_driven_host_gets_a_lost_overlay_frame_back_2071` |

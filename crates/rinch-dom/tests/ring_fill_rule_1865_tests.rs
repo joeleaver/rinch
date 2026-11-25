@@ -19,7 +19,7 @@
 
 use peniko::kurbo::{Affine, BezPath, PathEl, Point, Shape, Stroke};
 use peniko::{Brush, Fill, FontData};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 

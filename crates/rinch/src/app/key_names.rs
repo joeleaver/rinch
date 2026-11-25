@@ -269,7 +269,7 @@ pub(crate) enum NamedKeyDown {
 impl RinchApp {
     /// Press the key `key` names with `modifiers` held: check the menu
     /// shortcuts first — exactly as the real winit `WindowEvent::KeyboardInput`
-    /// arm does in `rinch_runtime.rs` (issue #533) — and otherwise dispatch a
+    /// arm does in `rinch_runtime/window_events.rs` (issue #533) — and otherwise dispatch a
     /// `PlatformEvent::KeyDown` through `handle_event`. The actions it asked
     /// for are appended to `actions`. The chord check is
     /// `RinchApp::try_menu_shortcut`'s: no chord under an open runtime popup
@@ -313,6 +313,10 @@ impl RinchApp {
             if !yields {
                 let typed_letter = keyname_typed_letter(key);
                 if crate::menu::match_shortcut_code(ctrl, meta, alt, shift, code, typed_letter) {
+                    // A fresh press `handle_event` never sees: it drops a
+                    // stale record of its key among the app-wide key
+                    // listeners here, as the shell's chord does (#3062).
+                    rinch_core::note_fresh_key_press(&format!("{key_code:?}"));
                     return NamedKeyDown::MenuShortcut;
                 }
             }

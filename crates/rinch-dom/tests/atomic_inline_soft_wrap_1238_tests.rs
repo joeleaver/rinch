@@ -23,7 +23,7 @@
 //! and `[id]` for each 30x10 inline-block, with the spaces at its ends left
 //! out (Chrome's per-character rects put a hanging space on either line).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

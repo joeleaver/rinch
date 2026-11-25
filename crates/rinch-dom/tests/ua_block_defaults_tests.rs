@@ -56,7 +56,7 @@
 //! `<hr>`'s paint — that the border row is real ink and not merely a computed
 //! value — lives in `ua_hr_paint_tests.rs`.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::values::{
     BorderStyleValue, DimensionValue, DisplayValue, LengthPercentageAutoValue,

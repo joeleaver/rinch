@@ -25,7 +25,7 @@
 
 #![allow(clippy::approx_constant)]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::transition::TransitionProperty;
 

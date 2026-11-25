@@ -20,7 +20,7 @@ use std::rc::Rc;
 use rinch_components::color_input::ColorInput;
 use rinch_components::context_menu::ContextMenu;
 use rinch_components::{Drawer, DropdownMenu, Modal, Popover, Select};
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::BACKDROP_ATTRIBUTE;
 use rinch_core::{Callback, Component};

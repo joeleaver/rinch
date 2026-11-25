@@ -1430,8 +1430,9 @@ impl RinchApp {
 
     /// Keys while the menu is open. Every key is consumed, as by the `<select>`
     /// popup: Up/Down/Home/End move the highlight over the enabled items,
-    /// Enter/Space run it. Escape normally never reaches here — the dismiss
-    /// stack answers it first — but closes the menu if it does.
+    /// Enter/Space run it, Escape closes it. Asked ahead of the app's key hooks
+    /// (#3062), as a native menu takes the keyboard before the page; the
+    /// menu's dismiss entry answers a `dispatch_dismiss` from app code.
     pub(crate) fn handle_text_menu_key(&mut self, key: KeyCode, vp_w: f32, vp_h: f32) -> bool {
         let Some(open) = self.open_text_menu.as_ref() else {
             return false;

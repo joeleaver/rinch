@@ -15,7 +15,7 @@
 //! border box until #1278; each document here loads the same rule), and
 //! `line-height` declared so no glyph metric enters it.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// A 10px-font, 20px-line field with 6px/10px padding and a 1px border: a

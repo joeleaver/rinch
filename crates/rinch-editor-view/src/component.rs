@@ -96,7 +96,7 @@ pub struct Editor {
     /// what is typed literally. See [`EditorHandle::set_markdown_shortcuts`].
     pub markdown_shortcuts: Option<bool>,
     /// What Tab does (#2210): `None` (the default) leaves the handle as it is
-    /// ([`TabBehavior::IndentInListsAndTables`] for a fresh one). See
+    /// ([`TabBehavior::MoveFocus`] for a fresh one, as in Chrome). See
     /// [`EditorHandle::set_tab_behavior`].
     pub tab_behavior: Option<TabBehavior>,
 }

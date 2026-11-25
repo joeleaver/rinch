@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use rinch_components::{SortableItem, SortableList, sortable_drag_group};
 use rinch_core::Component;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{self, EventHandlerId, KeyEventData};
 

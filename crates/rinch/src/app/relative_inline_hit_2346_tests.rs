@@ -4,7 +4,7 @@
 //! without the offset is not it any more.
 
 use super::hit_test;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// `(doc, container, box)`: `lead <span rel {offset}><ib></span>` in a block

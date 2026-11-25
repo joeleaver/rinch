@@ -101,20 +101,30 @@ impl EditorHandle {
     ///
     /// A matched binding is consumed whether or not its command applied
     /// (`Some(false)`: Tab at the top level sinks nothing and is still the
-    /// editor's; Ctrl+Shift+R on a right-aligned paragraph never reaches the
-    /// browser's reload), unless the binding is declared fall-through
+    /// editor's; Mod-z with nothing to undo never reaches the browser's own
+    /// undo), unless the binding is declared fall-through
     /// ([`Plugin::fall_through_keys`]) and its command answered `false`: that
     /// answers `None`, as ProseMirror's keymap does — Mod-Enter (`exitCode`) in a
-    /// paragraph. Unbound keys answer `None`. This is the single keymap entry
-    /// point: both the desktop and web key dispatchers translate their native
-    /// event into a platform-agnostic [`KeyBinding`] and route through here, so a
-    /// binding added in editor-core works on every platform (design §5).
+    /// paragraph. Unbound keys answer `None`. The app's own layer is asked
+    /// first: a chord bound with [`bind_key`](Self::bind_key) runs its command
+    /// and is consumed, one taken away with [`unbind_key`](Self::unbind_key)
+    /// answers `None` whatever a plugin binds it to. This is the single keymap
+    /// entry point: both the desktop and web key dispatchers translate their
+    /// native event into a platform-agnostic [`KeyBinding`] and route through
+    /// here, so a binding added in editor-core works on every platform (design
+    /// §5).
     pub fn dispatch_key(&self, binding: KeyBinding) -> Option<bool> {
         let (name, falls_through) = {
             let core = self.core();
-            let keymap = core.state.keymap();
-            let name = keymap.command_for(&binding)?.to_string();
-            (name, keymap.falls_through_when_inapplicable(&binding))
+            match core.app_keys.lookup(&binding) {
+                app_keymap::AppKey::Bound(name) => (name, false),
+                app_keymap::AppKey::Unbound => return None,
+                app_keymap::AppKey::Plugins => {
+                    let keymap = core.state.keymap();
+                    let name = keymap.command_for(&binding)?.to_string();
+                    (name, keymap.falls_through_when_inapplicable(&binding))
+                }
+            }
         };
         let applied = self.command(&name);
         (applied || !falls_through).then_some(applied)
@@ -232,7 +242,7 @@ impl EditorHandle {
     /// its flat byte offset, as `(textblock element id, leaf element id,
     /// after)`: for a `Downstream` caret the image just after `pos`, else the
     /// one just before it (#1104, #1116). The host draws such a caret from the leaf's
-    /// box (`DomDocument::query_inline_box_caret`). `None` anywhere else.
+    /// box (`DomLayout::query_inline_box_caret`). `None` anywhere else.
     pub fn caret_inline_box(&self, pos: Pos, affinity: CaretAffinity) -> Option<(u64, u64, bool)> {
         let core = self.core();
         let view = core.view.as_ref()?;

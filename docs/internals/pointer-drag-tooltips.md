@@ -195,7 +195,7 @@ group.
   computed-style query, and selectors (not only inherited values) apply. The
   body is placed `position: fixed` by the wrapper's
   `--rinch-sortable-ghost-x/-y`, sized at the item's **layout** size
-  (`DomDocument::layout_size`: Taffy's box, the web's `offsetWidth`) and
+  (`DomLayout::layout_size`: Taffy's box, the web's `offsetWidth`) and
   scaled by `--rinch-sortable-ghost-fit` = painted / layout (a scaled
   ancestor), placed by its centre (`Active.ghost_fix`). A copy drops the
   placement declarations of the item's inline style (`PLACEMENT`). `Custom`
@@ -669,7 +669,7 @@ node's parent) in `offer_element_wheel`'s walk, the web the nearest element
 with a `__nid` at or above `event.target` (raw HTML an app injected has none).
 A pinch carries it too. With **`NodeHandle::handle_for(id)`** a handler turns
 it into a handle on its own element's document and walks up, and
-**`NodeHandle::can_scroll_toward(dx, dy)`** (`DomDocument::can_scroll_toward`)
+**`NodeHandle::can_scroll_toward(dx, dy)`** (`DomScroll::can_scroll_toward`)
 answers whether the default scroll would move that element by a wheel of
 those signs. Desktop answers with `rinch_dom::paint::scrollbar::
 can_scroll_toward` — the very rule the wheel picks its container by (below):
@@ -795,7 +795,7 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
 `layout.unimplemented`). `NodeTree::scroll_behavior_smooth` answers for a box,
 and for the page scroller (`<body>`) from `<html>`'s **Stylo** style, because
 `<html>`'s `computed_style` is not kept current (its rem code reads it the same
-way). Every scroll write goes through `DomDocument::scroll_to_with(node, left,
+way). Every scroll write goes through `DomScroll::scroll_to_with(node, left,
 top, ScrollBehavior)` (`set_scroll_top`/`set_scroll_left` call it with `Auto`;
 `NodeHandle::scroll_to` passes one): a smooth write does not move the offset but
 queues a `SmoothScrollRequest` (target, and the animation clock's time of the

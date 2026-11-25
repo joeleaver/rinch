@@ -8,7 +8,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_core::image::{
     ImageLoadResult, ImageLoader, register_image_scheme, register_rgba, reload_image,
 };

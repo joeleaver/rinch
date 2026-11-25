@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::dom::mock::MockDomDocument;
-use crate::dom::traits::DomDocument;
+use crate::dom::traits::DomTree;
 
 /// A document and the handles a test needs from it.
 pub(super) fn doc() -> (Rc<RefCell<MockDomDocument>>, NodeHandle) {

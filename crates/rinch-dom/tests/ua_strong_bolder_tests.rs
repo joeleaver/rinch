@@ -9,7 +9,7 @@
 //! `getComputedStyle(e).fontWeight` and `getBoundingClientRect`), with the
 //! bundled Inter loaded by `@font-face` for the widths.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

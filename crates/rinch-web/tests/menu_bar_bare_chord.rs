@@ -286,3 +286,20 @@ fn a_ctrl_alt_item_leaves_altgr_text_to_a_field() {
     assert_eq!(fixture.counts(), vec![2]);
     fixture.teardown();
 }
+
+/// #1291 with desktop's whole rule: an AltGr press whose `key` is what the
+/// key types with no modifier typed nothing, and is the chord. German and
+/// Polish Windows layouts report right-Alt+1 as AltGraph with `key` `"1"`; a
+/// `Ctrl+Alt+1` item fires from a focused field there. An AltGr+1 that types
+/// `¡` into the same field is still text (the positive control).
+#[wasm_bindgen_test]
+fn an_altgr_press_that_types_its_own_key_fires_the_ctrl_alt_item() {
+    let fixture = Fixture::mount(&["Ctrl+Alt+1"]);
+    let input = fixture.field("input");
+    input.focus().unwrap();
+    assert!(press_ctrl_alt_at(&input, "Digit1", "1", true));
+    assert_eq!(fixture.counts(), vec![1]);
+    assert!(!press_ctrl_alt_at(&input, "Digit1", "¡", true));
+    assert_eq!(fixture.counts(), vec![1]);
+    fixture.teardown();
+}

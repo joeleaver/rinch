@@ -8,7 +8,7 @@
 //! the browser's `focus()`. The browser dispatches the capture textarea's
 //! `blur` synchronously inside that call, and the editor's blur handler
 //! repaints the caret there, writing styles into the document. The browser
-//! work now runs once the borrow is released (`DomDocument::take_after_borrow`),
+//! work now runs once the borrow is released (`DomFocus::take_after_borrow`),
 //! so the repaint happens in the `blur`, as for a press or Tab.
 //! `focus_move_listener_reentry.rs` covers the other listeners.
 //!

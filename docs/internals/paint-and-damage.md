@@ -9,21 +9,38 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 ### Rendering Backends
 
 Rinch has two rendering backends. Every desktop build carries the software one;
-the `gpu-renderer` feature (which `gpu` implies) adds the GPU one, and the window picks between them at run time:
+the `gpu-renderer` feature (which `gpu` implies) adds the GPU one, and the window picks between them at run time.
+`gpu` is one of `rinch`'s default features (`default = ["desktop", "gpu"]`, 2026-11-24); the workspace dependency
+is declared `default-features = false`, so a workspace member names `gpu` to get it:
 
 | Backend | Feature | Renderer | Presentation |
 |---------|---------|----------|--------------|
-| **GPU** | `"gpu"` | Vello + wgpu | GPU compositing |
+| **GPU** | `"gpu"` (a default) | Vello + wgpu | GPU compositing |
 | **Software** | (always on desktop) | tiny-skia | softbuffer |
 
 Set in `Cargo.toml`:
 ```toml
 # GPU, with software as the fallback and on request:
 rinch = { workspace = true, features = ["desktop", "gpu"] }
+rinch = { version = "…" }  # outside the workspace: the defaults
 
 # Software only:
 rinch = { workspace = true, features = ["desktop"] }
+rinch = { version = "…", default-features = false, features = ["desktop"] }
 ```
+
+A software-only build is the opt-out for a small tool: it leaves out the GPU
+shell, `rinch-renderer`, tokio and the wgpu code only the GPU renderer reaches
+(measured 2026-11-24 on `hello-rinch-dom`, release, stripped: the software-only
+binary is 31.4 MB against 39.3 MB with the GPU renderer, and the GPU build's
+release build took about 276 s longer), and opens no GPU device at
+run time. It still compiles wgpu and Vello: `rinch-dom` depends on `vello`
+unconditionally (its `Scene` is the display list), and Vello's default
+features bring wgpu. A GPU build stays
+off the GPU with `RINCH_RENDERER=software|cpu` or `App::renderer(Renderer::Software)`.
+CI covers both: the software-only `rinch` lines say `--no-default-features`
+(`.github/workflows/ci.yml`: the `feature-gated` test shard, the crate-scoped
+clippy step, `check-macos`), and `--workspace` and `test-gpu` run the GPU half.
 
 On a `gpu-renderer` build, `App::renderer(Renderer)` chooses (`shell/renderer.rs`):
 `Renderer::Auto` (the default) creates the GPU renderer when the window opens
@@ -602,7 +619,7 @@ it as of any child, walking its DOM ancestors up to the host: under a
 content, so the box counts when the scroller **is** the block holding the
 span's line (#1049), at the span's fragment (#631); with another block between
 the scroller and the line it is measured through `overflow_absolutes` (#770, below).
-`DomDocument::scroll_height` /
+`DomScroll::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
 `content_extents` for a scroll container (`scrollbar::scroll_extents`; a box
 that does not scroll joins its descendants' overflow to it, below), and so is layout's own clamp of a scrolled container
@@ -794,7 +811,7 @@ and scrollers come and go, `testing::deep_overflow_held`; a move pinned by
 its walk and measure counts; one child resized among 51).
 
 **A box that does not scroll (#2223).** It has no range for a bar or the
-wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it
+wheel to agree with, so `DomScroll::scroll_width` / `scroll_height` on it
 answer `scrollbar::scroll_extents`: `content_extents` joined with every
 descendant that overflows its own parent, as Chrome 158 counts them — each
 box's border box (no margins), at its offsets down the chain, transformed
@@ -846,7 +863,7 @@ which is why it was rarely seen — not because components avoided it: the
 `Drawer` body, `FloatingPanel` body, `Select` dropdown, the menu-bar dropdowns
 and `Code` are all padded or bordered scroll regions, and had the bug.
 `paint::scrollbar::visible_extents` is now the one content-box computation:
-`scrollbars`, `DomDocument::client_height`/`client_width`, layout's
+`scrollbars`, `DomScroll::client_height`/`client_width`, layout's
 `clamp_scroll_offsets` and the four wheel-routing walks all call it, the walks
 through `paint::scrollbar::overflows` — the same move #400 made for
 `content_extents`. `overflows` is the scrollable-and-overflowing half of
@@ -918,7 +935,7 @@ An rtl `nowrap` line is aligned within its box whatever its `text-align`
 (`aligned_away`): a short one lands where its alignment puts it, and one
 wider than the box is start-aligned at the right edge and overflows to the
 left, where the scroller reaches it (CSS Text 3; Chrome 157). `onscroll`'s `scroll_left` and
-`DomDocument::scroll_left` report the negative value, which is what the
+`DomScroll::scroll_left` report the negative value, which is what the
 browser reports on rinch-web. Before #2546 an rtl scroller's content was laid
 out left to right instead (#2543's stopgap, `lays_out_rtl`), and an rtl page's
 own left overflow could not be scrolled to. The viewport's direction is the

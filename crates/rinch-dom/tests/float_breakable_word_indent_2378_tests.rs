@@ -16,7 +16,7 @@
 //! 16px/20px, a 300px paragraph holding a 200x37 float, in a 560px column):
 //! the paragraph's height, and each line's glyphs' left edge and top from a
 //! `Range`'s client rects.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

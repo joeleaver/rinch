@@ -15,7 +15,7 @@
 //! (every break opportunity taken), and stores `0`, not `INFINITY`; the
 //! skip must still keep it.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// Stamped into a root's kept layout. A rebuild replaces the whole layout, and

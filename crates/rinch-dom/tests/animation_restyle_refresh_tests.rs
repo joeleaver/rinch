@@ -57,7 +57,7 @@
 //! | **M14** only the 0% stop takes implicit values, not the 100% | `a_from_only_rule_runs_to_the_base`, alone |
 //! | **M15** a kept animation's `position` is not updated to its new index | `a_kept_animation_takes_its_new_position_when_a_name_is_prepended`, alone |
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::animation::AnimationResult;
 use rinch_dom::transition::{AnimatableValue, TransitionProperty};

@@ -55,22 +55,49 @@ pub fn editor_section() -> NodeHandle {
             // ── Keyboard Shortcuts ──────────────────────────────────
             Title { order: 3, "Keyboard Shortcuts" }
             Space { h: "sm" }
-            Text { color: "dimmed", size: "sm", "Built-in shortcuts handled by the editor." }
+            Text { color: "dimmed", size: "sm", "The editor's keys (Chrome's), and the ones this showcase adds with bind_key and set_tab_behavior." }
             Space { h: "md" }
 
             Paper { p: "xl", radius: "md", with_border: true,
                 Stack { gap: "xs",
-                    {render_shortcut_row(__scope, "Ctrl+B", "Bold")}
-                    {render_shortcut_row(__scope, "Ctrl+I", "Italic")}
-                    {render_shortcut_row(__scope, "Ctrl+U", "Underline")}
-                    {render_shortcut_row(__scope, "Ctrl+Z", "Undo")}
-                    {render_shortcut_row(__scope, "Ctrl+Shift+Z / Ctrl+Y", "Redo")}
-                    {render_shortcut_row(__scope, "Enter", "Split block / new list item")}
-                    {render_shortcut_row(__scope, "Tab / Shift+Tab", "Move between table cells")}
-                    {render_shortcut_row(__scope, "Backspace / Delete", "Delete backward / forward")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-b"]), "Bold")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-i"]), "Italic")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-u"]), "Underline")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-z"]), "Undo")}
+                    {render_shortcut_row(__scope, &redo_chords(), "Redo")}
+                    {render_shortcut_row(__scope, &chords(&["Enter"]), "Split block / new list item")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-Shift-s"]), "Strikethrough (bound by the showcase)")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-e"]), "Inline code (bound by the showcase)")}
+                    {render_shortcut_row(__scope, &chords(&["Tab", "Shift-Tab"]), "Nest list items, move between table cells (opted into)")}
+                    {render_shortcut_row(__scope, &chords(&["Backspace", "Delete"]), "Delete backward / forward")}
                 }
             }
         }
+    }
+}
+
+/// `keymap_chords` (the keymap's syntax, `"Mod-Shift-s"`) as the platform
+/// spells them, joined by `" / "`: `⇧⌘S` on macOS, `Ctrl+Shift+S` elsewhere.
+fn chords(keymap_chords: &[&str]) -> String {
+    let macos = rinch_editor_core::keymap::host_is_macos();
+    keymap_chords
+        .iter()
+        .map(|c| {
+            rinch_editor_core::KeyBinding::parse(c)
+                .expect("a chord")
+                .label(macos)
+        })
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// Redo's chords: Mod-Shift-z everywhere, and Mod-y too except on macOS,
+/// where Cmd+Y is the browser's History and the editor leaves it unbound.
+fn redo_chords() -> String {
+    if rinch_editor_core::keymap::host_is_macos() {
+        chords(&["Mod-Shift-z"])
+    } else {
+        chords(&["Mod-Shift-z", "Mod-y"])
     }
 }
 
@@ -80,6 +107,16 @@ fn editor_body(__scope: &mut RenderScope) -> NodeHandle {
     let editor = create_editor();
     // Markdown shortcuts (`# `, `- `, `*x*`, …) are opt-in (#2210).
     editor.set_markdown_shortcuts(true);
+    // The editor binds only the keys Chrome's `contenteditable` has (#3062);
+    // a showcase opts into the rest. Tab nests list items and moves between
+    // table cells, and two chords reach the toolbar's strike and code.
+    editor.set_tab_behavior(rinch::editor::TabBehavior::IndentInListsAndTables);
+    editor
+        .bind_key("Mod-Shift-s", "toggleStrike")
+        .expect("a base command");
+    editor
+        .bind_key("Mod-e", "toggleCode")
+        .expect("a base command");
 
     // One handle clone per toolbar action (EditorHandle is cheap to clone).
     let ed_bold = editor.clone();

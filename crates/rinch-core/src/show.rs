@@ -508,7 +508,7 @@ mod tests {
     /// swap when the condition flips.
     #[test]
     fn a_branch_body_is_attributed_to_its_own_child_scope() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::{Owner, Signal, current_owner};
         use std::cell::RefCell;
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn a_store_created_in_a_branch_dies_with_the_branch() {
         use crate::context::{clear_context, create_store, try_use_store};
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;
@@ -635,7 +635,7 @@ mod tests {
     /// proving the counter can see a re-run.
     #[test]
     fn a_branch_cleanup_that_reads_a_signal_does_not_subscribe_the_show_effect() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::{Signal, on_cleanup};
         use std::cell::RefCell;
@@ -690,7 +690,7 @@ mod tests {
     /// real reconcile site.
     #[test]
     fn a_branch_signal_values_drop_that_reads_a_signal_does_not_subscribe_the_show_effect() {
-        use crate::dom::traits::DomDocument;
+        use crate::dom::traits::DomTree;
         use crate::dom::{RenderScope, mock::MockDomDocument};
         use crate::reactive::Signal;
         use std::cell::RefCell;

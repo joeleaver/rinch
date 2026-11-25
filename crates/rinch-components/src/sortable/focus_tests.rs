@@ -8,7 +8,7 @@ use std::rc::Rc;
 use rinch_core::Component;
 use rinch_core::dom::insert_observer_count;
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope};
 
 use super::*;

@@ -16,6 +16,12 @@ gpu = ["desktop", "rinch/gpu"]
 [dependencies]
 rinch = { workspace = true, default-features = false, features = ["components", "theme"] }
 rinch-core = { workspace = true }
+# `KeyBinding::label` / `host_is_macos` for the editor section's shortcut
+# table. An app takes them from its backend's editor API (`rinch::editor` on
+# desktop, `rinch_web` on the web), but this library is built for desktop, for
+# the web without `rinch-web` (ui-zoo-web adds that), and headless for its own
+# tests without `desktop`; the editor core is the one source all three have.
+rinch-editor-core = { workspace = true }
 rinch-macros = { workspace = true }
 rinch-platform = { workspace = true }
 rinch-tabler-icons.workspace = true

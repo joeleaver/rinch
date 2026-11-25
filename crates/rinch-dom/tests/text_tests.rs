@@ -1,4 +1,4 @@
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 #[test]

@@ -34,7 +34,7 @@ use std::rc::Rc;
 
 use rinch_components::color_input::ColorInput;
 use rinch_components::color_utils::parse_color;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::events::{EventHandlerId, dispatch_event, dispatch_input_event, update_drag};
 use rinch_core::reactive::Effect;

@@ -1,7 +1,7 @@
 //! #731's review fixtures: the odd-width groove split, the 1px groove collapse,
 //! and the unmitred corner (#1348), each measured against Chrome 153.
 use peniko::Brush;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

@@ -40,7 +40,7 @@ fn left_press(app: &mut RinchApp, x: f32, y: f32) -> Vec<AppAction> {
 
 /// A press as the desktop shell delivers one: the pointer's move first, then
 /// the press and release at the position the app recorded for that move
-/// (`cursor_pos`), which is all the shell passes on (`rinch_runtime.rs`).
+/// (`cursor_pos`), which is all the shell passes on (`rinch_runtime/window_events.rs`).
 fn shell_press(app: &mut RinchApp, x: f32, y: f32, button: MouseButton) -> Vec<AppAction> {
     let mut actions = ev(app, PlatformEvent::MouseMove { x, y });
     let (x, y) = app.cursor_pos.expect("a move records where the pointer is");
@@ -1791,8 +1791,9 @@ mod unadopted_write {
 /// frames that differ only in `data-cursor-visible`, diffed. (The review's
 /// `k1`/`k2`.)
 ///
-/// `software_shell` only, like every `build_pixels` oracle: `--workspace`
-/// unifies `rinch/gpu` on, so these run in CI's `-p rinch --features …` step.
+/// Gated on `software_shell`, like every `build_pixels` oracle; which every `windowing` build sets, with the GPU
+/// renderer or without it (`build.rs`), so these run under `cargo test
+/// --workspace` and in CI's software-only `feature-gated` lines alike.
 #[cfg(software_shell)]
 mod anchor_against_paint {
     use super::*;

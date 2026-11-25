@@ -31,7 +31,7 @@
 //! no line box or glyph advance of the host's fonts is involved.
 
 use parley::fontique::{Blob, FontInfoOverride};
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{DimensionValue, LengthPercentageAutoValue, LengthPercentageValue};
 

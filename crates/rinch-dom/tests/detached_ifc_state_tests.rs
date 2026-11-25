@@ -13,7 +13,7 @@
 //! dropped — while a subtree is out, attaching it again must lay it out as a
 //! fresh document of the same final state does.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter;
 

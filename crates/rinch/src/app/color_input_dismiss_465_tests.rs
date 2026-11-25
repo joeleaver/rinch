@@ -1169,7 +1169,7 @@ fn a_focus_move_into_the_panel_keeps_the_dropdown_open_1572() {
         let doc = f.field.app.doc.as_ref().unwrap();
         let mut d = doc.borrow_mut();
         let id = *d.tree.get(grid).unwrap().children.first().unwrap();
-        rinch_core::dom::DomDocument::set_attribute(
+        rinch_core::dom::DomContent::set_attribute(
             &mut *d,
             rinch_core::dom::NodeId(id),
             "tabindex",
@@ -1182,7 +1182,7 @@ fn a_focus_move_into_the_panel_keeps_the_dropdown_open_1572() {
         .resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
     {
         let doc = f.field.app.doc.as_ref().unwrap();
-        rinch_core::dom::DomDocument::focus_element(
+        rinch_core::dom::DomFocus::focus_element(
             &mut *doc.borrow_mut(),
             rinch_core::dom::NodeId(swatch),
         );

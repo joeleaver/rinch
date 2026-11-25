@@ -4,7 +4,7 @@
 //! geometry asserted.
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::text_query::{dom_cursor_to_ifc_offset, ifc_offset_to_dom_cursor};
 

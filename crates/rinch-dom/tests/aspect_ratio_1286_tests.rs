@@ -18,7 +18,7 @@
 //! container style. The loaded image is 40x30, off every ratio a case
 //! declares.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 /// A 40x30 PNG.

@@ -398,7 +398,7 @@ positions are lengths in the tile's space. Pins:
 `rinch-dom/tests/gradient_mask_1798_tests.rs` (Chrome 155 pixels),
 `rinch-dom/tests/image_rendering_mask_2098_2099_tests.rs` and its GPU twin
 `rinch/tests/gpu_image_rendering_mask_2098.rs` (Chrome 156 pixels, url masks),
-`hit_testing::tests::a_masked_boxs_overflow_is_not_hit_outside_its_border_box`,
+`hit_testing::tests::clip::a_masked_boxs_overflow_is_not_hit_outside_its_border_box`,
 `rinch-visual-test`'s `css_export` gradient test. Not Chrome's: a mask on a
 non-atomic `display: inline` element (a `<span>`): its text is drawn by its
 inline formatting context's root and is not masked, and its own `0x0` box
@@ -795,12 +795,25 @@ under Rendering Backends for the predicate and its deviations.
 Press F12 to toggle the DevTools panel which shows:
 - **Performance**: FPS, frame time, and render time
 - **Elements**: DOM tree inspection
-- **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
+- **Styles**: Computed styles for selected elements
 
-**The keys can be turned off** (#2689). F12 and Alt+I are answered in
+**Inspect mode has no key** (#3062). The toolbar's Inspect button turns it on
+and off (`DevToolsStore::toggle_inspect_mode`, which drops the hovered node on
+the way off, so its highlight goes); while it is on, the main window's pointer
+moves set `hovered_node_id` (the outline) and a left click selects the node
+under it, opens the Elements tab and ends it (`rinch_runtime/window_events.rs`, the
+`PointerButton` arm). It used to be Alt+I as well, answered in the key fallback
+with `AppAction::ToggleInspectMode`; that beat text input in a focused field in
+a debug build (on macOS Option+I is the circumflex dead key), and rinch claims
+no app-level shortcuts of its own, so the key and the action are gone. The
+debug/MCP server has no inspect mode of its own: `query_selector`, `get_node` and
+`dom_tree` answer what the outline shows. F12 is the one app-level shortcut rinch keeps, and
+only in a debug build by default.
+
+**The key can be turned off** (#2689). F12 is answered in
 `RinchApp::handle_unclaimed_key_fallback`, after menu shortcuts, element key
-handlers, a registered node's `on_key` and the app-wide listeners; F12 only
-under the `windowing` feature, Alt+I on every target. Both are gated on
+handlers, a registered node's `on_key` and the app-wide listeners, and only
+under the `windowing` feature. It is gated on
 `RinchApp::devtools_enabled()` (`app/devtools_keys.rs`): the app's own
 setting (`RinchApp::set_devtools`, defaulting to the thread's
 `set_devtools_default`, which `App::devtools` sets in `App::run` before any
@@ -809,16 +822,15 @@ too), overridden by `RINCH_DEVTOOLS=on|off`. The variable is read once per
 thread and cached (`ENV_OVERRIDE`, which tests set with
 `set_env_override_for_test` instead of touching the shared process
 environment), and resolved at each key, so a runtime `set_devtools(false)` by
-an embed host still loses to it. Off, the two `if`s are skipped and the key
-continues down the fallback (`match key`), so an Alt+I carrying text is typed
-into a focused field. The only way the DevTools window opens is
+an embed host still loses to it. Off, the `if` is skipped and the key
+continues down the fallback (`match key`). The only way the DevTools window opens is
 `AppAction::ToggleDevTools` from that fallback (there is no programmatic open),
 so the gate covers it; a DevTools window already open when the keys are turned
 off stays open until its close button. `RinchContext::set_devtools` forwards
 to the app's. **The default is on in a debug build and off in a release build**
 (`DEVTOOLS_DEFAULT = cfg!(debug_assertions)`; the owner's decision on #2689,
 2026-11-15): `App`'s field and the thread default both start from it, so an
-embedded `RinchContext` in a release build has the keys off too unless its
+embedded `RinchContext` in a release build has the key off too unless its
 host calls `set_devtools(true)`.
 
 **The DevTools window is one of the runtime's windows** (#2416 stage 3a). It is
@@ -1075,7 +1087,7 @@ Guide: `docs/src/guide/performance.md`.
 
 ### The test harness and synthesized keys (`testing`, #2553)
 
-`rinch::testing::TestApp` (`crates/rinch/src/testing.rs`, feature `testing`, desktop only) is a `RinchApp` with no window, driven the way `RinchRuntime` drives one: every input is the `PlatformEvent` the winit arm makes, handed to `handle_event` with the **physical** window size and the scale (as `dispatch_event` does), followed by one turn — `drain_main_callbacks`, `run_deferred_work`, `AboutToWait`, and `paint_software`'s steps (`drain_polls`, `resolve_and_repaint` if pending, `build_pixels`, `end_perf_frame`) when the turn was asked for a frame. Mount follows `create_window`: `set_device_pixel_ratio` before `mount_component` at the logical size, then `WindowFocus(true)`. A press first sends a `MouseMove` to its point unless the cursor is there, because the shell presses at `cursor_pos`, which its flushed move set.
+`rinch::testing::TestApp` (`crates/rinch/src/testing.rs` and `testing/`: the event loop in `event_loop.rs`, input in `input.rs`; feature `testing`, desktop only) is a `RinchApp` with no window, driven the way `RinchRuntime` drives one: every input is the `PlatformEvent` the winit arm makes, handed to `handle_event` with the **physical** window size and the scale (as `dispatch_event` does), followed by one turn — `drain_main_callbacks`, `run_deferred_work`, `AboutToWait`, and `paint_software`'s steps (`drain_polls`, `resolve_and_repaint` if pending, `build_pixels`, `end_perf_frame`) when the turn was asked for a frame. Mount follows `create_window`: `set_device_pixel_ratio` before `mount_component` at the logical size, then `WindowFocus(true)`. A press first sends a `MouseMove` to its point unless the cursor is there, because the shell presses at `cursor_pos`, which its flushed move set.
 
 Since #2742 the builder takes `WindowProps` (`window_props`): the app is made by the shell's `content_window::app_for_window` and carries the props; a hidden window is mounted but not painted (a turn paints only while `visible`) and not focused; a non-activating one is not focused. The app publishes its window state (`set_publishes_window_state(true)`, as `RinchRuntime::with_app` does for the main window), and the mount first publishes `focused: false`, since the thread's facts outlive the previous test on that thread. The window's requests: `send_native_event_for` (`shell/rinch_runtime/wake.rs`) hands each event to `testing::capture_native_event` first (`cfg(all(feature = "testing", feature = "windowing"))`), which gives it to a live `TestApp` on the calling thread (the one whose document sent it, else the newest) instead of the process-wide queue, so parallel tests do not see each other's. The harness serves them after each input (`serve_window_requests`, in rounds, re-entry guarded): mapped to `WindowRequest` and recorded; show, hide, prepare, focus and size applied; an `InjectedPlatformEvent` dispatched. Timers: `rinch_core::timer::virtual_time` is a thread-local clock (installs nest, the last uninstall cancels what is waiting); while one is installed `schedule` queues on it and `set_interval` computes deadlines from its `now`. `TestApp` installs it at the mount and uninstalls on drop; each turn first fires the timers due at the clock's time and armed before the turn, and `advance_time` takes them in (deadline, arming order), moving the clock to each deadline and running a turn after each. Since #2842 rinch's own timed behaviour reads `rinch_core::timer::now()` as well, so the virtual clock drives it: transitions and animations (`RinchDocument::animation_now_ms`), multi-click, the `title` tooltip, drag auto-scroll, the editor's caret blink and history clock, `<select>`/`Select` type-ahead, timed polls and the graph canvas's wheel gesture (see `docs/internals/state-and-threading.md` "UI timing on `now()`"). Touch and long-press timing, WM and OS drag waits, host wake scheduling and perf timings stay on the wall clock.
 

@@ -2251,7 +2251,7 @@ impl RinchDomEditorView {
         self.root.dom.node_id().0
     }
 
-    /// The host document's [`doc_key`](rinch_core::dom::DomDocument::doc_key),
+    /// The host document's [`doc_key`](rinch_core::dom::DomTree::doc_key),
     /// or 0 if the document is gone. Scopes the blink target — container ids
     /// collide across documents on one thread (issue #134).
     pub(crate) fn doc_key(&self) -> u64 {
@@ -2303,7 +2303,7 @@ impl RinchDomEditorView {
     }
 
     /// The on-screen caret for `pos` as `(x, y, height)`, in the host's popup
-    /// frame ([`DomDocument::query_caret_rect_with_affinity`]), drawn on
+    /// frame ([`DomLayout::query_caret_rect_with_affinity`](rinch_core::dom::DomLayout::query_caret_rect_with_affinity)), drawn on
     /// `affinity`'s side of a soft wrap. `None` when `pos` is not in a
     /// textblock, the host document is gone or busy, or the block has no box.
     pub(crate) fn caret_rect(
@@ -2643,7 +2643,7 @@ impl RinchDomEditorView {
     }
 
     /// The stretches of textblock `block_id`'s host flat bytes that hold CSS
-    /// generated content ([`DomDocument::generated_flat_ranges`], #891), which
+    /// generated content ([`DomLayout::generated_flat_ranges`](rinch_core::dom::DomLayout::generated_flat_ranges), #891), which
     /// the model's text does not: [`host_flat_byte`] steps over them. None
     /// when the host is gone or busy (a document being written answers no
     /// geometry either).
@@ -2781,7 +2781,7 @@ impl RinchDomEditorView {
     /// Beside text, with `over_glyphs` (the drawn caret and the composition
     /// overlay), it covers that
     /// text's content area, as Chrome draws a caret
-    /// ([`DomDocument::query_caret_box_with_affinity`]): under a tall
+    /// ([`DomLayout::query_caret_box_with_affinity`](rinch_core::dom::DomLayout::query_caret_box_with_affinity)): under a tall
     /// `line-height` shorter than the line and below its top. Without it
     /// (the reveal probes, the drop caret, a line's extent) it is the line's
     /// top, as tall as the glyph bounds there.
@@ -2951,7 +2951,7 @@ impl RinchDomEditorView {
     }
 
     /// Whether the host document has changes its geometry does not show yet
-    /// ([`DomDocument::layout_pending`]); `None` when it is gone or busy.
+    /// ([`DomLayout::layout_pending`](rinch_core::dom::DomLayout::layout_pending)); `None` when it is gone or busy.
     pub(crate) fn layout_pending(&self) -> Option<bool> {
         let host = self.doc.upgrade()?;
         let d = host.try_borrow().ok()?;
@@ -2980,7 +2980,7 @@ impl RinchDomEditorView {
     /// What the margin pass's lines for `positions` are read from, hashed so
     /// a later pass can compare: for every block an anchor is measured on, its
     /// offset in the container, its box, its padding and border, and — where
-    /// the host keeps one ([`DomDocument::text_layout_generation`]) — the
+    /// the host keeps one ([`DomLayout::text_layout_generation`](rinch_core::dom::DomLayout::text_layout_generation)) — the
     /// stamp of its text layout; and the first top-level block's box (the
     /// column edge). Equal keys for the same document mean no anchor's line
     /// can have moved, so the pass measures nothing: a layout of anything
@@ -3029,9 +3029,9 @@ impl RinchDomEditorView {
     ///
     /// A position in a textblock is measured on the line a caret there is
     /// drawn on (its downstream side at a soft wrap): the block's carets go to
-    /// [`DomDocument::query_line_boxes`] together, so a backend reads each
+    /// [`DomLayout::query_line_boxes`](rinch_core::dom::DomLayout::query_line_boxes) together, so a backend reads each
     /// block's lines once per pass; a caret it cannot answer gets the caret's
-    /// rect grown to the block's [`line_box_height`](DomDocument::line_box_height)
+    /// rect grown to the block's [`line_box_height`](rinch_core::dom::DomLayout::line_box_height)
     /// about its middle. A position right before a leaf block (a horizontal
     /// rule, an embed, a node view's host) is that block's box; anywhere else
     /// between blocks, the nearest text position after it. Positions in one
@@ -3211,9 +3211,9 @@ impl RinchDomEditorView {
     }
 
     /// Caret geometry for an *empty* textblock (which has no Parley layout, so
-    /// [`DomDocument::query_caret_position`] returns `None`): the block's content
-    /// origin in container space ([`DomDocument::content_box_inset`]), one
-    /// line ([`DomDocument::line_box_height`]) tall. `None` if the block at `pos` is *not* actually empty (a non-empty
+    /// [`DomLayout::query_caret_position`](rinch_core::dom::DomLayout::query_caret_position) returns `None`): the block's content
+    /// origin in container space ([`DomLayout::content_box_inset`](rinch_core::dom::DomLayout::content_box_inset)), one
+    /// line ([`DomLayout::line_box_height`](rinch_core::dom::DomLayout::line_box_height)) tall. `None` if the block at `pos` is *not* actually empty (a non-empty
     /// block that merely failed to measure — leave the caret hidden rather than
     /// misplace it) or has no host box yet.
     ///
@@ -4132,15 +4132,15 @@ fn apply_run_decos(desc: &mut ViewDesc, next: Vec<RunDeco>, doc: &DocRef) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FlatWidths {
     /// The bytes a hard break's `<br>` occupies
-    /// ([`DomDocument::line_break_flat_bytes`]): `1` on rinch-dom, whose inline
+    /// ([`DomLayout::line_break_flat_bytes`](rinch_core::dom::DomLayout::line_break_flat_bytes)): `1` on rinch-dom, whose inline
     /// layout pushes `"\n"` for it, `0` in the browser.
     line_break: usize,
-    /// The bytes a tab occupies ([`DomDocument::tab_flat_bytes`]): `1` on
+    /// The bytes a tab occupies ([`DomLayout::tab_flat_bytes`](rinch_core::dom::DomLayout::tab_flat_bytes)): `1` on
     /// rinch-dom (a space widened to its tab stop, #1122) and in the browser.
     /// rinch-dom answered `4` while it laid a tab out as four spaces (#1109).
     tab: usize,
     /// The chars the host lays out as something of another length, and its
-    /// flat bytes for each ([`DomDocument::substituted_char_flat_bytes`]):
+    /// flat bytes for each ([`DomLayout::substituted_char_flat_bytes`](rinch_core::dom::DomLayout::substituted_char_flat_bytes)):
     /// rinch-dom's U+2028, U+2029, U+0085 and U+000C (#1181), none in the
     /// browser.
     substituted: &'static [(char, usize)],
@@ -4286,14 +4286,14 @@ fn leaf_flat_bytes(leaf: &Node, flat: FlatWidths) -> usize {
 ///
 /// An inline leaf is one model char. Its flat-byte width is [`leaf_flat_bytes`]:
 /// the host's line-break bytes for a hard break (`<br>`), which is what the host
-/// gives it ([`DomDocument::line_break_flat_bytes`]), and zero for anything else
+/// gives it ([`DomLayout::line_break_flat_bytes`](rinch_core::dom::DomLayout::line_break_flat_bytes)), and zero for anything else
 /// (an image is an inline box with no text). A zero-byte leaf shares its byte
 /// with the position beside it, so a byte offset cannot say which side of it it
 /// means: the caret beside one is drawn from its box instead
 /// ([`RinchDomEditorView::inline_box_beside`], #1104). A tab in the text is the
-/// host's tab bytes ([`DomDocument::tab_flat_bytes`]) rather than its one UTF-8
+/// host's tab bytes ([`DomLayout::tab_flat_bytes`](rinch_core::dom::DomLayout::tab_flat_bytes)) rather than its one UTF-8
 /// byte (#1109), and a char the host substitutes its bytes for that
-/// ([`DomDocument::substituted_char_flat_bytes`], #1181).
+/// ([`DomLayout::substituted_char_flat_bytes`](rinch_core::dom::DomLayout::substituted_char_flat_bytes), #1181).
 fn textblock_flat_byte(block: &Node, char_off: usize, flat: FlatWidths) -> usize {
     let mut chars_seen = 0usize;
     let mut bytes = 0usize;

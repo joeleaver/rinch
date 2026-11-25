@@ -490,7 +490,7 @@ fn block_children_of(doc: &RinchDocument, ce_node_id: u64, filter_blocks: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     /// Build a new-editor-like host: a `data-pm-editor` scroll container with `n`
     /// `<p data-pm-type="paragraph">` blocks (each wrapping to ~2 lines in a narrow

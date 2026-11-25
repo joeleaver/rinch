@@ -14,7 +14,7 @@
 //! so a mark is 10px above it. Chrome lays out in 1/64 px and rinch rounds
 //! boxes to whole pixels, so a number agrees within half a pixel.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

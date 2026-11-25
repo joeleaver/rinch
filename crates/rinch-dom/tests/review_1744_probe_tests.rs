@@ -1,7 +1,7 @@
 //! Review probes for #1744 — every expectation is Chrome 155's offsetWidth
 //! (google-chrome 155.0.8059.39 headless, bundled Inter as ProbeFace,
 //! `font: 16px/20px ProbeFace; display: block`).
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

@@ -20,7 +20,7 @@
 //! with no fallback; `i1`: two widths) as invalid at computed-value time, so
 //! its longhands inherit the parent's stroke.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{ComputedStyle, FilterOp, OverflowWrapValue};
 

@@ -35,7 +35,7 @@ use rinch_components::popover::Popover;
 use rinch_components::tabs::Tabs;
 use rinch_components::text_input::TextInput;
 use rinch_core::Component;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 
 mod common;
