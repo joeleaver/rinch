@@ -206,6 +206,66 @@ fn a_discarded_items_lend_is_swept() {
     assert_eq!(lent_in(doc), 1, "a discarded item's lend outlived it");
 }
 
+/// A drop's request for `a` of the plain list `b` [a b c d], moved after
+/// `b` and not applied yet, held by `a`'s node.
+fn drop_request(scope: &mut RenderScope) -> (NodeHandle, NodeHandle) {
+    let doc = scope.body_handle().doc_key();
+    let plain = list(scope, "cards", "b", false, &["a", "b", "c", "d"]);
+    let a = items_of(&plain)[0].0.clone();
+    a.set_attribute("tabindex", "0");
+    a.focus();
+    let mv = SortMove {
+        group: "cards".into(),
+        keys: vec!["a".into()],
+        from_list: "b".into(),
+        to_list: "b".into(),
+        place: SortPlace {
+            after: Some("b".into()),
+            before: Some("c".into()),
+            index: 1,
+        },
+    };
+    let landing = Landing::at_drop(&plain, &mv, "a");
+    request_drop_focus(
+        doc,
+        "cards".into(),
+        "a".into(),
+        Some("b".into()),
+        landing,
+        &a,
+    );
+    assert_eq!(pending(), Some(("a".into(), Some("b".into()))), "control");
+    (plain, a)
+}
+
+/// #3071 review 5, finding 3: the focus falling to the document (a click on
+/// blank space, which a browser answers with `<body>`) while the lifted item
+/// is still drawn drops a drop's request, so the drop applied after that
+/// does not take the focus back.
+#[test]
+fn the_focus_falling_to_the_body_drops_a_drop_request() {
+    let mut scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let _ = drop_request(&mut scope);
+    scope.body_handle().focus();
+    rinch_core::notify_focus_moved(doc);
+    assert_eq!(pending(), None, "the request outlived the blur");
+}
+
+/// The control: the focus falling to the document because a redraw took the
+/// lifted item away keeps the request, for the node drawn in its place.
+#[test]
+fn the_focus_falling_with_its_item_keeps_a_drop_request() {
+    let mut scope = doc_scope();
+    let doc = scope.body_handle().doc_key();
+    let (_plain, a) = drop_request(&mut scope);
+    a.remove();
+    scope.body_handle().focus();
+    rinch_core::notify_focus_moved(doc);
+    assert_eq!(pending(), Some(("a".into(), Some("b".into()))));
+    cancel_pending_focus();
+}
+
 /// How many lent `tabindex` records document `doc` has.
 fn lent_in(doc: u64) -> usize {
     LENT_TABINDEX.with(|l| l.iter().filter(|(d, _, _)| *d == doc).count())

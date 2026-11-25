@@ -342,7 +342,10 @@ fn a_drop_applied_another_way_ends_the_request_on_the_card() {
 
 /// The focus falling to blank space (#3071 review 5) while the lifted card
 /// is still drawn drops the request, as the focus moving to another element
-/// does: the drop applied after that must not take the focus back.
+/// does: the drop applied after that must not take the focus back. (Desktop
+/// makes the clicked element the document's active element; the focus
+/// falling to `<body>`, a browser's answer, is `focus_tests.rs`'s
+/// `the_focus_falling_to_the_body_drops_a_drop_request`.)
 #[test]
 fn the_focus_falling_to_blank_space_drops_the_request() {
     let _guard = crate::app::timer_backend_lock();
