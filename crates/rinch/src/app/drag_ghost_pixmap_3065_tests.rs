@@ -9,6 +9,7 @@
 //! drawn, and that a frame which repainted only its damage holds the same
 //! pixels as one that repainted everything.
 
+use super::drag_ghost_software::{SoftwareGhost, SoftwareSnapshot};
 use super::*;
 
 /// The window's size, logical.
@@ -81,6 +82,13 @@ impl Page {
     /// Grabs the box at its centre (430, 35) and drags it to `to` (logical);
     /// paints that frame.
     fn drag_to(&mut self, to: (f32, f32)) {
+        self.start_drag(to);
+        let _ = self.frame();
+    }
+
+    /// Grabs the box at its centre (430, 35) and drags it to `to` (logical),
+    /// painting nothing.
+    fn start_drag(&mut self, to: (f32, f32)) {
         self.event(PlatformEvent::MouseDown {
             x: 430.0,
             y: 35.0,
@@ -88,7 +96,22 @@ impl Page {
         });
         self.event(PlatformEvent::MouseMove { x: to.0, y: to.1 });
         assert!(self.app.active_dnd.is_some(), "the drag activated");
-        let _ = self.frame();
+    }
+
+    /// The drag's software ghost.
+    fn software(&mut self) -> &mut SoftwareSnapshot {
+        &mut self
+            .app
+            .active_dnd
+            .as_mut()
+            .expect("a drag")
+            .snapshot_software
+    }
+
+    /// Builds a frame for the GPU renderer, as a window it presents does.
+    #[cfg(feature = "gpu-renderer")]
+    fn gpu_frame(&mut self) {
+        let _ = self.app.build_gpu_frame(self.scale, (W, H), None);
     }
 
     /// Drags the box to (250, 200), so its untransformed box is drawn at
@@ -126,9 +149,9 @@ impl Page {
     }
 
     /// The ghost pixmap's size, device pixels.
-    fn pixmap_size(&self) -> (u32, u32) {
-        let drag = self.app.active_dnd.as_ref().expect("a drag");
-        (drag.snapshot_width, drag.snapshot_height)
+    fn pixmap_size(&mut self) -> (u32, u32) {
+        let ghost = self.software().painted().expect("a painted ghost");
+        (ghost.width, ghost.height)
     }
 }
 
@@ -266,4 +289,114 @@ fn the_pixmap_rect_is_reach_within_a_surface_of_the_grab_point() {
         ghost_pixmap_rect(small, (30.0, 15.0), (1200.0, 800.0)),
         Rect::new(-4.0, -3.0, 63.0, 33.0)
     );
+}
+
+/// A ghost that could not be had: what a software frame would blit is empty.
+fn no_ghost() -> SoftwareSnapshot {
+    SoftwareSnapshot::Painted(SoftwareGhost {
+        pixels: Vec::new(),
+        width: 0,
+        height: 0,
+        origin: (0, 0),
+    })
+}
+
+/// A window the GPU presents paints no software pixmap when a drag starts,
+/// and its frames draw the ghost's scene (#3065 review: the pixmap, up to four
+/// surfaces of memory, was painted at every drag start whichever renderer
+/// presented).
+#[cfg(feature = "gpu-renderer")]
+#[test]
+fn a_window_the_gpu_presents_paints_no_software_ghost() {
+    let mut app = page(1.0, "box-shadow: 0 0 0 9999px rgba(0, 0, 200, 0.5)", "");
+    app.gpu_frame();
+    app.start_drag((250.0, 200.0));
+    assert!(app.software().painted().is_none(), "no pixmap was painted");
+    app.gpu_frame();
+    assert!(
+        app.app.last_ghost_rect.is_some(),
+        "the GPU frame draws the ghost"
+    );
+}
+
+/// A GPU frame draws the ghost whatever became of the software pixmap: one
+/// that could not be had hid the GPU ghost, as the empty pixmap's rect gated
+/// the scene's too (#3065 review). The drag starts on software, and the
+/// window then presents on the GPU; the ghost's box is at the pointer's
+/// (250, 200) less the grab point (30, 15).
+#[cfg(feature = "gpu-renderer")]
+#[test]
+fn a_gpu_frame_draws_the_ghost_where_no_pixmap_could_be_had() {
+    let mut app = page(1.0, "", "");
+    app.start_drag((250.0, 200.0));
+    *app.software() = no_ghost();
+    app.gpu_frame();
+    assert_eq!(
+        app.app.last_ghost_rect,
+        Some(peniko::kurbo::Rect::new(220.0, 185.0, 280.0, 215.0))
+    );
+}
+
+/// A drag that started while the GPU presented the window, which then
+/// presents with software (its GPU renderer lost): that frame paints the
+/// owed ghost and draws it.
+#[cfg(feature = "gpu-renderer")]
+#[test]
+fn a_drag_started_on_the_gpu_gets_its_ghost_when_software_takes_over() {
+    let mut app = page(1.0, "", "");
+    app.gpu_frame();
+    app.start_drag((250.0, 200.0));
+    assert!(app.software().painted().is_none());
+    assert_eq!(app.pixel(230, 200), GHOST);
+    assert_eq!(app.pixmap_size(), (60, 30));
+}
+
+/// On a software frame, an empty ghost (no pixmap could be had) draws
+/// nothing and names no damage.
+#[test]
+fn a_software_frame_draws_no_ghost_where_no_pixmap_could_be_had() {
+    let mut app = page(1.0, "", "");
+    app.start_drag((250.0, 200.0));
+    *app.software() = no_ghost();
+    assert_eq!(app.pixel(230, 200), PAGE);
+    assert_eq!(app.app.last_ghost_rect, None);
+}
+
+/// Where the pixmap of everything the ghost paints cannot be had, the box
+/// alone as drawn; where not even that, an empty ghost. A 40px shadow spread
+/// around the 60 x 30 box: 140 x 110 from (-40, -40).
+#[test]
+fn a_pixmap_that_cannot_be_had_falls_back_to_the_box_then_to_none() {
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+    let mut app = page(1.0, "box-shadow: 0 0 0 40px rgb(0, 0, 200)", "");
+    // Owed, so the request it would paint from can be had.
+    app.app.presents_gpu_frames = true;
+    app.start_drag((250.0, 200.0));
+    let SoftwareSnapshot::Owed(request) = &app.app.active_dnd.as_ref().unwrap().snapshot_software
+    else {
+        panic!("the ghost is owed");
+    };
+    let doc = app.app.doc.as_ref().unwrap();
+    let summary = |g: &SoftwareGhost| (g.width, g.height, g.origin, g.pixels.len());
+    let centre = |g: &SoftwareGhost, x: i32, y: i32| {
+        let i = (((y - g.origin.1) * g.width as i32 + x - g.origin.0) * 4) as usize;
+        [g.pixels[i], g.pixels[i + 1], g.pixels[i + 2]]
+    };
+
+    let whole = request.paint_with(doc, TinySkiaPainter::try_new);
+    assert_eq!(summary(&whole), (140, 110, (-40, -40), 140 * 110 * 4));
+    assert_eq!(centre(&whole, -20, 15), [0, 0, 200], "the shadow");
+
+    // No more than the box's pixels.
+    let at_most_the_box = |w: u32, h: u32| {
+        (w * h <= 60 * 30)
+            .then(|| TinySkiaPainter::try_new(w, h))
+            .flatten()
+    };
+    let boxed = request.paint_with(doc, at_most_the_box);
+    assert_eq!(summary(&boxed), (60, 30, (0, 0), 60 * 30 * 4));
+    assert_eq!(centre(&boxed, 30, 15), GHOST, "the box");
+
+    let none = request.paint_with(doc, |_, _| None);
+    assert_eq!(summary(&none), (0, 0, (0, 0), 0));
 }

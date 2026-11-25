@@ -4496,18 +4496,12 @@ impl RinchApp {
         // The software pixmap holds everything the ghost draws, as the GPU
         // scene does (an outline or a shadow past the box, a scaled-up
         // transform), within a surface's width and height of the grab point
-        // (#3065; `drag_ghost_software`).
+        // (#3065; `drag_ghost_software`). Only for a window that presents
+        // with software: one the GPU presents draws the scene, and owes it.
         #[cfg(software_shell)]
-        let super::drag_ghost_software::SoftwareGhost {
-            pixels: snapshot_pixels,
-            width: snapshot_width,
-            height: snapshot_height,
-            origin: snapshot_origin,
-        } = {
-            let mut d = doc.borrow_mut();
-            let d = &mut *d;
-            let ghost = super::drag_ghost_software::GhostPaint {
-                tree: &d.tree,
+        let snapshot_software = {
+            use super::drag_ghost_software::{GhostRequest, SoftwareSnapshot};
+            let request = GhostRequest {
                 node_id,
                 scale: scale_factor,
                 reach: ghost_reach,
@@ -4518,16 +4512,12 @@ impl RinchApp {
                     anchor.0 as f64 * scale_factor,
                     anchor.1 as f64 * scale_factor,
                 ),
-                surface: (
-                    d.tree.viewport.width as f64 * scale_factor,
-                    d.tree.viewport.height as f64 * scale_factor,
-                ),
             };
-            super::drag_ghost_software::paint_software_ghost(
-                &ghost,
-                &mut d.font_cx,
-                &mut d.layout_cx,
-            )
+            if self.presents_gpu_frames {
+                SoftwareSnapshot::Owed(request)
+            } else {
+                SoftwareSnapshot::Painted(request.paint(doc))
+            }
         };
 
         self.active_dnd = Some(ActiveDrag {
@@ -4535,13 +4525,7 @@ impl RinchApp {
             #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
             snapshot,
             #[cfg(software_shell)]
-            snapshot_pixels,
-            #[cfg(software_shell)]
-            snapshot_width,
-            #[cfg(software_shell)]
-            snapshot_height,
-            #[cfg(software_shell)]
-            snapshot_origin,
+            snapshot_software,
             #[cfg(software_shell)]
             snapshot_bounds,
             anchor,
