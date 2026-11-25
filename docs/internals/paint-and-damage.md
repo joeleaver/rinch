@@ -1506,53 +1506,50 @@ renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
   tells them to ask for grayscale when the UI texture is not shown 1:1.
 - **Snapshots.** The drag ghost's painters (`activate_drag` in
   `app/event_dispatch.rs`, Vello and software) are `set_subpixel_text(false)`:
-  the ghost is appended at the pointer's fractional `Affine::translate`.
-  Its damage (`RinchApp::ghost_overlay_rect`, old and new place every frame)
-  is, on a software frame, the blit rectangle at the truncated translate the
-  software path blits at, unioned with the snapshot's painted bounds
-  (`paint::paint_subtree_bounds`, kept on `ActiveDrag::snapshot_bounds`) at
-  the real fractional translate, rounded out; on a GPU frame, those bounds
-  alone. Those bounds are measured once
-  when the drag starts, without the per-frame visit budget
-  (`layer_bounds::unbudgeted_subtree_bounds`; `MAX_DEPTH` still applies), so
-  a ghost of more than 512 nodes is bounded. One still unbounded (a `fixed`
-  descendant the ghost's root does not contain, a `sticky` one, or deeper
-  than `MAX_DEPTH`) has its Vello snapshot recorded inside a clip to its box
-  as drawn — the bounding box of the border box through the root's own
-  transform (`compose_node_transform(..).transform_rect_bbox`), so a scaled
-  or rotated ghost is not cut to its untransformed box — and its bounds are
-  that clip: it used to damage the whole surface on every frame of the drag
-  (#3065). The software pixmap holds those bounds (the clip, for an
-  unbounded ghost), cut to a surface's width and height either side of the
-  grab point, the most the window can show with the pointer over it
-  (`drag_ghost_software::ghost_pixmap_rect`): a `box-shadow` spread 9999px
-  is at most twice the surface each way, not the shadow's reach. Its buffer
-  is allocated fallibly, as zeroed memory, not written
+  the ghost is appended at the pointer's fractional `Affine::translate`. Its
+  damage (`RinchApp::ghost_overlay_rect`, old and new place every frame) is, on
+  a software frame, the blit rectangle at the truncated translate the software
+  path blits at, unioned with the snapshot's painted bounds
+  (`paint::paint_subtree_bounds`, kept on `ActiveDrag::snapshot_bounds`) at the
+  real fractional translate, rounded out; on a GPU frame, those bounds alone.
+  Those bounds are measured once when the drag starts, without the per-frame
+  visit budget (`layer_bounds::unbudgeted_subtree_bounds`; `MAX_DEPTH` still
+  applies), so a ghost of more than 512 nodes is bounded. One still unbounded (a
+  `fixed` descendant the ghost's root does not contain, a `sticky` one, or
+  deeper than `MAX_DEPTH`) has its Vello snapshot recorded inside a clip to its
+  box as drawn — the bounding box of the border box through the root's own
+  transform (`compose_node_transform(..).transform_rect_bbox`), so a scaled or
+  rotated ghost is not cut to its untransformed box — and its bounds are that
+  clip: it used to damage the whole surface on every frame of the drag (#3065).
+  The software pixmap holds those bounds (the clip, for an unbounded ghost), cut
+  to a surface's width and height either side of the grab point, the most the
+  window can show with the pointer over it
+  (`drag_ghost_software::ghost_pixmap_rect`): a `box-shadow` spread 9999px is at
+  most twice the surface each way, not the shadow's reach. Its buffer is
+  allocated fallibly, as zeroed memory, not written
   (`TinySkiaPainter::try_new`): allocating it commits none of the pages the
-  ghost never paints, where a fill committed them all (a small buffer may
-  still be cleared by the allocator). It does not make the pages safe: a
-  ghost whose shadow covers its reach writes every page as it paints, and
-  under Linux overcommit that paint can still be OOM-killed; the pixmap's
-  size bound above is what limits it. Where the buffer cannot be had at
-  all, the box alone is tried, and then no ghost at all, never a panic. An empty
-  pixmap draws and damages nothing on a software frame, and does not touch
-  a GPU frame, which draws the scene. The pixmap is painted only for a
-  window that presents with software: `RinchApp::presents_gpu_frames`
-  records which builder made the last frame (`build_gpu_frame`, or
-  `build_scene`, which an embedded `RinchContext` presents through, against
-  `build_pixels`; `RinchApp::note_gpu_frame`), and a drag that starts after
-  a GPU frame owes its pixmap (`drag_ghost_software::SoftwareSnapshot`, its
-  `ghost` `None`), so a build carrying both renderers (`gpu`, or
-  `windowing` + `embed`) no longer allocates and paints up to four surfaces
-  at every drag start for nothing. A GPU frame also drops a pixmap a
-  software frame painted earlier in the drag, owing it again. Should
-  software take over mid-drag (a lost GPU falling back), its first frame
-  paints the owed pixmap from the document as it then is. A transformed root contains its
-  `fixed` descendants, so their reach is measured. Until the earlier fix
-  the GPU frame damaged only the truncated box, so the
-  right column and bottom row of every place a bordered ghost passed stayed
-  painted after the drag. Pins: `gpu_drag_ghost_damage_tests`,
-  `drag_ghost_dirty_region_tests`.
+  ghost never paints, where a fill committed them all (a small buffer may still
+  be cleared by the allocator). It does not make the pages safe: a ghost whose
+  shadow covers its reach writes every page as it paints, and under Linux
+  overcommit that paint can still be OOM-killed; the pixmap's size bound above
+  is what limits it. Where the buffer cannot be had at all, the box alone is
+  tried, and then no ghost at all, never a panic. An empty pixmap draws and
+  damages nothing on a software frame, and does not touch a GPU frame, which
+  draws the scene. The pixmap is painted only for a window that presents with
+  software: `RinchApp::presents_gpu_frames` records which builder made the last
+  frame (`build_gpu_frame`, or `build_scene`, which an embedded `RinchContext`
+  presents through, against `build_pixels`; `RinchApp::note_gpu_frame`), and a
+  drag that starts after a GPU frame owes its pixmap
+  (`drag_ghost_software::SoftwareSnapshot`, its `ghost` `None`), so a build
+  carrying both renderers (`gpu`, or `windowing` + `embed`) no longer allocates
+  and paints up to four surfaces at every drag start for nothing. A GPU frame
+  also drops a pixmap a software frame painted earlier in the drag, owing it
+  again. Should software take over mid-drag (a lost GPU falling back), its first
+  frame paints the owed pixmap from the document as it then is. A transformed
+  root contains its `fixed` descendants, so their reach is measured. Until the
+  earlier fix the GPU frame damaged only the truncated box, so the right column
+  and bottom row of every place a bordered ghost passed stayed painted after the
+  drag. Pins: `gpu_drag_ghost_damage_tests`, `drag_ghost_dirty_region_tests`.
 - **tiny-skia** (`blit_subpixel_mask_into`): straight into the pixmap at whole
   pixels, through the clip mask; per channel where the pixel's alpha is 255,
   grey source-over elsewhere, in `f32` then rounded, as the shader does.

@@ -382,6 +382,13 @@ fn a_gpu_frame_drops_a_painted_software_ghost() {
 /// through a `RinchContext`: `RinchContext::new` registers its thread as
 /// the process's main thread, which fails every other test in this binary
 /// that writes a signal from its own thread.
+///
+/// What ties this to the context is that every way it presents reaches
+/// `RinchApp::build_scene_with`, which notes the GPU frame: `scene` and
+/// `scene_with_textures` call `RinchContext::paint_scene`, which calls
+/// `build_scene` (`embed.rs`), and the overlay's `RinchContext::sliced_frame`
+/// calls `build_scene_with` itself. A context call site that painted some
+/// other way, past `build_scene_with`, would not be covered here.
 #[cfg(any(feature = "embed", feature = "gpu-renderer"))]
 #[test]
 fn a_scene_built_for_an_embedded_context_paints_no_software_ghost() {

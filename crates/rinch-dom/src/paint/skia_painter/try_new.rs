@@ -40,7 +40,9 @@ fn try_pixmap(width: u32, height: u32) -> Option<Pixmap> {
 /// Asked of the allocator as zeroed memory ([`std::alloc::alloc_zeroed`]),
 /// not reserved and then written. A large zeroed allocation is a fresh
 /// mapping the kernel already gives as zeros, so allocating it commits none
-/// of its pages, and a size it will not map is the allocator's null: `None`.
+/// of its pages beyond the one the allocator writes its own header into (the
+/// first; a whole huge page where transparent huge pages back the mapping),
+/// and a size it will not map is the allocator's null: `None`.
 /// (A small one may come from the heap and be cleared there, which costs no
 /// more than its size.) A buffer reserved with `Vec::try_reserve_exact` and
 /// then filled with `resize(len, 0)` wrote every page at once, pages the
@@ -90,28 +92,47 @@ mod tests {
     }
 
     /// The buffer is had as zeroed memory, not written: allocating 512 MiB
-    /// of it makes next to none of its own pages resident. Filled after a
-    /// reservation, every page of it was.
+    /// of it makes none of its pages resident past the allocator's header.
+    /// Filled after a reservation, every page of it was.
     ///
     /// Counted with `mincore(2)` over the buffer's own pages, so what other
     /// tests in this process allocate meanwhile does not count; a page
     /// written afterwards is counted, which shows the count sees a page
     /// becoming resident at all.
+    ///
+    /// Transparent huge pages are turned off for the buffer first
+    /// (`MADV_NOHUGEPAGE`): where they back it (`enabled` set to `always`, the
+    /// Fedora/RHEL default, or glibc asked to advise them with
+    /// `GLIBC_TUNABLES=glibc.malloc.hugetlb=1`), one write faults in a whole
+    /// huge page, 512 resident pages at 2 MiB, and the written page was
+    /// counted 512 times. The advice comes after the allocator wrote its
+    /// header, which may already have faulted in the huge page holding it,
+    /// so the count leaves out the buffer's head, up to the first huge-page
+    /// boundary at or past its start: no header lies past that.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_buffer_is_not_written_to_be_zeroed() {
-        /// How many of `buf`'s pages are resident.
-        fn resident_pages(buf: &[u8]) -> usize {
+        /// Where the kernel has transparent huge pages.
+        const THP: &str = "/sys/kernel/mm/transparent_hugepage";
+        /// The size of a page.
+        fn page_size() -> usize {
             // SAFETY: `sysconf` reads a constant; no memory is touched.
-            let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-            // `mincore` wants a page-aligned start: the page holding the
-            // first byte, through the page holding the last.
-            let start = buf.as_ptr() as usize & !(page - 1);
-            let len = buf.as_ptr() as usize + buf.len() - start;
-            let mut vec = vec![0u8; len.div_ceil(page)];
-            // SAFETY: `[start, start + len)` covers only pages `buf` lies in,
-            // all of them mapped while `buf` lives, and `vec` has one byte
-            // for each of those pages, which is what `mincore` writes.
+            unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+        }
+        /// The size of a transparent huge page, or `None` where the kernel
+        /// has none.
+        fn huge_page_size() -> Option<usize> {
+            let s = std::fs::read_to_string(format!("{THP}/hpage_pmd_size")).ok()?;
+            Some(s.trim().parse().expect("hpage_pmd_size is a number"))
+        }
+        /// How many pages of `[start, end)` are resident; `start` is
+        /// page-aligned and the range lies in a live mapping.
+        fn resident_pages(start: usize, end: usize) -> usize {
+            let len = end - start;
+            let mut vec = vec![0u8; len.div_ceil(page_size())];
+            // SAFETY: the caller's range is mapped and page-aligned at its
+            // start, and `vec` has one byte for each of its pages, which is
+            // what `mincore` writes.
             let rc = unsafe { libc::mincore(start as *mut libc::c_void, len, vec.as_mut_ptr()) };
             assert_eq!(rc, 0, "mincore: {}", std::io::Error::last_os_error());
             vec.iter().filter(|b| *b & 1 != 0).count()
@@ -119,13 +140,44 @@ mod tests {
         const LEN: usize = 512 << 20;
         let mut buf = try_zeroed(LEN).expect("512 MiB of address space");
         assert_eq!(buf.len(), LEN);
-        // At most the allocator's own header page(s) at the start, out of
-        // 131,072 (4 KiB pages).
-        let resident = resident_pages(&buf);
-        assert!(resident <= 2, "{resident} pages became resident");
-        // The count sees a page that is written.
+        let page = page_size();
+        let first = buf.as_ptr() as usize;
+        let end = first + LEN;
+        // The pages the buffer lies in: the one holding its first byte,
+        // through the one holding its last.
+        let start = first & !(page - 1);
+        // SAFETY: `[start, end)` covers only pages the buffer lies in, all
+        // mapped while it lives; the advice changes how later faults in
+        // them are served, not their contents.
+        let rc = unsafe {
+            libc::madvise(
+                start as *mut libc::c_void,
+                end - start,
+                libc::MADV_NOHUGEPAGE,
+            )
+        };
+        // A kernel built without transparent huge pages refuses the advice;
+        // it has nothing to turn off.
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            assert!(
+                err.raw_os_error() == Some(libc::EINVAL) && !std::path::Path::new(THP).exists(),
+                "madvise(MADV_NOHUGEPAGE): {err}"
+            );
+        }
+        // Past the head: from the first huge-page boundary at or past the
+        // buffer's start (its first page boundary, without huge pages).
+        let huge = huge_page_size().unwrap_or(page);
+        let body = first.next_multiple_of(huge);
+        assert!(
+            body < first + LEN / 2,
+            "a huge page of {huge} bytes leaves no body"
+        );
+        let resident = resident_pages(body, end);
+        assert_eq!(resident, 0, "pages past the head became resident");
+        // The count sees a page that is written, and only that page.
         buf[LEN / 2] = 1;
-        assert_eq!(resident_pages(&buf), resident + 1, "the written page");
+        assert_eq!(resident_pages(body, end), 1, "the written page");
         // Spot-read a few pages: zeros.
         buf[LEN / 2] = 0;
         assert!((0..LEN).step_by(LEN / 8).all(|i| buf[i] == 0));
