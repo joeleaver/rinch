@@ -151,24 +151,30 @@ pub const DEFAULT_SYSTEM_FONT_WATCH: std::time::Duration = std::time::Duration::
 /// window's document registers the face, and text already on screen in a
 /// fallback is shaped and painted again in it, a frame behind. A window
 /// opened afterwards is made with it, as with the build's own fonts. Called
-/// before the loop starts, the face is registered with the first window,
-/// before its first layout.
+/// before the loop starts (in `main`, before [`App::run`](crate::App::run)),
+/// the face is registered with the first window, before its first layout.
 ///
 /// A face is reachable by the family name in its file, and answers the
-/// generics it claims ([`AppFont::with_generics`]); see [`AppFont`]. Each
-/// call registers the bytes once more: an app that may ask for one face
-/// twice keeps its own record of what it registered. The bytes are normally
-/// owned ([`AppFont::from_data`]) and live as long as the app does.
+/// generics it claims ([`AppFont::with_generics`]); see [`AppFont`]. A face
+/// identical to one already registered (the same bytes, claiming the same
+/// generics, with the same [`script_fallback`](AppFont::script_fallback)) is
+/// skipped, so an app may ask for one face more than once. The bytes are
+/// normally owned ([`AppFont::from_data`]) and live as long as the app does.
 ///
 /// Where it applies:
 ///
 /// - **Desktop** (`windowing`): as above. Off the UI thread it is ignored,
 ///   with a warning.
+/// - **`rinch::testing::TestApp`** (the `testing` feature): as on
+///   the desktop. Its window and the windows it opened register the face when
+///   it serves its window's requests, after the turn the call was made in.
+/// - **An embed host** (a `RinchContext` made
+///   and no desktop runtime running): ignored, with nothing kept. The host
+///   registers faces with `RinchContext::register_app_font`.
 /// - **Web**: does nothing. The browser loads fonts from the page's CSS
 ///   (`@font-face`, a stylesheet `<link>`), as [`App::fonts`](crate::App::fonts)
 ///   leaves it to.
-/// - **Android** and an embedded `RinchContext`: does nothing yet; the embed
-///   registers through `RinchContext::register_app_font`.
+/// - **Android**: does nothing yet.
 pub fn register_font(font: AppFont) {
     #[cfg(feature = "windowing")]
     {
@@ -176,32 +182,13 @@ pub fn register_font(font: AppFont) {
             tracing::warn!("rinch::font::register_font was called off the UI thread; ignored");
             return;
         }
-        RUNTIME_FONTS.with(|q| q.borrow_mut().push(font));
-        // Wake a running shell to register it. Before a runtime exists the
-        // event is dropped (`send_native_event`), and the runtime takes the
-        // face from the queue when it is made.
-        crate::shell::rinch_runtime::send_native_event(
-            crate::shell::rinch_runtime::RinchNativeEvent::RegisterFonts,
-        );
+        crate::shell::rinch_runtime::queue_font(font);
     }
     #[cfg(not(feature = "windowing"))]
     {
         let _ = font;
         tracing::debug!("rinch::font::register_font: no desktop runtime here; ignored");
     }
-}
-
-#[cfg(feature = "windowing")]
-thread_local! {
-    /// Faces [`register_font`] queued for the desktop runtime, in order.
-    static RUNTIME_FONTS: std::cell::RefCell<Vec<AppFont>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// Take the faces [`register_font`] queued, oldest first, leaving none.
-#[cfg(feature = "windowing")]
-pub(crate) fn take_registered_fonts() -> Vec<AppFont> {
-    RUNTIME_FONTS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
 /// The bytes of a font file: borrowed for the life of the program, or owned
@@ -418,6 +405,19 @@ impl AppFont {
             generics: &[],
             script_fallback: false,
         }
+    }
+
+    /// Whether `other` registers exactly what this face does: the same
+    /// bytes (and so the same families, weights and styles), claiming the
+    /// same generics, joining the fallback chain or not alike. What
+    /// [`register_font`] skips a second registration of.
+    #[cfg(feature = "windowing")]
+    pub(crate) fn is_same_face(&self, other: &AppFont) -> bool {
+        let (mine, theirs) = (self.data.as_bytes(), other.data.as_bytes());
+        self.generics == other.generics
+            && self.script_fallback == other.script_fallback
+            && mine.len() == theirs.len()
+            && (std::ptr::eq(mine.as_ptr(), theirs.as_ptr()) || mine == theirs)
     }
 
     /// This face, answering `generics` as well as its own family name

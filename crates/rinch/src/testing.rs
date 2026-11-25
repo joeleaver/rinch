@@ -404,6 +404,7 @@ mod popup_tests;
 
 mod children;
 mod played_outputs;
+mod registered_fonts;
 mod test_window;
 
 pub use test_window::TestWindow;
@@ -490,6 +491,14 @@ pub(crate) fn stands_in_layer_shell() -> bool {
 thread_local! {
     /// The live `TestApp`s of this thread, newest last.
     static SINKS: RefCell<Vec<Rc<Sink>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether a [`TestApp`] is live on this thread: it then takes every native
+/// event sent here ([`capture_native_event`]).
+pub(crate) fn has_test_app() -> bool {
+    SINKS
+        .try_with(|sinks| !sinks.borrow().is_empty())
+        .unwrap_or(false)
 }
 
 /// Take `event` for a [`TestApp`] on this thread, if one is live: the one
@@ -1025,6 +1034,10 @@ impl TestApp {
                 } else if let RinchNativeEvent::InjectedPlatformEvent(event) = event {
                     // `inject_platform_event`: the shell dispatches it.
                     self.send(event);
+                } else if matches!(event, RinchNativeEvent::RegisterFonts) {
+                    // `rinch::font::register_font`: every window registers
+                    // the faces, as the shell's turn does.
+                    self.register_queued_fonts();
                 } else if matches!(event, RinchNativeEvent::ApplyWindowTitle) {
                     // `rinch::window::set_window_title` in this app's
                     // document: the title it stored is the window's title

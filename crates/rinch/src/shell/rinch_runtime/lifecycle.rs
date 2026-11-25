@@ -42,8 +42,9 @@ impl RinchRuntime {
         );
         // The build's faces, then any `rinch::font::register_font` queued
         // before there was a runtime to wake: those reach the first frame too.
+        // A queued face identical to one already there is skipped.
         let mut fonts = fonts.to_vec();
-        fonts.extend(crate::font::take_registered_fonts());
+        registered_fonts::take_new_fonts(&mut fonts);
         app.register_app_fonts(&fonts);
         // The main window's size, scale and focus reach `rinch::window`
         // (#1770); the DevTools window's do not.

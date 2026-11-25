@@ -255,17 +255,21 @@ On the desktop it takes effect on the event loop's next turn: every open
 window registers the face, and text already drawn in a fallback is shaped and
 painted again in it, a frame behind. Windows opened afterwards are made with
 it. Called before `App::run`, the face reaches the first frame like one from
-`.fonts()`.
+`.fonts()`. Several calls in a row are registered together, in one turn.
 
-Each call registers the bytes again, so an app that may ask for the same face
-twice keeps its own record of what it has registered. As with every
-registration, the face answers its own family name (and any generics it
-claims), and cannot be unregistered.
+Registering a face identical to one already registered (the same bytes,
+claiming the same generics) does nothing, so an app may ask for a face it may
+already have. As with every registration, the face answers its own family name
+(and any generics it claims), and cannot be unregistered.
+
+In a test, `rinch::testing::TestApp` does what the app does: its window, and
+the windows it opened, register the face once the turn the call was made in
+has been served (any input method, or `settle()`).
 
 On the web it does nothing: the browser loads fonts from the page's CSS
-(`@font-face` or a stylesheet `<link>`). It does nothing yet on Android or in
-an embedded `RinchContext`, which registers through
-`RinchContext::register_app_font`.
+(`@font-face` or a stylesheet `<link>`). It does nothing yet on Android. In
+a process that embeds rinch through `RinchContext` (with no desktop app
+running) it is ignored: register faces with `RinchContext::register_app_font`.
 
 ## Fonts installed while the app runs
 

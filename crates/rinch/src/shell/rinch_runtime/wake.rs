@@ -16,7 +16,7 @@ pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy> = OnceLock::new();
 
 mod queue;
 
-use queue::Drainer;
+pub(super) use queue::Drainer;
 pub(crate) use queue::{EventFor, NativeEventQueue};
 
 /// Queue of native events to process on the next proxy_wake_up.
@@ -31,6 +31,11 @@ pub(super) static NATIVE_EVENT_QUEUE: Mutex<NativeEventQueue> =
     } else {
         Drainer::Coming
     }));
+
+/// What will drain the native event queue now ([`Drainer`]).
+pub(super) fn native_event_drainer() -> Drainer {
+    NATIVE_EVENT_QUEUE.lock().unwrap().drainer()
+}
 
 /// Note that a desktop runtime exists, so native events are queued for it
 /// (#2801). Called by `RinchRuntime::with_app`, before anything of its app.

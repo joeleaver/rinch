@@ -1,6 +1,7 @@
 //! The runtime's construction-time state, tested without an event loop:
 //! bundled and registered fonts, focus, window props and attributes.
 
+use super::registered_fonts::take_new_fonts;
 use super::*;
 use crate::font::AppFont;
 
@@ -163,7 +164,9 @@ fn the_runtime_installs_the_video_sink_factory() {
 #[test]
 fn a_face_registered_before_the_runtime_reaches_its_first_frame() {
     let _lock = TestQueueLock::hold();
-    let _ = crate::font::take_registered_fonts();
+    // Another test may have registered its thread as the main one.
+    rinch_core::mark_host_thread();
+    let _ = take_new_fonts(&mut Vec::new());
     crate::font::register_font(AppFont::monospace(FACE));
     let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
     let runtime = RinchRuntime::new("t", 800, 600, component, &[AppFont::serif(FACE)]);
@@ -183,7 +186,7 @@ fn a_face_registered_before_the_runtime_reaches_its_first_frame() {
         "the build's face first, then the queued one"
     );
     assert_eq!(runtime.fonts.len(), 2, "both kept for windows opened later");
-    assert!(crate::font::take_registered_fonts().is_empty());
+    assert!(take_new_fonts(&mut Vec::new()).is_empty());
 }
 
 /// While the app runs, `register_font` queues the face and wakes the loop
@@ -194,7 +197,8 @@ fn a_face_registered_before_the_runtime_reaches_its_first_frame() {
 fn a_face_registered_while_running_reaches_the_windows() {
     let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
     let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-    let _ = crate::font::take_registered_fonts();
+    let _ = take_new_fonts(&mut Vec::new());
+    rinch_core::mark_host_thread();
 
     crate::font::register_font(AppFont::monospace(FACE));
     let queued = NATIVE_EVENT_QUEUE.lock().unwrap().drain();

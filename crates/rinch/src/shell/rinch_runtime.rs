@@ -80,6 +80,7 @@ mod native_events;
 mod open_windows;
 mod paint;
 mod popups;
+mod registered_fonts;
 mod wake;
 mod window_events;
 mod winit_input;
@@ -91,6 +92,8 @@ mod layer_drain_2829_tests;
 #[cfg(test)]
 mod physical_size_tests;
 #[cfg(test)]
+mod registered_fonts_tests;
+#[cfg(test)]
 mod text_only_key_2848_tests;
 #[cfg(test)]
 mod zoom_tests;
@@ -98,6 +101,9 @@ mod zoom_tests;
 pub(crate) use app_identity::*;
 pub use entry::*;
 use main_window::*;
+pub(crate) use registered_fonts::queue_font;
+#[cfg(feature = "testing")]
+pub(crate) use registered_fonts::take_new_fonts;
 pub use wake::*;
 pub use winit_input::*;
 

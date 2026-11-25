@@ -489,26 +489,6 @@ impl RinchRuntime {
         }
     }
 
-    /// Register the faces `rinch::font::register_font` queued with every open
-    /// window's document, and keep them with the app's fonts so a window
-    /// opened later is made with them. Each registration names its
-    /// document's root dirty (#2749), so the next frame re-shapes and repaints
-    /// text drawn in a fallback; the redraw asks for that frame.
-    pub(super) fn register_queued_fonts(&mut self) {
-        let fonts = crate::font::take_registered_fonts();
-        if fonts.is_empty() {
-            return;
-        }
-        for role in self.roles() {
-            let window = self.w(role);
-            window.app.register_app_fonts(&fonts);
-            if let Some(os_window) = window.window.as_ref() {
-                os_window.request_redraw();
-            }
-        }
-        self.fonts.extend(fonts);
-    }
-
     fn dispatch_to_app(
         &mut self,
         role: WindowRole,
