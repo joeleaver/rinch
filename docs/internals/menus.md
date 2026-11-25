@@ -211,7 +211,15 @@ classifies through `RinchApp::key_owner` (the arbiter's `FocusTarget`) in
 `RinchApp::try_menu_shortcut`, which the shell calls with winit's `text`; the
 web through `menu_bar::key_target_owner` on the keydown's
 `composedPath()[0]` — not `activeElement`, the host of a shadow-root field —
-and `getModifierState("AltGraph")`. The `<input>` type list is one function,
+and `menu_bar::web_alt_graph_text`, which asks the same `is_alt_graph_text`
+with `getModifierState("AltGraph")` as the platform fact and, for the key's
+unmodified character (which a browser does not report), what
+`note_unmodified_key` learned from the layout's own unmodified presses (both
+keydown listeners call it), seeded once from `navigator.keyboard.getLayoutMap()`
+where it exists (Chromium), else the US character of a `KeyX` / `DigitN` code
+(review of #3074: German right-Alt+1 reports AltGraph with `key` `"1"` and is
+the chord). Pins: `rinch-web/tests/menu_bar_bare_chord.rs`,
+`rinch-web/tests/editor_mod_key_3062.rs`. The `<input>` type list is one function,
 `rinch::menu::input_type_takes_text`.
 
 **AltGr text reaches the field as text** (#934, Windows): the shell keeps `text` on a

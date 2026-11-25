@@ -208,6 +208,8 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     if !on_capture {
         return false;
     }
+    // What an unmodified press types, for the AltGr question below.
+    crate::menu_bar::note_unmodified_key(event);
     // During an IME composition, yield every key to the textarea + IME — the composed
     // text arrives via the composition events, so inserting here would double up.
     if event.is_composing() || COMPOSING.with(|c| c.get()) {
@@ -259,7 +261,11 @@ pub(super) fn handle_keydown(event: &web_sys::KeyboardEvent, doc: &web_sys::Docu
     // or German AltGr+7 (`{`) would read as a Mod-Alt chord. A press that
     // typed a character through AltGr is text: it skips the keymap and goes
     // on, unconsumed, to the browser, whose input lands through `beforeinput`.
+    // An AltGr press that types nothing new (German right-Alt+1 reports `"1"`)
+    // is still the chord, as on desktop (`web_alt_graph_text`).
     let alt_graph_text = crate::menu_bar::web_alt_graph_text(event);
+    // Set at every mount already (`sync_host_platform`); kept per key so a
+    // test's `__set_mac_platform` between presses is heard too.
     rinch_editor_core::keymap::set_host_is_macos(mac);
     let (mod_key, other_mod) = if mac {
         (event.meta_key(), event.ctrl_key())

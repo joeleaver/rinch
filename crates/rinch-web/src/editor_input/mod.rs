@@ -361,10 +361,23 @@ thread_local! {
 
 /// Make the editor's key handling take the page as macOS (`Some(true)`), as
 /// not macOS (`Some(false)`), or ask the browser again (`None`). Test-only.
-/// It answers both [`is_mac`] and [`keymap_mod_is_cmd`].
+/// It answers both [`is_mac`] and [`keymap_mod_is_cmd`], and
+/// `rinch_editor_core::keymap::host_is_macos` follows at once.
 #[doc(hidden)]
 pub fn __set_mac_platform(mac: Option<bool>) {
     MAC_OVERRIDE.with(|m| m.set(mac));
+    sync_host_platform();
+}
+
+/// Tell the editor core which platform's keys arrive here
+/// (`rinch_editor_core::keymap::host_is_macos`, which `KeyBinding::label`
+/// callers and the not-on-macOS bindings read): [`keymap_mod_is_cmd`]'s
+/// answer, from `navigator.platform`. The core's own default is the target
+/// OS, which on wasm is never macOS, so this runs at the start of every mount
+/// (`install_before_build`), before the app's components render: a toolbar
+/// tooltip built at render time already spells `⌘` on a Mac.
+pub(crate) fn sync_host_platform() {
+    rinch_editor_core::keymap::set_host_is_macos(keymap_mod_is_cmd());
 }
 
 /// A `navigator` string property (`"platform"`, `"userAgent"`), or `""`.

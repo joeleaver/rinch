@@ -14,10 +14,14 @@
 //! every chord *before* the app sees the key and consumes the keystroke only
 //! when a callback actually ran.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
 use rinch::menu::Menu;
 use rinch_core::dom::{NodeHandle, RenderScope};
+
+use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::{Closure, JsValue};
 
 use crate::editor_input::add_capture_on;
 
@@ -75,7 +79,6 @@ pub(crate) fn wrap(
 /// Chrome 153). `activeElement` is the fallback for an event with no path.
 fn key_target_owner(event: &web_sys::KeyboardEvent) -> rinch::menu::KeyOwner {
     use rinch::menu::KeyOwner;
-    use wasm_bindgen::JsCast;
     let target = event
         .composed_path()
         .get(0)
@@ -111,19 +114,143 @@ fn key_target_owner(event: &web_sys::KeyboardEvent) -> rinch::menu::KeyOwner {
     }
 }
 
-/// Whether AltGr typed `event.key` (#1291): the browser reports AltGr on
-/// Windows as Ctrl+Alt, and says which it was through
-/// `getModifierState("AltGraph")`; the press typed a character when its `key`
-/// is one printable character rather than a key name.
+/// Whether AltGr typed `event.key` (#1291) — desktop's rule,
+/// [`rinch::platform::is_alt_graph_text`], asked with the browser's facts.
+/// The browser reports AltGr on Windows as Ctrl+Alt and says which it was
+/// through `getModifierState("AltGraph")`. The press is text when Ctrl and Alt
+/// are held (Meta is not), its `key` is one printable character rather than a
+/// key name, and that character is not simply the one the key types with no
+/// modifier ([`unmodified_key`]). A German or Polish layout reports right-Alt+1
+/// as AltGraph with `key` `"1"`: it types nothing, so an app's `Mod-Alt-1`
+/// still runs, as on desktop.
 pub(crate) fn web_alt_graph_text(event: &web_sys::KeyboardEvent) -> bool {
-    if !event.get_modifier_state("AltGraph") {
+    let key = event.key();
+    if !is_one_printable_char(&key) {
         return false;
     }
-    let key = event.key();
+    let unmodified = unmodified_key(&event.code());
+    rinch::platform::is_alt_graph_text(
+        event.get_modifier_state("AltGraph"),
+        rinch::platform::Modifiers {
+            shift: event.shift_key(),
+            ctrl: event.ctrl_key(),
+            alt: event.alt_key(),
+            meta: event.meta_key(),
+        },
+        Some(&key),
+        unmodified.as_deref(),
+    )
+}
+
+fn is_one_printable_char(key: &str) -> bool {
     let mut chars = key.chars();
     chars
         .next()
         .is_some_and(|c| !c.is_control() && chars.next().is_none())
+}
+
+thread_local! {
+    /// What each physical key (`code`) types with no modifier on the user's
+    /// layout, as far as this page has seen: winit's `key_without_modifiers`,
+    /// which a browser does not report. Filled by [`note_unmodified_key`] from
+    /// every unmodified press (which follows a layout switch), and seeded once
+    /// from the Keyboard API's layout map where the browser has one (Chromium);
+    /// a seeded entry never replaces one a press taught.
+    static UNMODIFIED_KEYS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static LAYOUT_MAP_ASKED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Learn what `event`'s physical key types with no modifier, when the press
+/// says: no Shift, Ctrl, Alt, Meta or AltGraph held, and a `key` that is one
+/// printable character (not `"Dead"`, `"Process"` or a key name). Every
+/// keydown listener that asks [`web_alt_graph_text`] calls this first.
+pub(crate) fn note_unmodified_key(event: &web_sys::KeyboardEvent) {
+    ask_layout_map_once();
+    if event.shift_key()
+        || event.ctrl_key()
+        || event.alt_key()
+        || event.meta_key()
+        || event.get_modifier_state("AltGraph")
+    {
+        return;
+    }
+    let (code, key) = (event.code(), event.key());
+    if code.is_empty() || !is_one_printable_char(&key) {
+        return;
+    }
+    UNMODIFIED_KEYS.with(|m| m.borrow_mut().insert(code, key));
+}
+
+/// What the key `code` types with no modifier: learned from a press or the
+/// layout map, else the US position of a letter or digit key (`KeyQ` → `q`,
+/// `Digit1` → `1`: right on most layouts for the digits and most letters),
+/// else `None`, and the AltGr text is then taken at its word, as desktop does
+/// when it does not know.
+fn unmodified_key(code: &str) -> Option<String> {
+    if let Some(known) = UNMODIFIED_KEYS.with(|m| m.borrow().get(code).cloned()) {
+        return Some(known);
+    }
+    let position = code
+        .strip_prefix("Key")
+        .or_else(|| code.strip_prefix("Digit"))?;
+    let mut chars = position.chars();
+    let c = chars.next()?;
+    (chars.next().is_none() && c.is_ascii_alphanumeric())
+        .then(|| c.to_ascii_lowercase().to_string())
+}
+
+/// Seed [`UNMODIFIED_KEYS`] from `navigator.keyboard.getLayoutMap()` once per
+/// page, where the browser has it (Chromium; Firefox and Safari do not), so
+/// the first AltGr press on a layout whose keys differ from US (French
+/// `Digit1` types `&`) is judged right before any plain press taught it.
+fn ask_layout_map_once() {
+    if LAYOUT_MAP_ASKED.with(|a| a.replace(true)) {
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let get = |target: &JsValue, name: &str| js_sys::Reflect::get(target, &name.into()).ok();
+    let Some(keyboard) = get(&window.into(), "navigator")
+        .and_then(|navigator| get(&navigator, "keyboard"))
+        .filter(|k| k.is_object())
+    else {
+        return;
+    };
+    let Some(get_layout_map) =
+        get(&keyboard, "getLayoutMap").and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+    else {
+        return;
+    };
+    let Ok(promise) = get_layout_map
+        .call0(&keyboard)
+        .and_then(|p| p.dyn_into::<js_sys::Promise>())
+    else {
+        return;
+    };
+    let on_map = Closure::once(move |map: JsValue| {
+        let Some(for_each) =
+            get(&map, "forEach").and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        else {
+            return;
+        };
+        let seed = Closure::<dyn FnMut(JsValue, JsValue)>::new(|key: JsValue, code: JsValue| {
+            if let (Some(key), Some(code)) = (key.as_string(), code.as_string())
+                && is_one_printable_char(&key)
+            {
+                UNMODIFIED_KEYS.with(|m| {
+                    m.borrow_mut().entry(code).or_insert(key);
+                });
+            }
+        });
+        let _ = for_each.call1(&map, seed.as_ref());
+    });
+    // A refusal (a cross-origin frame, a denied permission) leaves the
+    // fallbacks; handling it keeps it out of the console.
+    let on_refused = Closure::once(|_: JsValue| {});
+    let _ = promise.then2(&on_map, &on_refused);
+    on_map.forget();
+    on_refused.forget();
 }
 
 /// The single ASCII letter `key` (a `KeyboardEvent.key`) spells, lowercased —
@@ -185,6 +312,8 @@ fn install_shortcut_dispatch() {
         window.as_ref(),
         "keydown",
         |event: web_sys::KeyboardEvent| {
+            // What an unmodified press types, for the AltGr question below.
+            note_unmodified_key(&event);
             // `code` is the physical key's W3C name — "KeyK", "Digit0", "F5" — which
             // is exactly what a shortcut string parses into, so no translation.
             // It is still the only thing a *digit or punctuation* chord

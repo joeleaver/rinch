@@ -105,8 +105,13 @@ fn ensure_editor_web_styles(doc: &web_sys::Document) {
 /// build (with the rest of [`install`](fn@install)), the page's first mount told nobody, so
 /// its views were never observed and a view that grew left the caret and the
 /// highlight below it where they were (#2075). Called from `mount_tree` before
-/// the build. Setting the listener again is harmless.
+/// the build. Setting the listener again is harmless. The editor core learns
+/// the platform here too ([`sync_host_platform`]),
+/// for a component that labels a chord as it renders.
 pub(crate) fn install_before_build() {
+    // Which platform's keys arrive, before a component asks (a tooltip's
+    // `KeyBinding::label(host_is_macos())`).
+    super::sync_host_platform();
     // A node view that resizes moves what is below it (the caret, a highlight).
     registry::set_node_view_host_listener(on_node_view_host);
 }

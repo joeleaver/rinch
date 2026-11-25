@@ -97,6 +97,24 @@ impl EditorHandle {
     /// `"Tab"` and `"Shift-Tab"` can be bound too, and the app's binding is
     /// asked before the editor's [`TabBehavior`]: bound, the key runs the
     /// command and is the editor's under [`TabBehavior::MoveFocus`] as well.
+    /// That includes a table cell under
+    /// [`TabBehavior::IndentInListsAndTables`]: a bound Tab runs its command
+    /// there instead of moving to the next cell. To keep cell navigation and
+    /// give Tab another job elsewhere, leave Tab unbound and claim it in
+    /// [`on_key`](Self::on_key) only where you want it, trying
+    /// [`tab_cell`](Self::tab_cell) first:
+    ///
+    /// ```ignore
+    /// let h = handle.clone();
+    /// handle.on_key(move |key| {
+    ///     if key.key != "Tab" || key.primary || key.alt {
+    ///         return false;
+    ///     }
+    ///     // In a table, the next (previous) cell; elsewhere a command of the
+    ///     // app's own plugin. `false` leaves the key to the `TabBehavior`.
+    ///     h.tab_cell(key.shift) || (!key.shift && h.command("insertTabCharacter"))
+    /// });
+    /// ```
     ///
     /// The default keymap has only the keys a Chrome `contenteditable` has
     /// (#3062), so an app that wants the formatting chords of a word

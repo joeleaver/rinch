@@ -36,9 +36,10 @@
 //! read at lookup time, not when the keymap is built: it starts as the target
 //! OS, the desktop shell sets it from its app's text keymap (the one its
 //! single-line fields read) on each key, and rinch-web sets it from
-//! `navigator.platform` (any Apple platform: macOS, iOS, iPadOS) on each key it
-//! offers the editor, before an editor created ahead of the first mount could
-//! have been built with a wrong one.
+//! `navigator.platform` (any Apple platform: macOS, iOS, iPadOS) at the start
+//! of every mount, before the app's components render (so a tooltip's
+//! [`KeyBinding::label`] is right on a Mac browser), and again on each key it
+//! offers the editor.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -51,7 +52,8 @@ thread_local! {
 /// off the bindings marked [`Keymap::exclude_on_macos`] (the module docs,
 /// "Bindings that are not macOS's"). It starts as the target OS; the desktop
 /// shell sets it from its app's text keymap on each key, and rinch-web from
-/// `navigator.platform`.
+/// `navigator.platform` as each mount starts (so on the web it is right from
+/// the first component's render) and on each key.
 pub fn host_is_macos() -> bool {
     HOST_MACOS.with(Cell::get)
 }

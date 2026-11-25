@@ -1022,7 +1022,22 @@ always leave the editor by keyboard. A [read-only](#read-only) editor's Tab alwa
 moves the focus. An `on_key` callback sees Tab first and may claim it, and an
 app's own [`bind_key("Tab", …)`](#your-own-keys-bind_key-and-unbind_key) comes
 before the `TabBehavior`: under either, the bound Tab runs its command and stays in
-the editor.
+the editor. That includes a table cell: under `IndentInListsAndTables` a bound Tab
+runs its command there instead of moving to the next cell. To keep cell navigation
+and give Tab another job elsewhere, don't bind it; claim it in `on_key` where you
+want it, and try `tab_cell` first:
+
+```rust
+let h = editor.clone();
+editor.on_key(move |key| {
+    if key.key != "Tab" || key.primary || key.alt {
+        return false;
+    }
+    // In a table, the next (previous) cell; elsewhere a command of your own
+    // plugin. `false` leaves the key to the `TabBehavior`.
+    h.tab_cell(key.shift) || (!key.shift && h.command("insertTabCharacter"))
+});
+```
 
 ### Colours of the caret, the selection and the composition
 
@@ -1607,7 +1622,8 @@ hardware keyboard included: on a Mac, Ctrl+B is the browser's caret key, and off
 Mac the Windows key is not `Mod`). On desktop the editor and the text fields read
 the same answer, so their macOS-only rules (Cmd+Y is not redo) always agree. On the
 web, a key typed through AltGr (Windows reports it as Ctrl+Alt: German AltGr+7 is
-`{`) is text, never a Ctrl+Alt chord.
+`{`) is text, never a Ctrl+Alt chord. An AltGr press that types nothing new — on a
+German or Polish layout right-Alt+1 reports just `1` — is the chord, as on desktop.
 
 | Shortcut | Action |
 |----------|--------|
@@ -1675,14 +1691,19 @@ the key to your app and the browser even where a plugin binds it, until the chor
 is bound again. A bound chord is consumed wherever the caret is, as the editor's
 own are. `"Tab"` and `"Shift-Tab"` can be bound too, and your binding comes before
 the [`TabBehavior`](#tab): bound, Tab runs your command and stays in the editor
-even under `MoveFocus` (except in a read-only editor, which always lets Tab go).
+even under `MoveFocus` (except in a read-only editor, which always lets Tab go),
+and in a table cell it runs your command instead of moving to the next cell (to
+keep that, claim Tab in `on_key` instead; see [Tab](#tab)).
 The app's keys belong to the handle, so they survive `add_plugin`, a
 placeholder change and every load. A plugin that brings its own keys does so with
 `Plugin::keymap`; `Keymap::remove` takes a binding out of a keymap a plugin builds.
 
 A toolbar tooltip can name the chord the way the platform does:
 `KeyBinding::parse("Mod-Shift-s").unwrap().label(host_is_macos())` is `⇧⌘S` on
-macOS and `Ctrl+Shift+S` elsewhere (both from `rinch::editor`).
+macOS and `Ctrl+Shift+S` elsewhere (both from `rinch::editor`). On the web,
+`host_is_macos()` reads the browser's platform (any Apple one, iOS and iPadOS
+included) from the moment a mount starts, so a tooltip built while the app's
+components render is already right.
 
 Some chords are the browser's or the platform's before they are the page's, and
 binding one does not take it from them: Chrome keeps Ctrl+Shift+J (and

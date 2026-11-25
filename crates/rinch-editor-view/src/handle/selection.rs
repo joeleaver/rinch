@@ -243,7 +243,9 @@ impl EditorHandle {
     /// `"Tab"` / `"Shift-Tab"`) is asked first, ahead of the
     /// [`TabBehavior`]: it runs its command and keeps the key (`true`) whether
     /// or not the command applied, as every `bind_key` binding does, under
-    /// [`TabBehavior::MoveFocus`] too. Otherwise `false` under `MoveFocus`.
+    /// [`TabBehavior::MoveFocus`] too, and ahead of the table-cell move under
+    /// [`TabBehavior::IndentInListsAndTables`] (see `bind_key`'s docs for
+    /// keeping cell navigation). Otherwise `false` under `MoveFocus`.
     /// Shared by every platform's keyboard glue, which offers Tab here instead
     /// of to the keymap.
     pub fn tab_key(&self, shift: bool) -> bool {

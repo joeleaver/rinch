@@ -326,3 +326,104 @@ fn an_alt_graph_character_is_not_a_ctrl_alt_chord() {
     assert!(chord, "Ctrl+Alt+7 is the app's chord");
     assert_eq!(after_chord, "<p><strong>abc</strong></p>", "and bolds");
 }
+
+/// Ctrl+Alt with `AltGraph` held: how Windows reports any AltGr press.
+const ALT_GR: Mods = Mods {
+    ctrl: true,
+    meta: false,
+    shift: false,
+    alt: true,
+    alt_graph: true,
+};
+
+/// An AltGr press that types nothing new is the chord, as on desktop
+/// (`is_alt_graph_text`: the text must differ from what the key types with
+/// no modifier). German and Polish Windows layouts report right-Alt+1 as
+/// AltGraph with `key` `"1"`, the digit key's own character; the app's
+/// Mod-Alt-1 must run there. A one-character `key` alone used to be taken as
+/// typed text, and the chord was dropped.
+#[wasm_bindgen_test]
+fn an_alt_graph_press_that_types_its_own_key_is_the_chord() {
+    let f = Fixture::focused(false);
+    f.handle
+        .bind_key("Mod-Alt-1", "toggleBold")
+        .expect("a base command");
+    let chord = f.key("1", "Digit1", ALT_GR);
+    let after = f.html();
+    f.teardown();
+    assert!(chord, "right-Alt+1 typing nothing is the app's Mod-Alt-1");
+    assert_eq!(after, "<p><strong>abc</strong></p>", "and bolds");
+}
+
+/// What a key types unmodified is learned from the layout's own plain
+/// presses, not assumed to be the US one: on a French layout `Digit3` types
+/// `"`, so an AltGr press reporting `"` there typed nothing new and is the
+/// chord. The positive control: an AltGr press on the same key reporting `#`
+/// (which French AltGr+3 types) is text, left to the browser.
+#[wasm_bindgen_test]
+fn the_unmodified_character_is_the_layouts_not_the_us_one() {
+    let f = Fixture::focused(false);
+    f.handle
+        .bind_key("Mod-Alt-3", "toggleBold")
+        .expect("a base command");
+    let plain = f.key("\"", "Digit3", Mods::default());
+    let typed = f.html();
+    f.handle.set_selection(Selection::text(Pos(1), Pos(2)));
+    let hash = f.key("#", "Digit3", ALT_GR);
+    let after_hash = f.html();
+    let chord = f.key("\"", "Digit3", ALT_GR);
+    let after_chord = f.html();
+    f.teardown();
+    assert!(
+        plain,
+        "positive control: the plain press reached the editor"
+    );
+    assert_eq!(typed, "<p>\"</p>", "and typed over the selection");
+    assert!(!hash, "AltGr+3 typing `#` is text, left to the browser");
+    assert_eq!(after_hash, "<p>\"</p>", "and bolds nothing");
+    assert!(chord, "AltGr+3 reporting the key's own `\"` is the chord");
+    assert_eq!(after_chord, "<p><strong>\"</strong></p>", "and bolds");
+}
+
+/// The core learns the page's platform as the mount starts, before any key:
+/// a component labelling a chord while it renders (a toolbar tooltip, the
+/// guide's recipe) spells it for a Mac on a Mac browser. The core's own
+/// default on wasm is "not macOS", which it kept until the first editor
+/// keydown. The positive control: the same render on a non-Apple platform
+/// answers `false`.
+#[wasm_bindgen_test]
+fn a_chord_label_rendered_at_mount_knows_the_platform() {
+    use rinch_editor_core::keymap::{host_is_macos, set_host_is_macos};
+    let render_answer = |platform: &str| {
+        fake_platform(Some(platform));
+        // The opposite of the right answer, so only the mount can fix it.
+        set_host_is_macos(!platform.starts_with("Mac"));
+        let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+        let host = document().create_element("div").unwrap();
+        document().body().unwrap().append_child(&host).unwrap();
+        let record = seen.clone();
+        let root = rinch_web::mount_into(
+            &host,
+            ThemeProviderProps::default(),
+            move |scope: &mut RenderScope| {
+                record.set(Some(host_is_macos()));
+                scope.create_element("div")
+            },
+        );
+        root.unmount();
+        host.remove();
+        fake_platform(None);
+        seen.get().expect("the build ran")
+    };
+    let mac = render_answer("MacIntel");
+    let linux = render_answer("Linux x86_64");
+    rinch_web::__set_mac_platform(None);
+    assert!(mac, "a render on a Mac browser labels for macOS");
+    assert_eq!(
+        rinch_editor_core::KeyBinding::parse("Mod-Shift-s")
+            .unwrap()
+            .label(mac),
+        "⇧⌘S"
+    );
+    assert!(!linux, "positive control: elsewhere it does not");
+}

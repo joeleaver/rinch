@@ -60,19 +60,44 @@ pub fn editor_section() -> NodeHandle {
 
             Paper { p: "xl", radius: "md", with_border: true,
                 Stack { gap: "xs",
-                    {render_shortcut_row(__scope, "Ctrl+B", "Bold")}
-                    {render_shortcut_row(__scope, "Ctrl+I", "Italic")}
-                    {render_shortcut_row(__scope, "Ctrl+U", "Underline")}
-                    {render_shortcut_row(__scope, "Ctrl+Z", "Undo")}
-                    {render_shortcut_row(__scope, "Ctrl+Shift+Z / Ctrl+Y", "Redo")}
-                    {render_shortcut_row(__scope, "Enter", "Split block / new list item")}
-                    {render_shortcut_row(__scope, "Ctrl+Shift+S", "Strikethrough (bound by the showcase)")}
-                    {render_shortcut_row(__scope, "Ctrl+E", "Inline code (bound by the showcase)")}
-                    {render_shortcut_row(__scope, "Tab / Shift+Tab", "Nest list items, move between table cells (opted into)")}
-                    {render_shortcut_row(__scope, "Backspace / Delete", "Delete backward / forward")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-b"]), "Bold")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-i"]), "Italic")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-u"]), "Underline")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-z"]), "Undo")}
+                    {render_shortcut_row(__scope, &redo_chords(), "Redo")}
+                    {render_shortcut_row(__scope, &chords(&["Enter"]), "Split block / new list item")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-Shift-s"]), "Strikethrough (bound by the showcase)")}
+                    {render_shortcut_row(__scope, &chords(&["Mod-e"]), "Inline code (bound by the showcase)")}
+                    {render_shortcut_row(__scope, &chords(&["Tab", "Shift-Tab"]), "Nest list items, move between table cells (opted into)")}
+                    {render_shortcut_row(__scope, &chords(&["Backspace", "Delete"]), "Delete backward / forward")}
                 }
             }
         }
+    }
+}
+
+/// `keymap_chords` (the keymap's syntax, `"Mod-Shift-s"`) as the platform
+/// spells them, joined by `" / "`: `⇧⌘S` on macOS, `Ctrl+Shift+S` elsewhere.
+fn chords(keymap_chords: &[&str]) -> String {
+    let macos = rinch_editor_core::keymap::host_is_macos();
+    keymap_chords
+        .iter()
+        .map(|c| {
+            rinch_editor_core::KeyBinding::parse(c)
+                .expect("a chord")
+                .label(macos)
+        })
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// Redo's chords: Mod-Shift-z everywhere, and Mod-y too except on macOS,
+/// where Cmd+Y is the browser's History and the editor leaves it unbound.
+fn redo_chords() -> String {
+    if rinch_editor_core::keymap::host_is_macos() {
+        chords(&["Mod-Shift-z"])
+    } else {
+        chords(&["Mod-Shift-z", "Mod-y"])
     }
 }
 
