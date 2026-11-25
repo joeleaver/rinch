@@ -25,7 +25,7 @@
 //! look like today's "inside"-shaped span (filed as a follow-up) — so no
 //! fixture here claims to pin outside-vs-inside geometry.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::DisplayValue;
 use rinch_dom::testing::get_text_content;

@@ -52,7 +52,7 @@ thread_local! {
 
 rinch_core::doc_keyed! {
     /// `(doc_key, container node id, handle)` for every mounted editor. The
-    /// [`doc_key`](rinch_core::dom::DomDocument::doc_key) scopes entries per
+    /// [`doc_key`](rinch_core::dom::DomTree::doc_key) scopes entries per
     /// document: container node ids are per-document slab indices, so two
     /// documents on one thread (two embedded `RinchContext`s, or two desktop
     /// windows) can both hold an editor at the same container id (issue #134).

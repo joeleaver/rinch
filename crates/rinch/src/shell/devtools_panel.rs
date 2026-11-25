@@ -480,7 +480,7 @@ fn render_toolbar(scope: &mut RenderScope, store: DevToolsStore) -> NodeHandle {
             inspect_btn.set_attribute("class", cls);
         }
     });
-    let handler_id = scope.register_handler(move || inspect_mode.update(|v| *v = !*v));
+    let handler_id = scope.register_handler(move || store.toggle_inspect_mode());
     inspect_btn.set_attribute("data-rid", &handler_id.0.to_string());
     let btn_text = scope.create_text("Inspect");
     inspect_btn.append_child(&btn_text);

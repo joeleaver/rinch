@@ -862,7 +862,7 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
 /// a scroller's range is measured unrounded (#2116), so 100.4px of content
 /// growing to 100.55px gives it a pixel's range with no rounded rect moving.
 /// The unrounded rect is read only when everything else held.
-fn geometry_may_have_moved(tree: &NodeTree, node: &Node) -> bool {
+pub(crate) fn geometry_may_have_moved(tree: &NodeTree, node: &Node) -> bool {
     let Some(painted) = node.painted.as_ref() else {
         return true;
     };
@@ -3575,7 +3575,7 @@ fn compose_transform_parts(
 /// branch hands `parent_transform` straight down to the children rather than
 /// composing anything for it — a transform declared on such a node has no box
 /// to apply about and is simply not drawn. Hit testing makes the same exception
-/// (`local_point`, `crates/rinch/src/app/hit_testing.rs`); a forward walk that
+/// (`local_point`, `crates/rinch/src/app/hit_testing/walk.rs`); a forward walk that
 /// composed it anyway would place the node's descendants somewhere paint never
 /// puts them.
 fn compose_transform_step(
@@ -5298,7 +5298,7 @@ fn paint_layered_span(
 
 /// A highlight box held back from its place in a stacking sequence until the
 /// box whose content it highlights is painted (#2666,
-/// [`rinch_core::dom::DomDocument::set_highlight_owner`]): what
+/// [`rinch_core::dom::DomContent::set_highlight_owner`]): what
 /// [`paint_sequence_entry`] would have drawn it with.
 #[derive(Clone, Copy)]
 struct HeldHighlight {
@@ -7399,6 +7399,9 @@ fn paint_text_leaf(
     // constraint below at fractional scale factors.)
     tree.perf.bump(crate::perf::Counter::ShapePaint);
     let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
+    builder.set_base_direction(
+        parent_computed.map_or(parley::BaseDirection::Ltr, |s| s.base_direction()),
+    );
     builder.set_line_break_override(Some(crate::ifc::CHROME_LINE_BREAKS));
     builder.push_default(parley::style::StyleProperty::FontSize(font_size));
     builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
@@ -7511,7 +7514,7 @@ fn paint_text_leaf(
 mod tests {
     use crate::RinchDocument;
     use peniko::kurbo::Affine;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     // The correctness criterion for every test here: `painted_border_box`
     // returns the box the node is *painted* in. So the expected rects are

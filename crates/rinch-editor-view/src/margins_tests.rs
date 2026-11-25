@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId};
+use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::{Node, Pos, Schema, default_plugins};
 

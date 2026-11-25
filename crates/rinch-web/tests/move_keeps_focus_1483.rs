@@ -18,7 +18,7 @@
 //!
 //! `WebDocument`'s insertion verbs use it when the method exists and the child
 //! and the parent are both connected, in one document; the `NodeHandle` verbs
-//! then ask for no focus release (`DomDocument::moves_keeping_focus`). Anything
+//! then ask for no focus release (`DomFocus::moves_keeping_focus`). Anything
 //! else — a browser without the method, a move into or out of a detached
 //! subtree — takes the #1478 path: blur first, then `insertBefore`.
 //!

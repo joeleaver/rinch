@@ -380,7 +380,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::dom::{DomDocument, DomFocus, NodeHandle, NodeId, RenderScope};
 use rinch_core::element::WindowProps;
 use rinch_core::events::{ModifierState, MouseButton};
 use rinch_core::reactive::ElementBounds;

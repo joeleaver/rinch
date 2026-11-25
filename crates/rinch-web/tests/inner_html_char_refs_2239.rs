@@ -13,7 +13,7 @@ mod char_refs;
 #[path = "support/engine.rs"]
 mod engine;
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_web::web_document::WebDocument;
 use wasm_bindgen_test::*;
 

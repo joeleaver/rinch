@@ -12,7 +12,7 @@
 //! range (`-min scrollLeft`), and each mark's x relative to `c` at the
 //! scroll start and at the far end (`scrollLeft = -1e6`).
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomScroll, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::scrollbar::{ScrollbarAxis, scroll_bounds};
 use rinch_dom::testing::query_selector;
@@ -232,23 +232,14 @@ const CHROME: &[(&str, &str, &str, f64, &str, &str)] = &[
 
 /// (name, rinch's range, start, far end, why) — rows whose views are not
 /// Chrome's yet, for reasons outside the scroll model.
-const KNOWN: &[(&str, f64, &str, &str, &str)] = &[
-    (
-        "s_nested",
-        0.0,
-        "a=-100",
-        "a=-100",
-        "a box overflowing its own parent is in no scroll range, ltr too (#2054)",
-    ),
-    (
-        "s_anon_line",
-        49.0,
-        "a=100 b=-49",
-        "a=149 b=0",
-        "an anonymous box's lines are aligned across 201px of a 200px box, \
+const KNOWN: &[(&str, f64, &str, &str, &str)] = &[(
+    "s_anon_line",
+    49.0,
+    "a=100 b=-49",
+    "a=149 b=0",
+    "an anonymous box's lines are aligned across 201px of a 200px box, \
          so its rtl line starts a pixel right of Chrome's (#2546 review notes)",
-    ),
-];
+)];
 
 fn lay_out(inner: &str, extra: &str) -> (RinchDocument, u64) {
     let mut doc = RinchDocument::new();

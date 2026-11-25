@@ -1,6 +1,6 @@
 //! `<table>` layout on Taffy's grid (`table_layout`). Every expected number is
 //! Chrome's, for the same markup with declared line boxes.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const CSS: &str =

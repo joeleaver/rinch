@@ -10,7 +10,7 @@
 //! depends on the host's fonts. A table's box is its wrapper's: the captions
 //! are inside it.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

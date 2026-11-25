@@ -16,7 +16,7 @@
 //! between.
 
 use rinch::prelude::*;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_core::dom::mock::MockDomDocument;
 use rinch_tabler_icons::TablerIcon;
 use std::cell::{Cell, RefCell};

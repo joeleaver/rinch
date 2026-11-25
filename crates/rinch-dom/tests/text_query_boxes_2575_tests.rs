@@ -16,7 +16,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{CaretAffinity, DomDocument, NodeId};
+use rinch_core::dom::{CaretAffinity, DomContent, DomLayout, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::text_query::glyph_bounds_for_offset;
 

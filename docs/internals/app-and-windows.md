@@ -3189,7 +3189,7 @@ and rerun the pins.
 ### Bounds signals on the web (#1781)
 
 `NodeHandle::bounds_signal()` registers in `rinch_core::reactive::bounds`
-and, for a new entry, calls `DomDocument::watch_bounds` (default no-op: desktop
+and, for a new entry, calls `DomLayout::watch_bounds` (default no-op: desktop
 refreshes every registered node after each layout, `RinchApp::refresh_bounds_signals`).
 `WebDocument::watch_bounds` hands the element to `rinch-web/src/bounds.rs`, which
 while anything is watched holds one `ResizeObserver` over the watched elements,
@@ -3221,7 +3221,7 @@ refresh (at most one per frame). Pins:
 (#1764). `RinchApp::resolve_and_repaint` and `resize_layout` follow
 `refresh_bounds_signals` with `settle_bounds_writes`: while the document has a
 change its layout does not show (`dirty_nodes`, `styles_dirty`,
-`DomDocument::layout_pending`), it lays out again and publishes the bounds
+`DomLayout::layout_pending`), it lays out again and publishes the bounds
 again, at most `BOUNDS_SETTLE_PASSES` (3) times (a `debug!` line says when the
 cap is hit); a subscriber that never settles carries on next frame, as every
 one did before. Each pass runs the frame's own post-layout work

@@ -233,6 +233,47 @@ fn child_component() -> NodeHandle {
 }
 ```
 
+### One current observer: each run is its own tracking frame (#3047)
+
+`Runtime::observer` (`crates/rinch-core/src/reactive/tracking.rs`) is the one
+observer a signal or memo read subscribes: the effect run or memo recompute in
+progress, or none. `ObserverGuard` makes an id current for a run and puts back
+the one it displaced; `untracked`, `untracked_handler` and `suspend_tracking`
+hide it (`SuspendObservers`) and put it back. The rule: **an observer depends on
+exactly what was read while it was current**.
+
+Runs nest all the time. Outside a batch a write flushes the effects it wakes on
+the spot, inside the writer's run, and that includes every write an effect makes
+while a batch's exit flush runs it (the flag is lowered for the flush). A memo
+recomputes inside the read that wants it. Until #3047 the slot was a stack: a
+nested run was pushed over the writer, and `untracked` popped one frame, so an
+`untracked` read inside the nested run subscribed the **writer**. `if let` and
+`match` render a new branch under `untracked`, re-reading the scrutinee to bind
+its names, so an effect that set a result signal to "loading" was subscribed to
+that signal by the branch swap its own write caused. When the answer arrived it
+ran again (re-ofscp's admin console sent every request twice). Earlier fixes had
+patched the same leak per site: #491/#1190 put exactly one `untracked` at every
+render boundary so the stack stayed balanced, and #932 made the app-callback
+sites suspend the whole stack. With one slot there is no frame below to expose,
+so `untracked` and `untracked_handler` now do the same thing. They keep separate
+names because they record different decisions.
+
+Suspensions are counted per run (`Suspensions`), not saved and restored, so
+they end in any order: the run's observer stays hidden until the last
+suspension taken in that run ends. Each suspension remembers the run it was
+taken in. Released in that run, it lowers the count; released after that run
+finished (a `suspend_tracking` guard kept past it), it does nothing, so a
+finished run's observer never comes back as current; released inside a run
+nested in its own (the guard moved there), it is recorded and taken off the
+count when the outer run is current again. An observer that runs inside an
+`untracked` region starts with no suspensions and tracks normally. Pinned by
+the `suspension` and `guard` tests in `tracking.rs`. Pinned by `crates/rinch-core/tests/effect_own_reads_3047.rs` (nested
+flush, batch exit flush, memo, effect created in a run) and
+`crates/rinch-macros/tests/rsx_effect_own_reads_3047.rs` (the issue's `match`
+and `if let` screens). The path is the same on desktop and rinch-web: nothing
+in it is backend code, and `spawn_local` never polls inline (the first poll is
+scheduled).
+
 ### Intervals and polled signals off the native frame loop (#1773)
 
 `set_interval` (`rinch-core/src/timer.rs`) is a chain of `set_timeout` ticks,

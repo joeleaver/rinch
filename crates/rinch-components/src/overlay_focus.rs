@@ -33,12 +33,12 @@
 //! with the keyboard still on whatever opened it, and closing with the claim
 //! pointing into a subtree that no longer has a box. [`arm_overlay_focus`] is
 //! the move-in and the restore, and it needed portable API that did not exist:
-//! [`DomDocument::active_element`](rinch_core::dom::DomDocument::active_element)
+//! [`DomFocus::active_element`](rinch_core::dom::DomFocus::active_element)
 //! to read the current focus,
-//! [`focus_into`](rinch_core::dom::DomDocument::focus_into) to move it in
+//! [`focus_into`](rinch_core::dom::DomFocus::focus_into) to move it in
 //! (because "the first focusable" is each backend's own computation and a third
 //! answer written here would be wrong on both), and
-//! [`restore_focus`](rinch_core::dom::DomDocument::restore_focus) to give it
+//! [`restore_focus`](rinch_core::dom::DomFocus::restore_focus) to give it
 //! back or let it go.
 //!
 //! **Why the close is one call and not a decision made here.** Whether the
@@ -208,7 +208,7 @@ struct Capture {
 /// take the keyboard, and whether the keyboard is even this overlay's to return,
 /// are both questions about boxes, and the boxes here are a layout out of date —
 /// the close is a class change in this very effect flush. See
-/// [`DomDocument::restore_focus`](rinch_core::dom::DomDocument::restore_focus).
+/// [`DomFocus::restore_focus`](rinch_core::dom::DomFocus::restore_focus).
 fn restore(root: &NodeHandle, captured: Capture) {
     root.restore_focus(captured.opener.as_ref());
 }

@@ -3,7 +3,7 @@
 //! (`a28`: 280.92 / 280.92). The capped-contribution change in `ifc.rs`
 //! (09dce7f8) makes a fresh layout answer `a=280` around `t=281`; the
 //! 1px table tolerance hides it.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

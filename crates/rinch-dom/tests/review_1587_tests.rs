@@ -6,7 +6,7 @@
 //! Chrome's (`pairs(30, 1)` at 300px: 7 of 30 tabs). Refs #1593.
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomLayout, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::text_query::dom_cursor_to_ifc_offset;
 

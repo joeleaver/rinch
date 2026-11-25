@@ -20,7 +20,7 @@ use rinch_components::{
     PopoverTarget,
 };
 use rinch_core::Signal;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::NodeId;
 use rinch_core::reactive::ElementBounds;
 use std::rc::Rc;
 

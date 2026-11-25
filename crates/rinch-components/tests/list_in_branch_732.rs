@@ -2,7 +2,7 @@
 //! #732): the icon `List` patches into a late row is built through
 //! `late_children`'s scope, and the branch's hide must reclaim it with the row.
 use rinch_components::list::{List, ListItem};
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::{Component, Signal, for_each_dom_typed, show_dom};
 use rinch_tabler_icons::TablerIcon;

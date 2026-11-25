@@ -10,7 +10,7 @@
 //! again, and compares every box with a second document built directly in
 //! the final state and laid out once.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::node::NodeKind;
 

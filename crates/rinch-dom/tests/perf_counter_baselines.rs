@@ -50,7 +50,7 @@
 
 #![cfg(feature = "software-renderer")]
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use rinch_dom::perf::{Counter, FrameStats};
@@ -238,7 +238,6 @@ fn every_rinch_dom_counter_fires_somewhere() {
         .gen::before { content: \"*\"; }
         .inset { width: 20px; height: 20px; box-shadow: inset 0 0 4px rgb(0, 0, 0); }
         .hang { width: 1px; }
-        .narrow { width: 20px; }
         @media (min-width: 801px) { .mq { color: rgb(0, 0, 255); } }
         ",
     );
@@ -302,18 +301,11 @@ fn every_rinch_dom_counter_fires_somewhere() {
     doc.set_inner_html(hang, "a <span style=\"padding: 0 4px\">bb cc</span> d");
     doc.append_child(body, hang);
 
-    // A paragraph ending in an atomic inline too wide for its line: parley's
-    // empty line after it is broken away (#1050).
-    let narrow = doc.create_element("div");
-    doc.set_attribute(narrow, "class", "narrow");
-    let nt = doc.create_text("x ");
-    doc.append_child(narrow, nt);
-    let wide = doc.create_element("span");
-    doc.set_attribute(wide, "class", "chip");
-    let wt = doc.create_text("wide chip");
-    doc.append_child(wide, wt);
-    doc.append_child(narrow, wide);
-    doc.append_child(body, narrow);
+    // A paragraph ending in a forced break: parley's empty line after it is
+    // broken away (#1172).
+    let trailing_br = doc.create_element("div");
+    doc.set_inner_html(trailing_br, "x<br>");
+    doc.append_child(body, trailing_br);
 
     doc.resolve_layout(VP.0, VP.1);
     // A text edit: cache retains, and hits on the second measure.

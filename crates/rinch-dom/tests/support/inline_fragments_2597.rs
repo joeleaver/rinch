@@ -13,7 +13,7 @@
 
 #![allow(dead_code)]
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");

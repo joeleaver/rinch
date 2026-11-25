@@ -19,7 +19,7 @@
 //! width its line gives it (#1476), so the box is exactly as wide as the room
 //! it was given whenever that is under 544.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

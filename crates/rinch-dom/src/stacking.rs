@@ -950,7 +950,7 @@ impl<const BARS: bool> Collector<'_, BARS> {
             // the obvious symmetry with `descend` below says there should be — and
             // NOT because the correction would be dead code. This sequence is
             // shared with hit testing, whose own `descend`
-            // (`crates/rinch/src/app/hit_testing.rs`) adds the IFC offset itself
+            // (`crates/rinch/src/app/hit_testing/walk.rs`) adds the IFC offset itself
             // when it enters a node, so the entry's offset must stay the plain
             // border-box chain or every tap on a hoisted inline-block lands one
             // padding+border off (the offset double-added).

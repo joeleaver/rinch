@@ -2,7 +2,7 @@
 //! Chrome 153 (headless, bundled Inter as ProbeFace, 16px/20px,
 //! getBoundingClientRect). `GAPS` pin rinch's current answer where it is not
 //! Chrome's, with the reason.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

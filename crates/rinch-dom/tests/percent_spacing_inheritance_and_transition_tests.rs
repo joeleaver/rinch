@@ -3,8 +3,8 @@
 //! negative percentages; `em` units; and the pinned gap #1363 — percentage
 //! spacing does not follow an in-flight font-size transition.
 
-use rinch_core::dom::DomDocument;
 use rinch_core::dom::NodeId;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 fn el(doc: &mut RinchDocument, parent: NodeId, tag: &str, style: &str) -> NodeId {

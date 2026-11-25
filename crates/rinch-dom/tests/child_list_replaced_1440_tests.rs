@@ -9,7 +9,9 @@
 //! `rinch-core`; this file is the real backend, whose `set_inner_html` also
 //! **re-issues** the freed ids to the nodes it parses.
 
-use rinch_core::dom::{DomDocument, NodeHandle, NodeId, on_child_inserted, on_child_removed};
+use rinch_core::dom::{
+    DomContent, DomDocument, DomTree, NodeHandle, NodeId, on_child_inserted, on_child_removed,
+};
 use rinch_dom::RinchDocument;
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -37,7 +37,7 @@
 
 use peniko::kurbo::{Affine, Rect};
 use peniko::{Brush, Fill};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::{PaintShape, Painter};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
@@ -230,8 +230,8 @@ fn the_selected_row_does_not_cover_the_left_of_the_thumb() {
 ///
 /// The box ends at the scroller's right edge (140 + 60 = 200), under the bar.
 /// Past it, it would overflow the scroller since #770 — a browser scrolls to
-/// it — and add a horizontal bar that its in-flow twin (an in-flow grandchild
-/// overflowing its parent, which rinch does not count yet, #2054) does not.
+/// it — and add a horizontal bar, as its in-flow twin (an in-flow grandchild
+/// overflowing its parent) would since #2054.
 #[test]
 fn the_bar_is_drawn_over_a_contained_absolute() {
     let mk = |abs: bool| {

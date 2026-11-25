@@ -464,7 +464,7 @@ Findings marked **Differs from Chrome** are behaviour gaps, separate from whethe
   - *Chrome:* **`showModal()`** focuses the first `autofocus` descendant. Failing that it focuses the first focusable descendant, and failing that the dialog itself. Everything outside the dialog becomes inert. On close, focus goes back to the element that had it before `showModal()`.
   - *Chrome:* **`popover="auto"`** moves focus only to an `autofocus` descendant. It traps nothing. On hide, it restores focus to the previously focused element, but only if focus was inside the popover.
   - *Chrome:* So Chrome **does** decouple restore from containment: a popover restores focus without trapping it. rinch's Popover, with its default `trap_focus: false`, neither moves focus to an `autofocus` child nor restores it. That is a behaviour gap; see Popover below.
-  - *Chrome:* rinch's Modal/Drawer `FirstFocusable` skips the "prefer `autofocus`" step. Chrome: unsure whether rinch's `focus_into(FirstFocusable)` honours `autofocus` first. traits.rs:800 says FirstFocusable "falls back to the first stop", which suggests it does try autofocus first, so this probably matches.
+  - *Chrome:* rinch's Modal/Drawer `FirstFocusable` skips the "prefer `autofocus`" step. Chrome: unsure whether rinch's `focus_into(FirstFocusable)` honours `autofocus` first. `rinch-core/src/dom/traits/focus.rs` (`focus_into`) says FirstFocusable "falls back to the first stop", which suggests it does try autofocus first, so this probably matches.
   - Can the app change it? **Partially.** `trap_focus: false` turns off all three behaviours together. `autofocus` on a child picks the target only under `AutofocusOnly`.
   - Proposal: `return_focus: bool` (default true for Modal/Drawer/Popover, as Chrome does for both dialog and popover), `initial_focus: String` ("auto" = Chrome's dialog/popover rule for the component, "first", "none"), and optionally `initial_focus_fn: Option<Rc<dyn Fn() -> Option<NodeHandle>>>`.
   - Likelihood: **High**. "Focus the Cancel/primary button, not the first input", and "don't steal focus back to the opener after a destructive action" are common requests.
@@ -1994,7 +1994,7 @@ are left to the app, which has the seams it needs (`on_image_hover` + overlay;
 - **Differs from Chrome:** the caret is a fixed blue, where Chrome uses the
   text colour. **`crates/rinch-editor-view/src/view.rs:3527-3539`** — Caret
   colour `#1a73e8` inline (`background-color`, line 3535) and width
-  `CARET_WIDTH` = 2px (`crates/rinch-core/src/dom/traits.rs:136`) inline. The
+  `CARET_WIDTH` = 2px (`crates/rinch-core/src/dom/traits/types.rs`) inline. The
   same blue applies in `set_dark_mode(true)`.
   - *Chrome:* `caret-color: auto`, which is effectively `currentColor` (the
     text colour, so it follows dark themes for free). The app can set

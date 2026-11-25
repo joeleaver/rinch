@@ -3,7 +3,7 @@
 //! wave's shape and its `currentcolor` fallback (fixtures from the review of
 //! #836). Local pixel oracles on a software-painted frame; every text-measured
 //! fixture declares its `font-size` and `line-height`.
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 

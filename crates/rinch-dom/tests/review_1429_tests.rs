@@ -7,7 +7,7 @@
 //! had no test for.
 
 use rinch_core::NodeId;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_core::image::{ImageLoadResult, ImageLoader, register_image_scheme};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::{has_pending, reload_image};

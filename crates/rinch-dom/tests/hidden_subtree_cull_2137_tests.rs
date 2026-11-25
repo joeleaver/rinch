@@ -12,7 +12,7 @@
 
 use peniko::kurbo::{Affine, Stroke};
 use peniko::{Brush, Fill, FontData};
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::{BlendMode, PaintGlyph, PaintImage, PaintShape, Painter};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
@@ -568,7 +568,7 @@ const TRANSITION_CSS: &str = "
     .kid.on { visibility: visible; transition: visibility 100ms linear; }
     .panel { width: 200px; height: 60px; background: rgb(0, 120, 0); }
     .panel.shut { visibility: hidden; transition: visibility 0s linear 300ms; }
-    .fill { width: 50px; height: 20px; background: rgb(200, 0, 0); }
+    .fill { width: 50px; height: 10px; background: rgb(200, 0, 0); }
 ";
 
 fn tick(doc: &mut RinchDocument, at_ms: f64) {
@@ -628,6 +628,10 @@ fn a_tick_that_reveals_a_descendant_reaches_paint() {
 /// The overlay idiom (`Drawer`, `Popover`): closing holds the root `visible`
 /// for the 300ms delay, everything under it painted; the tick at the end hides
 /// it, and the next paint skips it all. Reopening shows it at once.
+///
+/// The fills (200px of them) overflow the 60px panel but stay inside the
+/// 240px viewport: a hidden box is still scrollable overflow, so past it
+/// the page would scroll to them and paint its bar (#2054), hidden or not.
 #[test]
 fn a_closing_overlay_paints_through_its_delay_and_is_skipped_after() {
     let (mut doc, body) = page();

@@ -37,7 +37,7 @@ impl RinchDocument {
         parsed: &crate::html_parser::ParsedNode,
     ) -> NodeId {
         use crate::html_parser::ParsedNode;
-        use rinch_core::dom::DomDocument;
+        use rinch_core::dom::{DomContent, DomTree};
 
         match parsed {
             ParsedNode::Element {

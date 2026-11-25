@@ -11,7 +11,7 @@
 //! The counts and timings of the 1000-child cases are in
 //! `perf_counter_baselines.rs`.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::perf::Counter::*;
 

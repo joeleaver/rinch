@@ -7,7 +7,7 @@
 //! identical button styles on each keystroke and restyled about a hundred
 //! nodes.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
 use std::sync::Arc;

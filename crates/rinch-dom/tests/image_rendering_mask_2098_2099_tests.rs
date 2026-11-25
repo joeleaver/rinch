@@ -8,7 +8,7 @@
 #![cfg(feature = "software-renderer")]
 
 use peniko::Brush;
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::DecodedImage;
 use rinch_dom::paint::skia_painter::TinySkiaPainter;

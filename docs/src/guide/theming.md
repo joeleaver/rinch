@@ -917,9 +917,6 @@ Where desktop still differs from a browser:
 - **A margin that collapses through a child's end** — the last child of a
   `height: auto` child carrying `margin-bottom` — is not counted; a browser
   counts it.
-- **An in-flow box that overflows its own parent** — a 300px child of a
-  `height: 50px` child — is not counted: a browser scrolls 200 to it, desktop
-  0 (#2054). An absolute box in the same place is.
 
 ### Why not `scrollbar-color` / `scrollbar-width`?
 

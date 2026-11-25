@@ -26,7 +26,7 @@
 //! | `<table><td><img width=300 height=150 align=center>` (cell) | 150 |
 //! | the same `<img>` without `align` (cell) | 154 |
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

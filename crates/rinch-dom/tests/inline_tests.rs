@@ -1,6 +1,6 @@
 //! Tests for CSS inline layout (IFC) in rinch-dom.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 // ============================================================

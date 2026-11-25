@@ -1095,7 +1095,7 @@ impl RinchApp {
 #[cfg(test)]
 mod tests {
     use super::RinchApp;
-    use rinch_core::dom::{DomDocument, NodeId};
+    use rinch_core::dom::{DomContent, DomTree, NodeId};
     use rinch_dom::RinchDocument;
 
     fn child_of(doc: &mut RinchDocument, parent: NodeId, tag: &str, style: &str) -> NodeId {

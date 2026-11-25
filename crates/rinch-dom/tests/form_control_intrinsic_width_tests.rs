@@ -32,7 +32,7 @@
 //! is below one half and the rounded one wherever it is at or above — Inter at
 //! 20px is 12.80, used as 13. The 20px fixtures sit on that branch.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

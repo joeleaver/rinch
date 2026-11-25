@@ -49,7 +49,7 @@
 //! 32px line-height, same 16px font-size: identical shift both times) — only
 //! with the parent's `font-size`, as the spec's wording implies.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::computed_style::{LengthPercentageValue, VerticalAlignValue};
 use rinch_dom::text_query::{caret_position_for_offset, glyph_bounds_for_offset};

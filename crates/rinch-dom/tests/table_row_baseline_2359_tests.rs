@@ -10,7 +10,7 @@
 //! table. A line's baseline is marked by a 4x10 inline-block standing on it,
 //! so a mark 10px above it; a 16/20 line puts its baseline 16 below its top.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

@@ -16,7 +16,7 @@ use rinch_components::SectionRenderer;
 use rinch_components::alert::Alert;
 use rinch_components::badge::Badge;
 use rinch_components::progress::Progress;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::DomTree;
 use rinch_core::dom::{NodeHandle, RenderScope, mock::MockDomDocument};
 use rinch_core::{Component, Signal};
 use rinch_macros::rsx;

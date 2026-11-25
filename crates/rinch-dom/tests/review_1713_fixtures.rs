@@ -1,6 +1,6 @@
 //! Review fixtures for PR #1713 (#1114): two bidi-line pieces the PR misses.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 
 const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

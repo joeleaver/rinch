@@ -13,7 +13,7 @@
 //! - #2362: a line starts after the rightmost left float it overlaps (and
 //!   ends before the leftmost right one), not in a gap a shorter float left
 //!   when it ended (CSS 2.2 §9.5).
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::DomTree;
 use rinch_dom::RinchDocument;
 
 const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

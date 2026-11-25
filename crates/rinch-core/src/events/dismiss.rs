@@ -808,7 +808,7 @@ mod tests {
     // ------------------------------------------------ key handlers (#434)
 
     use crate::dom::mock::MockDomDocument;
-    use crate::dom::{DomDocument, NodeHandle};
+    use crate::dom::{DomDocument, DomTree, NodeHandle};
     use crate::events::{KeyEventData, KeyEventKind, dispatch_keyboard_event};
 
     fn press(key: &str) -> KeyEventData {

@@ -22,7 +22,7 @@
 //! plus a pixel of break slack (#1869), a known difference of its own that
 //! `direction: rtl` shows as readily as `dir`.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::{get_node_summary, query_selector};
 
@@ -159,8 +159,7 @@ fn cases() -> Vec<Case> {
         // One direction for the whole element, every line of it: `isolate`,
         // not `plaintext`, whose second paragraph would be `ltr`. (Chrome makes a
         // `<pre>` or `<textarea>` with `dir=auto` `plaintext`, each paragraph
-        // its own; rinch's `plaintext` block takes one direction for all of
-        // them, a known difference of `plaintext` itself.)
+        // its own: `plaintext_paragraphs_2940_tests.rs`.)
         (
             "dir_auto_after_a_br",
             format!("<div dir=auto>{a}<br><span class=t>abc</span></div>"),

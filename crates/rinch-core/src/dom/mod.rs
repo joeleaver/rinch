@@ -313,7 +313,7 @@ impl std::fmt::Debug for NodeId {
 /// Whether writing or removing the attribute `name` on the **focused** element
 /// can make a browser blur it inside the write (issue #1478): `hidden`,
 /// `tabindex` and `contenteditable`, ASCII case-insensitively. See
-/// [`DomDocument::before_attribute_write`], the only thing this gates.
+/// [`DomFocus::before_attribute_write`], the only thing this gates.
 pub fn is_focus_revoking_attribute(name: &str) -> bool {
     // Three lengths no other common attribute name shares, so the hot path
     // (`class`, `style`, `data-rid`) is one length compare.
@@ -327,7 +327,7 @@ pub fn is_focus_revoking_attribute(name: &str) -> bool {
 
 /// Run what the backend wants done before an attribute write that may cost
 /// the focused element its focus, with the document **not** borrowed
-/// ([`DomDocument::before_attribute_write`]).
+/// ([`DomFocus::before_attribute_write`]).
 fn before_attribute_write(
     doc: &Rc<RefCell<dyn DomDocument>>,
     node: NodeId,
@@ -351,7 +351,7 @@ const FOCUS_RELEASE_ROUNDS: usize = 4;
 
 /// Run whatever the backend wants done before a mutation takes `node` (or,
 /// with `children_only`, what is under it) out of place, with the document
-/// **not** borrowed ([`DomDocument::release_focus_within`], issue #1478).
+/// **not** borrowed ([`DomFocus::release_focus_within`], issue #1478).
 ///
 /// On the web that is a `blur()` of the focused element inside the part that
 /// goes: the browser would otherwise run its focus listeners inside the DOM
@@ -397,7 +397,7 @@ fn release_focus_within(
 /// Whether putting `child` under `parent` displaces the focus inside `child`:
 /// the backend will carry the insertion out ([`can_take`]) and does not make
 /// it as a move in place, which keeps the focus where it is and dispatches
-/// nothing ([`DomDocument::moves_keeping_focus`]: the web's `moveBefore`,
+/// nothing ([`DomFocus::moves_keeping_focus`]: the web's `moveBefore`,
 /// issue #1483).
 fn moves_in(doc: &dyn DomDocument, parent: NodeId, child: NodeId) -> bool {
     can_take(doc, parent, child) && !doc.moves_keeping_focus(parent, child)
@@ -480,7 +480,7 @@ impl NodeHandle {
     }
 
     /// Whether this node is in its document's tree: its parent chain reaches
-    /// the root ([`DomDocument::is_connected`]). `false` once the document is
+    /// the root ([`DomTree::is_connected`]). `false` once the document is
     /// gone. Runs no pending effects, unlike the accessors that read the
     /// document for an operation.
     ///
@@ -498,7 +498,7 @@ impl NodeHandle {
 
     /// Whether the document has let go of this node: it was
     /// [`discard`](Self::discard)ed, alone or under an ancestor
-    /// ([`DomDocument::is_retired`]). `false` once the document is gone, and on
+    /// ([`DomTree::is_retired`]). `false` once the document is gone, and on
     /// a backend whose discard reclaims nothing, where a discarded node is
     /// only detached.
     ///
@@ -511,7 +511,7 @@ impl NodeHandle {
             .is_some_and(|doc| doc.borrow().is_retired(self.node_id))
     }
 
-    /// This node's document identity (see [`DomDocument::doc_key`]), or `0` if
+    /// This node's document identity (see [`DomTree::doc_key`]), or `0` if
     /// the document is already gone.
     ///
     /// Node ids are per-document slab indices, so anything that keys a registry
@@ -649,7 +649,7 @@ impl NodeHandle {
     }
 
     /// Give this element a fresh backing element under the same handle
-    /// ([`DomDocument::renew_element`]): on the web, a new `<canvas>` for one
+    /// ([`DomTree::renew_element`]): on the web, a new `<canvas>` for one
     /// whose context kind is spent (#1768). Whether the backend did.
     #[doc(hidden)]
     pub fn renew_element(&self) -> bool {
@@ -658,7 +658,7 @@ impl NodeHandle {
     }
 
     /// This element's border-box size as laid out, before a CSS transform on
-    /// it or an ancestor scales it ([`DomDocument::layout_size`]); compare
+    /// it or an ancestor scales it ([`DomLayout::layout_size`]); compare
     /// [`Self::bounding_rect`], the painted box. `None` without a layout.
     pub fn layout_size(&self) -> Option<(f32, f32)> {
         self.accessed_doc()
@@ -666,7 +666,7 @@ impl NodeHandle {
     }
 
     /// Every attribute of this element as (name, value) pairs, in no promised
-    /// order ([`DomDocument::attribute_list`]). Empty for a text node, a node
+    /// order ([`DomContent::attribute_list`]). Empty for a text node, a node
     /// that is gone, or a host that cannot list them.
     pub fn attributes(&self) -> Vec<(String, String)> {
         self.accessed_doc()
@@ -681,7 +681,7 @@ impl NodeHandle {
     ///
     /// Use it, not `get_attribute("value")`, whenever the question is "what
     /// does the field say?": the two agree on desktop and part ways in a
-    /// browser as soon as the user types. See [`DomDocument::live_value`] for
+    /// browser as soon as the user types. See [`DomContent::live_value`] for
     /// each backend's answer and what `None` means.
     pub fn live_value(&self) -> Option<String> {
         let doc = self.accessed_doc()?;
@@ -814,7 +814,7 @@ impl NodeHandle {
     ///
     /// When you are finished with the subtree for good, call
     /// [`discard`](Self::discard) instead, which releases it now. See
-    /// [`DomDocument::remove_node`] and [`DomDocument::discard_node`] for what
+    /// [`DomTree::remove_node`] and [`DomTree::discard_node`] for what
     /// each backend reclaims.
     pub fn remove(&self) {
         let vacated = late_child::vacated_parent(self);
@@ -837,7 +837,7 @@ impl NodeHandle {
     /// making every operation on it a silent no-op: `rinch-dom` frees its slab
     /// slots and Taffy nodes (issue #723), `rinch-web` drops it from its node
     /// maps, and `MockDomDocument` forgets it. See
-    /// [`DomDocument::discard_node`] for the full contract.
+    /// [`DomTree::discard_node`] for the full contract.
     pub fn discard(&self) {
         // Before the backend lets go: a discarded id may be handed to the next
         // node the document mints, and an observer left behind under it would
@@ -884,7 +884,7 @@ impl NodeHandle {
     }
 
     /// Run a focus-moving backend call, then whatever it left to run once the
-    /// document is no longer borrowed ([`DomDocument::take_after_borrow`]).
+    /// document is no longer borrowed ([`DomFocus::take_after_borrow`]).
     ///
     /// A browser runs its focus listeners synchronously inside `focus()`, and
     /// those listeners touch the document; run under the borrow, they panic.
@@ -920,7 +920,7 @@ impl NodeHandle {
     /// input.set_selection_range(0, name.encode_utf16().count(), SelectionDirection::Forward);
     /// ```
     ///
-    /// See [`DomDocument::set_selection_range`] for the backend contract.
+    /// See [`DomFocus::set_selection_range`] for the backend contract.
     pub fn set_selection_range(&self, start: usize, end: usize, direction: SelectionDirection) {
         if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut()
@@ -936,7 +936,7 @@ impl NodeHandle {
     /// as well as after.
     ///
     /// `None` for a node that is not an `<input>`/`<textarea>`, or before this
-    /// handle is mounted. See [`DomDocument::text_selection_range`].
+    /// handle is mounted. See [`DomFocus::text_selection_range`].
     pub fn selection_range(&self) -> Option<(usize, usize, SelectionDirection)> {
         let doc = self.accessed_doc()?;
         doc.borrow().text_selection_range(self.node_id)
@@ -951,7 +951,7 @@ impl NodeHandle {
     /// Ask after layout — from an effect, a timer, or a key handler for a
     /// caret that the key did not move — since the desktop answer is the
     /// layout the field was last painted with. See
-    /// [`DomDocument::text_caret_rect`].
+    /// [`DomFocus::text_caret_rect`].
     pub fn caret_rect(&self) -> Option<crate::reactive::ElementBounds> {
         let doc = self.accessed_doc()?;
         doc.borrow_mut().text_caret_rect(self.node_id, None)
@@ -972,7 +972,7 @@ impl NodeHandle {
     /// SelectionDirection::Forward)`, and subject to the same "applied now or
     /// stashed for the next focus" rule.
     ///
-    /// See [`DomDocument::select_text`] for the backend contract.
+    /// See [`DomFocus::select_text`] for the backend contract.
     pub fn select(&self) {
         if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().select_text(self.node_id);
@@ -989,7 +989,7 @@ impl NodeHandle {
     ///
     /// `None` means *unknown or outside this document*, not *nothing is
     /// focused*: on the web an element rinch did not create (and so carries no
-    /// `__nid`) cannot be named here. See [`DomDocument::active_element`].
+    /// `__nid`) cannot be named here. See [`DomFocus::active_element`].
     pub fn active_element(&self) -> Option<NodeHandle> {
         let doc = self.accessed_doc()?;
         let id = doc.borrow().active_element()?;
@@ -998,7 +998,7 @@ impl NodeHandle {
 
     /// Whether this node is on screen as far as CSS is concerned — connected,
     /// no `display: none` on it or an ancestor, and not `visibility: hidden` /
-    /// `collapse`. See [`DomDocument::is_rendered`]; `false` once the document
+    /// `collapse`. See [`DomFocus::is_rendered`]; `false` once the document
     /// is gone.
     pub fn is_rendered(&self) -> bool {
         match self.accessed_doc() {
@@ -1011,7 +1011,7 @@ impl NodeHandle {
     /// does (issue #695): the `autofocus` descendant if there is one, else —
     /// under [`FocusIntoPolicy::FirstFocusable`] — the first focusable one.
     ///
-    /// See [`DomDocument::focus_into`], including why desktop applies it after
+    /// See [`DomFocus::focus_into`], including why desktop applies it after
     /// the next layout rather than immediately.
     pub fn focus_into(&self, policy: FocusIntoPolicy) {
         self.focus_op(|doc, id| doc.focus_into(id, policy));
@@ -1021,7 +1021,7 @@ impl NodeHandle {
     /// (issue #695) — with **this node as the closing overlay's root**.
     ///
     /// The backend decides which, because neither answer is knowable at the
-    /// moment an effect calls this: see [`DomDocument::restore_focus`] for the
+    /// moment an effect calls this: see [`DomFocus::restore_focus`] for the
     /// three questions and why a `blur()` verb would not have been enough.
     pub fn restore_focus(&self, opener: Option<&NodeHandle>) {
         let opener = opener.map(|o| o.node_id);
@@ -1035,7 +1035,7 @@ impl NodeHandle {
     /// opens and again when it closes or unmounts. The node matters: desktop
     /// keeps this subtree scrollable while rejecting a gesture anywhere else, so
     /// the dialog's own `overflow: auto` body still works. See
-    /// [`DomDocument::set_scroll_locked`] for what each backend does and why the
+    /// [`DomScroll::set_scroll_locked`] for what each backend does and why the
     /// count is the backend's job.
     ///
     /// Every lock must be paired with an unlock. Do **not** reach for
@@ -1178,7 +1178,7 @@ impl NodeHandle {
     }
 
     /// Paint this positioned box as a highlight of `owner`'s content: over its
-    /// backgrounds, under its text ([`DomDocument::set_highlight_owner`],
+    /// backgrounds, under its text ([`DomContent::set_highlight_owner`],
     /// #2666). `None` returns it to its own place in the stacking order.
     pub fn set_highlight_owner(&self, owner: Option<NodeId>) {
         if let Some(doc) = self.accessed_doc() {
@@ -1187,7 +1187,7 @@ impl NodeHandle {
     }
 
     /// Name the text this highlight box covers, for a host that paints the
-    /// highlight on the text itself ([`DomDocument::set_highlight_text`],
+    /// highlight on the text itself ([`DomContent::set_highlight_text`],
     /// #2667). `None`: it covers no text. Whether the host paints it there.
     pub fn set_highlight_text(&self, text: Option<HighlightText<'_>>) -> bool {
         self.accessed_doc()
@@ -1363,9 +1363,8 @@ impl NodeHandle {
     /// client_width()` is the scroll range on both: its answer is the
     /// browser's less the box's padding, and a box holding less than its
     /// size answers what it holds where the browser answers at least
-    /// `clientWidth`. A box that does not scroll counts every descendant that
-    /// overflows it (#2223); a scroll container's range does not yet count an
-    /// in-flow box overflowing its own parent below the first box (#2054).
+    /// `clientWidth`. Every descendant that overflows the box counts, as in
+    /// the browser (#2223; in a scroll container's range since #2054).
     pub fn scroll_width(&self) -> f64 {
         self.accessed_doc()
             .map(|doc| doc.borrow().scroll_width(self.node_id))
@@ -1403,7 +1402,7 @@ impl NodeHandle {
     /// whose nodes hold lists) asks it of each element from
     /// [`WheelEvent::target`](crate::events::WheelEvent::target) up to its
     /// own, and declines the wheel when one can move, so that scroller
-    /// scrolls — the browser's scroll chaining. See [`DomDocument::can_scroll_toward`].
+    /// scrolls — the browser's scroll chaining. See [`DomScroll::can_scroll_toward`].
     pub fn can_scroll_toward(&self, dx: f64, dy: f64) -> bool {
         self.accessed_doc()
             .is_some_and(|doc| doc.borrow().can_scroll_toward(self.node_id, dx, dy))
@@ -1624,7 +1623,7 @@ impl NodeHandle {
     }
 
     /// Whether this node's document has changes its geometry does not show
-    /// yet ([`DomDocument::layout_pending`]): when `true`, what
+    /// yet ([`DomLayout::layout_pending`]): when `true`, what
     /// [`Self::bounding_rect`] answers is the box before those changes. The
     /// browser lays out on demand and always answers `false`.
     pub fn layout_pending(&self) -> bool {
@@ -2658,7 +2657,7 @@ mod tests {
     }
 
     /// `NodeHandle::select()`/`set_selection_range()` route to the backend's
-    /// `DomDocument::select_text`/`set_selection_range` with this handle's own
+    /// `DomFocus::select_text`/`set_selection_range` with this handle's own
     /// node id (issue #552) — the same shape `focus()` already has. A mutant
     /// passing the *parent* node's id instead of `self.node_id` would still
     /// pass a test that only checks "a selection was recorded", so this one

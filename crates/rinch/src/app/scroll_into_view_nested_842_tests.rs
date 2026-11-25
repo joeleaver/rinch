@@ -367,3 +367,37 @@ fn the_page_brings_the_part_of_the_target_its_scroller_shows() {
     assert_eq!(r.scroll("s1"), (0.0, 400.0), "Chrome: s1 (0, 400)");
     assert_eq!(r.scroll("page"), (0.0, 500.0), "Chrome: page (0, 500)");
 }
+
+/// A target in a box that overflows its own `height: 50px` parent inside a
+/// 200x100 scroller (#2054): the scroller's range now reaches it, so the
+/// scroll is Chrome's, not clamped to the 0 range the scroller had when its
+/// range stopped at its child.
+///
+/// ```html
+/// <div id=root style="width:600px;height:400px">
+///  <div id=s style="width:200px;height:100px;overflow:auto">
+///   <div style="height:50px"><div style="height:300px;padding-top:260px">
+///    <div id=t style="width:40px;height:30px"></div></div></div></div></div>
+/// ```
+#[test]
+fn a_target_overflowing_its_parent_is_scrolled_to() {
+    let mut r = Rig::new(N(
+        "root",
+        "width: 600px; height: 400px",
+        vec![N(
+            "s",
+            "width: 200px; height: 100px; overflow: auto",
+            vec![N(
+                "",
+                "height: 50px",
+                vec![N(
+                    "",
+                    "height: 300px; padding-top: 260px; box-sizing: border-box",
+                    vec![target()],
+                )],
+            )],
+        )],
+    ));
+    r.request(None);
+    assert_eq!(r.scroll("s"), (0.0, 190.0), "Chrome: s (0, 190)");
+}

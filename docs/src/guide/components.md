@@ -9,7 +9,7 @@ rinch = { workspace = true, features = ["desktop", "components", "theme"] }
 
 > **Note:** The workspace dependency uses `default-features = false`, so features must be listed explicitly:
 > - `"desktop"` — enables `run()`, window management, and the software renderer (tiny-skia)
-> - `"gpu"` — (optional) adds GPU rendering via Vello/wgpu beside the software renderer, chosen at run time
+> - `"gpu"` — adds GPU rendering via Vello/wgpu beside the software renderer, chosen at run time (a default feature of `rinch`, so a git or crates.io dependency has it unless it sets `default-features = false`; the workspace dependency does, so name it here)
 > - `"components"` — enables the component library (Button, TextInput, Stack, etc.)
 > - `"theme"` — enables automatic theme CSS loading and CSS variables
 
@@ -187,8 +187,19 @@ PasswordInput {
 // ColorInput all take it; ColorInput defaults to "off", since its picker
 // opens where the browser's list would.
 TextInput { label: "Username", autocomplete: "username" }
-PasswordInput { label: "Password", autocomplete: "current-password" }
-TextInput { label: "Code", autocomplete: "one-time-code" }
+PasswordInput {
+    label: "Password",
+    autocomplete: "current-password",
+    // Enter submits, as in a TextInput (#3048).
+    onsubmit: move || sign_in(),
+}
+
+// `inputmode` picks the on-screen keyboard on a phone (#3048): "numeric"
+// brings up a digit pad. Empty (the default) writes no attribute, the
+// browser's default; the same five components take it. On desktop it is
+// kept on the element and changes nothing.
+TextInput { label: "Code", autocomplete: "one-time-code", inputmode: "numeric" }
+TextInput { label: "Phone", inputmode: "tel" }
 
 // NumberInput — uncontrolled: the component owns the number, so the
 // +/- steppers step, clamp to [min, max] and format it themselves,

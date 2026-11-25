@@ -2,7 +2,7 @@
 //! the node's BORDER box, for an IFC root and for a flex container whose
 //! text is a measured leaf. Asymmetric padding/border, off the fixed point.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomLayout, DomTree};
 use rinch_dom::RinchDocument;
 
 const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");

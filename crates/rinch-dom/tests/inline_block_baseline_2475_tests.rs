@@ -18,7 +18,7 @@
 //! block. `k` is a one-line inline-block before the box: its top is the
 //! line's baseline less 16.
 
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::testing::query_selector;
 

@@ -218,7 +218,7 @@ impl RinchDocument {
         }
 
         // Create a wrapper span element for the pseudo-element
-        use rinch_core::dom::DomDocument;
+        use rinch_core::dom::DomTree;
         let span_id = self.create_element("span");
 
         // Append a text child only when there is text to show it — an empty
@@ -227,7 +227,7 @@ impl RinchDocument {
         if !text.is_empty() {
             let text_node_id = self.create_text(&text);
             // Append the text node to the span (using raw tree manipulation
-            // to avoid triggering style recomputation via DomDocument::append_child)
+            // to avoid triggering style recomputation via DomTree::append_child)
             let span_raw = span_id.0;
             let text_raw = text_node_id.0;
             self.tree.nodes[text_raw].parent = Some(span_raw);
@@ -315,7 +315,7 @@ impl RinchDocument {
         text: &str,
         layout_parent_is_flex_or_grid: bool,
     ) -> bool {
-        use rinch_core::dom::DomDocument;
+        use rinch_core::dom::DomTree;
 
         self.tree.nodes[span_raw]
             .is_flex_or_grid_item
@@ -675,7 +675,7 @@ impl RinchDocument {
         // it inherit its font and colour from the item whatever a universal
         // rule says. The attribute is what the UA sheet keys the marker's own
         // rules on (#1356).
-        use rinch_core::dom::DomDocument;
+        use rinch_core::dom::{DomContent, DomTree};
         let span_id = self.create_element("rinch-marker");
         self.set_attribute(
             span_id,

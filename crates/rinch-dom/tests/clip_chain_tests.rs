@@ -37,7 +37,7 @@
 //! provide (`reference_visual_regression_gap`).
 
 use peniko::Brush;
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 use rinch_dom::node::RawNodeId;
 use rinch_dom::stacking::{PaintOrder, stacking_paint_order};
@@ -904,7 +904,7 @@ mod painted {
     /// root's own untransformed space and paint pushes it under
     /// `node_transform` with no per-clip composition. The module docs assert
     /// that; this measures it. Its twin in
-    /// `rinch/src/app/hit_testing.rs`
+    /// `rinch/src/app/hit_testing/tests/positioned.rs`
     /// (`a_tap_on_a_chained_box_under_a_transform_lands_where_it_paints`) reads
     /// the same fixture from the input side, and the two are the only thing
     /// standing between the chain and a probe point taken in the wrong space.

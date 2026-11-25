@@ -490,7 +490,7 @@ fn block_children_of(doc: &RinchDocument, ce_node_id: u64, filter_blocks: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     /// Build a new-editor-like host: a `data-pm-editor` scroll container with `n`
     /// `<p data-pm-type="paragraph">` blocks (each wrapping to ~2 lines in a narrow
@@ -561,6 +561,7 @@ mod tests {
             "expected a multi-line block (>30px), got {full_h}"
         );
         let caret_h = doc.tree.nodes[caret].layout.height;
+        let range = rinch_dom::paint::scrollbar::content_extents(&doc.tree, container);
 
         // This is exactly what the driver does on first run for a scroll editor.
         let vw = CeVirtualWindow::new_filtered(container, container, &mut doc, true);
@@ -588,6 +589,14 @@ mod tests {
             "the caret overlay must not get an estimated height"
         );
         assert!((doc.tree.nodes[caret].layout.height - caret_h).abs() < 0.5);
+        // The scroll range is the one the measured blocks gave: a collapsed
+        // block's estimate stands for its content, which the range's walk
+        // of the boxes overflowing their parents (#2054) does not enter.
+        let collapsed = rinch_dom::paint::scrollbar::content_extents(&doc.tree, container);
+        assert!(
+            (collapsed.1 - range.1).abs() < 1.0 && (collapsed.0 - range.0).abs() < 1.0,
+            "range {collapsed:?}, measured {range:?}"
+        );
     }
 
     /// An editor that does not scroll, inside a scroller that does: the

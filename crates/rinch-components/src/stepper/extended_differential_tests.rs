@@ -6,7 +6,7 @@
 //! step nodes handed to a new render with different props.
 use super::*;
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::traits::DomDocument;
+use rinch_core::dom::traits::{DomDocument, DomTree};
 use std::cell::RefCell;
 
 const ATTRS: &[&str] = &[

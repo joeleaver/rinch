@@ -165,6 +165,12 @@ impl Tooltip {
 
         let font_family = crate::fonts::parley_text_family(font_cx, &family, text);
         let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+        // One direction for all its lines, from its first strong character
+        // (parley's `Auto` would give each line its own, #2940).
+        builder.set_base_direction(match crate::legacy_hints::first_strong_is_rtl(text) {
+            Some(true) => parley::BaseDirection::Rtl,
+            _ => parley::BaseDirection::Ltr,
+        });
         builder.push_default(parley::style::StyleProperty::FontSize(TOOLTIP_FONT_SIZE));
         builder.push_default(parley::style::StyleProperty::LineHeight(
             parley::style::LineHeight::FontSizeRelative(TOOLTIP_LINE_HEIGHT),

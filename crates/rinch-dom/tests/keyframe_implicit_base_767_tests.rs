@@ -42,7 +42,7 @@
 //! Every width/height fixture reads the **laid-out** box, not only the
 //! computed style: the frame has to reach Taffy.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 use rinch_dom::animation::AnimationResult;
 use rinch_dom::transition::{AnimatableValue, TransitionProperty};

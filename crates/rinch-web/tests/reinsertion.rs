@@ -8,7 +8,7 @@
 //! ```
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{DomDocument, DomTree, NodeHandle, RenderScope};
 use rinch_core::{Signal, show_dom};
 use rinch_web::web_document::WebDocument;
 use std::cell::RefCell;

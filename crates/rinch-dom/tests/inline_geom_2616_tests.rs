@@ -11,7 +11,7 @@
 #[path = "support/inline_geom_2616.rs"]
 mod scene;
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomLayout, NodeId};
 use rinch_dom::testing::query_selector;
 
 fn node(doc: &rinch_dom::RinchDocument, id: &str) -> NodeId {

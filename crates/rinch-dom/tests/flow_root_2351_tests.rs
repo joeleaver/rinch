@@ -9,7 +9,7 @@
 //! boxes after it.
 //!
 //! Every box here is sized, so no number depends on the host's fonts.
-use rinch_core::dom::DomDocument;
+use rinch_core::dom::{DomContent, DomTree};
 use rinch_dom::RinchDocument;
 
 const CSS: &str = "body { margin: 0; font-family: sans-serif; font-size: 16px; line-height: 20px; } \

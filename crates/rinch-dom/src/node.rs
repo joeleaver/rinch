@@ -292,6 +292,9 @@ pub struct TextMeasure {
     pub line_break: crate::computed_style::LineBreakValue,
     /// The parent's `hyphens: none` (#2621).
     pub hyphens_none: bool,
+    /// The base direction the leaf is laid out in: the parent's
+    /// ([`crate::computed_style::ComputedStyle::base_direction`], #2940).
+    pub base_direction: parley::BaseDirection,
     /// The parent's `text-indent` (#2628): the text is a flex or grid
     /// container's own, an anonymous item whose first line it indents.
     pub text_indent: crate::computed_style::TextIndentValue,
@@ -786,7 +789,7 @@ pub struct InlineLayout {
     /// `unicode-bidi` put around its content (#2588), ascending: `(start,
     /// end, closing)`, `closing` for the PDF/PDI after the content. No text
     /// node owns them; a caller counting the DOM's or a model's text steps
-    /// over them (`DomDocument::generated_flat_ranges`).
+    /// over them (`DomLayout::generated_flat_ranges`).
     pub bidi_control_ranges: Vec<(usize, usize, bool)>,
     /// The colour the root's own style gave the layout
     /// (`crate::ifc::root_text_color` at the build): what text no range
@@ -991,6 +994,27 @@ impl InlineLayout {
             return None;
         }
         self.layout.get(n - 1)
+    }
+
+    /// How far the relative inline elements of these lines move what they
+    /// draw, `[left, up, right, down]` in CSS px, each `<= 0` on the left and
+    /// up sides and `>= 0` on the right and down ones: the sum of each
+    /// direction's offsets over [`Self::relative_spans`]. Nested relative
+    /// elements compose (`text_query::unmoved_point` adds every offset
+    /// around a byte), so no byte is drawn moved further than this. A
+    /// rectangle holding the lines as laid out, grown by it, holds them as
+    /// drawn: hit testing's flow extent (#3056) and
+    /// `paint::inline_box_reach` read it.
+    pub fn relative_reach(&self) -> [f64; 4] {
+        let mut d = [0.0f64; 4];
+        for span in &self.relative_spans {
+            let (dx, dy) = (span.dx as f64, span.dy as f64);
+            d[0] += dx.min(0.0);
+            d[1] += dy.min(0.0);
+            d[2] += dx.max(0.0);
+            d[3] += dy.max(0.0);
+        }
+        d
     }
 
     /// Where the lines reach horizontally, `[x0, x1]` in CSS px from the
@@ -1598,7 +1622,7 @@ pub struct Node {
     /// attribute name (review of #1706: the lookup cost a hover frame 3.6%).
     text_sel: bool,
     /// The node whose content this positioned box highlights
-    /// ([`rinch_core::dom::DomDocument::set_highlight_owner`], #2666): paint
+    /// ([`rinch_core::dom::DomContent::set_highlight_owner`], #2666): paint
     /// draws it as part of that node's paint, over its backgrounds and under
     /// its text, rather than in its own place in the stacking order.
     pub(crate) highlight_owner: Option<RawNodeId>,
@@ -2164,7 +2188,7 @@ pub struct Node {
     /// keep the rule node with the old insets.
     pub inline_style_unmatched: Cell<bool>,
     /// The document's style sheets stop at this node (#2357,
-    /// `DomDocument::isolate_styles`): its descendants answer `false` to
+    /// `DomContent::isolate_styles`): its descendants answer `false` to
     /// Stylo's `TElement::matches_user_and_content_rules`, so they match
     /// only user-agent rules, presentational hints and their `style`
     /// attribute — Stylo's own gate for native anonymous content, the same
@@ -2457,7 +2481,7 @@ impl Node {
     }
 
     /// The node whose content this box is painted as a highlight of, if any
-    /// (#2666, [`rinch_core::dom::DomDocument::set_highlight_owner`]).
+    /// (#2666, [`rinch_core::dom::DomContent::set_highlight_owner`]).
     #[inline]
     pub fn highlight_owner(&self) -> Option<RawNodeId> {
         self.highlight_owner
@@ -3501,6 +3525,25 @@ impl Node {
         InlineFlowRole::InFlowBlock
     }
 
+    /// This node's parent in the **box tree**
+    /// ([`RinchDocument::box_tree_parent`](crate::RinchDocument::box_tree_parent),
+    /// which reads it from the slab), for a caller holding the node.
+    pub fn box_tree_parent(&self) -> Option<RawNodeId> {
+        // A hoisted out-of-flow box is held by its host's lists, not its DOM
+        // parent's (#591): its `layout` is relative to the host, so every
+        // coordinate sum steps there. `Node::hoisted_out_of_flow_to`.
+        if let Some(host) = self.hoisted_out_of_flow_to {
+            return Some(host);
+        }
+        if let Some(b) = self.run_box {
+            return Some(b);
+        }
+        // A box needs no arm of its own: it keeps a real `parent` edge to its
+        // container (it is simply absent from that container's `children`), so
+        // the ordinary answer is already right.
+        self.parent
+    }
+
     /// Whether this is a `display: inline` element **broken around** in-flow
     /// block-level content — CSS 2.1 §9.2.1.1's block-in-inline, #513.
     ///
@@ -3964,6 +4007,11 @@ pub struct NodeTree {
     /// current geometry (#2116): `content_extents`' memo of the one walk that
     /// reads Taffy's unrounded rects. Boxed for the reason above.
     pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
+    /// Each scroll container's descendants' overflow below its first boxes
+    /// (#2054), kept until something it read under it changes: `content_extents`' memo
+    /// of the walk through every box that does not clip. Boxed for the
+    /// reason above.
+    pub(crate) deep_overflow: Box<crate::paint::scrollbar::DeepOverflow>,
     /// Each inline element's own font's ascent and descent, by font
     /// (`out_of_flow::InlineFontBoxes`, #2257): filled when an IFC is
     /// shaped, for every inline element it flows, so an inline element's
@@ -4038,14 +4086,14 @@ pub struct NodeTree {
     /// The container of the rich-text editor holding the keyboard, when one
     /// does (issue #1126). Kept by the runtime's focus arbiter; an editor takes
     /// no CSS `:focus`, so it is not [`Self::focused_node`]. What
-    /// `DomDocument::active_element` answers for it, so an overlay opened from
+    /// `DomFocus::active_element` answers for it, so an overlay opened from
     /// an editor remembers the editor as its opener.
     pub keyboard_editor: Option<RawNodeId>,
     /// Currently active (mouse-pressed) node ID (for CSS :active).
     pub active_node: Option<RawNodeId>,
     /// The roots of every overlay currently holding a **scroll lock** (#474) —
     /// `Modal`/`Drawer`'s `lock_scroll`, arriving through
-    /// [`DomDocument::set_scroll_locked`](rinch_core::dom::DomDocument::set_scroll_locked).
+    /// [`DomScroll::set_scroll_locked`](rinch_core::dom::DomScroll::set_scroll_locked).
     ///
     /// A `Vec` rather than a flag or a count because it has to answer two
     /// questions at once: *is* the page locked (non-empty), and *which* subtrees
@@ -4118,7 +4166,7 @@ pub struct NodeTree {
     /// The selection each text control had when it last lost the keyboard,
     /// or the one stashed for its next focus — `(start, end, direction)` in
     /// UTF-16 code units, written by the desktop runtime — so
-    /// `DomDocument::text_selection_range` answers for an unfocused control as
+    /// `DomFocus::text_selection_range` answers for an unfocused control as
     /// a browser does (issue #1678). Dropped with the node.
     pub text_selections: HashMap<RawNodeId, (usize, usize, rinch_core::dom::SelectionDirection)>,
     /// How many live nodes have [`Node::style_isolated`] set (#2357). While
@@ -4749,6 +4797,7 @@ impl NodeTree {
             placed_absolutes: Vec::new(),
             overflow_absolutes: Default::default(),
             exact_flow: Default::default(),
+            deep_overflow: Default::default(),
             inline_font_boxes: Default::default(),
             layout_epoch: 0,
             scroll_epoch: 0,
@@ -5281,6 +5330,9 @@ impl NodeTree {
         // before the lists they are read from are drained (#2719): every
         // shell path drains them before it paints.
         crate::paint::raster_cache::invalidate(self);
+        // The descendant walks the moves since the last paint made stale
+        // (#2054), while the lists that name them are still here.
+        self.deep_overflow.before_paint_consumed(self);
         // The containers whose bars this paint may have moved, asked before
         // the painted boxes below are rewritten (`bar_watch_scrollers` reads
         // `prev_layout`), and their bars recorded after.
@@ -5418,6 +5470,7 @@ impl NodeTree {
         }
         self.bar_check_parents.clear();
         self.whole_document_damaged = false;
+        self.deep_overflow.after_paint_consumed();
     }
 
     /// Bring [`PaintedState::subtree_reach`] level with the paint that
@@ -5581,6 +5634,9 @@ impl NodeTree {
         // Collect all descendant IDs first
         let mut to_remove = Vec::new();
         self.collect_descendants(id, &mut to_remove);
+        // The scroll ranges' kept walks forget the freed boxes, and the
+        // walks of the freed scroll containers (#2054).
+        self.deep_overflow.forget_freed(&to_remove);
         for node_id in &to_remove {
             self.active_transitions.remove(node_id);
             self.active_animations.remove(node_id);

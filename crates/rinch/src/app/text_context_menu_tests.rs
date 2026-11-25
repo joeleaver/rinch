@@ -1791,8 +1791,9 @@ mod unadopted_write {
 /// frames that differ only in `data-cursor-visible`, diffed. (The review's
 /// `k1`/`k2`.)
 ///
-/// `software_shell` only, like every `build_pixels` oracle: `--workspace`
-/// unifies `rinch/gpu` on, so these run in CI's `-p rinch --features …` step.
+/// Gated on `software_shell`, like every `build_pixels` oracle; which every `windowing` build sets, with the GPU
+/// renderer or without it (`build.rs`), so these run under `cargo test
+/// --workspace` and in CI's software-only `feature-gated` lines alike.
 #[cfg(software_shell)]
 mod anchor_against_paint {
     use super::*;

@@ -2,7 +2,7 @@
 //!
 //! rinch-dom lays a preserved tab out as one space widened to its tab stop
 //! (#1122), so a tab is one byte of the flat offsets its text queries take
-//! and its pointer hit answers (`DomDocument::tab_flat_bytes`), as it is in
+//! and its pointer hit answers (`DomLayout::tab_flat_bytes`), as it is in
 //! the model. (It was four spaces, four bytes, until then; #1109 taught the
 //! caret map to count them.)
 //!

@@ -824,8 +824,7 @@ pub struct HangStats {
     /// or to undo a hung NBSP (`unglue`).
     pub lines: u32,
     /// Extra breaks of the whole paragraph to drop parley's empty line after
-    /// an overflowing last inline box (#1050) or a final forced break
-    /// (#1172): 0 or 1.
+    /// a final forced break (#1172): 0 or 1.
     pub phantom_rebreaks: u32,
     /// Breaks of one line `unglue` made to move a break parley put after
     /// a hung NBSP (#1218): a few per such line, logarithmic in the length
@@ -899,9 +898,8 @@ impl HangStats {
 /// ordinary break and a scan of its lines.
 ///
 /// And whatever the white space, a paragraph that ends in the empty line parley
-/// commits after an overflowing inline box or a final forced break
-/// ([`phantom_last_line`], #1050, #1172) is broken once more, the same way,
-/// without it.
+/// commits after a final forced break ([`phantom_last_line`], #1172) is broken
+/// once more, the same way, without it.
 ///
 /// And with `align_width`, a paragraph broken unconstrained (`max_width` is
 /// `None`: none of its text may wrap) is aligned within that width ([`AlignWidth`]) rather
@@ -990,9 +988,8 @@ pub(crate) fn break_lines_hanging_spaces<'p>(
         ),
         None => HangStats::default(),
     };
-    // #1050, #1172: parley's trailing empty line after an overflowing inline
-    // box or a final forced break. Broken again, the same way, up to the line
-    // before it.
+    // #1172: parley's trailing empty line after a final forced break. Broken
+    // again, the same way, up to the line before it.
     if let Some(keep) = phantom_last_line(layout) {
         match fix {
             Some(max) => {
@@ -1808,6 +1805,9 @@ pub(crate) fn shape_text_leaf(
     let leaf = LeafText::of(&text.content, text.white_space);
     let font_family = crate::fonts::parley_text_family(font_cx, &text.font_family, &leaf.text);
     let mut builder = layout_cx.ranged_builder(font_cx, &leaf.text, 1.0, true);
+    // The parent's direction (#2940): parley's default, `Auto`, gives each
+    // paragraph its own.
+    builder.set_base_direction(text.base_direction);
     builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
     use parley::style::StyleProperty as P;
     builder.push_default(P::FontSize(text.font_size));
@@ -1911,26 +1911,18 @@ impl LeafShape {
     }
 }
 
-/// The line count to keep when `layout` ends in an empty line parley 0.11.1
-/// commits where CSS has no line box: after an inline box it placed by an
-/// **emergency** break (#1050), or after a forced break that ends the text
-/// (#1172).
+/// The line count to keep when `layout` ends in the empty line parley commits
+/// after a forced break that ends the text, where CSS has no line box (#1172).
 ///
-/// **After an overflowing box.** At the start of a line, a box too wide for
-/// any line is consumed and the line committed on the spot
-/// (`BreakReason::Emergency`). When that box was the paragraph's last item the
-/// breaker is not marked done, so its next `break_next` commits one more line
-/// holding nothing. When text came before the box that line still carries an
-/// empty text-run item, so the breaker's own rule that an empty last line adds
-/// no height does not apply, and it is counted at the box's line height: a
-/// 300x80 box wrapped under `"x "` in a 200px paragraph made it 180px tall
-/// where Chrome makes it 105. Parley's `main` still has the same branch
-/// (checked 2026-09-26).
+/// (Parley 0.11.1 also left an empty line after an inline box too wide for any
+/// line that ended the paragraph, committing the box's line on the spot by an
+/// emergency break (#1050). The fork ends such a line only at the next item
+/// that starts the next one (rinch #2944), so nothing follows the last box.)
 ///
-/// **After a final forced break.** A `<br>` is pushed to parley as `"\n"`, and
-/// parley always lays out one more line after a text-final newline, with an
-/// empty text run in it (its "copy metrics from previous line" hack) — so it
-/// is counted too. A line box after the last forced break exists in CSS only
+/// A `<br>` is pushed to parley as `"\n"`, and parley always lays out one more
+/// line after a text-final newline, with an empty text run in it (its "copy
+/// metrics from previous line" hack), so its height is counted. A line box
+/// after the last forced break exists in CSS only
 /// when something comes after the break: `<div>a<br></div>` and `<pre>a\n</pre>`
 /// are one line in Chrome 153 (rinch made two), `<div><br></div>` one,
 /// `<div>a<br><br></div>` two. What "something" is has been settled before
@@ -1938,11 +1930,10 @@ impl LeafShape {
 /// out-of-flow box put nothing into it ([`IfcText`]), while a preserved space,
 /// an NBSP, and any in-flow atomic inline (even a 0x0 one) do.
 ///
-/// Either way it is that line exactly: the last line, ended by the end of the
-/// text (`BreakReason::None`), right after an emergency break with nothing to
-/// paint or hit (no glyph run, no box), or right after a forced break
-/// (`BreakReason::Explicit`) with no text and no box. A line of real content —
-/// even a single space — has a glyph run or text and is kept.
+/// It is that line exactly: the last line, ended by the end of the text
+/// (`BreakReason::None`), right after a forced break (`BreakReason::Explicit`),
+/// with no text and no box. A line of real content — even a single space — has
+/// text and is kept.
 ///
 /// **This is not a `<textarea>`'s rule**, whose value ending in `"\n"` does
 /// show an empty last line in Chrome (where its caret goes). A textarea is laid
@@ -1961,16 +1952,11 @@ fn phantom_last_line(layout: &parley::Layout<Brush>) -> Option<usize> {
     if last.break_reason() != BreakReason::None {
         return None;
     }
-    let phantom = match prev.break_reason() {
-        BreakReason::Emergency => last.items().next().is_none(),
-        BreakReason::Explicit => {
-            last.text_range().is_empty()
-                && !last
-                    .items()
-                    .any(|item| matches!(item, PositionedLayoutItem::InlineBox(_)))
-        }
-        _ => false,
-    };
+    let phantom = prev.break_reason() == BreakReason::Explicit
+        && last.text_range().is_empty()
+        && !last
+            .items()
+            .any(|item| matches!(item, PositionedLayoutItem::InlineBox(_)));
     phantom.then_some(n - 1)
 }
 
@@ -2188,11 +2174,11 @@ fn offset_map_note(map: &mut Vec<(usize, usize)>, flat: usize, dom: usize) {
 ///
 /// Preserved text takes [`PRESERVED_SUBSTITUTES`], which is also what the
 /// rich-text editor's caret map is told
-/// ([`DomDocument::substituted_char_flat_bytes`]), so the two count the same
+/// ([`DomLayout::substituted_char_flat_bytes`]), so the two count the same
 /// flat bytes for each.
 ///
 /// [`InlineLayout::measured_width`]: crate::node::InlineLayout::measured_width
-/// [`DomDocument::substituted_char_flat_bytes`]: rinch_core::dom::DomDocument::substituted_char_flat_bytes
+/// [`DomLayout::substituted_char_flat_bytes`]: rinch_core::dom::DomLayout::substituted_char_flat_bytes
 fn laid_out_as(c: char, preserved: bool) -> Option<&'static str> {
     if !preserved && c == '\u{c}' {
         return None;
@@ -2374,12 +2360,27 @@ impl<'a> IfcText<'a> {
     /// Chrome 156 breaks there: `aaaa<wbr>bbbb cc` in a `nowrap` or `pre`
     /// box 1px wide is `aaaa` / `bbbb cc`, and its `min-content` is `bbbb
     /// cc`'s width.
-    pub(crate) fn push_wbr(&mut self) {
+    ///
+    /// The `<wbr>`'s own wrap mode, `own_wraps` by its `white-space`, goes
+    /// to parley beside it (`StyleProperty::Wbr`, #2944): where a line that
+    /// already overflows ends at the opportunity before a `<wbr>`, Chrome 158
+    /// keeps one that wraps on that line and starts the next with one that
+    /// does not, so `aaaa<wbr><wbr>bbbb` in a 1px `nowrap` box is `aaaa` /
+    /// an empty line / `bbbb`, and two lines when the second `<wbr>` alone
+    /// is `normal`.
+    pub(crate) fn push_wbr(&mut self, own_wraps: bool) {
+        use parley::style::TextWrapMode;
         self.last_wraps = Some(true);
         self.wbr = true;
         self.any_wbr = true;
+        let own = if own_wraps {
+            TextWrapMode::Wrap
+        } else {
+            TextWrapMode::NoWrap
+        };
         self.ops.push(IfcOp::Span(vec![
-            parley::style::StyleProperty::TextWrapMode(parley::style::TextWrapMode::Wrap),
+            parley::style::StyleProperty::TextWrapMode(TextWrapMode::Wrap),
+            parley::style::StyleProperty::Wbr(Some(own)),
         ]));
         self.ops.push(IfcOp::Text(WBR_TEXT.into()));
         self.ops.push(IfcOp::Pop);
@@ -4982,8 +4983,17 @@ static CHROME_ASCII_PAIRS: parley::AsciiLineBreakTable<5> = {
 ///   Blink decides before its table (`ShouldBreakAfter`); UAX #14 LB25 has
 ///   none there at all.
 /// - Any other pair of printable ASCII characters: [`CHROME_ASCII_PAIRS`].
+/// - Between two zero width spaces, always (#2944): each is a `<wbr>`
+///   ([`WBR_TEXT`]), and Chrome 158 has an opportunity at every `<wbr>`, so
+///   `aaaa<wbr><wbr>bbbb` in a 1px `nowrap` box is `aaaa` / an empty line /
+///   `bbbb`. UAX #14 has none there (LB7, `× ZW`). Typed ZWSPs get it too;
+///   it changes nothing visible for them where text wraps, and where it
+///   does not, no ZWSP of their own is an opportunity.
 fn chrome_break(before_before: Option<char>, before: char, after: char) -> Option<bool> {
     if space_run_break(before, after) {
+        return Some(true);
+    }
+    if before == '\u{200b}' && after == '\u{200b}' {
         return Some(true);
     }
     if before == '-' && after.is_ascii_digit() {
@@ -6611,6 +6621,8 @@ impl RinchDocument {
 
             // Remove anonymous DOM node from slab
             self.tree.nodes.remove(anon_id);
+            // Nor may the scroll ranges' kept walks keep its record (#2054).
+            self.tree.deep_overflow.forget_freed(&[anon_id]);
             // And its measured sizes, for `remove_subtree`'s reason: the slab
             // recycles the id, and the box minted next — very often for the
             // same run, so with the same content signature — would otherwise
@@ -6648,6 +6660,7 @@ impl RinchDocument {
             // `remove_subtree`'s reason, as for a freed box above: the slab
             // recycles the id.
             self.tree.ifc_measure_cache.remove(&id);
+            self.tree.deep_overflow.forget_freed(&[id]);
         }
     }
 
@@ -10058,7 +10071,7 @@ impl RinchDocument {
     /// dirty a measure without dirtying the IFC structure — a restyle that
     /// changed something, and `set_text_content` — which between them are five
     /// call sites (`dom_impl/mod.rs` twice, `style_resolution/mod.rs`,
-    /// `dom_document_impl.rs`, `layout_engine.rs`). A *structural* mutation
+    /// `dom_impl/content.rs`, `layout_engine.rs`). A *structural* mutation
     /// seeds a structural pass instead (`crate::ifc_scope`), which sizes what
     /// it placed and calls this itself for every container it set up (the
     /// atomic inlines around a changed container are outside its scope, and
@@ -12524,8 +12537,12 @@ impl RinchDocument {
         // (CSS Text 3 §7.1), so it overflows to the left (Chrome 157; an rtl
         // scroll container scrolls to it, #2546). It overflowed to the
         // right, past the inline start, before.
+        // Under `unicode-bidi: plaintext` each paragraph has its own
+        // direction (#2940), so a right-to-left one in a `ltr` block is
+        // aligned away from the left too.
         let ltr = css_direction_is_ltr(nodes, root_id);
         let aligned_away = !ltr
+            || base_direction == parley::BaseDirection::Auto
             || matches!(
                 alignment,
                 parley::layout::Alignment::Right
@@ -12537,9 +12554,18 @@ impl RinchDocument {
         let mut hang = HangStats::default();
         let mut float_drop: f32;
         let mut builds = 0u32;
+        // The controls rinch wrote for `unicode-bidi` (#2588). parley reopens
+        // those still open at a forced break after it, as Blink reopens an
+        // element's bidi context, where controls typed in the text end there
+        // (UAX #9 X8, #2962).
+        let reopened_controls: Vec<std::ops::Range<usize>> = bidi_control_ranges
+            .iter()
+            .map(|&(start, end, _)| start..end)
+            .collect();
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
             builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
+            builder.set_reopened_bidi_controls(&reopened_controls);
             // A block's paragraph runs in the block's `direction` whatever
             // its text (parley 0.12 takes a base direction): an rtl one's
             // trailing spaces are at its visual left, inside the box (Chrome
@@ -12864,7 +12890,6 @@ impl RinchDocument {
         glyph.break_all_lines(None);
         let ellipsis_width = glyph.width();
         let glyph_baseline = glyph.lines().next().map_or(0.0, |l| l.metrics().baseline);
-        let rtl = il.layout.is_rtl();
 
         let mut hidden: Vec<std::ops::Range<usize>> = Vec::new();
         let mut hidden_boxes = Vec::new();
@@ -12950,7 +12975,9 @@ impl RinchDocument {
             let at_left = if over_left != over_right {
                 over_left
             } else {
-                rtl
+                // The line's own paragraph's direction (#2940: a `plaintext`
+                // block's paragraphs each have theirs).
+                line.is_rtl()
             };
             // Whether an extent `x0..x1` is past the point the "…" fits at.
             let past = |x0: f32, x1: f32| {
@@ -13883,7 +13910,7 @@ impl RinchDocument {
                     };
                     let wbr = child.tag() == Some("wbr");
                     if wbr {
-                        builder.push_wbr();
+                        builder.push_wbr(wraps(child_computed));
                         *flat_pos += WBR_TEXT.len();
                     } else {
                         builder.open_element(wraps(child_computed));
@@ -14757,7 +14784,7 @@ impl TabStops {
 #[cfg(test)]
 mod atomic_leaf_layout_tests {
     use crate::RinchDocument;
-    use rinch_core::dom::DomDocument;
+    use rinch_core::dom::{DomContent, DomTree};
 
     /// The keying rule of `NodeTree::atomic_leaf_layouts` (#904): each layout
     /// the atomic compute's text measure builds is filed under the width it
@@ -14847,6 +14874,15 @@ mod chrome_break_tests {
         assert_eq!(chrome_break(None, '-', '1'), Some(false));
         assert_eq!(chrome_break_at("-1", 1), Some(false));
         assert_eq!(chrome_break_at("x", 0), None);
+    }
+
+    /// Two `<wbr>`s in a row are two opportunities (#2944), which UAX #14's
+    /// `× ZW` (LB7) leaves one of.
+    #[test]
+    fn two_zero_width_spaces_have_an_opportunity_between_them() {
+        assert_eq!(chrome_break(Some('a'), '\u{200b}', '\u{200b}'), Some(true));
+        assert_eq!(chrome_break_at("a\u{200b}\u{200b}b", 4), Some(true));
+        assert_eq!(chrome_break(Some('a'), 'a', '\u{200b}'), None);
     }
 }
 

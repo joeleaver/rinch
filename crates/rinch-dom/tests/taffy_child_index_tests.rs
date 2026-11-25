@@ -21,7 +21,7 @@
 //! defect is therefore latent rather than live, and the seam between the
 //! mutation and the next layout pass is the only place it is observable.
 
-use rinch_core::dom::{DomDocument, NodeId};
+use rinch_core::dom::{DomContent, DomTree, NodeId};
 use rinch_dom::RinchDocument;
 
 const VW: f32 = 800.0;

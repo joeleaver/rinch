@@ -216,6 +216,7 @@ The rich-text `Editor`'s props (`editor`, `content`, `read_only`, `spellcheck`) 
 | `onsubmit` | `Option<Callback>` | `None` | Fires on Enter key |
 | `spellcheck` | `Option<bool>` | `None` | Spellchecking for the field (#2862): `false` turns it off, `true` turns it on inside a subtree that turned it off, `None` inherits the nearest ancestor's `spellcheck` (on by default). See [Spellcheck](./spellcheck.md) |
 | `autocomplete` | `String` | `""` | The field's HTML `autocomplete` attribute (#3028), e.g. `username`, `email`, `current-password`, `new-password`, `one-time-code`, which password managers and the browser's autofill read. Empty writes no attribute (the browser's default). Accepts `{|| expr}`. On desktop it is kept on the element; there is no autofill there |
+| `inputmode` | `String` | `""` | The field's HTML `inputmode` attribute (#3048): which on-screen keyboard a touch device shows, one of `none`, `text`, `decimal`, `numeric`, `tel`, `search`, `email`, `url` (`numeric` gives a one-time-code field a digit pad). Empty writes no attribute (the browser's default). Accepts `{|| expr}`. On desktop it is kept on the element and changes nothing |
 
 ### Textarea
 
@@ -238,6 +239,7 @@ The rich-text `Editor`'s props (`editor`, `content`, `read_only`, `spellcheck`) 
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification); only if the value changed since focus |
 | `spellcheck` | `Option<bool>` | `None` | Spellchecking for the field (#2862): `false` turns it off, `true` turns it on inside a subtree that turned it off, `None` inherits the nearest ancestor's `spellcheck` (on by default). See [Spellcheck](./spellcheck.md) |
 | `autocomplete` | `String` | `""` | The field's HTML `autocomplete` attribute (#3028), e.g. `username`, `email`, `current-password`, `new-password`, `one-time-code`, which password managers and the browser's autofill read. Empty writes no attribute (the browser's default). Accepts `{|| expr}`. On desktop it is kept on the element; there is no autofill there |
+| `inputmode` | `String` | `""` | The field's HTML `inputmode` attribute (#3048): which on-screen keyboard a touch device shows, one of `none`, `text`, `decimal`, `numeric`, `tel`, `search`, `email`, `url` (`numeric` gives a one-time-code field a digit pad). Empty writes no attribute (the browser's default). Accepts `{|| expr}`. On desktop it is kept on the element and changes nothing |
 
 ### PasswordInput
 
@@ -263,7 +265,9 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `ontoggle` | `Option<Callback>` | `None` | Fires when visibility toggled |
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` |
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
+| `onsubmit` | `Option<Callback>` | `None` | Fires on Enter key, as `TextInput`'s (#3048): the `onchange` commit runs first, then this |
 | `autocomplete` | `String` | `""` | The field's HTML `autocomplete` attribute (#3028), e.g. `username`, `email`, `current-password`, `new-password`, `one-time-code`, which password managers and the browser's autofill read. Empty writes no attribute (the browser's default), so a password manager may fill the field; before #3028 it was always `off`. Accepts `{|| expr}`. On desktop it is kept on the element; there is no autofill there |
+| `inputmode` | `String` | `""` | The field's HTML `inputmode` attribute (#3048): which on-screen keyboard a touch device shows, one of `none`, `text`, `decimal`, `numeric`, `tel`, `search`, `email`, `url` (`numeric` gives a one-time-code field a digit pad). Empty writes no attribute (the browser's default). Accepts `{|| expr}`. On desktop it is kept on the element and changes nothing |
 
 ### NumberInput
 
@@ -293,6 +297,7 @@ Custom Default: `toggle_visibility` defaults to `true`.
 | `oninput` | `Option<InputCallback>` | `None` | Receives `String` from direct text entry, and — uncontrolled — each stepper-written value |
 | `onchange` | `Option<InputCallback>` | `None` | Commit boundary (#226): fires once with the final value when the gesture ends (blur after a modification, or Enter); only if the value changed since focus |
 | `autocomplete` | `String` | `""` | The field's HTML `autocomplete` attribute (#3028), e.g. `username`, `email`, `current-password`, `new-password`, `one-time-code`, which password managers and the browser's autofill read. Empty writes no attribute (the browser's default). Accepts `{|| expr}`. On desktop it is kept on the element; there is no autofill there |
+| `inputmode` | `String` | `""` | The field's HTML `inputmode` attribute (#3048): which on-screen keyboard a touch device shows, one of `none`, `text`, `decimal`, `numeric`, `tel`, `search`, `email`, `url` (`numeric` gives a one-time-code field a digit pad). Empty writes no attribute (the browser's default). Accepts `{|| expr}`. On desktop it is kept on the element and changes nothing |
 
 ### Checkbox
 
@@ -550,6 +555,7 @@ Text input with inline color preview and dropdown ColorPicker.
 | `z_index` | `Option<i32>` | `None` | Stacking level of the open picker's panel; its click-catching backdrop stays one below and the field one above (defaults 100 / 99 / 101, #801) |
 | `spellcheck` | `Option<bool>` | `None` | Spellchecking for the colour text field (#2862), as `TextInput`'s. A code with a digit is never checked (the default skip rules) |
 | `autocomplete` | `String` | **`"off"`** | The colour text field's HTML `autocomplete` attribute (#3028). Off by default: the picker opens below the field, where the browser would list remembered entries, and a native `<input type="color">` has no autofill. Empty writes no attribute; any other value is written as given |
+| `inputmode` | `String` | `""` | The field's HTML `inputmode` attribute (#3048): which on-screen keyboard a touch device shows, one of `none`, `text`, `decimal`, `numeric`, `tel`, `search`, `email`, `url` (`numeric` gives a one-time-code field a digit pad). Empty writes no attribute (the browser's default). Accepts `{|| expr}`. On desktop it is kept on the element and changes nothing |
 
 `size` and `radius` were declared but unread until #263. **`size` always
 resolves to a step, `radius` does not**: an unrecognised `size` falls back to

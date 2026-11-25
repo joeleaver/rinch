@@ -17,7 +17,15 @@ use style::stylist::Stylist;
 use crate::node::RawNodeId;
 use crate::node::{DirtyFlags, NodeTree};
 
-mod dom_document_impl;
+mod attach;
+mod content;
+mod create;
+mod focus;
+mod inline_style;
+mod layout;
+mod scroll;
+mod tree;
+mod window_rects;
 
 /// Parameters baked into the Stylo [`Device`] that must survive its rebuild.
 ///
@@ -139,7 +147,7 @@ pub(crate) fn clock_epoch_ms(at: rinch_core::timer::Instant) -> f64 {
 /// In later phases, this will integrate Taffy for layout,
 /// Parley for text, and Vello for painting.
 pub struct RinchDocument {
-    /// Process-unique document identity (see [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) — scopes
+    /// Process-unique document identity (see [`DomTree::doc_key`](rinch_core::dom::DomTree::doc_key)) — scopes
     /// per-node-id state in thread-local registries so two documents on one
     /// thread never collide (issue #134).
     pub(crate) doc_key: u64,
@@ -283,7 +291,7 @@ pub(crate) fn set_stylo_prefs() {
 
 impl RinchDocument {
     /// Process-unique document identity (see
-    /// [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) —
+    /// [`DomTree::doc_key`](rinch_core::dom::DomTree::doc_key)) —
     /// inherent accessor so callers holding a concrete `RinchDocument` don't
     /// need the trait in scope.
     pub fn doc_key(&self) -> u64 {
@@ -1095,6 +1103,10 @@ impl RinchDocument {
         if let Some(parent) = self.tree.get(node_id).and_then(|n| n.parent) {
             self.tree.bar_check_parents.push(parent);
         }
+        // The scroll ranges' kept walks drop what they recorded of it, and
+        // the walks of the scroll containers in it (#2054): put back, it is
+        // recorded again where it is.
+        self.tree.deep_overflow.forget_detached(&self.tree, node_id);
         self.mark_subtree_paint_dirty_below(node_id);
     }
 
