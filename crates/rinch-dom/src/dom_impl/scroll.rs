@@ -143,7 +143,7 @@ impl DomScroll for RinchDocument {
     /// extent `scrollbars()` compares [`Self::scroll_height`] against to
     /// decide whether to paint a bar (issue #769). This used to be a second,
     /// independent copy of that padding/border subtraction, while
-    /// `rinch/src/app/hit_testing.rs`'s scroll-container walks skipped the
+    /// `rinch/src/app/hit_testing/scroll.rs`'s scroll-container walks skipped the
     /// subtraction entirely and compared against the border box.
     fn client_height(&self, node: NodeId) -> f64 {
         crate::paint::scrollbar::visible_extents(&self.tree, node.0).1

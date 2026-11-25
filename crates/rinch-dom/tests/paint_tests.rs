@@ -1103,7 +1103,7 @@ mod icb_absolute_paint {
 /// `(s·x, s·y, s)` has to equal `S · compose(x, y, 1.0) · S⁻¹` for `S = scale(s)`
 /// — i.e. "compose in physical px" and "compose in layout px, then convert" are
 /// the same map. That identity is exactly what lets hit testing (`local_point`
-/// in `crates/rinch/src/app/hit_testing.rs`) compose at `scale = 1.0` in layout
+/// in `crates/rinch/src/app/hit_testing/walk.rs`) compose at `scale = 1.0` in layout
 /// space and still mirror paint at any DPI.
 ///
 /// The linear part (rotate/scale/skew) is unit-invariant, so it satisfies this
