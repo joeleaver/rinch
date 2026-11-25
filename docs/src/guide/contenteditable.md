@@ -78,7 +78,7 @@ background covers.
 | `spellcheck` | `Option<bool>` | Spellchecking for this editor (#2862): `false` turns it off, `true` turns it on inside a subtree that turned it off, `None` (the default) inherits the nearest ancestor's `spellcheck` (on by default). See [Spellcheck](./spellcheck.md). |
 | `placeholder` | `String` | The prompt shown while the editor is empty, as `<textarea placeholder>`. Empty (the default) leaves the handle as it is. Change it live with `handle.set_placeholder(..)` — see [Placeholder](#placeholder). |
 | `markdown_shortcuts` | `Option<bool>` | `Some(true)` turns on the [markdown shortcuts](#markdown-shortcuts), which are **off** by default. `None` leaves the handle as it is. |
-| `tab_behavior` | `Option<TabBehavior>` | What Tab does — see [Tab](#tab). `None` leaves the handle as it is (`IndentInListsAndTables` for a fresh one). |
+| `tab_behavior` | `Option<TabBehavior>` | What Tab does — see [Tab](#tab). `None` leaves the handle as it is (`MoveFocus` for a fresh one, as in Chrome). |
 
 Like every rinch component, `Editor {}` also accepts the universal `style:` and
 `class:` props, applied to its host element. Its **children** are an overlay slot that
@@ -1012,13 +1012,32 @@ Tab and Shift+Tab are what `set_tab_behavior(TabBehavior)` (or
 
 | `TabBehavior` | Tab / Shift+Tab |
 |---|---|
-| `IndentInListsAndTables` (default) | In a table cell: the next / previous cell (Tab in the last cell adds a row). In a list item: the keymap's `Tab` / `Shift-Tab` (`sinkListItem` / `liftListItem`). Anywhere they do nothing — a plain paragraph, a first item that cannot sink — the focus moves to the next / previous Tab stop. |
-| `MoveFocus` | Always move the focus, as in a Chrome `contenteditable`. Lists are indented from the toolbar or the `indent` / `sinkListItem` commands. |
+| `MoveFocus` (default) | Always move the focus, as in a Chrome `contenteditable`. Lists are indented from the toolbar or the `indent` / `sinkListItem` commands. |
+| `IndentInListsAndTables` | In a table cell: the next / previous cell (Tab in the last cell adds a row). In a list item: the keymap's `Tab` / `Shift-Tab` (`sinkListItem` / `liftListItem`). Anywhere they do nothing — a plain paragraph, a first item that cannot sink — the focus moves to the next / previous Tab stop. |
 
-The default is a deliberate difference from Chrome, whose `contenteditable` never keeps
-Tab: a document editor indents with it (Google Docs). Under both, a keyboard user can
+The default is Chrome's: its `contenteditable` never keeps Tab (#3062; until then
+rinch indented by default). A document editor that indents with Tab, as Google Docs
+does, opts in with `IndentInListsAndTables`. Under both, a keyboard user can
 always leave the editor by keyboard. A [read-only](#read-only) editor's Tab always
-moves the focus. An `on_key` callback sees Tab first and may claim it.
+moves the focus. An `on_key` callback sees Tab first and may claim it, and an
+app's own [`bind_key("Tab", …)`](#your-own-keys-bind_key-and-unbind_key) comes
+before the `TabBehavior`: under either, the bound Tab runs its command and stays in
+the editor. That includes a table cell: under `IndentInListsAndTables` a bound Tab
+runs its command there instead of moving to the next cell. To keep cell navigation
+and give Tab another job elsewhere, don't bind it; claim it in `on_key` where you
+want it, and try `tab_cell` first:
+
+```rust
+let h = editor.clone();
+editor.on_key(move |key| {
+    if key.key != "Tab" || key.primary || key.alt {
+        return false;
+    }
+    // In a table, the next (previous) cell; elsewhere a command of your own
+    // plugin. `false` leaves the key to the `TabBehavior`.
+    h.tab_cell(key.shift) || (!key.shift && h.command("insertTabCharacter"))
+});
+```
 
 ### Colours of the caret, the selection and the composition
 
@@ -1113,7 +1132,8 @@ previous Tab stop from the editor's place in the page, on desktop and on the web
 a focus trap, within the trap). Past the last or the first Tab stop, desktop wraps round,
 as every Tab there does; the web behaves as a native field: Tab is left to the browser,
 and Shift+Tab sends the focus to the document. An editable editor keeps them only
-where they do something (table cells, list indentation; see [Tab](#tab)), so a reader
+under `IndentInListsAndTables` and only where they do something (table cells, list
+indentation; see [Tab](#tab)), so a reader
 who comes in by keyboard can always leave by keyboard. An `on_key` callback still sees
 Tab first and may claim it.
 
@@ -1592,30 +1612,56 @@ and places no caret). The layer sets no `pointer-events` — style your markers 
 
 ## Keyboard shortcuts
 
-The editor handles its own keyboard input. Every shortcut below comes from the
-**editor-core keymap** (`BaseCommandsPlugin`/`HistoryPlugin`), which both the desktop
-and web views consult through one path — add a binding there and it works on every
-platform. `Mod` = Ctrl on Windows/Linux, Cmd on macOS.
+The editor's keys are the ones Chrome's `contenteditable` itself has, and no more
+(#3062): a key the editor does not bind goes on to your app and the browser, as it
+would from a `contenteditable`. Every binding below comes from the **editor-core
+keymap** (`BaseCommandsPlugin`/`HistoryPlugin`), which the desktop and web views
+consult through one path. `Mod` = Ctrl on Windows/Linux, Cmd on macOS (on the web,
+from `navigator.platform`, Cmd on every Apple platform, iOS and iPadOS with a
+hardware keyboard included: on a Mac, Ctrl+B is the browser's caret key, and off a
+Mac the Windows key is not `Mod`). On desktop the editor and the text fields read
+the same answer, so their macOS-only rules (Cmd+Y is not redo) always agree. On the
+web, a key typed through AltGr (Windows reports it as Ctrl+Alt: German AltGr+7 is
+`{`) is text, never a Ctrl+Alt chord. An AltGr press that types nothing new — on a
+German or Polish layout right-Alt+1 reports just `1`, and AltGr+Shift+1 just `!` —
+is the chord, as on desktop. The browser does not say what a key types without
+AltGr, so the page learns it from the user's plain presses (and, in Chrome and
+Edge, from the keyboard layout map as the page mounts). Until a key has been
+pressed plainly, Firefox and Safari assume the US character for a letter or digit
+key; on a layout where AltGr+1 types `1` itself (Lithuanian), that press runs an
+app's `Mod-Alt-1` instead of typing, until the user has typed on the digit row
+once. After that the press is text: with no character to compare against, the
+page takes AltGr text at its word, because a missed shortcut still has its menu
+entry or button, while a swallowed character has no other way in. Chrome's
+layout map gives only what each key types with no modifier, so what a key types
+with Shift is learned from Shift presses alone, and until then the US character
+is assumed: on a German layout, AltGr+Shift+2 types nothing and reports the
+key's `"`, which is not the US `@`, so that press is text and an app's
+`Mod-Alt-Shift-2` misses it until the user has typed Shift+2 once (the same safe
+direction). The page learns nothing from a press with CapsLock on, nor from the
+press after a dead key, whose character is the composed one (`'` then `a`
+reports `á` on Windows US-International, which AltGr+A types too).
 
 | Shortcut | Action |
 |----------|--------|
 | Mod+B / Mod+I / Mod+U | Toggle **bold** / *italic* / underline |
-| Mod+E | Toggle inline `code` |
-| Mod+Shift+S | Toggle ~~strikethrough~~ |
 | Mod+A | Select all |
-| Mod+Alt+1…6 | Heading 1–6 |
-| Mod+Shift+0 | Paragraph |
-| Mod+Shift+7 / 8 / 9 | Task / bullet / ordered list |
-| Mod+Shift+B | Blockquote |
-| Mod+Shift+L / E / R / J | Align left / center / right / justify |
-| Mod+Z / Mod+Shift+Z / Mod+Y | Undo / redo |
+| Mod+Z / Mod+Shift+Z | Undo / redo |
+| Ctrl+Y (not on macOS) | Redo. On macOS Cmd+Y is Chrome's History, and redo is Cmd+Shift+Z only |
 | Enter | Split block / new list item (between two blocks: a new empty paragraph there); in a code block, a new line (`newlineInCode`) |
 | Shift+Enter | Insert a hard break (line break within the block); in a code block, a new line (`insertLineBreak`) |
 | Mod+Enter | In a code block: leave it for a new paragraph after it (`exitCode`) |
-| Tab / Shift+Tab | Move between table cells, else indent / outdent a list item; where neither applies, move the focus to the next / previous Tab stop. `TabBehavior::MoveFocus` always moves the focus, and so does a [read-only](#read-only) editor. See [Tab](#tab) |
+| Tab / Shift+Tab | Move the focus to the next / previous Tab stop. Under `TabBehavior::IndentInListsAndTables`: move between table cells, else indent / outdent a list item, and move the focus only where neither applies. See [Tab](#tab) |
 | Backspace / Delete | Delete backward / forward |
 | Ctrl+Backspace / Ctrl+Delete (Alt on macOS) | Delete the word backward / forward |
 | Page Up / Page Down (Option+ on macOS) | Move the caret about a page (0.875 of the scroller's height) up / down at its column, scrolling the same amount; Shift extends. At the first / last line: the document's start / end. Read-only: scroll only. Plain Page Up / Down on macOS: scroll only |
+
+Until #3062 the editor also bound Mod+E (inline code), Mod+Shift+S
+(strikethrough), Mod+Alt+1…6 (headings), Mod+Shift+0 (paragraph), Mod+Shift+7 / 8 /
+9 (task / bullet / ordered list), Mod+Shift+B (blockquote) and Mod+Shift+L / E / R /
+J (alignment). Chrome binds none of them, and several are the browser's own (Ctrl+E
+the address bar, Ctrl+Shift+R hard reload, Ctrl+Shift+J the developer tools). The
+commands are all still there, for a toolbar or for your own keys.
 
 In a code block a line is a `"\n"` in its text (a code block holds no hard
 break), as in ProseMirror: Enter and Shift+Enter type one over the selection,
@@ -1628,23 +1674,62 @@ editor's: the key goes on to your app (the keyboard interceptor, an
 "send".
 
 **Every shortcut in the table is the editor's key wherever the caret is**,
-whether or not its command applies there: Ctrl+Shift+R on a paragraph that is
-already right-aligned, or any chord in a [read-only](#read-only) editor, does
-nothing and is still consumed, so it never reaches the browser (on the web, Ctrl+Shift+R would hard-reload the page and
-lose unsaved edits). The one exception is Mod+Enter, which goes on to your app
-where it does not apply, as above. A plugin's bindings consume their key the
-same way — a plugin that rebinds Enter keeps it consumed — unless the plugin
-names them in `Plugin::fall_through_keys`, which gives them ProseMirror's
-keymap semantics: where the command answers `false`, the key goes on as if the
-editor had no binding for it (on the web it is not `preventDefault`ed, so the
-page's listeners and the browser's default see it).
+whether or not its command applies there: Mod+B in a [read-only](#read-only)
+editor does nothing and is still consumed, so it never reaches the browser. The
+one exception is Mod+Enter, which goes on to your app where it does not apply,
+as above. A plugin's bindings consume their key the same way — a plugin that
+rebinds Enter keeps it consumed — unless the plugin names them in
+`Plugin::fall_through_keys`, which gives them ProseMirror's keymap semantics:
+where the command answers `false`, the key goes on as if the editor had no
+binding for it (on the web it is not `preventDefault`ed, so the page's listeners
+and the browser's default see it). A plugin's `Plugin::keys_not_on_macos` names
+bindings that are not bound on macOS (the history plugin's Mod-y).
 
-The four alignment chords are the Google Docs ones, and some of them are also
-chords of the browser or the platform, which may take the key before the editor
-sees it. Chrome reserves Ctrl+Shift+J (and Ctrl+Shift+I) for its developer
-tools; Ctrl+Shift+R is the browser's hard reload; some Linux input methods
-(IBus's emoji picker) bind Ctrl+Shift+E. The commands themselves
-(`setTextAlignLeft` / `Center` / `Right` / `Justify`) always work from a toolbar.
+### Your own keys: `bind_key` and `unbind_key`
+
+An app adds a chord for any command, and takes one of the editor's away, on the
+handle:
+
+```rust
+let editor = create_editor();
+editor.bind_key("Mod-Shift-s", "toggleStrike")?;
+editor.bind_key("Mod-Alt-1", "setHeading1")?;
+editor.unbind_key("Mod-u")?; // Ctrl/Cmd+U is the app's now
+```
+
+A chord is written as the keymap writes it (`Mod-Shift-8`, `Mod-Alt-1`, `Ctrl-k`).
+Both calls return `Result<(), KeyBindError>` and change nothing when they refuse:
+`KeyBindError::Chord` for a chord that does not parse, and, from `bind_key`,
+`KeyBindError::UnknownCommand` for a command the editor does not have (a misspelt
+`"toggleStrikethrough"`). The command is looked up when you bind it, so bind a
+plugin's command after `add_plugin`. The app's keys come first:
+`bind_key` wins over every plugin's binding of the chord, and `unbind_key` leaves
+the key to your app and the browser even where a plugin binds it, until the chord
+is bound again. A bound chord is consumed wherever the caret is, as the editor's
+own are. `"Tab"` and `"Shift-Tab"` can be bound too, and your binding comes before
+the [`TabBehavior`](#tab): bound, Tab runs your command and stays in the editor
+even under `MoveFocus` (except in a read-only editor, which always lets Tab go),
+and in a table cell it runs your command instead of moving to the next cell (to
+keep that, claim Tab in `on_key` instead; see [Tab](#tab)).
+The app's keys belong to the handle, so they survive `add_plugin`, a
+placeholder change and every load. A plugin that brings its own keys does so with
+`Plugin::keymap`; `Keymap::remove` takes a binding out of a keymap a plugin builds.
+
+A toolbar tooltip can name the chord the way the platform does:
+`KeyBinding::parse("Mod-Shift-s").unwrap().label(host_is_macos())` is `⇧⌘S` on
+macOS and `Ctrl+Shift+S` elsewhere. Both come with the rest of the editor API:
+`rinch::editor::{KeyBinding, host_is_macos}` on desktop and
+`rinch_web::{KeyBinding, host_is_macos}` on the web. On the web,
+`host_is_macos()` reads the browser's platform (any Apple one, iOS and iPadOS
+included) from the moment a mount starts, so a tooltip built while the app's
+components render is already right.
+
+Some chords are the browser's or the platform's before they are the page's, and
+binding one does not take it from them: Chrome keeps Ctrl+Shift+J (and
+Ctrl+Shift+I) for its developer tools, Ctrl+T, Ctrl+W and Ctrl+N for tabs and
+windows, and some Linux input methods (IBus's emoji picker) take Ctrl+Shift+E.
+Others the editor does take once bound — Ctrl+Shift+R, the browser's hard reload,
+is then consumed — so bind them knowing what the browser did with them.
 
 The caret keys are not keymap bindings; they are the platform's. On desktop
 Ctrl+Left / Ctrl+Right move by word, Home / End go to the visual line's edges and
@@ -2065,7 +2150,7 @@ Where the right press lands decides the rest:
 **Undo and Redo in the menu act on the editor**, but Chrome enables them only when
 its own page-wide undo stack has a step — after an IME commit in the editor, or
 after typing into another field on the page — so they are usually greyed out, and
-Redo stays greyed after a menu Undo. Use Ctrl+Z and Ctrl+Y. (Chrome aims the menu's
+Redo stays greyed after a menu Undo. Use Ctrl+Z and Ctrl+Shift+Z (Cmd on a Mac). (Chrome aims the menu's
 Undo at whichever field owns that step; the editor takes it back while it has
 focus, so the other field is not undone.)
 

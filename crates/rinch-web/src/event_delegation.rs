@@ -18,7 +18,10 @@ use wasm_bindgen::prelude::*;
 use rinch_core::events;
 
 use crate::editor_input::{add_capture, add_capture_on};
+
+mod keys;
 use crate::web_document::{COMPOSING_PROP, WebDocument, flush_deferred_value};
+pub(crate) use keys::{ensure_window_key_capture, offer_popup_and_app_keys};
 
 thread_local! {
     /// The elements carrying a `data-onenter`/`data-onleave` handler that
@@ -2526,63 +2529,6 @@ pub(crate) fn editor_owning(el: &web_sys::Element) -> Option<web_sys::Element> {
     hit.closest("[data-pm-editor]").ok().flatten()
 }
 
-/// Offer a key to the `attr` (`data-onkeydown` / `data-onkeyup`) handler of
-/// the element the key was pressed in and then its ancestors', nearest first,
-/// stopping at the first that consumes it (issue #1678). The ids are read
-/// before any handler runs, as a browser fixes an event's path at dispatch.
-///
-/// Not offered — as on desktop, where these have no element claim to walk
-/// from — for a key the rich-text editor holds (its keys are
-/// `EditorHandle::on_key`'s; a field inside a node view's component is not
-/// the editor's), one a focused render surface holds (`set_key_handler`), or
-/// one an input method is composing with (`isComposing`, or the `Process` key
-/// a composition sends). Known gap: Safari sends the Enter that confirms a
-/// composition after `compositionend`, as `key: "Enter"`, `keyCode` 229 and
-/// `isComposing` false, and that Enter is offered. Refusing every 229 Enter
-/// would also refuse an Android soft keyboard's plain Enter, which can carry
-/// 229.
-fn offer_element_key(
-    event: &web_sys::KeyboardEvent,
-    attr: &str,
-    data: &events::KeyEventData,
-) -> bool {
-    if event.is_composing() || event.key() == "Process" {
-        return false;
-    }
-    if rinch::render_surface::focused_surface_id().is_some() {
-        return false;
-    }
-    let Some(el) = event
-        .target()
-        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-    else {
-        return false;
-    };
-    if el.has_attribute("data-pm-capture") || editor_owning(&el).is_some() {
-        return false;
-    }
-    let data = &data.clone().with_target(crate::web_document::get_nid(&el));
-    let mut ids = Vec::new();
-    let mut cur = Some(el);
-    while let Some(e) = cur {
-        if let Some(id) = e.get_attribute(attr).and_then(|v| v.parse::<usize>().ok()) {
-            ids.push(events::EventHandlerId(id));
-        }
-        cur = e.parent_element();
-    }
-    !ids.is_empty() && events::dispatch_key_handler_chain(ids, data)
-}
-
-/// Whether a key event's target is a rich-text editor's: its capture
-/// textarea, or an element inside an editor that is not a node view's
-/// component (see [`editor_owning`]).
-fn key_target_is_editor(event: &web_sys::KeyboardEvent) -> bool {
-    event
-        .target()
-        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-        .is_some_and(|el| el.has_attribute("data-pm-capture") || editor_owning(&el).is_some())
-}
-
 /// `(editor container, view host)` when `el` is inside a node view's component
 /// (see [`editor_owning`]).
 pub(crate) fn node_view_around(
@@ -3219,9 +3165,12 @@ fn install_wheel(doc: &web_sys::Document) {
 /// hover `data-onenter`/`data-onleave`, and the element drag-and-drop
 /// `data-ondrag*` suite — which now works on touch/pen as well as mouse),
 /// `click` (keyboard / AT activation of `data-rid`, gated on the pointer
-/// interaction flag — issue #240), `keydown` (render-surface routing, keyboard
-/// interceptor, Enter/Space activation of a focused `tabindex` element, the
-/// Enter change-before-submit commit + `data-onsubmit`, Escape drag-cancel),
+/// interaction flag — issue #240), `keydown` / `keyup` (the order of issue
+/// #3062, in `keys`: on `window` the menu chords, Escape drag-cancel and the
+/// keyboard interceptor; on `document` the element's key handlers, the key
+/// entries and dismiss stack, render-surface routing, the app-wide listeners,
+/// Enter/Space activation of a focused `tabindex` element, the Enter
+/// change-before-submit commit + `data-onsubmit`),
 /// `input`
 /// (`data-oninput`), `focusin` (the issue #226 commit baseline), `change`
 /// (`data-onchange`, deduplicated against the Enter commit), `contextmenu`
@@ -3260,13 +3209,14 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             schedule_gesture_end(GESTURE_GRACE_MS);
         });
     }
-    // On `window`, not `document`, unlike its pointer siblings above: the menu
-    // bar's chord check (`menu_bar.rs`) is a *window* capture listener that
-    // stops a consumed chord before it reaches `document` at all, the way the
-    // desktop shell returns before a matched chord becomes a `PlatformEvent`.
-    // Same-node listeners all still run, so observing from `window` too is what
-    // keeps this flag seeing every key — including a chord — while
-    // `editor_input` and the bubble delegate correctly see none.
+    // On `window`, not `document`, unlike its pointer siblings above: the
+    // shared `window` capture key listener (`keys::ensure_window_key_capture`:
+    // the menu bar's chords, then the interceptor) stops a consumed key before
+    // it reaches `document` at all, the way the desktop shell returns before a
+    // matched chord becomes a `PlatformEvent`. Same-node listeners all still
+    // run, so observing from `window` too is what keeps this flag seeing every
+    // key — including a chord — while `editor_input` and the bubble delegate
+    // correctly see none.
     let window: web_sys::EventTarget = match web_sys::window() {
         Some(w) => w.into(),
         None => browser_doc.clone().into(),
@@ -3939,272 +3889,10 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         .unwrap();
     dragstart_closure.forget();
 
-    // Keyboard delegation: route to focused render surface or keyboard interceptor.
-    let browser_doc_for_tab = browser_doc.clone();
-    let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
-        // Anything at all can be dispatched at `document` under the name
-        // "keydown" — `document.dispatchEvent(new Event("keydown"))` from page
-        // script, a polyfill, an extension, a test harness. wasm-bindgen hands a
-        // `Closure<dyn FnMut(web_sys::KeyboardEvent)>` whatever arrives, cast
-        // **unchecked**, so on a plain `Event` the very first `event.key()`
-        // returned `undefined` and the string marshaller threw `Cannot read
-        // properties of undefined (reading 'length')` out of a document
-        // listener — a console full of TypeErrors from a page that had done
-        // nothing wrong.
-        //
-        // `dyn_ref` is the instanceof check that was missing. `add_capture` does
-        // the same for the listeners registered through it; this one is
-        // registered by hand, as is every other listener in this function, and
-        // each takes a plain `Event` (issue #811): the pointer family and
-        // `paste` ignore one of the wrong interface, `click` and `contextmenu`
-        // read it as an event with no position.
-        //
-        // Because it is `instanceof`, a `KeyboardEvent` built from another
-        // realm's constructor (an iframe's `KeyboardEvent`, dispatched on this
-        // document by script) is now ignored where it used to reach the
-        // delegation — exactly as `add_capture` already ignores it. A trusted
-        // key press inside an iframe goes to the iframe's own document.
-        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
-            return;
-        };
-
-        // Escape cancels an in-progress element drag (consumed only if one was
-        // actually active, so Escape otherwise reaches the app normally).
-        if event.key() == "Escape" && cancel_web_drag() {
-            event.prevent_default();
-            return;
-        }
-
-        // The key is the root's whose element it targets (#2811): its
-        // handlers run as that root's code, and the interceptor, key entries
-        // and dismiss stack it reaches are that root's.
-        let _root = crate::mark_event_root(event);
-
-        // 0.5. The focused element's own `onkeydown`, then its ancestors',
-        //      before the interceptor and the dismiss stack (issue #1678) —
-        //      desktop's order. A consumed key is the browser's
-        //      `preventDefault` + `stopPropagation`: no line break, no submit,
-        //      no activation, no Tab, and nothing after this sees it.
-        let element_key = events::KeyEventData::new(event.key(), event.code()).with_modifiers(
-            event.ctrl_key() || event.meta_key(),
-            event.shift_key(),
-            event.alt_key(),
-            event.meta_key(),
-        );
-        if offer_element_key(event, "data-onkeydown", &element_key) {
-            event.prevent_default();
-            event.stop_propagation();
-            return;
-        }
-
-        // 1. The document-level interceptor always sees the key first, even
-        //    while a render surface holds focus — matching desktop (issue
-        //    #484: the keyup leg already reached it unconditionally, but
-        //    keydown used to skip it entirely whenever a surface was
-        //    focused) and letting a host's own `set_keyboard_interceptor`
-        //    claim an app-global chord before a focused canvas ever sees it
-        //    (issue #482).
-        let key_data = events::KeyEventData::new(event.key(), event.code()).with_modifiers(
-            event.ctrl_key() || event.meta_key(),
-            event.shift_key(),
-            event.alt_key(),
-            event.meta_key(),
-        );
-        if events::dispatch_keyboard_event(&key_data) {
-            event.prevent_default();
-            event.stop_propagation();
-            return;
-        }
-
-        // 2. If a render surface is focused, forward KeyDown + TextInput for
-        //    input (always — unaffected by whether the key is "claimed"
-        //    below) and ask the surface's own `set_key_handler` whether this
-        //    key stops here.
-        //
-        //    Issue #482: this used to call `preventDefault`/
-        //    `stopPropagation` unconditionally, so the moment a canvas took
-        //    focus every key — including ones the surface did nothing with —
-        //    went deaf to the host's own `window`-level keybindings and the
-        //    browser's own shortcuts (reload, find, …). The default, with no
-        //    `set_key_handler` registered, is "claims nothing": an unclaimed
-        //    key now falls through to the Tab-trap/activation/submit handling
-        //    below and keeps propagating to `window` and the browser.
-        if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
-            let surface_key_data = rinch::render_surface::SurfaceKeyData {
-                key: event.key(),
-                code: event.code(),
-                ctrl: event.ctrl_key() || event.meta_key(),
-                shift: event.shift_key(),
-                alt: event.alt_key(),
-                meta: event.meta_key(),
-            };
-            rinch::render_surface::dispatch_surface_event(
-                surface_id,
-                rinch::render_surface::SurfaceEvent::KeyDown(surface_key_data.clone()),
-            );
-            // Also dispatch TextInput for printable characters
-            let key = event.key();
-            if key.len() == 1 && !event.ctrl_key() && !event.meta_key() && !event.alt_key() {
-                rinch::render_surface::dispatch_surface_event(
-                    surface_id,
-                    rinch::render_surface::SurfaceEvent::TextInput(key),
-                );
-            }
-            if rinch::render_surface::dispatch_surface_key_event(surface_id, &surface_key_data) {
-                // A claimed key is the surface's, release and all (#1784).
-                events::withhold_app_key_release(&surface_key_data.code);
-                event.prevent_default();
-                event.stop_propagation();
-                return;
-            }
-        }
-
-        // 3. The app-wide key listeners (`on_app_key`, issue #1784): after
-        //    everything that owns a key, before the Tab trap, activation and
-        //    `onsubmit` below — desktop's order. This listener is on
-        //    `document`, so it hears a key with nothing focused (it targets
-        //    `<body>` and bubbles here). Not a key the rich-text editor holds
-        //    (the ones it acts on never get here; the rest are not offered,
-        //    as on desktop), nor one an input method is composing with.
-        //    They hear the page's keys, every root's (see `on_app_key`), so
-        //    they are offered the key as no root's (#2811).
-        if !event.is_composing() && event.key() != "Process" && !key_target_is_editor(event) && {
-            let _page = rinch_core::push_dispatching_doc(0);
-            events::dispatch_app_key(&key_data)
-        } {
-            event.prevent_default();
-            event.stop_propagation();
-            return;
-        }
-
-        if key_data.key == "Tab" && handle_trapped_tab(&browser_doc_for_tab, event.shift_key()) {
-            // `trap_focus` (#474): an open overlay confines Tab to itself. The
-            // browser would otherwise walk straight out of the dialog and into
-            // the page behind it, so the move is made here and its own default
-            // suppressed. With no live trap this is false and the browser's Tab
-            // is left alone here. The one other place rinch moves web focus on
-            // Tab is a read-only rich-text editor (#833, `tab_from_editor`),
-            // which the editor's own keydown handles from its place in the page
-            // before this listener sees the key.
-            //
-            // After the interceptor, so a document-level `set_keyboard_interceptor`
-            // still sees Tab first, and before the activation branch, which only
-            // ever answers Enter/Space.
-            event.prevent_default();
-        } else if try_keyboard_activation(event, &key_data.key) {
-            // Enter/Space on a focused element the browser does not activate
-            // itself (issue #240 — the `Tree` node shape). Consume the key:
-            // this is what stops Space from also scrolling the page, on the
-            // activating press and on every auto-repeat of it. A node with no
-            // live handler fell through, leaving the key to the browser.
-            event.prevent_default();
-        } else if key_data.key == "Enter" && !event.shift_key() && !event.is_composing() {
-            // Enter (without Shift) fires the nearest ancestor's data-onsubmit,
-            // matching a native form submit. Shift+Enter is left alone so
-            // multiline inputs (a textarea) can insert a newline. During an IME
-            // composition the Enter that commits the candidate is skipped
-            // (isComposing) so it confirms the text instead of submitting.
-            if let Some(target) = event.target()
-                && let Ok(el) = target.clone().dyn_into::<web_sys::Element>()
-            {
-                let mut current: Option<web_sys::Element> = Some(el.clone());
-                while let Some(cur) = current {
-                    if let Some(handler_str) = cur.get_attribute("data-onsubmit")
-                        && let Ok(handler_id) = handler_str.parse::<usize>()
-                    {
-                        // Prevent the browser from also inserting a newline
-                        // (in a textarea) or running a native form submit.
-                        event.prevent_default();
-                        // preventDefault also suppresses the browser's native
-                        // change-on-Enter commit, so deliver the
-                        // `data-onchange` commit ourselves — before onsubmit,
-                        // matching desktop's change-before-submit ordering —
-                        // and only if the value was modified since focus
-                        // (mirroring the browser's only-if-modified rule).
-                        // Record the committed value on the control so the
-                        // `change` listener can skip the browser's deferred
-                        // duplicate at the eventual blur (issue #226).
-                        if let Some(value) = form_control_value(&target) {
-                            let focus_value = get_expando_string(&el, FOCUS_VALUE_PROP);
-                            if focus_value.as_deref() != Some(value.as_str())
-                                && dispatch_form_value_attr(&target, "data-onchange", value.clone())
-                            {
-                                set_expando(&el, COMMITTED_VALUE_PROP, &JsValue::from_str(&value));
-                            }
-                        }
-                        events::dispatch_event(events::EventHandlerId(handler_id));
-                        break;
-                    }
-                    current = cur.parent_element();
-                }
-            }
-        }
-    }) as Box<dyn FnMut(_)>);
-    browser_doc
-        .add_event_listener_with_callback("keydown", keydown_closure.as_ref().unchecked_ref())
-        .unwrap();
-    keydown_closure.forget();
-
-    // keyup: the document-level interceptor first, then a focused render surface
-    // (games need key-release).
-    //
-    // The interceptor half is issue #337's web leg. Releases reached no app
-    // code on *either* backend — fixing only desktop would have turned a shared
-    // gap into a divergence, which is the thing an app most notices, since the
-    // whole point of an interceptor is that it is the one hook that behaves the
-    // same everywhere.
-    //
-    // Its return value is ignored, matching desktop: there is nothing
-    // downstream of a release to suppress, and `prevent_default` on a keyup
-    // suppresses nothing a browser would have done anyway.
-    let keyup_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
-        // See the keydown listener: the cast is unchecked, so a plain
-        // `Event("keyup")` would read `undefined` for `key` and throw.
-        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
-            return;
-        };
-        let key_data = events::KeyEventData::new(event.key(), event.code())
-            .with_modifiers(
-                event.ctrl_key() || event.meta_key(),
-                event.shift_key(),
-                event.alt_key(),
-                event.meta_key(),
-            )
-            .with_kind(events::KeyEventKind::Up);
-        // The element's own `onkeyup` first (issue #1678); a consuming one
-        // stops its ancestors, and the interceptor hears the release anyway,
-        // as on desktop. Both as the target's root's code, like the press
-        // (#2811).
-        {
-            let _root = crate::mark_event_root(event);
-            offer_element_key(event, "data-onkeyup", &key_data);
-            events::dispatch_keyboard_event(&key_data);
-        }
-        // Every release reaches the app-wide listeners, but one whose press a
-        // focused surface claimed (#1784). As no root's: they hear the page.
-        events::dispatch_app_key(&key_data);
-
-        if let Some(surface_id) = rinch::render_surface::focused_surface_id() {
-            let key_data = rinch::render_surface::SurfaceKeyData {
-                key: event.key(),
-                code: event.code(),
-                ctrl: event.ctrl_key() || event.meta_key(),
-                shift: event.shift_key(),
-                alt: event.alt_key(),
-                meta: event.meta_key(),
-            };
-            rinch::render_surface::dispatch_surface_event(
-                surface_id,
-                rinch::render_surface::SurfaceEvent::KeyUp(key_data),
-            );
-            event.prevent_default();
-            event.stop_propagation();
-        }
-    }) as Box<dyn FnMut(_)>);
-    browser_doc
-        .add_event_listener_with_callback("keyup", keyup_closure.as_ref().unchecked_ref())
-        .unwrap();
-    keyup_closure.forget();
+    // Keyboard delegation (#3062): the `window` capture listener (menu chords,
+    // drag-Escape, the interceptor) and the bubble delegates. See `keys`.
+    keys::ensure_window_key_capture();
+    keys::install_key_delegation(&browser_doc);
 
     // Input delegation: find [data-oninput] on the target or ancestors.
     let browser_doc2 = browser_doc.clone();

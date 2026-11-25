@@ -75,11 +75,15 @@ impl EditorState {
                 commands.insert(name.to_string(), cmd);
             }
             let fall_through = p.fall_through_keys();
+            let not_on_macos = p.keys_not_on_macos();
             for (binding, command) in p.keymap() {
                 if fall_through.contains(&binding) {
                     keymap.add_fall_through(binding, command);
                 } else {
                     keymap.add(binding, command);
+                }
+                if not_on_macos.contains(&binding) {
+                    keymap.exclude_on_macos(binding);
                 }
             }
             input_rules.extend(p.input_rules());

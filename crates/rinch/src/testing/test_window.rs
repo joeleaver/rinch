@@ -226,8 +226,14 @@ impl TestWindow<'_> {
         self.after_input(close);
     }
 
-    /// Release the key `key` names.
+    /// Release the key `key` names, with this window's held modifiers. While
+    /// a menu popup of its chain is open, its topmost menu takes the release,
+    /// as it takes the press (#2552) and as the shell routes both.
     pub fn key_up(&mut self, key: &str) {
+        if let Some(menu) = self.app.popup_key_target(self.id) {
+            self.app.window_by_id(menu).key_up(key);
+            return;
+        }
         let code = crate::app::key_names::keyname_to_keycode(key)
             .unwrap_or_else(|| panic!("unknown key name {key:?}"));
         let modifiers = self.child().modifiers();
