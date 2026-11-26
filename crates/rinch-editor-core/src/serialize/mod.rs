@@ -15,7 +15,9 @@
 pub mod doc_json;
 pub mod html;
 mod html_entities;
+mod html_google_docs;
 mod html_integer;
+mod html_lines;
 mod html_tree;
 #[cfg(feature = "markdown")]
 pub mod markdown;

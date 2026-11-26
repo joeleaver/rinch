@@ -27,10 +27,12 @@
 //!
 //! The tree builder is `super::html_tree`, zero-dependency.
 
+use super::html_google_docs::{is_docs_default_text_colour, is_google_docs_copy};
 use super::html_integer::{
     HtmlDimension, parse_html_clamped_non_negative_integer, parse_html_dimension,
     parse_html_integer,
 };
+use super::html_lines::{LineEnd, drop_line_end_break};
 use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
@@ -697,8 +699,9 @@ fn read_slice(schema: &Schema, html: &str, data: DataAttrSource) -> Result<Slice
     let mut forest = HtmlFragmentParser::new(html).parse();
     let mut parser = HtmlParser::new(schema)?;
     parser.data_attrs = data;
+    parser.google_docs = is_google_docs_copy(&forest);
     parser.mark_blocks(&mut forest);
-    let blocks = parser.parse_blocks(&forest)?;
+    let blocks = parser.parse_fragment(&forest)?;
     if blocks.is_empty() {
         return Ok(Slice::empty());
     }
@@ -762,6 +765,9 @@ struct HtmlParser<'a> {
     hard_break: Option<&'a NodeType>,
     /// Which data attributes a node that keeps them takes from an element.
     data_attrs: DataAttrSource,
+    /// The markup is a Google Docs copy, whose default text colour is no
+    /// colour (`html_google_docs`).
+    google_docs: bool,
 }
 
 /// The textblock that inline content between blocks becomes: a paragraph
@@ -854,6 +860,7 @@ impl<'a> HtmlParser<'a> {
             code_block: schema.node_type("code_block"),
             hard_break,
             data_attrs: DataAttrSource::Any,
+            google_docs: false,
         })
     }
 
@@ -956,6 +963,16 @@ impl<'a> HtmlParser<'a> {
         Ok(self.parse_block_refs(&refs, None, &[])?.blocks)
     }
 
+    /// [`Self::parse_blocks`] for the whole markup read: the inline content
+    /// it ends with is a line its end leaves open ([`LineEnd::Open`]), which
+    /// the text after a paste's caret continues.
+    fn parse_fragment(&self, nodes: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
+        let refs: Vec<&ParsedNode> = nodes.iter().collect();
+        Ok(self
+            .parse_block_refs_ending(&refs, None, &[], LineEnd::Open)?
+            .blocks)
+    }
+
     /// Read sibling nodes as blocks. Inline content between blocks is a
     /// paragraph; a run of `<li>` with no list around it is a list, and a run
     /// of table parts with no `<table>` around it a table.
@@ -974,6 +991,18 @@ impl<'a> HtmlParser<'a> {
         loose_as: LooseAs<'_>,
         active: &[Mark],
     ) -> Result<Parsed, EditorError> {
+        self.parse_block_refs_ending(nodes, loose_as, active, LineEnd::Closed)
+    }
+
+    /// [`Self::parse_block_refs`], the inline content after the last block
+    /// ending as `end` says.
+    fn parse_block_refs_ending(
+        &self,
+        nodes: &[&ParsedNode],
+        loose_as: LooseAs<'_>,
+        active: &[Mark],
+        end: LineEnd,
+    ) -> Result<Parsed, EditorError> {
         let mut b = Building {
             active: active.to_vec(),
             ..Building::default()
@@ -983,7 +1012,7 @@ impl<'a> HtmlParser<'a> {
             step();
             i = self.read_block(nodes, i, loose_as, &mut b)?;
         }
-        self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
+        self.flush_line(&mut b.loose, &mut b.blocks, loose_as, end)?;
         if !b.blocks.is_empty() {
             b.blank.clear();
         }
@@ -1314,17 +1343,30 @@ impl<'a> HtmlParser<'a> {
     }
 
     /// Flush accumulated inline content as a block: a paragraph, or what
-    /// `loose_as` says.
+    /// `loose_as` says. A block or the end of an element ends the line, so
+    /// its last `<br>` makes no line ([`drop_line_end_break`]).
     fn flush_loose(
         &self,
         loose: &mut Inline,
         blocks: &mut Vec<Node>,
         loose_as: LooseAs<'_>,
     ) -> Result<(), EditorError> {
-        let loose = std::mem::take(loose);
+        self.flush_line(loose, blocks, loose_as, LineEnd::Closed)
+    }
+
+    /// [`Self::flush_loose`] for a line that ends as `end` says.
+    fn flush_line(
+        &self,
+        loose: &mut Inline,
+        blocks: &mut Vec<Node>,
+        loose_as: LooseAs<'_>,
+        end: LineEnd,
+    ) -> Result<(), EditorError> {
+        let mut loose = std::mem::take(loose);
         if loose.nodes.is_empty() {
             return Ok(());
         }
+        drop_line_end_break(&mut loose.nodes, self.hard_break, end);
         let content = inline_fragment(loose.nodes);
         let (nt, attrs) = match loose_as {
             Some((nt, attrs)) => (nt, attrs.clone()),
@@ -2047,8 +2089,9 @@ impl<'a> HtmlParser<'a> {
     /// takes italic off), `text-decoration` / `text-decoration-line`
     /// (`underline`, `line-through`) and `vertical-align` (`sub`, `super`),
     /// each as the mark the schema reads `<b>`, `<em>`, `<u>`, `<s>`,
-    /// `<sub>` and `<sup>` as. Returns the new active mark set, or `None`
-    /// for a span with no style.
+    /// `<sub>` and `<sup>` as. In a Google Docs copy its default
+    /// `color:#000000` is no colour (#3096). Returns the new active mark set,
+    /// or `None` for a span with no style.
     fn span_marks(
         &self,
         attributes: &[(String, String)],
@@ -2058,8 +2101,11 @@ impl<'a> HtmlParser<'a> {
             return Ok(None);
         };
         let mut next = active.to_vec();
+        // Google Docs' black is its "no colour" (`html_google_docs`).
         if let (Some(color), Some(mt)) = (
-            parse_style(style, "color").filter(|c| is_safe_css_color(c)),
+            parse_style(style, "color").filter(|c| {
+                is_safe_css_color(c) && !(self.google_docs && is_docs_default_text_colour(c))
+            }),
             self.schema.mark_type("text_color"),
         ) {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(color))]))?;

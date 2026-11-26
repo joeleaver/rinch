@@ -1507,12 +1507,15 @@ pub(super) fn is_void_tag(tag: &str) -> bool {
 /// Keep only the safe, schema-relevant attributes and an app's data
 /// attributes ([`is_app_data_attr`](crate::schema::is_app_data_attr), which
 /// the reader keeps on a node whose schema opts in) — drops `on*` event
-/// handlers, every data attribute rinch reserves and everything else.
+/// handlers, every data attribute rinch reserves and everything else. The
+/// one `id` kept is Google Docs' `docs-internal-guid-…`, which says the
+/// markup is a Docs copy ([`super::html_google_docs`]).
 fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
     attrs
         .into_iter()
-        .filter(|(name, _)| {
+        .filter(|(name, value)| {
             crate::schema::is_app_data_attr(name)
+                || (name == "id" && super::html_google_docs::is_docs_guid(value))
                 || name == super::html::CLIPBOARD_MARK
                 || matches!(
                     name.as_str(),

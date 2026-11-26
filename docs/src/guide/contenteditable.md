@@ -1826,7 +1826,14 @@ included: Docs writes a nested list beside the item it belongs to
 in a list is dropped for not being an `<li>`. A link or other mark around whole
 blocks (a card that is one `<a>` around a heading and a paragraph) is kept on the
 text of those blocks. A `<b style="font-weight:normal">`, which Docs wraps its
-copies in, is not bold. All of this is the HTML reader, so `load_html` and
+copies in, is not bold. Docs' formatting arrives as the marks the schema has (bold,
+italic, underline, strikethrough, colour, highlight, superscript, subscript, links,
+headings, lists, alignment); its default black is no colour, so pasted text takes
+the editor's own; font size and family are dropped, as the starter kit has no mark
+for them. An empty line is the one empty line it was: a bare `<br>` between blocks,
+as Docs writes an empty paragraph, and a `<div><br></div>` (Gmail, Apple Mail) are
+an empty paragraph, since a browser draws no line for a block's last `<br>`. All of
+this is the HTML reader, so `load_html` and
 `content:` read the same way. (Before #1382 HTML
 that began with a `<meta>` tag, as what Chrome and Firefox copy does, was read as
 empty, and the paste fell back to its plain text.)
