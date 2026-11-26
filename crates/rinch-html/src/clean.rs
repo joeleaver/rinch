@@ -33,7 +33,6 @@
 //!   them as presentational hints, as a browser does (`rinch-dom`'s
 //!   `legacy_hints`).
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -173,15 +172,6 @@ pub fn clean_at(document: &str, policy: &Policy, width: f32) -> Cleaned {
 
 fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
     let document = crate::depth::cap(document);
-    let document = match &policy.allow {
-        Some(allow) => Cow::Owned(crate::allow::carry(&document, allow).into_owned()),
-        None => document,
-    };
-    let carried_names = policy
-        .allow
-        .as_ref()
-        .map(crate::allow::carried_names)
-        .unwrap_or_default();
     let user_selectors: Vec<String> = crate::user_sheet::rules(&policy.user_css)
         .into_iter()
         .map(|r| r.selector)
@@ -230,10 +220,15 @@ fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
             },
         );
     if let Some(allow) = &policy.allow {
-        allow.narrow(&mut builder, &mark, &carried_names);
+        allow.narrow(&mut builder, &mark);
     }
+    let html = builder.clean(document).to_string();
+    let html = match &policy.allow {
+        Some(allow) => crate::allow::carry(&html, allow).into_owned(),
+        None => html,
+    };
     Cleaned {
-        html: builder.clean(document).to_string(),
+        html,
         body_style,
         user_selectors,
         user_matches,

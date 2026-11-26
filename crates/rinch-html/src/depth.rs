@@ -47,15 +47,27 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
 /// (`<html><head>…<body>…`), leaving out what is nested deeper than
 /// [`MAX_DEPTH`]; empty if it cannot be written.
 pub(crate) fn write(arena: &Arena, capacity: usize) -> String {
+    write_children(arena, 0, capacity)
+}
+
+/// What is inside `root` (a node of `arena`), written as [`write`] writes a
+/// document; empty if it cannot be written.
+pub(crate) fn write_children(arena: &Arena, root: Id, capacity: usize) -> String {
     let mut out = Vec::with_capacity(capacity);
     let opts = SerializeOpts {
         traversal_scope: TraversalScope::ChildrenOnly(None),
         ..Default::default()
     };
-    if html5ever::serialize(&mut out, arena, opts).is_err() {
+    if html5ever::serialize(&mut out, &Children { arena, root }, opts).is_err() {
         return String::new();
     }
     String::from_utf8(out).unwrap_or_default()
+}
+
+/// The children of one node of an arena, to serialize.
+struct Children<'a> {
+    arena: &'a Arena,
+    root: Id,
 }
 
 pub(crate) type Id = usize;
@@ -276,16 +288,16 @@ impl TreeSink for Arena {
     }
 }
 
-impl Serialize for Arena {
-    /// The document's children, leaving out each element deeper than
-    /// [`MAX_DEPTH`] (and what is in it).
+impl Serialize for Children<'_> {
+    /// The root's children, leaving out each element deeper than
+    /// [`MAX_DEPTH`] below it (and what is in it).
     fn serialize<S: Serializer>(&self, s: &mut S, _scope: TraversalScope) -> std::io::Result<()> {
         enum Step {
             Open(Id, usize),
             Close(Id),
         }
-        let nodes = self.nodes.borrow();
-        let mut stack: Vec<Step> = nodes[0]
+        let nodes = self.arena.nodes.borrow();
+        let mut stack: Vec<Step> = nodes[self.root]
             .children
             .iter()
             .rev()

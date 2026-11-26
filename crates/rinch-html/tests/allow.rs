@@ -206,11 +206,37 @@ fn a_carried_attribute_comes_out_renamed_and_only_carried_values_bear_the_name()
     let html = out.html;
     assert_eq!(html.matches(&name).count(), 1, "{html}");
     assert!(
-        html.contains(&format!(r#"<img alt="one" {name}="a&quot;b">"#)),
+        html.contains(&format!(r#"{name}="a&quot;b""#)) && html.contains(r#"alt="one""#),
         "{html}"
     );
     assert!(
         !html.contains("forged") && !html.contains(" data-attachment"),
         "{html}"
     );
+}
+
+#[test]
+fn a_document_that_parses_differently_twice_cannot_forge_a_carried_value() {
+    // A `<form>` in MathML: what one parse reads as text, a second parse of
+    // the written-out document reads as elements.
+    let mut allow = list(&["p", "a", "img"], &[("a", "href"), ("img", "alt")], &[]);
+    allow.carried = vec![
+        ("img".into(), "data-attachment".into()),
+        // Named twice, and once under the carried prefix itself.
+        ("*".into(), "data-attachment".into()),
+        ("img".into(), format!("{CARRIED}data-attachment")),
+    ];
+    let name = format!("{CARRIED}data-attachment");
+    let out = narrowed(
+        &format!(
+            "<img data-attachment=real alt=real>\
+             <form><math><mtext></form><form><mglyph><style></math>\
+             <p {name}=x>t</p><a href=http://e.example {name}=x>l</a>\
+             <img {name}=x alt=forged>"
+        ),
+        allow,
+    );
+    let html = out.html;
+    assert_eq!(html.matches(&name).count(), 1, "{html}");
+    assert!(html.contains(&format!(r#"{name}="real""#)), "{html}");
 }
