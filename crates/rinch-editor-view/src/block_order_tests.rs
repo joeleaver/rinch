@@ -12,17 +12,25 @@ use rinch_editor_core::{EditorState, Pos, Schema, Selection, default_plugins};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-struct Host {
-    doc: Rc<RefCell<dyn DomDocument>>,
-    container_id: NodeId,
+pub(super) struct Host {
+    pub(super) doc: Rc<RefCell<dyn DomDocument>>,
+    pub(super) container_id: NodeId,
+    /// The same document, for the boxes a test gives its blocks.
+    pub(super) mock: Rc<RefCell<MockDomDocument>>,
 }
 
-fn para(s: &Schema, t: &str) -> Node {
-    s.branch("paragraph", Fragment::from_node(s.text(t).unwrap()))
-        .unwrap()
+/// A paragraph holding `t` (empty when `t` is).
+pub(super) fn para(s: &Schema, t: &str) -> Node {
+    let content = if t.is_empty() {
+        Fragment::empty()
+    } else {
+        Fragment::from_node(s.text(t).unwrap())
+    };
+    s.branch("paragraph", content).unwrap()
 }
 
-fn mount(blocks: &[&str]) -> (Host, Rc<Schema>, EditorState, RinchDomEditorView) {
+/// A starter-kit editor over paragraphs holding `blocks`.
+pub(super) fn mount(blocks: &[&str]) -> (Host, Rc<Schema>, EditorState, RinchDomEditorView) {
     let s = Rc::new(Schema::starter_kit());
     let doc = s
         .branch(
@@ -30,30 +38,44 @@ fn mount(blocks: &[&str]) -> (Host, Rc<Schema>, EditorState, RinchDomEditorView)
             Fragment::from_children(blocks.iter().map(|t| para(&s, t)).collect()),
         )
         .unwrap();
-    let st = EditorState::create(s.clone(), doc, default_plugins());
+    let (host, st, view) = mount_state(EditorState::create(s.clone(), doc, default_plugins()));
+    (host, s, st, view)
+}
+
+/// An editor view over `st`, mounted in a mock document.
+pub(super) fn mount_state(st: EditorState) -> (Host, EditorState, RinchDomEditorView) {
     let mock = Rc::new(RefCell::new(MockDomDocument::new()));
-    let ddoc: Rc<RefCell<dyn DomDocument>> = mock;
+    let ddoc: Rc<RefCell<dyn DomDocument>> = mock.clone();
     let cid = ddoc.borrow_mut().create_element("div");
     let container = NodeHandle::new(cid, Rc::downgrade(&ddoc));
     let view = RinchDomEditorView::new(container, Rc::downgrade(&ddoc), &st);
-    (
-        Host {
-            doc: ddoc,
-            container_id: cid,
-        },
-        s,
-        st,
-        view,
-    )
+    let host = Host {
+        doc: ddoc,
+        container_id: cid,
+        mock,
+    };
+    (host, st, view)
 }
 
-/// The root's host children, each as its block's text or the overlay it is.
-fn order(host: &Host) -> Vec<String> {
+/// The marker attribute of each node the view keeps in the root that is not a
+/// block.
+pub(super) const OVERLAYS: [&str; 7] = [
+    "data-pm-placeholder",
+    "data-pm-caret",
+    "data-pm-selection",
+    "data-pm-selected",
+    "data-pm-drop-caret",
+    "data-pm-preedit",
+    "data-pm-reveal",
+];
+
+/// The host children of `id`, each as its block's text or the overlay it is.
+pub(super) fn order_of(host: &Host, id: NodeId) -> Vec<String> {
     let d = host.doc.borrow();
-    d.get_children(host.container_id)
+    d.get_children(id)
         .into_iter()
         .map(|id| {
-            for a in ["data-pm-caret", "data-pm-selection"] {
+            for a in OVERLAYS {
                 if d.get_attribute(id, a).is_some() {
                     return a.to_string();
                 }
@@ -63,8 +85,13 @@ fn order(host: &Host) -> Vec<String> {
         .collect()
 }
 
+/// The root's host children, each as its block's text or the overlay it is.
+pub(super) fn order(host: &Host) -> Vec<String> {
+    order_of(host, host.container_id)
+}
+
 /// Shows a caret and a selection rectangle, as a focused editor does.
-fn show_overlays(host: &Host, view: &mut RinchDomEditorView) {
+pub(super) fn show_overlays(host: &Host, view: &mut RinchDomEditorView) {
     view.position_caret(4.0, 4.0, 16.0);
     let first = host.doc.borrow().get_children(host.container_id)[0];
     view.set_selection_rects(&[((0.0, 0.0, 10.0, 16.0), first.0, None)]);
@@ -170,13 +197,14 @@ fn a_changed_stretch_holding_a_node_view_lands_before_the_overlays() {
         .unwrap();
     let st = EditorState::create(s.clone(), doc, default_plugins());
     let mock = Rc::new(RefCell::new(MockDomDocument::new()));
-    let ddoc: Rc<RefCell<dyn DomDocument>> = mock;
+    let ddoc: Rc<RefCell<dyn DomDocument>> = mock.clone();
     let cid = ddoc.borrow_mut().create_element("div");
     let container = NodeHandle::new(cid, Rc::downgrade(&ddoc));
     let mut view = RinchDomEditorView::with_node_views(container, Rc::downgrade(&ddoc), &st, views);
     let host = Host {
         doc: ddoc,
         container_id: cid,
+        mock,
     };
     show_overlays(&host, &mut view);
     // The rule and "two" (5..end) become "deux", a new rule and "trois".

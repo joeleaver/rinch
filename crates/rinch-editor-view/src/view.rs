@@ -1498,7 +1498,9 @@ impl ViewDesc {
     /// The host node a block child that is to follow `children[..end]` is
     /// inserted before: the first child of the unchanged suffix, else the
     /// trailing-break placeholder, else whatever host node follows
-    /// `children[end - 1]` (with no children, the host's first node).
+    /// `children[end - 1]` (with no children, the host's first node after the
+    /// empty-editor placeholder, which leads the root and stays before the
+    /// first block it overlays).
     ///
     /// The root also holds nodes that are not blocks: the caret, the selection
     /// rectangles, the node-selection outline, the drop caret, the IME preedit,
@@ -1516,7 +1518,12 @@ impl ViewDesc {
         }
         match end.checked_sub(1).and_then(|i| self.children.get(i)) {
             Some(last) => last.dom.next_sibling(),
-            None => self.dom.children().into_iter().next(),
+            None => match self.dom.children().into_iter().next() {
+                Some(first) if first.get_attribute(PLACEHOLDER_ATTR).is_some() => {
+                    first.next_sibling()
+                }
+                first => first,
+            },
         }
     }
 
@@ -1530,6 +1537,10 @@ impl ViewDesc {
 /// The attribute marking a textblock's trailing-break placeholder
 /// ([`ViewDesc::sync_trailing_break`], #1172).
 pub(crate) const TRAILING_BREAK_ATTR: &str = "data-pm-trailing-break";
+
+/// The attribute marking the empty-editor placeholder overlay, the root's
+/// first host node while shown.
+pub(crate) const PLACEHOLDER_ATTR: &str = "data-pm-placeholder";
 
 /// The desktop editor view: projects [`EditorState`] onto rinch-dom and keeps the
 /// host in sync as transactions are applied (design §6). Implements the
@@ -1846,14 +1857,17 @@ impl RinchDomEditorView {
             (Some(text), false) => {
                 self.placeholder_text = text.into();
                 if let Some(node) = create_element(&self.doc, "div") {
-                    node.set_attribute("data-pm-placeholder", "true");
+                    node.set_attribute(PLACEHOLDER_ATTR, "true");
                     node.set_attribute("class", "rinch-editor-placeholder");
                     if let Some(t) = create_text(&self.doc, text) {
                         node.append_child(&t);
                     }
-                    // Overlay the (empty) first block; if none, append to the root.
-                    match self.root.first_child_dom() {
-                        Some(first) => self.root.dom.insert_before(&node, first),
+                    // Before the (empty) first block it overlays; with no
+                    // block, still the root's first node, ahead of the caret
+                    // and the other overlays (`ViewDesc::block_end_anchor`).
+                    let first = self.root.first_child_dom().cloned();
+                    match first.or_else(|| self.root.dom.children().into_iter().next()) {
+                        Some(first) => self.root.dom.insert_before(&node, &first),
                         None => self.root.dom.append_child(&node),
                     }
                     self.placeholder = Some(node);
@@ -7362,6 +7376,10 @@ mod incremental_fresh_1833_prop_tests;
 #[cfg(test)]
 #[path = "block_order_tests.rs"]
 mod block_order_tests;
+
+#[cfg(test)]
+#[path = "block_order_overlay_tests.rs"]
+mod block_order_overlay_tests;
 
 #[cfg(test)]
 #[path = "inline_doc_1833_tests.rs"]
