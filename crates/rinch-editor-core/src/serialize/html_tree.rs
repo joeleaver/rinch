@@ -1509,13 +1509,13 @@ pub(super) fn is_void_tag(tag: &str) -> bool {
 /// the reader keeps on a node whose schema opts in) — drops `on*` event
 /// handlers, every data attribute rinch reserves and everything else. The
 /// one `id` kept is Google Docs' `docs-internal-guid-…`, which says the
-/// markup is a Docs copy ([`super::html_google_docs`]).
+/// markup is a Docs copy ([`super::html_sources`]).
 fn filter_attributes(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
     attrs
         .into_iter()
         .filter(|(name, value)| {
             crate::schema::is_app_data_attr(name)
-                || (name == "id" && super::html_google_docs::is_docs_guid(value))
+                || (name == "id" && super::html_sources::is_docs_guid(value))
                 || name == super::html::CLIPBOARD_MARK
                 || matches!(
                     name.as_str(),

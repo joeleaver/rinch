@@ -800,7 +800,11 @@ const COMMANDS_HASH: u64 = 9266202348521479181;
 /// Since #1930, a paste over a range whose ends are in different isolating
 /// nodes is fitted: 148 lines of the table document went from `ERR` (the plain
 /// replace's refusal) to a fitted result; no other line changed.
-const PASTE_HASH: u64 = 2303484980220912611;
+/// Since #3096, the writer writes a textblock that ends in a hard break with
+/// the placeholder `<br>` after it (`<p>q<br><br></p>`): 20 lines changed, and
+/// with each `<br><br></tag>` written back as `<br></tag>` the output hashes to
+/// the previous value, 2303484980220912611, so no document changed.
+const PASTE_HASH: u64 = 12776122385540167651;
 
 fn rss_kb() -> usize {
     std::fs::read_to_string("/proc/self/statm")

@@ -21,6 +21,12 @@ const SAFE: &[(&str, &str)] = &[
         "data-on",
         "a prefix the debug HTML serializer skips; the runtime reads only the whole `data-on…` names, all reserved",
     ),
+    // Read, never written: an attribute of another application's clipboard
+    // markup the HTML reader recognises that application by.
+    (
+        "data-sheets-root",
+        "Google Sheets' copy (`serialize/html_sources.rs`); only read, to know the source",
+    ),
     // Component markers: written and read by one component on its own parts,
     // found under the component's own class, never by a walk from an
     // arbitrary element.

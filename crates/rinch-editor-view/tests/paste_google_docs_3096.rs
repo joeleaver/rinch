@@ -57,7 +57,7 @@ fn a_docs_paste_on_an_empty_line_has_the_lines_docs_shows() {
     let doc = editor.doc();
     assert_eq!(
         node_to_html(&doc),
-        "<p>first</p><p></p><p>second</p><p><br></p><p>third</p>"
+        "<p>first</p><p></p><p>second</p><p><br><br></p><p>third</p>"
     );
     // first, 1 empty, second, 2 empty, third: what Chrome shows for the
     // markup, and what the plain text says.
@@ -70,7 +70,7 @@ fn a_docs_paste_inside_a_line_keeps_the_text_around_it() {
     let doc = editor.doc();
     assert_eq!(
         node_to_html(&doc),
-        "<p>afirst</p><p></p><p>second</p><p><br></p><p>thirdb</p>"
+        "<p>afirst</p><p></p><p>second</p><p><br><br></p><p>thirdb</p>"
     );
     assert_eq!(lines(&doc), 6);
 }
@@ -83,4 +83,85 @@ fn the_plain_text_of_a_docs_copy_has_the_same_lines() {
     editor.set_selection(Selection::text(Pos(1), Pos(1)));
     assert!(editor.paste(&PasteContent::text(clipboard().text.unwrap())));
     assert_eq!(lines(&editor.doc()), 6);
+}
+
+/// Paste `html` (with no plain text) at `at` in `target`.
+fn paste_html(target: &str, at: usize, html: &str) -> Node {
+    let editor = create_editor();
+    editor.load_html(target);
+    editor.set_selection(Selection::text(Pos(at), Pos(at)));
+    let paste = PasteContent {
+        text: None,
+        html: Some(html.into()),
+    };
+    assert!(editor.paste(&paste), "the paste was refused");
+    editor.doc()
+}
+
+/// Loose `<br>`s that end a copy, where nothing follows the caret: the last
+/// makes no line. Chrome (`insertHTML`): `<p>alpha</p><br>` at the end of
+/// `x` is 2 lines and with four `<br>`s 5; the same on an empty line, and at
+/// the end of a paragraph with another after it (plus that one).
+#[test]
+fn trailing_brs_where_nothing_follows_the_caret_have_chromes_lines() {
+    let one = "<p>alpha</p><br>";
+    let four = "<p>alpha</p><br><br><br><br>";
+    // The end of the document.
+    assert_eq!(lines(&paste_html("<p>x</p>", 2, one)), 2);
+    assert_eq!(lines(&paste_html("<p>x</p>", 2, four)), 5);
+    // An empty line.
+    assert_eq!(lines(&paste_html("<p></p>", 1, one)), 2);
+    assert_eq!(lines(&paste_html("<p></p>", 1, four)), 5);
+    // The end of a paragraph, another after it.
+    let doc = paste_html("<p>x</p><p>z</p>", 2, one);
+    assert_eq!(node_to_html(&doc), "<p>xalpha</p><p></p><p>z</p>");
+    assert_eq!(lines(&doc), 3);
+    assert_eq!(lines(&paste_html("<p>x</p><p>z</p>", 2, four)), 6);
+}
+
+/// Where text follows the caret, the `<br>` breaks the line before it, as
+/// in Chrome: `<p>alpha</p><br>` into `x|y` is 3 lines, four `<br>`s 6.
+#[test]
+fn trailing_brs_where_text_follows_the_caret_break_before_it() {
+    let doc = paste_html("<p>xy</p>", 2, "<p>alpha</p><br>");
+    assert_eq!(node_to_html(&doc), "<p>xalpha</p><p><br>y</p>");
+    assert_eq!(lines(&doc), 3);
+    assert_eq!(
+        lines(&paste_html("<p>xy</p>", 2, "<p>alpha</p><br><br><br><br>")),
+        6
+    );
+}
+
+/// A copy that ends in `<br class="Apple-interchange-newline">`, as Chrome's
+/// and Docs' do, ends in a paragraph end: into `x|y` Chrome shows `xalpha`,
+/// `beta`, `y`. Where nothing follows, it leaves no empty paragraph behind.
+#[test]
+fn an_interchange_newline_ends_the_paragraph() {
+    let html = "<meta charset=\"utf-8\"><p>alpha</p><p>beta</p>\
+                <br class=\"Apple-interchange-newline\">";
+    let doc = paste_html("<p>xy</p>", 2, html);
+    assert_eq!(node_to_html(&doc), "<p>xalpha</p><p>beta</p><p>y</p>");
+    assert_eq!(lines(&doc), 3);
+    let doc = paste_html("<p>x</p>", 2, html);
+    assert_eq!(node_to_html(&doc), "<p>xalpha</p><p>beta</p>");
+    let doc = paste_html("<p></p>", 1, html);
+    assert_eq!(node_to_html(&doc), "<p>alpha</p><p>beta</p>");
+}
+
+/// The Docs clipboard with its interchange newline, into `x|y`: the `y`
+/// follows `third` on a line of its own, with no empty line between.
+#[test]
+fn a_docs_copy_ending_in_an_interchange_newline_into_a_line() {
+    let mut paste = clipboard();
+    if let Some(html) = paste.html.as_mut() {
+        html.push_str("<br class=\"Apple-interchange-newline\">");
+    }
+    let editor = create_editor();
+    editor.load_html("<p>xy</p>");
+    editor.set_selection(Selection::text(Pos(2), Pos(2)));
+    assert!(editor.paste(&paste));
+    assert_eq!(
+        node_to_html(&editor.doc()),
+        "<p>xfirst</p><p></p><p>second</p><p><br><br></p><p>third</p><p>y</p>"
+    );
 }

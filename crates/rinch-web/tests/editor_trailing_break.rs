@@ -171,7 +171,7 @@ impl F {
 /// `ab<br>` shows two lines, and the caret after the break is on the second.
 #[wasm_bindgen_test]
 fn a_paragraph_ending_in_a_break_shows_its_empty_line_and_the_caret_is_on_it() {
-    let f = F::new("<p>ab<br></p>");
+    let f = F::new("<p>ab<br><br></p>");
     let line = f.line();
     assert_eq!(f.placeholders(), 1);
     let h = f.block().get_bounding_client_rect().height();
@@ -265,7 +265,7 @@ impl F {
 
 #[wasm_bindgen_test]
 fn arrows_home_end_and_backspace_across_a_trailing_break() {
-    let f = F::new("<p>ab<br></p><p>cd</p>");
+    let f = F::new("<p>ab<br><br></p><p>cd</p>");
     f.at(2);
     f.key("ArrowDown", false);
     assert_eq!(f.head(), 3, "down onto the empty line");

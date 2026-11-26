@@ -143,7 +143,7 @@ fn dump_chrome_carets() {
     dump_editor(&mut out, "<pre>ab\n</pre>", 400);
     dump_editor(&mut out, "<pre>ab\n\n</pre>", 400);
     dump_editor(&mut out, "<pre>\nab\n\n\ncd\nef</pre>", 400);
-    dump_editor(&mut out, "<p>ab<br>cd</p><p>ab<br></p>", 400);
+    dump_editor(&mut out, "<p>ab<br>cd</p><p>ab<br><br></p>", 400);
     dump_editor(&mut out, "<p>aaaa bbbb cccc dddd eeee</p>", 60);
     dump_editor(&mut out, "<pre>aaaaaaaaaaaaaaaa\nbb</pre>", 60);
     dump_doc(&mut out, "white-space: pre", &["ab\n\ncd"]);

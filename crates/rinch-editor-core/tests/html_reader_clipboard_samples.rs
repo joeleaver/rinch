@@ -203,9 +203,12 @@ fn google_docs() {
         "<h1>Trip plan</h1>\
          <p>Leave on <strong>Friday</strong>, see <u><span style=\"color:#1155cc\"><a href=\"https://example.com/map\">the map</a></span></u>.</p>\
          <p></p>\
-         <ul><li><p>Tickets</p><ul><li><p>Train</p></li></ul></li><li><p>Hotel</p></li></ul>\
-         <p><br></p>"
+         <ul><li><p>Tickets</p><ul><li><p>Train</p></li></ul></li><li><p>Hotel</p></li></ul>"
     );
+    // The `<br class="Apple-interchange-newline">` Docs' copy ends in is a
+    // paragraph end, not an empty line (#3096): nothing is open at the end.
+    let slice = slice_from_pasted_html(&Schema::starter_kit(), DOCS).unwrap();
+    assert_eq!(slice.open_end, 0);
 }
 
 /// Notion: plain structure, with an `<aside>` for a callout and
@@ -312,7 +315,7 @@ dir=\"ltr\">Are you coming?</div></div></blockquote></div></div>";
 fn apple_notes_and_mail() {
     assert_eq!(
         read(APPLE_NOTES),
-        "<p><strong>Shopping</strong></p><p><br></p><ul><li><p>Milk</p></li><li><p>Bread\u{a0}</p></li></ul>"
+        "<p><strong>Shopping</strong></p><p></p><ul><li><p>Milk</p></li><li><p>Bread\u{a0}</p></li></ul>"
     );
     assert_eq!(
         read(APPLE_MAIL),

@@ -27,13 +27,16 @@
 //!
 //! The tree builder is `super::html_tree`, zero-dependency.
 
-use super::html_google_docs::{is_docs_default_text_colour, is_google_docs_copy};
 use super::html_integer::{
     HtmlDimension, parse_html_clamped_non_negative_integer, parse_html_dimension,
     parse_html_integer,
 };
+pub use super::html_lines::PasteEnd;
 use super::html_lines::{LineEnd, drop_line_end_break};
-use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
+pub use super::html_slice::{
+    slice_from_html, slice_from_pasted_html, slice_from_pasted_html_ending,
+};
+use super::html_tree::{ParsedNode, is_table_part, step};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::pos::Pos;
@@ -190,6 +193,19 @@ fn write_node(node: &Node, out: &mut String, mode: Mode) {
     out.push_str(&open);
     for child in node.content().children() {
         write_node(child, out, mode);
+    }
+    // A browser draws no line for a block's last `<br>` (the reader reads it
+    // so too, #3096), so a textblock that ends in a hard break gets one more
+    // `<br>` for the line after it, as a browser's own editor writes it:
+    // `<p>a<br><br></p>` is `a` and an empty line, in rinch and anywhere.
+    if node.is_textblock()
+        && node
+            .content()
+            .children()
+            .last()
+            .is_some_and(|c| c.type_name() == "hard_break")
+    {
+        out.push_str("<br>");
     }
     out.push_str(&close);
 }
@@ -511,7 +527,7 @@ fn html_fallback_for(node: &Node) -> Option<String> {
 ///
 /// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DataAttrSource {
+pub(super) enum DataAttrSource {
     /// Every app data attribute ([`slice_from_html`]: a load, an import).
     Any,
     /// Only on an element rinch's copy-out marked ([`CLIPBOARD_MARK`]): the
@@ -656,90 +672,8 @@ fn escape_attr(s: &str) -> String {
 
 // ─── Paste-in: HTML → Slice (whitelist) ──────────────────────────────────────
 
-/// Parse an HTML fragment into a sanitized [`Slice`] against `schema`.
-///
-/// The result is structurally valid content, **open at each end down to the
-/// textblock there** (`open_depth`): `<p>a</p><p>b</p>` is open through its
-/// paragraphs, `<ul><li>a</li></ul>` through the list, its item and the
-/// item's paragraph. Markup carries no open depths, so this is the reading
-/// that suits a paste ([`Transaction::replace_selection`]): the first
-/// textblock's content continues the line it is pasted on and the last one
-/// takes the text after the caret, while everything between keeps its
-/// structure. An edge that reaches no textblock (a rule, a table) is closed.
-///
-/// It does not fail on markup, and the content is always valid: what the
-/// reader has no node for is read through for its text (an element that holds
-/// a block is a container of blocks, any other is inline), table parts with
-/// no `<table>` around them are a table, and what has no place in a table
-/// goes in front of it. Unknown marks and attributes are dropped; dangerous
-/// elements never materialize. The only errors are a schema with no
-/// paragraph or list item type, and attributes the schema refuses.
-///
-/// A node whose spec keeps app data attributes ([`NodeSpec::data_attrs`])
-/// keeps every one the element carries (bounded, [`kept_data_attrs`]); the
-/// default paste reads with [`slice_from_pasted_html`] instead.
-///
-/// [`Transaction::replace_selection`]: crate::state::Transaction::replace_selection
-/// [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
-pub fn slice_from_html(schema: &Schema, html: &str) -> Result<Slice, EditorError> {
-    read_slice(schema, html, DataAttrSource::Any)
-}
-
-/// [`slice_from_html`] for the default (unclaimed) paste: an element's app
-/// data attributes are kept only when rinch's own copy-out wrote them
-/// ([`CLIPBOARD_MARK`] on the element), so a copy between rinch editors keeps
-/// them and another application's are dropped. A
-/// [`Plugin::handle_paste`](crate::Plugin::handle_paste) that wants the
-/// pasted markup's attributes reads them from `PasteContent::html` itself.
-pub fn slice_from_pasted_html(schema: &Schema, html: &str) -> Result<Slice, EditorError> {
-    read_slice(schema, html, DataAttrSource::MarkedOnly)
-}
-
-fn read_slice(schema: &Schema, html: &str, data: DataAttrSource) -> Result<Slice, EditorError> {
-    let mut forest = HtmlFragmentParser::new(html).parse();
-    let mut parser = HtmlParser::new(schema)?;
-    parser.data_attrs = data;
-    parser.google_docs = is_google_docs_copy(&forest);
-    parser.mark_blocks(&mut forest);
-    let blocks = parser.parse_fragment(&forest)?;
-    if blocks.is_empty() {
-        return Ok(Slice::empty());
-    }
-    let open_start = open_depth(blocks.first());
-    let open_end = open_depth_end(blocks.last());
-    Ok(Slice::new(
-        Fragment::from_children(blocks),
-        open_start,
-        open_end,
-    ))
-}
-
-/// How many nodes are open at the start of content whose first node is
-/// `node`: every node down to and including the first textblock, when the
-/// way there crosses no leaf and no isolating node (a table cell); else none.
-fn open_depth(node: Option<&Node>) -> usize {
-    edge_depth(node, |n| n.content().children().first())
-}
-
-/// [`open_depth`] for the end of content whose last node is `node`.
-fn open_depth_end(node: Option<&Node>) -> usize {
-    edge_depth(node, |n| n.content().children().last())
-}
-
-fn edge_depth(mut node: Option<&Node>, next: impl Fn(&Node) -> Option<&Node>) -> usize {
-    let mut depth = 0;
-    while let Some(n) = node {
-        if n.is_textblock() {
-            return depth + 1;
-        }
-        if n.is_leaf() || n.node_type().is_isolating() {
-            return 0;
-        }
-        depth += 1;
-        node = next(n);
-    }
-    0
-}
+// The entry points (`slice_from_html` and the paste readers) are in
+// `html_slice`; the reader they drive follows.
 
 /// The schema's table node types, when it has all four.
 struct TableTypes<'a> {
@@ -750,7 +684,7 @@ struct TableTypes<'a> {
 }
 
 /// Holds the schema and the reverse tag→type lookup tables, built once per parse.
-struct HtmlParser<'a> {
+pub(super) struct HtmlParser<'a> {
     schema: &'a Schema,
     /// Block-level HTML tag → node type (`p`→paragraph, `h1`→heading, …).
     block: HashMap<&'a str, &'a NodeType>,
@@ -764,10 +698,7 @@ struct HtmlParser<'a> {
     code_block: Option<&'a NodeType>,
     hard_break: Option<&'a NodeType>,
     /// Which data attributes a node that keeps them takes from an element.
-    data_attrs: DataAttrSource,
-    /// The markup is a Google Docs copy, whose default text colour is no
-    /// colour (`html_google_docs`).
-    google_docs: bool,
+    pub(super) data_attrs: DataAttrSource,
 }
 
 /// The textblock that inline content between blocks becomes: a paragraph
@@ -806,7 +737,7 @@ struct Parsed {
 }
 
 impl<'a> HtmlParser<'a> {
-    fn new(schema: &'a Schema) -> Result<Self, EditorError> {
+    pub(super) fn new(schema: &'a Schema) -> Result<Self, EditorError> {
         let mut block = HashMap::new();
         let mut inline_leaf = HashMap::new();
         for (name, spec) in &schema.nodes {
@@ -860,7 +791,6 @@ impl<'a> HtmlParser<'a> {
             code_block: schema.node_type("code_block"),
             hard_break,
             data_attrs: DataAttrSource::Any,
-            google_docs: false,
         })
     }
 
@@ -938,7 +868,7 @@ impl<'a> HtmlParser<'a> {
 
     /// Set every element's `holds_block` under `nodes`. Returns whether any
     /// of `nodes` is, or holds, a block.
-    fn mark_blocks(&self, nodes: &mut [ParsedNode]) -> bool {
+    pub(super) fn mark_blocks(&self, nodes: &mut [ParsedNode]) -> bool {
         let mut any = false;
         for n in nodes {
             if let ParsedNode::Element {
@@ -964,13 +894,15 @@ impl<'a> HtmlParser<'a> {
     }
 
     /// [`Self::parse_blocks`] for the whole markup read: the inline content
-    /// it ends with is a line its end leaves open ([`LineEnd::Open`]), which
-    /// the text after a paste's caret continues.
-    fn parse_fragment(&self, nodes: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
+    /// it ends with is a line that ends as `end` says ([`LineEnd::Open`] when
+    /// the text after a paste's caret continues it).
+    pub(super) fn parse_fragment(
+        &self,
+        nodes: &[ParsedNode],
+        end: LineEnd,
+    ) -> Result<Vec<Node>, EditorError> {
         let refs: Vec<&ParsedNode> = nodes.iter().collect();
-        Ok(self
-            .parse_block_refs_ending(&refs, None, &[], LineEnd::Open)?
-            .blocks)
+        Ok(self.parse_block_refs_ending(&refs, None, &[], end)?.blocks)
     }
 
     /// Read sibling nodes as blocks. Inline content between blocks is a
@@ -1883,9 +1815,14 @@ impl<'a> HtmlParser<'a> {
 
     // ── Inline content ───────────────────────────────────────────────────────
 
+    /// The content of a textblock element. Its last `<br>` is the line end a
+    /// browser draws no line for, so it is no `hard_break` (#3096):
+    /// `<p><br></p>` is an empty paragraph, `<p>a<br><br></p>` (how the
+    /// writer writes a paragraph ending in a hard break) `a` and one break.
     fn parse_inline_children(&self, children: &[ParsedNode]) -> Result<Fragment, EditorError> {
         let mut out = Inline::default();
         self.parse_inline(children, &[], &mut out)?;
+        drop_line_end_break(&mut out.nodes, self.hard_break, LineEnd::Closed);
         Ok(inline_fragment(out.nodes))
     }
 
@@ -2089,9 +2026,9 @@ impl<'a> HtmlParser<'a> {
     /// takes italic off), `text-decoration` / `text-decoration-line`
     /// (`underline`, `line-through`) and `vertical-align` (`sub`, `super`),
     /// each as the mark the schema reads `<b>`, `<em>`, `<u>`, `<s>`,
-    /// `<sub>` and `<sup>` as. In a Google Docs copy its default
-    /// `color:#000000` is no colour (#3096). Returns the new active mark set,
-    /// or `None` for a span with no style.
+    /// `<sub>` and `<sup>` as. A known source's default text colour was
+    /// taken out of its copy before this reads it (`html_sources`, #3096).
+    /// Returns the new active mark set, or `None` for a span with no style.
     fn span_marks(
         &self,
         attributes: &[(String, String)],
@@ -2101,11 +2038,8 @@ impl<'a> HtmlParser<'a> {
             return Ok(None);
         };
         let mut next = active.to_vec();
-        // Google Docs' black is its "no colour" (`html_google_docs`).
         if let (Some(color), Some(mt)) = (
-            parse_style(style, "color").filter(|c| {
-                is_safe_css_color(c) && !(self.google_docs && is_docs_default_text_colour(c))
-            }),
+            parse_style(style, "color").filter(|c| is_safe_css_color(c)),
             self.schema.mark_type("text_color"),
         ) {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(color))]))?;
@@ -3063,7 +2997,7 @@ mod tests {
                 ),
             ]),
         );
-        assert_eq!(node_to_html(&para), r#"<p><img src="a.png"><br></p>"#);
+        assert_eq!(node_to_html(&para), r#"<p><img src="a.png"><br><br></p>"#);
     }
 
     /// An image's app data attributes and `width` survive copy and paste,
