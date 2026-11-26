@@ -685,7 +685,11 @@ EditorState { doc, selection, stored_marks, schema, plugins, plugin_state }
 ```
 
 `state.apply(tr)` runs the transaction's steps, then folds each plugin's state
-forward (history pushes inverted steps). Decorations are **not** stored and
+forward (history pushes inverted steps). A decoration is a widget at a position,
+a class on a range of text (`Decoration::inline`) or a class on one whole node's
+element (`Decoration::node`; see
+[Your own plugins and decorations](contenteditable.md#your-own-plugins-and-decorations));
+the enum is `#[non_exhaustive]`. Decorations are **not** stored and
 remapped by the core: `state.decorations()` asks every plugin afresh for the
 state being rendered, so a plugin that caches decoration ranges maps them through
 `tr.mapping()` in its own `apply`.

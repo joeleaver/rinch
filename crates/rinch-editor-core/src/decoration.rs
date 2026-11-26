@@ -32,23 +32,39 @@
 //! `decorations`. A plugin that derives its ranges from the document each time
 //! (the placeholder plugin, a plugin that scans `state.doc`) needs to do nothing.
 //!
-//! **Scope:** [`Widget`] decorations (the placeholder) and [`Inline`] decorations
+//! **Scope:** [`Widget`] decorations (the placeholder), [`Inline`] decorations
 //! (a class applied to a document range — spellcheck squiggles, search
-//! highlights). Node decorations — a class on a whole block — land in M7; adding
-//! that variant now would be unconstructed and trip the crate's no-dead-code
-//! gate.
+//! highlights) and [`Node`] decorations (a class on one whole node's own host
+//! element — the block the caret is in, a block an outline has folded). The
+//! enum is `#[non_exhaustive]`: another kind may be added, so a `match` on it
+//! outside this crate needs a `_` arm.
+//!
+//! # Which node a node decoration names
+//!
+//! [`Decoration::Node`] spans exactly one node: `from` is the position
+//! immediately before it and `to` the position immediately after it
+//! (`from + node.node_size()`), as in ProseMirror. Any node but the document
+//! itself and a text node can be named: a textblock, a container (a list, a
+//! list item, a quote, a table, a row, a cell), a block or inline leaf (a
+//! horizontal rule, an image, a hard break, a node a node view draws). A range
+//! that does not span exactly one such node draws **nothing** — it is never
+//! widened or narrowed to the nearest one — so a plugin that caches positions
+//! has to keep both ends right (map `from` with a bias of `1` and `to` with
+//! `-1`, so that content inserted beside the node stays outside the range).
 //!
 //! [`EditorState`]: crate::state::EditorState
 //! [`Inline`]: Decoration::Inline
+//! [`Node`]: Decoration::Node
 
 use crate::model::Attrs;
 use crate::pos::Pos;
 use std::rc::Rc;
 
-/// One decoration: a [`Decoration::Widget`] anchored at a single position, or a
-/// [`Decoration::Inline`] styling a range of the document. The node kind arrives
-/// with a later milestone (see the module docs).
+/// One decoration: a [`Decoration::Widget`] anchored at a single position, a
+/// [`Decoration::Inline`] styling a range of the document, or a
+/// [`Decoration::Node`] styling one whole node (see the module docs).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Decoration {
     /// A widget anchored at a single document position, drawn *between* content
     /// and never selectable. Used for the empty-editor placeholder now, and for
@@ -80,6 +96,23 @@ pub enum Decoration {
         /// Renderer-agnostic attributes; `class` is the one the view honours.
         attrs: Attrs,
     },
+    /// Styling applied to the host element of the one node spanning
+    /// `[from, to)`, without touching the document.
+    ///
+    /// The view reads **`class`** from `attrs` (a space-separated CSS class
+    /// list) and adds those words to the element's own `class` attribute.
+    /// Several decorations of one node add the union of their words; a word the
+    /// element already had is left alone, and only the words decorations added
+    /// are taken off again. See the module docs for which nodes can be named
+    /// and what a range that spans none does.
+    Node {
+        /// The position immediately before the node.
+        from: Pos,
+        /// The position immediately after the node.
+        to: Pos,
+        /// Renderer-agnostic attributes; `class` is the one the view honours.
+        attrs: Attrs,
+    },
 }
 
 impl Decoration {
@@ -101,22 +134,36 @@ impl Decoration {
         Decoration::Inline { from, to, attrs }
     }
 
+    /// A [`Decoration::Node`] on the node spanning `[from, to)`: the positions
+    /// immediately before and after it (`to = from + node.node_size()`).
+    ///
+    /// The ends are put in order, as for [`Decoration::inline`]. Nothing checks
+    /// here that they span a node; one that does not is simply not drawn.
+    pub fn node(from: Pos, to: Pos, attrs: Attrs) -> Decoration {
+        let (from, to) = if from.0 <= to.0 {
+            (from, to)
+        } else {
+            (to, from)
+        };
+        Decoration::Node { from, to, attrs }
+    }
+
     /// The (single) document position this decoration is anchored at. For a
-    /// widget, the position it is drawn at; for an inline decoration, the start
-    /// of its range.
+    /// widget, the position it is drawn at; for an inline or node decoration,
+    /// the start of its range.
     pub fn pos(&self) -> Pos {
         match self {
             Decoration::Widget { pos, .. } => *pos,
-            Decoration::Inline { from, .. } => *from,
+            Decoration::Inline { from, .. } | Decoration::Node { from, .. } => *from,
         }
     }
 
-    /// The range this decoration covers: `[from, to)` for an inline decoration,
-    /// the empty range at its anchor for a widget.
+    /// The range this decoration covers: `[from, to)` for an inline or node
+    /// decoration, the empty range at its anchor for a widget.
     pub fn range(&self) -> (Pos, Pos) {
         match self {
             Decoration::Widget { pos, .. } => (*pos, *pos),
-            Decoration::Inline { from, to, .. } => (*from, *to),
+            Decoration::Inline { from, to, .. } | Decoration::Node { from, to, .. } => (*from, *to),
         }
     }
 
@@ -133,9 +180,22 @@ impl Decoration {
         }
     }
 
+    /// The CSS class list of a [`Decoration::Node`]; `None` for any other
+    /// kind, for a node decoration with no `class` attr or a blank one, and for
+    /// an empty range (no node is that small). Whether the range spans a node
+    /// is for the view, which has the document, to decide.
+    pub fn node_class(&self) -> Option<&str> {
+        match self {
+            Decoration::Node { from, to, attrs } if from.0 < to.0 => {
+                attrs.get_str("class").filter(|c| !c.trim().is_empty())
+            }
+            _ => None,
+        }
+    }
+
     /// This decoration's placeholder prompt text, if it is a
     /// [`Widget::Placeholder`]; `None` otherwise (other widget kinds, and inline
-    /// decorations). Lets the view pull the placeholder out of a
+    /// and node decorations). Lets the view pull the placeholder out of a
     /// [`DecorationSet`] without matching the enum.
     pub fn as_placeholder(&self) -> Option<&str> {
         match self {
@@ -143,7 +203,7 @@ impl Decoration {
                 widget: Widget::Placeholder(text),
                 ..
             } => Some(text),
-            Decoration::Inline { .. } => None,
+            Decoration::Inline { .. } | Decoration::Node { .. } => None,
         }
     }
 }
@@ -307,6 +367,33 @@ mod tests {
             None
         );
         assert_eq!(classed(0, 2, "   ").inline_class(), None);
+    }
+
+    #[test]
+    fn node_decoration_records_its_range_and_class() {
+        let attrs = Attrs::new().with("class", "current");
+        let d = Decoration::node(Pos(0), Pos(7), attrs.clone());
+        assert_eq!(d.pos(), Pos(0));
+        assert_eq!(d.range(), (Pos(0), Pos(7)));
+        assert_eq!(d.node_class(), Some("current"));
+        // The two classed kinds are told apart, and neither is a placeholder.
+        assert_eq!(d.inline_class(), None);
+        assert_eq!(d.as_placeholder(), None);
+        assert_eq!(classed(0, 7, "current").node_class(), None);
+        assert_ne!(d, classed(0, 7, "current"));
+        assert_eq!(Decoration::node(Pos(7), Pos(0), attrs), d);
+    }
+
+    #[test]
+    fn a_node_decoration_with_nothing_to_draw_has_no_class() {
+        let blank = Attrs::new().with("class", "  ");
+        assert_eq!(Decoration::node(Pos(0), Pos(2), blank).node_class(), None);
+        assert_eq!(
+            Decoration::node(Pos(0), Pos(2), Attrs::new()).node_class(),
+            None
+        );
+        let empty = Attrs::new().with("class", "c");
+        assert_eq!(Decoration::node(Pos(3), Pos(3), empty).node_class(), None);
     }
 
     #[test]
