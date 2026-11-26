@@ -2,6 +2,8 @@
 //! inserting a node or a block.
 
 use super::*;
+use crate::transform::data_attrs::Edit;
+use crate::transform::steps::ReplaceStep;
 
 impl Transaction {
     // -- selection-aware gestures ----------------------------------------
@@ -39,7 +41,10 @@ impl Transaction {
             .text_with_marks(text, marks)
             .map_err(|e| StepError::new(e.to_string()))?;
         let len = node.text_len();
-        self.replace_with(from, to, Fragment::from_node(node))?;
+        self.with_transform(|tf| {
+            tf.replace_inline(from, to, Fragment::from_node(node))
+                .map(|_| ())
+        })?;
         self.set_selection(Selection::cursor(Pos(from + len)));
         Ok(())
     }
@@ -101,7 +106,7 @@ impl Transaction {
                 .ok_or_else(|| StepError::new("no position after block"))?
         } else {
             // Interior — split the textblock; the gap is just before the second half.
-            self.split(from, 1, None)?;
+            self.split_textblock(from, 1, None)?;
             let mapped = self.mapping().map(from, 1);
             let r2 = self
                 .doc
@@ -134,6 +139,52 @@ impl Transaction {
             Ok(())
         })?;
         Ok(self)
+    }
+
+    /// [`split`](Self::split) at `pos`, inside a textblock, as Enter does it:
+    /// the two blocks then hold that textblock's app data attributes by [the
+    /// rules](crate::schema::data_attrs).
+    pub(crate) fn split_textblock(
+        &mut self,
+        pos: usize,
+        depth: usize,
+        types_after: Option<Vec<Option<(NodeType, Attrs)>>>,
+    ) -> Result<(), StepError> {
+        let r = self
+            .doc
+            .resolve(Pos(pos))
+            .map_err(|e| StepError::new(e.to_string()))?;
+        let original = r.parent().clone();
+        let first = r
+            .before(r.depth())
+            .ok_or_else(|| StepError::new("no position before block"))?;
+        let before = r.parent_offset() > 0;
+        let after = r.parent_offset() < original.content().size();
+        self.split(pos, depth, types_after)?;
+        // The split closes `depth` nodes after the position and opens as many.
+        let second = self
+            .doc
+            .resolve(Pos(pos + 2 * depth))
+            .ok()
+            .and_then(|r| r.before(r.depth()))
+            .ok_or_else(|| StepError::new("no block after the split"))?;
+        self.with_transform(|tf| tf.settle_split(&original, first, second, before, after))
+    }
+
+    /// Remove the two tokens around `cut`, joining the nodes that meet there.
+    pub(crate) fn join_textblocks(&mut self, cut: usize) -> Result<(), StepError> {
+        self.with_transform(|tf| {
+            let ends = tf.data_ends(cut - 1, cut + 1, Edit::Join);
+            tf.step(Box::new(ReplaceStep::structural(
+                cut - 1,
+                cut + 1,
+                Slice::empty(),
+            )))?;
+            match ends {
+                Some(ends) => tf.settle_data(ends, Edit::Join),
+                None => Ok(()),
+            }
+        })
     }
 
     /// The selection's `from..to`, or an error for a **cell selection**,

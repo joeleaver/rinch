@@ -10,11 +10,15 @@
 //! Helpers return `Result<&mut Self, StepError>` so failures (schema-invalid
 //! steps) surface and chain with `?` — `tr.insert_text(..)?.delete(..)?`.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use crate::Slice;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, Node, NodeType};
 use crate::pos::Pos;
-use crate::schema::Schema;
 use crate::schema::data_attrs::carry_app_data;
+use crate::schema::{DataAttrSplit, Schema};
+use crate::transform::data_attrs::Edit;
 use crate::transform::fit;
 use crate::transform::node_range::NodeRange;
 use crate::transform::step::{Step, StepError};
@@ -32,6 +36,9 @@ pub struct Transform<'a> {
     steps: Vec<Box<dyn Step>>,
     docs: Vec<Node>,
     mapping: Mapping,
+    /// What a split does with the app data attributes named here; any other
+    /// is copied. A state's transaction brings its plugins' choices.
+    pub(crate) data_attr_splits: Option<Rc<HashMap<String, DataAttrSplit>>>,
 }
 
 impl<'a> Transform<'a> {
@@ -43,6 +50,7 @@ impl<'a> Transform<'a> {
             steps: Vec::new(),
             docs: Vec::new(),
             mapping: Mapping::new(),
+            data_attr_splits: None,
         }
     }
 
@@ -65,7 +73,17 @@ impl<'a> Transform<'a> {
             steps,
             docs,
             mapping,
+            data_attr_splits: None,
         }
+    }
+
+    /// What a split does with the app data attribute `name`
+    /// ([`Plugin::data_attr_splits`](crate::plugin::Plugin::data_attr_splits)).
+    pub(crate) fn data_attr_split(&self, name: &str) -> DataAttrSplit {
+        self.data_attr_splits
+            .as_ref()
+            .and_then(|splits| splits.get(name).copied())
+            .unwrap_or_default()
     }
 
     /// Extract the accumulated state (the inverse of [`Transform::from_parts`]).

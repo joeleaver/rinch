@@ -2,6 +2,8 @@
 //! handle's `set_block_data_attr` / `block_data_attr`.
 
 use super::*;
+use rinch_editor_core::DataAttrSplitPlugin;
+use rinch_editor_core::schema::DataAttrSplit;
 
 fn attr(h: &Harness, id: NodeId, name: &str) -> Option<String> {
     NodeHandle::new(id, Rc::downgrade(&h.doc)).get_attribute(name)
@@ -39,7 +41,7 @@ fn the_host_element_follows_set_change_remove_and_undo() {
     assert!(h.handle.set_block_data_attr("data-role", None));
     assert_eq!(roles(&h), [None, None]);
     assert!(h.handle.command("undo"));
-    assert_eq!(roles(&h).iter().flatten().count(), 1);
+    assert_eq!(roles(&h), [Some(String::new()), None]);
     // An attribute change patches the element it has.
     assert_eq!(children(&h, h.container_id)[0], first);
 }
@@ -50,12 +52,12 @@ fn the_host_element_follows_a_split_a_retype_and_a_load() {
     assert!(h.handle.set_block_data_attr("data-role", Some("sub")));
     h.handle.set_selection(Selection::cursor(Pos(3)));
     assert!(h.handle.command("enter"));
-    assert_eq!(roles(&h), [Some("sub".into()), None, None]);
+    assert_eq!(roles(&h), [Some("sub".into()), Some("sub".into()), None]);
     h.handle.set_selection(Selection::cursor(Pos(1)));
-    assert!(h.handle.command("toggleHeading2") || h.handle.command("setHeading2"));
+    assert!(h.handle.command("setHeading2"));
     let first = children(&h, h.container_id)[0];
     assert_eq!(tag(&h, first).as_deref(), Some("h2"));
-    assert_eq!(attr(&h, first, "data-role").as_deref(), Some("sub"));
+    assert_eq!(attr(&h, first, "data-role"), None);
     assert!(h.handle.load_html(r#"<p data-role="x">a</p><p>b</p>"#));
     assert_eq!(roles(&h), [Some("x".into()), None]);
 }
@@ -66,7 +68,23 @@ fn a_plain_text_paste_at_the_start_leaves_them_with_the_text() {
     assert!(h.handle.set_block_data_attr("data-role", Some("sub")));
     h.handle.set_selection(Selection::cursor(Pos(1)));
     assert!(h.handle.replace_selection_with_text("1\n2"));
-    assert_eq!(roles(&h), [None, Some("sub".into()), None]);
+    assert_eq!(roles(&h), [Some("sub".into()), Some("sub".into()), None]);
+}
+
+/// An app's choice, added to a mounted editor, is what Enter and a paste follow.
+#[test]
+fn an_added_split_choice_is_followed() {
+    let h = two();
+    h.handle.add_plugin(Rc::new(
+        DataAttrSplitPlugin::new().with("data-role", DataAttrSplit::CopyToText),
+    ));
+    assert!(h.handle.set_block_data_attr("data-role", Some("sub")));
+    h.handle.set_selection(Selection::cursor(Pos(3)));
+    assert!(h.handle.command("enter"));
+    assert_eq!(roles(&h), [Some("sub".into()), None, None]);
+    h.handle.set_selection(Selection::cursor(Pos(1)));
+    assert!(h.handle.replace_selection_with_text("1\n2"));
+    assert_eq!(roles(&h), [None, Some("sub".into()), None, None]);
 }
 
 #[test]

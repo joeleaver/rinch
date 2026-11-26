@@ -11,9 +11,9 @@ pub mod node;
 pub mod validation;
 
 pub use data_attrs::{
-    MAX_DATA_ATTR_NAME, MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS, RESERVED_DATA_ATTR_PREFIXES,
-    RESERVED_DATA_ATTRS, app_data_attrs, is_app_data_attr, is_data_attr_name,
-    is_reserved_data_attr, kept_data_attrs,
+    DataAttrSplit, MAX_DATA_ATTR_NAME, MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS,
+    RESERVED_DATA_ATTR_PREFIXES, RESERVED_DATA_ATTRS, app_data_attrs, is_app_data_attr,
+    is_data_attr_name, is_reserved_data_attr, kept_data_attrs,
 };
 pub use mark::{MarkSpec, MarkSpecBuilder};
 pub use node::{AttrSpec, MarkSet, NodeSpec, NodeSpecBuilder};

@@ -15,6 +15,7 @@ use crate::decoration::DecorationSet;
 use crate::input_rules::InputRule;
 use crate::keymap::KeyBinding;
 use crate::model::Node;
+use crate::schema::DataAttrSplit;
 use crate::state::{EditorState, Transaction};
 use std::any::Any;
 use std::rc::Rc;
@@ -101,6 +102,15 @@ pub trait Plugin {
     /// plugin that replaces a command by name replaces its declaration with its
     /// own.
     fn selection_commands(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    /// What a split of a textblock does with the app data attributes this
+    /// plugin names ([`DataAttrSplit`]), as `(name, choice)` pairs. A later
+    /// plugin that names one again replaces the choice; an attribute no plugin
+    /// names is copied. [`DataAttrSplitPlugin`](crate::plugins::DataAttrSplitPlugin)
+    /// is the ready-made one.
+    fn data_attr_splits(&self) -> Vec<(String, DataAttrSplit)> {
         Vec::new()
     }
 

@@ -2,11 +2,8 @@
 //! ([`crate::schema::data_attrs`]).
 
 use crate::command::Command;
-use crate::pos::Pos;
 use crate::schema::data_attrs::node_app_data;
-use crate::selection::Selection;
-use crate::state::{EditorState, Transaction};
-use crate::transform::steps::SetNodeAttrStep;
+use crate::state::EditorState;
 
 use super::command_tr;
 use super::queries::sel_ranges;
@@ -64,42 +61,4 @@ pub fn block_data_attr(state: &EditorState, name: &str) -> Option<String> {
             });
     }
     shared.flatten()
-}
-
-/// Remove every app data attribute of the node at `pos`.
-/// Delete the empty textblock before `cut` instead of joining the block after
-/// it into it, where either holds app data attributes: a join keeps the first
-/// block's markup, which would hand the second one an empty block's attributes
-/// (or take its own). `None` where neither block holds any, or they are not two
-/// textblocks with the first empty: the ordinary join.
-pub(super) fn delete_empty_block_before(state: &EditorState, cut: usize) -> Option<Transaction> {
-    let r = state.doc.resolve(Pos(cut)).ok()?;
-    let (before, after) = (r.node_before()?, r.node_after()?);
-    let applies = before.is_textblock()
-        && after.is_textblock()
-        && before.content().size() == 0
-        && (node_app_data(&before).next().is_some() || node_app_data(&after).next().is_some());
-    if !applies {
-        return None;
-    }
-    let from = cut - before.node_size();
-    let mut tr = state.tr();
-    tr.delete(from, cut).ok()?;
-    tr.set_selection(Selection::text(Pos(from + 1), Pos(from + 1)));
-    tr.doc_changed().then_some(tr)
-}
-
-pub(super) fn remove_app_data(tr: &mut Transaction, pos: usize) -> Option<()> {
-    let names: Vec<String> = node_app_data(&tr.doc().node_at(pos)?)
-        .map(|(name, _)| name.to_string())
-        .collect();
-    for attr in names {
-        tr.step(Box::new(SetNodeAttrStep {
-            pos,
-            attr,
-            value: None,
-        }))
-        .ok()?;
-    }
-    Some(())
 }

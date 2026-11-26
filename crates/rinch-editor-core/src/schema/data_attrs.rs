@@ -18,30 +18,42 @@
 //!
 //! An app sets and removes them with
 //! [`set_block_data_attr`](crate::commands::set_block_data_attr). They belong
-//! to the block, so:
+//! to the block and are invisible to it: **no data attribute ever changes
+//! what a document is made of.** Every split, join, fit and paste produces the
+//! blocks it would produce without them; the attributes then follow the text.
+//! The rules are what a browser's `contenteditable` does (measured in Chrome
+//! 158), except where said.
 //!
-//! - **Enter** at the end of a block (an empty one included) makes the new
-//!   block without them; at its start, the new empty block above is without
-//!   them and the text keeps them; in its middle, both halves keep them. The
-//!   same inside a list item. A raw [`Transform::split`] copies the markup,
-//!   as it always did.
-//! - **Joining** two blocks (Backspace, Delete, deleting across a boundary)
-//!   keeps the first block's attributes and drops the second's. Backspace or
-//!   Delete between an **empty** block and the textblock after it, where
-//!   either holds some, removes the empty block instead of joining: the other
-//!   stays as it was, its type included.
-//! - **Changing block type** keeps them where the new type keeps data
-//!   attributes (paragraph and heading) and drops them where it does not (a
-//!   code block). The Paragraph reset
-//!   ([`set_paragraph`](crate::commands::set_paragraph)) removes them.
+//! - **Enter** (and the block split a rule or a table is inserted at, inside a
+//!   list item too) copies them to both blocks: at the end of a block, at its
+//!   start and in its middle. A block of another element gets none: the
+//!   paragraph Enter makes after a heading. An app chooses otherwise per
+//!   attribute with [`DataAttrSplit`]. A raw [`Transform::split`] copies the
+//!   markup and asks no policy.
+//! - **Joining** two blocks (Backspace, Delete, deleting across a boundary,
+//!   typing over one): the joined block keeps the first block's, unless none
+//!   of the first block's text is left and some of the second's is, when it
+//!   has the second's (`<h2></h2>` and `<p data-b>cd</p>` join as
+//!   `<h2 data-b>cd</h2>`). A browser keeps the first block's there too.
+//! - **Changing block type** drops them when the element changes (paragraph to
+//!   heading, one heading level to another, anything to a code block) and
+//!   keeps them when it does not.
 //! - **Wrapping and lifting** (lists, quotes) move the block, attributes and
 //!   all.
-//! - **Paste**: a whole block pasted over all of a textblock's text (an empty
-//!   line included) arrives as itself, attributes and all; content pasted into
-//!   a block's text, its start included, joins that block, which keeps its
-//!   own. A copy of all of one such block's text carries the block. Lines of
-//!   plain text pasted into a block place them as Enter does
-//!   ([`Transform::replace_range_with_lines`](crate::transform::Transform::replace_range_with_lines)).
+//! - **Paste**: content pasted into a block's text joins it, and the block
+//!   keeps its own. A pasted block that becomes a block of its own keeps its
+//!   own. The text after the paste keeps the attributes of the block it was
+//!   in, where it is still that element (a paste into the middle of a marked
+//!   paragraph marks both pieces; they replace those of the pasted block that
+//!   text joins). A paste that leaves none of a block's text gives it the
+//!   pasted block's, if that block has any, and else leaves it what it had. A
+//!   copy of all of one marked block's text carries the block. Lines of plain
+//!   text pasted into a block are new text, placed as Enter places it
+//!   ([`Transform::replace_range_with_lines`](crate::transform::Transform::replace_range_with_lines)):
+//!   the pieces of one block follow [`DataAttrSplit`], and over two blocks the
+//!   text left of the second keeps the second's. A paste at a block's start
+//!   that makes it another element (a pasted heading) leaves it the pasted
+//!   block's.
 //! - **Loading HTML** keeps an element's attributes on the one block it is; an
 //!   element that holds blocks of its own gives them to none.
 //!
@@ -74,7 +86,57 @@
 //!
 //! [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 
-use crate::model::{AttrValue, Attrs, Node, NodeType};
+use crate::model::{AttrValue, Attrs, Fragment, Node, NodeType};
+
+/// What a split of a textblock (Enter) does with one app data attribute
+/// ([the rules](self)). An app chooses by name with
+/// [`DataAttrSplitPlugin`](crate::plugins::DataAttrSplitPlugin).
+///
+/// "Text" below is what the block held before the split. A block that is
+/// another element than the one split (the paragraph after a heading) never
+/// gets the attribute, whatever the choice.
+///
+/// | Enter | `Copy` | `CopyToText` | `Keep` |
+/// |---|---|---|---|
+/// | at the end | both | the old block; the new one is plain | the old block |
+/// | at the start | both | the text; the empty block above is plain | the text |
+/// | in the middle | both | both | the first half |
+/// | in an empty block | both | the first | the first |
+///
+/// Lines of pasted plain text follow it as that many Enters would.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DataAttrSplit {
+    /// Every block the split makes has it, as in a browser.
+    #[default]
+    Copy,
+    /// Every block that holds some of the text has it; a new empty block does
+    /// not. For a style an app names this way (a subtitle): Enter at its end
+    /// starts a plain paragraph.
+    CopyToText,
+    /// One block has it: the one with the start of the text. For an id.
+    Keep,
+}
+
+/// Whether `a` and `b` are written as the same HTML element: one node type,
+/// and for a heading one level. What an app data attribute may pass between.
+pub(crate) fn same_element(a: &Node, b: &Node) -> bool {
+    a.node_type() == b.node_type() && level(a) == level(b)
+}
+
+/// The node's `level` attribute, or its type's default for it.
+fn level(node: &Node) -> Option<&AttrValue> {
+    node.attrs().get("level").or_else(|| {
+        let spec = node.node_type().spec();
+        spec.attrs.get("level")?.default.as_ref()
+    })
+}
+
+/// Whether `a` and `b` have the same markup, app data attributes aside.
+pub(crate) fn same_markup_but_data(a: &Node, b: &Node) -> bool {
+    a.node_type() == b.node_type()
+        && a.marks() == b.marks()
+        && without_app_data(a) == without_app_data(b)
+}
 
 /// The most app data attributes one node keeps. Enough for an app's own ids
 /// and flags; a page that stamps dozens (framework scoping attributes, lazy
@@ -296,11 +358,13 @@ pub(crate) fn without_data_attrs(attrs: &Attrs) -> Attrs {
 }
 
 /// `attrs`, for a node of type `typ` that takes `from`'s place: with every app
-/// data attribute of `from` that `attrs` does not name, when `typ` keeps them.
-/// What a change of block type carries over.
+/// data attribute of `from` that `attrs` does not name, when that node is
+/// still the same element ([`same_element`]) and keeps them. What a change of
+/// block type carries over.
 pub(crate) fn carry_app_data(typ: &NodeType, attrs: &Attrs, from: &Node) -> Attrs {
     let mut out = attrs.clone();
-    if typ.spec().data_attrs {
+    let to = Node::new_branch(typ.clone(), attrs.clone(), Fragment::empty());
+    if typ.spec().data_attrs && same_element(from, &to) {
         for (name, value) in node_app_data(from) {
             if out.get(name).is_none() {
                 out = out.with(name, AttrValue::from(value));
@@ -310,9 +374,8 @@ pub(crate) fn carry_app_data(typ: &NodeType, attrs: &Attrs, from: &Node) -> Attr
     out
 }
 
-/// `node`'s attributes without its app data attributes: what a new block that
-/// continues from it (Enter at its end) is made with.
-pub(crate) fn without_app_data(node: &Node) -> Attrs {
+/// `node`'s attributes without its app data attributes.
+fn without_app_data(node: &Node) -> Attrs {
     node_app_data(node).fold(node.attrs().clone(), |attrs, (name, _)| attrs.without(name))
 }
 

@@ -4,7 +4,7 @@
 use crate::command::Command;
 use crate::model::Attrs;
 use crate::pos::Pos;
-use crate::schema::data_attrs::{carry_app_data, node_app_data};
+use crate::schema::data_attrs::carry_app_data;
 use crate::state::{EditorState, Transaction};
 use crate::transform::block_range_simple;
 
@@ -20,7 +20,7 @@ use super::{command_tr, in_node_type};
 /// Set every textblock overlapping the selection to `node_type` with `attrs` —
 /// `setParagraph` / `setHeading{level}` / `setCodeBlock`. Applies only if some
 /// textblock in range does not already have that markup. A block keeps its app
-/// data attributes where `node_type` keeps them
+/// data attributes where it stays the same element
 /// ([`Transform::set_block_type`](crate::transform::Transform::set_block_type)).
 pub fn set_block_type(node_type: &'static str, attrs: Attrs) -> Command {
     command_tr(move |state| {
@@ -229,17 +229,7 @@ pub fn set_paragraph() -> Command {
         //    stays a true no-op.
         let mut indent_targets: Vec<usize> = Vec::new();
         let mut align_targets: Vec<usize> = Vec::new();
-        let mut data_targets: Vec<(usize, String)> = Vec::new();
         for &(from, to) in &ranges {
-            // The blocks as they are now: the type change above carried their
-            // data attributes over, at the same positions.
-            tr.doc().nodes_between(from, to, &mut |node, pos, _parent| {
-                if node.is_textblock() {
-                    data_targets
-                        .extend(node_app_data(node).map(|(name, _)| (pos, name.to_string())));
-                }
-                true
-            });
             state
                 .doc
                 .nodes_between(from, to, &mut |node, pos, _parent| {
@@ -259,8 +249,7 @@ pub fn set_paragraph() -> Command {
         }
         let removals = align_targets
             .into_iter()
-            .map(|pos| (pos, "text_align".to_string()))
-            .chain(data_targets);
+            .map(|pos| (pos, "text_align".to_string()));
         for (pos, attr) in removals {
             let _ = tr.step(Box::new(crate::transform::steps::SetNodeAttrStep {
                 pos,

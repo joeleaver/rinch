@@ -27,7 +27,7 @@ use std::rc::Rc;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, NodeType};
 use crate::model::{Node, Slice};
 use crate::pos::{Pos, ResolvedPos};
-use crate::schema::Schema;
+use crate::schema::{DataAttrSplit, Schema};
 use crate::selection::Selection;
 use crate::tables::{self, TableProblem};
 use crate::transform::Transform;
@@ -45,6 +45,9 @@ pub const ADD_TO_HISTORY: &str = "addToHistory";
 ///
 /// [`EditorState::tr`]: crate::state::EditorState::tr
 pub struct Transaction {
+    /// The state's choices for app data attributes at a split
+    /// ([`Plugin::data_attr_splits`](crate::plugin::Plugin::data_attr_splits)).
+    pub(crate) data_attr_splits: Option<Rc<HashMap<String, DataAttrSplit>>>,
     schema: Rc<Schema>,
     // --- transform accumulation (mirrors `Transform`'s fields) ---
     doc: Node,
@@ -73,6 +76,7 @@ impl Transaction {
         stored_marks: Option<Vec<Mark>>,
     ) -> Transaction {
         Transaction {
+            data_attr_splits: None,
             schema,
             doc,
             steps: Vec::new(),
@@ -151,6 +155,7 @@ impl Transaction {
             std::mem::take(&mut self.docs),
             std::mem::take(&mut self.mapping),
         );
+        tf.data_attr_splits = self.data_attr_splits.clone();
         let steps_before = tf.steps().len();
         let r = f(&mut tf);
         let added = tf.steps().len() - steps_before;

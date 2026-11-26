@@ -794,8 +794,18 @@ p[data-role="note"] { opacity: 0.7; }
 p[data-role="note"] + p { margin-top: 1em; }
 ```
 
-What Enter, joining, a change of block type, paste, Markdown and collaboration do with
-them is in [the editor guide](editor.md#a-paragraphs-and-a-headings-attributes).
+Enter copies them to the new paragraph, as in a browser. For a style that should end
+with its paragraph, say so once, when the handle is created:
+
+```rust
+handle.add_plugin(Rc::new(
+    DataAttrSplitPlugin::new().with("data-role", DataAttrSplit::CopyToText),
+));
+```
+
+Now Enter at the end of a note starts a plain paragraph. What every choice does, and
+what joining, a change of block type, paste, Markdown and collaboration do with the
+attributes, is in [the editor guide](editor.md#a-paragraphs-and-a-headings-attributes).
 
 ### Node views: your component in the document
 

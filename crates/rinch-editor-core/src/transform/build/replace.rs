@@ -36,7 +36,9 @@ impl Transform<'_> {
     ///   (a list item, a heading, a quote) replaces the textblock, keeping
     ///   that node.
     ///
-    /// One step is added. Returns the position right after the inserted
+    /// The fit is one step, followed by one for each app data attribute a
+    /// block changes ([the rules](crate::schema::data_attrs); the attributes
+    /// never change the fit). Returns the position right after the inserted
     /// content, in the new document. Errors, adding nothing, when no fit is
     /// valid, or when `slice` holds a node that is not valid content (the
     /// nodes open at its edges aside).
@@ -55,6 +57,27 @@ impl Transform<'_> {
     ) -> Result<usize, StepError> {
         if slice.size() == 0 {
             self.delete(from, to)?;
+            return Ok(from);
+        }
+        let pasted = slice.clone();
+        let ends = self.data_ends(from, to, Edit::Paste(&pasted));
+        let end = self.fit_range(from, to, slice)?;
+        if let Some(ends) = ends {
+            self.settle_data(ends, Edit::Paste(&pasted))?;
+        }
+        Ok(end)
+    }
+
+    /// The fit of [`replace_range`](Self::replace_range), data attributes
+    /// left where the step put them.
+    pub(crate) fn fit_range(
+        &mut self,
+        from: usize,
+        to: usize,
+        slice: Slice,
+    ) -> Result<usize, StepError> {
+        if slice.size() == 0 {
+            self.fit_delete(from, to)?;
             return Ok(from);
         }
         if !fit::slice_is_sound(&slice) {
@@ -98,8 +121,19 @@ impl Transform<'_> {
     /// fitted too, as ProseMirror fits it; one that holds only the tokens
     /// between two textblocks that cannot join (code, then marked text),
     /// which would delete nothing, is refused. One step is added, or none
-    /// and the plain replacement's error.
+    /// and the plain replacement's error. Blocks it joins then take their
+    /// app data attributes by [the rules](crate::schema::data_attrs).
     pub fn delete(&mut self, from: usize, to: usize) -> Result<&mut Self, StepError> {
+        let ends = self.data_ends(from, to, Edit::Join);
+        self.fit_delete(from, to)?;
+        if let Some(ends) = ends {
+            self.settle_data(ends, Edit::Join)?;
+        }
+        Ok(self)
+    }
+
+    /// The step of [`delete`](Self::delete).
+    fn fit_delete(&mut self, from: usize, to: usize) -> Result<&mut Self, StepError> {
         let Some(plain) = self
             .step(Box::new(ReplaceStep::new(from, to, Slice::empty())))
             .err()
@@ -132,6 +166,23 @@ impl Transform<'_> {
             .schema
             .text(text)
             .map_err(|e| StepError::new(e.to_string()))?;
-        self.replace(from, to, Slice::from_fragment(Fragment::from_node(node)))
+        self.replace_inline(from, to, Fragment::from_node(node))
+    }
+
+    /// Replace `from..to` with inline `content` typed there: a
+    /// [`replace`](Self::replace) after which blocks it joined take their app
+    /// data attributes by [the rules](crate::schema::data_attrs).
+    pub(crate) fn replace_inline(
+        &mut self,
+        from: usize,
+        to: usize,
+        content: Fragment,
+    ) -> Result<&mut Self, StepError> {
+        let ends = self.data_ends(from, to, Edit::Join);
+        self.replace_with(from, to, content)?;
+        if let Some(ends) = ends {
+            self.settle_data(ends, Edit::Join)?;
+        }
+        Ok(self)
     }
 }

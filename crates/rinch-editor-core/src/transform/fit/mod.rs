@@ -40,7 +40,7 @@
 use crate::model::{Fragment, Mark, Node, NodeType, Slice};
 use crate::pos::{Pos, ResolvedPos};
 use crate::schema::content_match::MatchState;
-use crate::schema::data_attrs::node_app_data;
+use crate::schema::data_attrs::same_markup_but_data;
 use crate::transform::step::Step;
 use crate::transform::steps::{ReplaceAroundStep, ReplaceStep};
 

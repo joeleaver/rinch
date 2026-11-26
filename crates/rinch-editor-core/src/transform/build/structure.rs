@@ -76,8 +76,9 @@ impl Transform<'_> {
     }
 
     /// Change the type (and attrs) of every textblock overlapping `from..to`.
-    /// Each block keeps its [app data attributes](crate::schema::data_attrs)
-    /// when `typ` keeps them and `attrs` does not name them.
+    /// A block that stays the same element keeps its [app data
+    /// attributes](crate::schema::data_attrs), where `attrs` does not name
+    /// them; one that becomes another element drops them.
     /// Port of `Transform.setBlockType`: each block's content is first cleared of
     /// what the new type does not allow ([`clear_incompatible`](Self::clear_incompatible)),
     /// so a paragraph with bold text and a hard break made a code block is plain

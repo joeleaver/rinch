@@ -158,33 +158,68 @@ selection with `EditorHandle::set_block_data_attr(name, Some(value) | None)`, re
 shared value with `EditorHandle::block_data_attr(name)`; in a plugin or a command,
 `commands::set_block_data_attr`, `commands::block_data_attr` and
 `Transaction::set_block_data_attr(from, to, name, value)`. Each is one undo step, and a
-block that does not keep data attributes (a code block) is passed over. The attributes
-belong to the block:
+block that does not keep data attributes (a code block) is passed over.
+
+**No data attribute ever changes what a document is made of.** Every split, join and
+paste produces the blocks it would produce without them; the attributes then follow the
+text. They are what a browser's `contenteditable` does (measured in Chrome 158), except
+where the table says otherwise:
 
 | Edit | Result |
 | --- | --- |
-| Enter at the end of a block (an empty one included) | the new block has none |
-| Enter at the start | the new empty block above has none; the text keeps them |
-| Enter in the middle | both halves keep them (a list item's block follows the same three rules) |
-| Joining two blocks (Backspace, Delete, deleting across them) | the first block's stay, the second's go |
-| Backspace or Delete between an empty block and the one after it, either holding some | the empty block is removed; the other is unchanged |
-| Changing type between paragraph and heading | kept |
-| Changing to a code block | dropped, and not restored by changing back (undo restores them) |
-| The Paragraph reset (`set_paragraph`) | removed |
+| Enter (at the end of a block, at its start, in its middle, in a list item) | both blocks have them, unless the app chose otherwise ([below](#what-enter-carries)) |
+| Enter at the end of a heading | the paragraph after it has none |
+| A rule or table inserted inside a block | splits it as Enter does |
+| Joining two blocks (Backspace, Delete, deleting or typing across them) | the first block's stay. With none of the first block's text left and some of the second's, the joined block has the second's (a browser keeps the first's) |
+| Changing the element (paragraph to heading, one heading level to another, a code block) | dropped, and not restored by changing back (undo restores them) |
+| Setting a block to the type it already is (`set_paragraph` on a paragraph, which resets alignment and indent) | kept |
 | Wrapping in or lifting out of a list or quote | kept |
-| Pasting whole blocks over an empty line, or over all of a block's text | they arrive with their own |
-| Pasting into a block's text, its start included | the block joined keeps its own; a following pasted block keeps its own |
-| Pasting lines of plain text into a block | as Enter: the text after the caret keeps them, a new line above it has none |
+| Pasting into a block's text | the block keeps its own |
+| A paste that leaves text of a block after it, in another block of the same element | that block has them too (in place of those of the pasted block the text joins) |
+| A pasted block that stays a block of its own | keeps its own |
+| A paste that leaves none of a block's text | the block takes the pasted block's, if it has any, else keeps what it had |
+| A paste at a block's start that turns it into another element (a pasted heading) | it has the pasted block's |
+| Pasting lines of plain text into one block | new blocks as that many Enters would make them, the app's choice included |
+| Pasting lines over two blocks | the lines follow the first block's Enter rules; the text left of the second keeps the second's |
 | Copying all of one block's text | the copy carries the block and its attributes (a part of it copies as text) |
 | Loading an element that holds blocks of its own (`<h1>a<div>b</div></h1>`) | none of the blocks takes them |
 
-A raw `Transform::split` copies the block's markup onto both halves. **Markdown** has no
-syntax for them and writes none; a table written as HTML keeps them.
+##### What Enter carries
+
+By default Enter copies every attribute to both blocks, as a browser does. An app
+chooses per attribute with `DataAttrSplitPlugin`, added to a handle as soon as it is
+created (adding a plugin discards the undo history):
+
+```rust
+use rinch_editor_core::DataAttrSplitPlugin;
+use rinch_editor_core::schema::DataAttrSplit;
+
+handle.add_plugin(Rc::new(
+    DataAttrSplitPlugin::new()
+        .with("data-role", DataAttrSplit::CopyToText)
+        .with("data-id", DataAttrSplit::Keep),
+));
+```
+
+| Enter | `Copy` (default) | `CopyToText` | `Keep` |
+| --- | --- | --- | --- |
+| at the end | both | the old block; **the new one is plain** | the old block |
+| at the start | both | the text; the empty block above is plain | the text |
+| in the middle | both | both | the first half |
+| in an empty block | both | the first | the first |
+
+`CopyToText` is the one for a style named by an attribute (a subtitle): Enter at its end
+starts a plain paragraph. `Keep` is for an id. A plugin of your own can answer
+`Plugin::data_attr_splits` instead. The choice is the editor's, not the document's: each
+peer of a collaboration follows its own, so install it in every one.
+
+A raw `Transform::split` copies the block's markup onto both halves and asks no choice.
+**Markdown** has no syntax for them and writes none; a table written as HTML keeps them.
 
 **Collaboration** merges them per attribute. A peer running a build from before
 textblocks kept them preserves them in the document through reading, typing, moving
-and splitting, but does not draw them or copy them out, splits copy them to both
-halves (Enter at the end included), and its own change of the block's type removes
+and splitting, but does not draw them or copy them out. Its splits copy them to both
+halves whatever the others chose, and its own change of the block's type removes
 them.
 
 `width` (whole CSS pixels, absent or not positive for the natural width; read from

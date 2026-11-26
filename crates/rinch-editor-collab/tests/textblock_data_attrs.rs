@@ -11,7 +11,8 @@ use rinch_editor_core::commands::{
 };
 use rinch_editor_core::serialize::{node_to_html, slice_from_html};
 use rinch_editor_core::{
-    Attrs, Command, EditorState, Plugin, Pos, Schema, Selection, Transaction, default_plugins,
+    AttrValue, Attrs, Command, EditorState, Plugin, Pos, Schema, Selection, Transaction,
+    default_plugins,
 };
 
 struct Peer {
@@ -181,26 +182,47 @@ fn splits_joins_and_type_changes_reach_the_peer() {
     a.run(5, split_block());
     assert_eq!(
         sync(&mut a, &mut b),
-        r#"<p data-role="sub">abcd</p><p></p>"#
+        r#"<p data-role="sub">abcd</p><p data-role="sub"></p>"#
     );
-    // At the start: the new empty block above has none.
+    // At the start: both again.
     b.run(1, split_block());
     assert_eq!(
         sync(&mut a, &mut b),
-        r#"<p></p><p data-role="sub">abcd</p><p></p>"#
+        r#"<p data-role="sub"></p><p data-role="sub">abcd</p><p data-role="sub"></p>"#
     );
-    // Backspace takes the empty one and leaves the other as it was.
+    // Backspace joins the empty one away; the text's block stays.
     a.run(3, delete_char_backward());
     assert_eq!(
         sync(&mut a, &mut b),
-        r#"<p data-role="sub">abcd</p><p></p>"#
+        r#"<p data-role="sub">abcd</p><p data-role="sub"></p>"#
     );
     a.run(2, set_block_type("code_block", Attrs::new()));
-    assert_eq!(sync(&mut a, &mut b), "<pre>abcd</pre><p></p>");
+    assert_eq!(
+        sync(&mut a, &mut b),
+        r#"<pre>abcd</pre><p data-role="sub"></p>"#
+    );
     b.run(2, set_block_type("paragraph", Attrs::new()));
     b.run(2, set("data-role", "x"));
-    b.run(2, set_paragraph());
-    assert_eq!(sync(&mut a, &mut b), "<p>abcd</p><p></p>");
+    // A paragraph reset is a paragraph still.
+    assert!(!set_paragraph()(&b.state, None));
+    b.run(
+        2,
+        set_block_type("heading", Attrs::from_iter([("level", AttrValue::Int(2))])),
+    );
+    assert_eq!(
+        sync(&mut a, &mut b),
+        r#"<h2>abcd</h2><p data-role="sub"></p>"#
+    );
+}
+
+/// A join that keeps only the second block's text has its attributes, on both
+/// peers.
+#[test]
+fn a_join_after_an_empty_block_reaches_the_peer() {
+    let start = r#"<p data-role="a"></p><p data-role="b">cd</p>"#;
+    let (mut a, mut b) = two_peers(start, (11, 22));
+    a.run(3, delete_char_backward());
+    assert_eq!(sync(&mut a, &mut b), r#"<p data-role="b">cd</p>"#);
 }
 
 #[test]
