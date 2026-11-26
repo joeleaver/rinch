@@ -100,9 +100,9 @@ pub enum Decoration {
     /// `[from, to)`, without touching the document.
     ///
     /// `class` is a space-separated CSS class list, whose words are added to
-    /// the element's own `class` attribute. Several decorations of one node add the union of their words; a word the
-    /// element already had is left alone, and only the words decorations added
-    /// are taken off again. See the module docs for which nodes can be named
+    /// the element's own `class` attribute. Several decorations of one node
+    /// add the union of their words; a word the element already had is left
+    /// alone, and only the words decorations added are taken off again. See the module docs for which nodes can be named
     /// and what a range that spans none does.
     ///
     /// A class is all it carries: no `style`, `data-*` or tag name. Style the

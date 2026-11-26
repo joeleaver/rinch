@@ -479,6 +479,14 @@ fn decorations(&self, state: &EditorState) -> DecorationSet {
 - **A class is all it carries** — no `style`, `data-*` or tag name, unlike
   ProseMirror's node decoration. Style the node through the class in your
   stylesheet. An attribute that belongs to the content is set on the node.
+- **`class` is a class list**: one word or several separated by spaces
+  (`"marked folded"`). `Decoration::inline` takes `Attrs`, whose `class` its
+  view reads; `Decoration::node` takes the class string itself, so there is no
+  other attribute to pass that would be silently ignored.
+- **Matching.** The `Node` variant is `#[non_exhaustive]`: outside
+  `rinch-editor-core` a pattern on it needs `..`
+  (`Decoration::Node { from, to, class, .. }`), beside the `_` arm the enum
+  needs.
 - **Naming the node.** `from` is the position immediately before the node and
   `to` the position immediately after it (`from + node.node_size()`), as in
   ProseMirror. A range that does not span exactly one node draws nothing; it is
