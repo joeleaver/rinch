@@ -621,7 +621,7 @@ every node it rebuilds must be valid. Content that comes from somewhere else rar
 lines up — a list has no place inside the paragraph the caret is in — so paste goes
 through `Transform::replace_range(from, to, slice)` (`Transaction::replace_range`, and
 `Transaction::replace_selection(slice)`, which also places the caret). It is
-ProseMirror's `replaceRange` and `Fitter` (`transform/fit.rs`), and it adds **one**
+ProseMirror's `replaceRange` and `Fitter` (`transform/fit/`), and it adds **one**
 step or fails with nothing changed.
 
 The rules, with `|` the caret and a pasted `<ul><li>A</li><li>B</li></ul>`:
