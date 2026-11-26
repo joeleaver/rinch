@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use rinch_html::{AllowList, Cleaned, Policy, USER_MARK, clean};
+use rinch_html::{AllowList, CARRIED, Cleaned, Policy, USER_MARK, clean};
 
 fn strings(names: &[&str]) -> Vec<String> {
     names.iter().map(|s| (*s).to_owned()).collect()
@@ -17,6 +17,7 @@ fn list(tags: &[&str], attributes: &[(&str, &str)], removed: &[&str]) -> AllowLi
             .map(|(t, a)| ((*t).to_owned(), (*a).to_owned()))
             .collect(),
         removed_with_content: strings(removed),
+        carried: Vec::new(),
     }
 }
 
@@ -188,4 +189,28 @@ fn a_deep_document_is_still_cut() {
     let out = narrowed(&doc, list(&["blockquote"], &[], &[]));
     let depth = out.html.matches("<blockquote>").count();
     assert!(depth <= 512, "{depth} levels kept");
+}
+
+#[test]
+fn a_carried_attribute_comes_out_renamed_and_only_carried_values_bear_the_name() {
+    let mut allow = list(&["p", "img"], &[("img", "alt")], &[]);
+    allow.carried = vec![("img".into(), "data-attachment".into())];
+    let name = format!("{CARRIED}data-attachment");
+    let out = narrowed(
+        &format!(
+            r#"<p {name}="forged"><img data-attachment="a&quot;b" alt="one">
+               <img {name}="forged" alt="two"></p><div data-attachment="not an img">x</div>"#
+        ),
+        allow,
+    );
+    let html = out.html;
+    assert_eq!(html.matches(&name).count(), 1, "{html}");
+    assert!(
+        html.contains(&format!(r#"<img alt="one" {name}="a&quot;b">"#)),
+        "{html}"
+    );
+    assert!(
+        !html.contains("forged") && !html.contains(" data-attachment"),
+        "{html}"
+    );
 }
