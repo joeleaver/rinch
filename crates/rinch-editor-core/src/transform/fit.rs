@@ -40,6 +40,7 @@
 use crate::model::{Fragment, Mark, Node, NodeType, Slice};
 use crate::pos::{Pos, ResolvedPos};
 use crate::schema::content_match::MatchState;
+use crate::schema::data_attrs::node_app_data;
 use crate::transform::step::Step;
 use crate::transform::steps::{ReplaceAroundStep, ReplaceStep};
 
@@ -871,7 +872,10 @@ pub(crate) fn range_candidates(
     );
     for d in (0..slice.open_start).rev() {
         let Some(node) = &left[d] else { break };
-        let defines = node.node_type().spec().defining;
+        // A textblock carrying an app's data attributes defines its content
+        // too: pasted over a whole textblock it arrives as itself.
+        let defines = node.node_type().spec().defining
+            || (node.is_textblock() && node_app_data(node).next().is_some());
         if defines && !node.same_markup(context) {
             preferred_depth = d;
         } else if defines || !node.is_textblock() {

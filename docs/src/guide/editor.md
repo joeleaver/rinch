@@ -80,7 +80,7 @@ block/inline/offset math with one consistent model.
 The **schema** defines which nodes and marks exist and what content each node may
 contain. The starter-kit catalogue:
 
-- **Nodes:** `doc`, `paragraph`, `heading{level}`, `blockquote`, `code_block`,
+- **Nodes:** `doc`, `paragraph{data-*}`, `heading{level, data-*}`, `blockquote`, `code_block`,
   `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `embed{data-*}`,
   `hard_break`, `text`, `image{src, alt, title, width, data-*}`, plus the table nodes.
 - **Marks:** `bold`, `italic`, `underline`, `strike`, `code`, `link{href}`,
@@ -140,12 +140,49 @@ handle.update(|state| {
 ```
 
 The opt-in is the node spec's: `NodeSpec::data_attrs` (`NodeSpecBuilder::data_attrs(true)`).
-The starter kit's `image` and `embed` set it, and nothing else does. Only a **leaf**
-node type (an atom: `<img>`, `<hr>`, `<br>`, an embed's `<div>`) may set it —
-`SchemaBuilder::build` panics for one with content — because HTML carries the
-attributes only on an element that holds none of the document's content. An
+The starter kit's `paragraph`, `heading`, `image` and `embed` set it. Only a **leaf**
+node type (an atom: `<img>`, `<hr>`, `<br>`, an embed's `<div>`) or a **textblock**
+may set it — `SchemaBuilder::build` panics for any other node with content — because
+HTML carries the attributes on the node's own element, and a copy that cuts through a
+container loses that element. An
 attribute a node's spec neither declares nor keeps is dropped by validation
 (`to_doc`, `node_from_doc`), and the HTML writer does not write it.
+
+#### A paragraph's and a heading's attributes
+
+A textblock keeps the same attributes (same names, bounds and paste rule), written on
+its own element (`<p data-role="note">`) and on its host element, so an app's
+stylesheet can select on them: `p[data-role="note"]`, `p[data-role="note"] + p`
+(`:has()` does not work on the desktop). Set or remove one on every textblock of the
+selection with `EditorHandle::set_block_data_attr(name, Some(value) | None)`, read the
+shared value with `EditorHandle::block_data_attr(name)`; in a plugin or a command,
+`commands::set_block_data_attr`, `commands::block_data_attr` and
+`Transaction::set_block_data_attr(from, to, name, value)`. Each is one undo step, and a
+block that does not keep data attributes (a code block) is passed over. The attributes
+belong to the block:
+
+| Edit | Result |
+| --- | --- |
+| Enter at the end of a block (an empty one included) | the new block has none |
+| Enter at the start | the new empty block above has none; the text keeps them |
+| Enter in the middle | both halves keep them (a list item's block follows the same three rules) |
+| Joining two blocks (Backspace, Delete, deleting across them) | the first block's stay, the second's go |
+| Backspace or Delete between an empty block and the one after it, either holding some | the empty block is removed; the other is unchanged |
+| Changing type between paragraph and heading | kept |
+| Changing to a code block | dropped, and not restored by changing back (undo restores them) |
+| The Paragraph reset (`set_paragraph`) | removed |
+| Wrapping in or lifting out of a list or quote | kept |
+| Pasting whole blocks over an empty line | they arrive with their own |
+| Pasting into a block's text | the block joined keeps its own; a following pasted block keeps its own |
+
+A raw `Transform::split` copies the block's markup onto both halves. **Markdown** has no
+syntax for them and writes none; a table written as HTML keeps them.
+
+**Collaboration** merges them per attribute. A peer running a build from before
+textblocks kept them preserves them in the document through reading, typing, moving
+and splitting, but does not draw them or copy them out, splits copy them to both
+halves (Enter at the end included), and its own change of the block's type removes
+them.
 
 `width` (whole CSS pixels, absent or not positive for the natural width; read from
 HTML by HTML's dimension rules, so `320px` is 320, rounded and at most 65535) is the

@@ -349,6 +349,20 @@ impl Transaction {
         Ok(self)
     }
 
+    /// Set or remove an app data attribute on the textblocks overlapping
+    /// `from..to`
+    /// ([`Transform::set_block_data_attr`](crate::transform::Transform::set_block_data_attr)).
+    pub fn set_block_data_attr(
+        &mut self,
+        from: usize,
+        to: usize,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<&mut Self, StepError> {
+        self.with_transform(|tf| tf.set_block_data_attr(from, to, name, value).map(|_| ()))?;
+        Ok(self)
+    }
+
     /// Set a document-level attribute.
     pub fn set_doc_attr(
         &mut self,

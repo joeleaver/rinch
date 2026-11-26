@@ -4,6 +4,7 @@
 use crate::command::Command;
 use crate::model::Attrs;
 use crate::pos::Pos;
+use crate::schema::data_attrs::{carry_app_data, node_app_data};
 use crate::state::{EditorState, Transaction};
 use crate::transform::block_range_simple;
 
@@ -18,7 +19,9 @@ use super::{command_tr, in_node_type};
 
 /// Set every textblock overlapping the selection to `node_type` with `attrs` —
 /// `setParagraph` / `setHeading{level}` / `setCodeBlock`. Applies only if some
-/// textblock in range does not already have that markup.
+/// textblock in range does not already have that markup. A block keeps its app
+/// data attributes where `node_type` keeps them
+/// ([`Transform::set_block_type`](crate::transform::Transform::set_block_type)).
 pub fn set_block_type(node_type: &'static str, attrs: Attrs) -> Command {
     command_tr(move |state| {
         let ty = state.schema().node_type(node_type)?.clone();
@@ -31,7 +34,9 @@ pub fn set_block_type(node_type: &'static str, attrs: Attrs) -> Command {
             state
                 .doc
                 .nodes_between(from, to, &mut |node, _pos, _parent| {
-                    if node.is_textblock() && !node.has_markup(&ty, &attrs) {
+                    if node.is_textblock()
+                        && !node.has_markup(&ty, &carry_app_data(&ty, &attrs, node))
+                    {
                         applies = true;
                     }
                     true
@@ -185,11 +190,12 @@ fn build_set_text_align(state: &EditorState, align: &str) -> Option<Transaction>
 ///
 /// 1. removes all inline marks (bold/italic/underline/link/…),
 /// 2. converts the block(s) to paragraphs (heading / code block → paragraph),
-/// 3. resets the indent level to 0 and unsets the alignment,
+/// 3. resets the indent level to 0, unsets the alignment and removes the
+///    blocks' [app data attributes](crate::schema::data_attrs),
 /// 4. lifts the block(s) out of every wrapper (blockquote, list) to the top level.
 ///
 /// A no-op (returns `None`) only when the selection is already plain top-level
-/// paragraph text with no marks.
+/// paragraph text with no marks and no app data attributes.
 pub fn set_paragraph() -> Command {
     command_tr(|state| {
         let para_ty = state.schema().node_type("paragraph")?.clone();
@@ -223,7 +229,17 @@ pub fn set_paragraph() -> Command {
         //    stays a true no-op.
         let mut indent_targets: Vec<usize> = Vec::new();
         let mut align_targets: Vec<usize> = Vec::new();
+        let mut data_targets: Vec<(usize, String)> = Vec::new();
         for &(from, to) in &ranges {
+            // The blocks as they are now: the type change above carried their
+            // data attributes over, at the same positions.
+            tr.doc().nodes_between(from, to, &mut |node, pos, _parent| {
+                if node.is_textblock() {
+                    data_targets
+                        .extend(node_app_data(node).map(|(name, _)| (pos, name.to_string())));
+                }
+                true
+            });
             state
                 .doc
                 .nodes_between(from, to, &mut |node, pos, _parent| {
@@ -241,10 +257,14 @@ pub fn set_paragraph() -> Command {
         for pos in indent_targets {
             let _ = tr.set_node_attr(pos, "indent", crate::AttrValue::Int(0));
         }
-        for pos in align_targets {
+        let removals = align_targets
+            .into_iter()
+            .map(|pos| (pos, "text_align".to_string()))
+            .chain(data_targets);
+        for (pos, attr) in removals {
             let _ = tr.step(Box::new(crate::transform::steps::SetNodeAttrStep {
                 pos,
-                attr: "text_align".into(),
+                attr,
                 value: None,
             }));
         }

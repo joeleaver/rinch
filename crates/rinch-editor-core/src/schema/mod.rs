@@ -98,6 +98,9 @@ impl Schema {
                 // (a `th` centres, an RTL editor starts right). A stored "left" is an
                 // explicit choice, kept apart from unset (#2210).
                 .attr("text_align", AttrSpec::optional("left"))
+                // An app's own `data-*` attributes (a style it names, an id):
+                // see `schema::data_attrs`.
+                .data_attrs(true)
                 .parse_html(vec!["p".into()])
                 .build(),
         );
@@ -113,6 +116,8 @@ impl Schema {
                 .attr("indent", AttrSpec::optional(AttrValue::Int(0)))
                 // Horizontal text alignment — see the paragraph node above.
                 .attr("text_align", AttrSpec::optional("left"))
+                // An app's `data-*` attributes, as on the paragraph.
+                .data_attrs(true)
                 .parse_html(vec![
                     "h1".into(),
                     "h2".into(),
@@ -499,10 +504,11 @@ impl SchemaBuilder {
     ///
     /// # Panics
     ///
-    /// When a node type that is not a leaf (one with content) sets
-    /// [`NodeSpec::data_attrs`]: app data attributes are carried through HTML
-    /// only on an element that holds none of the document's content (a void
-    /// element, or a block atom's `<div>`).
+    /// When a node type that is neither a leaf nor a textblock (a list, a
+    /// quote, a table) sets [`NodeSpec::data_attrs`]: HTML carries app data
+    /// attributes on a leaf's element (a void element, or a block atom's
+    /// `<div>`) and on a textblock's own element (`<p>`, `<h1>`), and a
+    /// container would lose them on a copy that cuts through it.
     pub fn build(self) -> Schema {
         let groups = compute_groups(&self.nodes);
         // A node-type name must not collide with a group name, or content
@@ -512,13 +518,15 @@ impl SchemaBuilder {
             "a node-type name collides with a group name"
         );
         let node_types = compile_node_types(&self.nodes, &groups);
-        // App data attributes go through HTML only on a leaf's element, so a
-        // container that kept them would lose them on every copy and paste.
+        // App data attributes go through HTML on a leaf's or a textblock's own
+        // element only, so a container that kept them would lose them on copy
+        // and paste.
         for (name, spec) in &self.nodes {
+            let typ = &node_types[name.as_str()];
             assert!(
-                !spec.data_attrs || node_types[name.as_str()].is_leaf(),
+                !spec.data_attrs || typ.is_leaf() || typ.is_textblock(),
                 "node type `{name}` sets `data_attrs`, which only a leaf node type \
-                 (an atom such as `image`) may"
+                 (an atom such as `image`) or a textblock (such as `paragraph`) may"
             );
         }
         let mark_types = compile_mark_types(&self.marks);
@@ -846,7 +854,9 @@ mod tests {
             image.data_attrs,
             "the image keeps an app's data-* attributes"
         );
-        assert!(!schema.node("paragraph").unwrap().data_attrs);
+        assert!(schema.node("paragraph").unwrap().data_attrs);
+        assert!(schema.node("heading").unwrap().data_attrs);
+        assert!(!schema.node("code_block").unwrap().data_attrs);
     }
 
     #[test]

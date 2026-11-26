@@ -54,6 +54,7 @@ mod callbacks;
 #[cfg(feature = "collaboration")]
 mod collaboration;
 mod content;
+mod data_attrs;
 mod editor_core;
 mod focus_scroll;
 mod guards;

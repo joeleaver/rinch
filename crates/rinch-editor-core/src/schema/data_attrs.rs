@@ -5,9 +5,42 @@
 //! attribute an app sets on it, as a string, through every edit, copy and
 //! paste (HTML), the durable [`DocNode`](crate::serialize) shape, collaboration
 //! (one CRDT entry per attribute) and the view, which writes it on the node's
-//! host element. The starter kit's `image` and `embed` opt in, so an app can keep what it
-//! needs to find again — an annotation id, a reference into its own store —
-//! on the picture itself.
+//! host element. The starter kit's `paragraph`, `heading`, `image` and `embed`
+//! opt in, so an app can keep what it needs to find again — an annotation id, a
+//! reference into its own store, the name of a style its stylesheet draws — on
+//! the block or the picture itself. Markdown has no syntax for them, and
+//! writes none (a table written as HTML keeps them).
+//!
+//! Only a **leaf** or a **textblock** type may opt in: those are the nodes HTML
+//! writes as one element of their own.
+//!
+//! # A textblock's attributes through edits
+//!
+//! An app sets and removes them with
+//! [`set_block_data_attr`](crate::commands::set_block_data_attr). They belong
+//! to the block, so:
+//!
+//! - **Enter** at the end of a block (an empty one included) makes the new
+//!   block without them; at its start, the new empty block above is without
+//!   them and the text keeps them; in its middle, both halves keep them. The
+//!   same inside a list item. A raw [`Transform::split`] copies the markup,
+//!   as it always did.
+//! - **Joining** two blocks (Backspace, Delete, deleting across a boundary)
+//!   keeps the first block's attributes and drops the second's. Backspace or
+//!   Delete between an **empty** block and the textblock after it, where
+//!   either holds some, removes the empty block instead of joining: the other
+//!   stays as it was, its type included.
+//! - **Changing block type** keeps them where the new type keeps data
+//!   attributes (paragraph and heading) and drops them where it does not (a
+//!   code block). The Paragraph reset
+//!   ([`set_paragraph`](crate::commands::set_paragraph)) removes them.
+//! - **Wrapping and lifting** (lists, quotes) move the block, attributes and
+//!   all.
+//! - **Paste**: a whole block pasted over a whole textblock (an empty line
+//!   included) arrives as itself, attributes and all; content pasted into a
+//!   block's text joins that block, which keeps its own.
+//!
+//! [`Transform::split`]: crate::transform::Transform::split
 //!
 //! Every reader and writer asks [`is_app_data_attr`] which names are kept:
 //!
@@ -36,7 +69,7 @@
 //!
 //! [`NodeSpec::data_attrs`]: crate::schema::NodeSpec::data_attrs
 
-use crate::model::{AttrValue, Attrs};
+use crate::model::{AttrValue, Attrs, Node, NodeType};
 
 /// The most app data attributes one node keeps. Enough for an app's own ids
 /// and flags; a page that stamps dozens (framework scoping attributes, lazy
@@ -232,6 +265,39 @@ pub fn app_data_attrs(attrs: &Attrs) -> impl Iterator<Item = (&str, &str)> {
         AttrValue::Str(s) => Some((k, &**s)),
         _ => None,
     }))
+}
+
+/// The app data attributes `node` holds: those its type keeps for an app
+/// ([`app_data_attrs`]), an attribute its spec declares by such a name aside
+/// (that one is the schema's). None for a type that does not opt in.
+pub(crate) fn node_app_data(node: &Node) -> impl Iterator<Item = (&str, &str)> {
+    let spec = node.node_type().spec();
+    spec.data_attrs
+        .then(|| app_data_attrs(node.attrs()))
+        .into_iter()
+        .flatten()
+        .filter(move |(name, _)| !spec.attrs.contains_key(*name))
+}
+
+/// `attrs`, for a node of type `typ` that takes `from`'s place: with every app
+/// data attribute of `from` that `attrs` does not name, when `typ` keeps them.
+/// What a change of block type carries over.
+pub(crate) fn carry_app_data(typ: &NodeType, attrs: &Attrs, from: &Node) -> Attrs {
+    let mut out = attrs.clone();
+    if typ.spec().data_attrs {
+        for (name, value) in node_app_data(from) {
+            if out.get(name).is_none() {
+                out = out.with(name, AttrValue::from(value));
+            }
+        }
+    }
+    out
+}
+
+/// `node`'s attributes without its app data attributes: what a new block that
+/// continues from it (Enter at its end) is made with.
+pub(crate) fn without_app_data(node: &Node) -> Attrs {
+    node_app_data(node).fold(node.attrs().clone(), |attrs, (name, _)| attrs.without(name))
 }
 
 /// `attrs` as a node of a type with spec `spec` holds them: for a type that

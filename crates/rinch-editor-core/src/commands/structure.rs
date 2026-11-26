@@ -5,8 +5,10 @@ use crate::Fragment;
 use crate::command::{Command, chain};
 use crate::model::{Attrs, Node};
 use crate::pos::Pos;
+use crate::schema::data_attrs::without_app_data;
 use crate::state::{EditorState, Transaction};
 
+use super::data_attrs::remove_app_data;
 use super::wrapping::build_lift;
 use super::{command_tr, newline_in_code, table_ops};
 
@@ -16,6 +18,11 @@ use super::{command_tr, newline_in_code, table_ops};
 
 /// Split the current textblock at the cursor (Enter). Deletes a non-empty
 /// selection first; at the end of a heading, the new block becomes a paragraph.
+///
+/// An empty block made by the split is made without the block's
+/// [app data attributes](crate::schema::data_attrs): at its end the new block
+/// below, at its start the one above (the text keeps them). A split in the
+/// middle gives both halves the block's attributes.
 ///
 /// Refuses (`None`) when the cursor, after that delete, is not in a textblock:
 /// a caret at a gap between blocks (between a rule and a paragraph in a table
@@ -36,13 +43,23 @@ pub fn split_block() -> Command {
         }
         let parent = r.parent();
         let at_end = r.parent_offset() == parent.content().size();
+        let at_start = !at_end && r.parent_offset() == 0;
         let types_after = if at_end && parent.type_name() == "heading" {
             let para = state.schema().node_type("paragraph")?.clone();
             Some(vec![Some((para, Attrs::new()))])
+        } else if at_end {
+            Some(vec![Some((
+                parent.node_type().clone(),
+                without_app_data(parent),
+            ))])
         } else {
             None
         };
+        let first = r.before(r.depth())?;
         tr.split(pos, 1, types_after).ok()?;
+        if at_start {
+            remove_app_data(&mut tr, first)?;
+        }
         Some(tr)
     })
 }
@@ -87,12 +104,17 @@ pub fn split_list_item(item_type: &'static str) -> Command {
         // default content (a paragraph) rather than copying a heading/code block; mid-text
         // the second half keeps its own textblock type (`None`).
         let at_end = r.parent_offset() == r.parent().content().size();
+        let at_start = !at_end && r.parent_offset() == 0;
         let inner = if at_end {
             Some((state.schema().node_type("paragraph")?.clone(), Attrs::new()))
         } else {
             None
         };
+        let first = r.before(r.depth())?;
         tr.split(pos, 2, Some(vec![new_item, inner])).ok()?;
+        if at_start {
+            remove_app_data(&mut tr, first)?;
+        }
         Some(tr)
     })
 }

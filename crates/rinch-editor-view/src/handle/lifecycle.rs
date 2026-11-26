@@ -485,10 +485,15 @@ impl EditorHandle {
     /// whether it applied — a [read-only](Self::set_read_only) editor refuses every
     /// command that would change the document. The toolbar/keymap entry point.
     pub fn command(&self, name: &str) -> bool {
-        let mut core = self.core_mut();
-        let Some(cmd) = core.state.command(name) else {
+        let Some(cmd) = self.core().state.command(name) else {
             return false;
         };
+        self.run_command(cmd)
+    }
+
+    /// [`Self::command`] for a command in hand.
+    pub(super) fn run_command(&self, cmd: rinch_editor_core::Command) -> bool {
+        let mut core = self.core_mut();
         // `run_command_mapped`, keeping the attribute proof of the transaction
         // (an undo of a node view's `set_attrs` keeps the view mounted).
         let mut result: Option<(EditorState, Mapping, Vec<Kept>)> = None;

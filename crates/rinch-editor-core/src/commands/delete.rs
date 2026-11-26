@@ -9,6 +9,7 @@ use crate::state::{EditorState, Transaction};
 use crate::transform::block_range_simple;
 use crate::transform::steps::{ReplaceAroundStep, ReplaceStep};
 
+use super::data_attrs::delete_empty_block_before;
 use super::wrapping::build_lift;
 use super::{command_tr, table_ops};
 
@@ -388,6 +389,9 @@ pub fn delete_char_backward() -> Command {
                 return backspace_after_table(state, &r, cut);
             }
             {
+                if let Some(tr) = delete_empty_block_before(state, cut) {
+                    return Some(tr);
+                }
                 let mut tr = state.tr();
                 if tr
                     .step(Box::new(ReplaceStep::structural(
@@ -443,6 +447,9 @@ pub fn delete_char_forward() -> Command {
             return Some(tr);
         }
         if !table_barrier(&state.doc, cut) {
+            if let Some(tr) = delete_empty_block_before(state, cut) {
+                return Some(tr);
+            }
             let mut tr = state.tr();
             if tr
                 .step(Box::new(ReplaceStep::structural(

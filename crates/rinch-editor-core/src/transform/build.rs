@@ -14,6 +14,7 @@ use crate::Slice;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, Node, NodeType};
 use crate::pos::Pos;
 use crate::schema::Schema;
+use crate::schema::data_attrs::carry_app_data;
 use crate::transform::fit;
 use crate::transform::node_range::NodeRange;
 use crate::transform::step::{Step, StepError};
@@ -315,6 +316,8 @@ impl<'a> Transform<'a> {
     }
 
     /// Change the type (and attrs) of every textblock overlapping `from..to`.
+    /// Each block keeps its [app data attributes](crate::schema::data_attrs)
+    /// when `typ` keeps them and `attrs` does not name them.
     /// Port of `Transform.setBlockType`: each block's content is first cleared of
     /// what the new type does not allow ([`clear_incompatible`](Self::clear_incompatible)),
     /// so a paragraph with bold text and a hard break made a code block is plain
@@ -329,15 +332,19 @@ impl<'a> Transform<'a> {
         if !typ.is_textblock() {
             return Err(StepError::new("set_block_type target must be a textblock"));
         }
-        let mut conversions: Vec<(usize, usize, Vec<Mark>)> = Vec::new();
+        let mut conversions: Vec<(usize, Attrs, Vec<Mark>)> = Vec::new();
         self.doc.nodes_between(from, to, &mut |node, pos, _parent| {
-            if node.is_textblock() && !node.has_markup(&typ, &attrs) {
-                conversions.push((pos, node.node_size(), node.marks().to_vec()));
+            if node.is_textblock() {
+                // Each block keeps its own app data attributes.
+                let attrs = carry_app_data(&typ, &attrs, node);
+                if !node.has_markup(&typ, &attrs) {
+                    conversions.push((pos, attrs, node.marks().to_vec()));
+                }
             }
             true
         });
         let map_from = self.mapping.len();
-        for (pos, _size, marks) in conversions {
+        for (pos, attrs, marks) in conversions {
             // Positions were collected in the document as it was; clearing an earlier
             // block can have shrunk it.
             let pos = self.mapping.slice(map_from, self.mapping.len()).map(pos, 1);
@@ -348,7 +355,7 @@ impl<'a> Transform<'a> {
                 ));
             };
             let new_block =
-                Node::new_branch(typ.clone(), attrs.clone(), Fragment::empty()).with_marks(marks);
+                Node::new_branch(typ.clone(), attrs, Fragment::empty()).with_marks(marks);
             let slice = Slice::new(Fragment::from_node(new_block), 0, 0);
             self.step(Box::new(ReplaceAroundStep::new(
                 pos,
