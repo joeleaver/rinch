@@ -877,10 +877,14 @@ pub(crate) fn range_candidates(
     for d in (0..slice.open_start).rev() {
         let Some(node) = &left[d] else { break };
         // A textblock carrying an app's data attributes defines its content
-        // too where it is pasted over a whole textblock: it arrives as itself.
-        // Pasted into text it joins the block it lands in, which keeps its own.
-        let defines = node.node_type().spec().defining
-            || (covers_text && node.is_textblock() && node_app_data(node).next().is_some());
+        // where it is pasted over a whole textblock, and only there, whatever
+        // its type says: it arrives as itself. Pasted into text it joins the
+        // block it lands in, which keeps its own.
+        let defines = if node.is_textblock() && node_app_data(node).next().is_some() {
+            covers_text
+        } else {
+            node.node_type().spec().defining
+        };
         if defines && !node.same_markup(context) {
             preferred_depth = d;
         } else if defines || !node.is_textblock() {

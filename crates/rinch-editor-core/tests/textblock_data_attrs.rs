@@ -447,10 +447,18 @@ fn a_paste_at_the_start_of_text_joins_that_block() {
         r#"<ul><li><p data-role="t">wxyz</p></li></ul>"#,
     ] {
         let at = if doc.starts_with("<ul") { 3 } else { 1 };
-        let one = r#"<p data-role="a" data-rinch-clip="">X</p>"#;
-        let out = html(&paste(&state(doc, at), one));
-        assert_eq!(out, doc.replace("wxyz", "Xwxyz"));
+        // A heading's type defines it, but not into text while it carries any.
+        for one in [
+            r#"<p data-role="a" data-rinch-clip="">X</p>"#,
+            r#"<h2 data-role="a" data-rinch-clip="">X</h2>"#,
+        ] {
+            let out = html(&paste(&state(doc, at), one));
+            assert_eq!(out, doc.replace("wxyz", "Xwxyz"), "{one}");
+        }
     }
+    let heading = r#"<h2 data-role="a" data-rinch-clip="">X</h2>"#;
+    let out = html(&paste(&state("<p></p>", 1), heading));
+    assert_eq!(out, r#"<h2 data-role="a">X</h2>"#);
     let out = html(&paste(
         &state(r#"<p data-role="t">wxyz</p>"#, 1),
         &open_copy(1, 7),
@@ -498,6 +506,18 @@ fn lines_of_plain_text_place_them_as_enter_does() {
         r#"<p data-role="sub">abcd1</p><p>2</p><p>3</p>"#
     );
     assert_eq!(lines(1, 3), r#"<p>1</p><p>2</p><p data-role="sub">3cd</p>"#);
+}
+
+/// With nothing after the range the block keeps them, an empty first line too.
+#[test]
+fn an_empty_first_line_leaves_them_on_the_block() {
+    for (doc, to) in [(r#"<p data-role="sub"></p>"#, 1), (SUB, 5)] {
+        let s = select(state(doc, 1), 1, to);
+        let mut tr = s.tr();
+        let slice = slice_from_text(s.schema(), "\n2").unwrap();
+        tr.replace_selection_with_lines(slice).unwrap();
+        assert_eq!(html(&s.apply(tr)), r#"<p data-role="sub"></p><p>2</p>"#);
+    }
 }
 
 #[test]

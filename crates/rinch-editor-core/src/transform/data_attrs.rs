@@ -86,7 +86,7 @@ impl Transform<'_> {
         to: usize,
         slice: Slice,
     ) -> Result<usize, StepError> {
-        // The textblock split, where there is text after the range to move.
+        // The textblock split, where it carries data attributes to place.
         let split = (slice.content.child_count() > 1)
             .then(|| {
                 let r_from = self.doc.resolve(Pos(from)).ok()?;
@@ -96,8 +96,8 @@ impl Transform<'_> {
                     && r_from.depth() == r_to.depth()
                     && r_from.start(r_from.depth()) == r_to.start(r_to.depth())
                     && block.is_textblock()
-                    && node_app_data(block).next().is_some()
-                    && r_to.parent_offset() < block.content().size();
+                    && node_app_data(block).next().is_some();
+                let text_after = r_to.parent_offset() < block.content().size();
                 let after = self.doc.content().size() - to;
                 let at_start = r_from.parent_offset() == 0;
                 splits.then(|| {
@@ -106,14 +106,25 @@ impl Transform<'_> {
                         block.clone(),
                         after,
                         at_start,
+                        text_after,
                     )
                 })
             })
             .flatten();
         let end = self.replace_range(from, to, slice)?;
-        let Some((Some(head), block, after, at_start)) = split else {
+        let Some((Some(head), block, after, at_start, text_after)) = split else {
             return Ok(end);
         };
+        if !text_after {
+            // Enter at the end: the block split keeps its attributes, also
+            // when an empty first line took its place.
+            if at_start && self.doc.resolve(Pos(head + 1)).is_ok() {
+                for (name, value) in node_app_data(&block) {
+                    self.set_block_data_attr(head + 1, head + 1, name, Some(value))?;
+                }
+            }
+            return Ok(end);
+        }
         // What was after the range is as far from the document's end as it was.
         let tail = self.doc.content().size().saturating_sub(after);
         let Ok(r) = self.doc.resolve(Pos(tail)) else {
