@@ -99,19 +99,24 @@ pub enum Decoration {
     /// Styling applied to the host element of the one node spanning
     /// `[from, to)`, without touching the document.
     ///
-    /// The view reads **`class`** from `attrs` (a space-separated CSS class
-    /// list) and adds those words to the element's own `class` attribute.
-    /// Several decorations of one node add the union of their words; a word the
+    /// `class` is a space-separated CSS class list, whose words are added to
+    /// the element's own `class` attribute. Several decorations of one node add the union of their words; a word the
     /// element already had is left alone, and only the words decorations added
     /// are taken off again. See the module docs for which nodes can be named
     /// and what a range that spans none does.
+    ///
+    /// A class is all it carries: no `style`, `data-*` or tag name. Style the
+    /// node through the class in the app's stylesheet; an attribute that
+    /// belongs to the content goes on the node itself
+    /// ([`NodeSpec::data_attrs`](crate::schema::NodeSpec::data_attrs)).
+    #[non_exhaustive]
     Node {
         /// The position immediately before the node.
         from: Pos,
         /// The position immediately after the node.
         to: Pos,
-        /// Renderer-agnostic attributes; `class` is the one the view honours.
-        attrs: Attrs,
+        /// The space-separated CSS class list.
+        class: String,
     },
 }
 
@@ -139,13 +144,14 @@ impl Decoration {
     ///
     /// The ends are put in order, as for [`Decoration::inline`]. Nothing checks
     /// here that they span a node; one that does not is simply not drawn.
-    pub fn node(from: Pos, to: Pos, attrs: Attrs) -> Decoration {
+    pub fn node(from: Pos, to: Pos, class: impl Into<String>) -> Decoration {
         let (from, to) = if from.0 <= to.0 {
             (from, to)
         } else {
             (to, from)
         };
-        Decoration::Node { from, to, attrs }
+        let class = class.into();
+        Decoration::Node { from, to, class }
     }
 
     /// The (single) document position this decoration is anchored at. For a
@@ -181,13 +187,13 @@ impl Decoration {
     }
 
     /// The CSS class list of a [`Decoration::Node`]; `None` for any other
-    /// kind, for a node decoration with no `class` attr or a blank one, and for
+    /// kind, for a node decoration with a blank class list, and for
     /// an empty range (no node is that small). Whether the range spans a node
     /// is for the view, which has the document, to decide.
     pub fn node_class(&self) -> Option<&str> {
         match self {
-            Decoration::Node { from, to, attrs } if from.0 < to.0 => {
-                attrs.get_str("class").filter(|c| !c.trim().is_empty())
+            Decoration::Node { from, to, class } if from.0 < to.0 => {
+                Some(class.as_str()).filter(|c| !c.trim().is_empty())
             }
             _ => None,
         }
@@ -371,8 +377,7 @@ mod tests {
 
     #[test]
     fn node_decoration_records_its_range_and_class() {
-        let attrs = Attrs::new().with("class", "current");
-        let d = Decoration::node(Pos(0), Pos(7), attrs.clone());
+        let d = Decoration::node(Pos(0), Pos(7), "current");
         assert_eq!(d.pos(), Pos(0));
         assert_eq!(d.range(), (Pos(0), Pos(7)));
         assert_eq!(d.node_class(), Some("current"));
@@ -381,19 +386,14 @@ mod tests {
         assert_eq!(d.as_placeholder(), None);
         assert_eq!(classed(0, 7, "current").node_class(), None);
         assert_ne!(d, classed(0, 7, "current"));
-        assert_eq!(Decoration::node(Pos(7), Pos(0), attrs), d);
+        assert_eq!(Decoration::node(Pos(7), Pos(0), "current"), d);
     }
 
     #[test]
     fn a_node_decoration_with_nothing_to_draw_has_no_class() {
-        let blank = Attrs::new().with("class", "  ");
-        assert_eq!(Decoration::node(Pos(0), Pos(2), blank).node_class(), None);
-        assert_eq!(
-            Decoration::node(Pos(0), Pos(2), Attrs::new()).node_class(),
-            None
-        );
-        let empty = Attrs::new().with("class", "c");
-        assert_eq!(Decoration::node(Pos(3), Pos(3), empty).node_class(), None);
+        assert_eq!(Decoration::node(Pos(0), Pos(2), "  ").node_class(), None);
+        assert_eq!(Decoration::node(Pos(0), Pos(2), "").node_class(), None);
+        assert_eq!(Decoration::node(Pos(3), Pos(3), "c").node_class(), None);
     }
 
     #[test]

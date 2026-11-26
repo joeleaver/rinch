@@ -451,7 +451,7 @@ take off), and a run whose decorations did not change is not rewritten (#848).
 
 #### Node decorations: a class on a whole block
 
-`Decoration::node(from, to, attrs)` adds the `class` words in `attrs` to the
+`Decoration::node(from, to, class)` adds the words of `class` to the
 host element of **one node**: the block the caret is in, a heading whose
 section is folded away, a row an app wants to mark. The document is not changed.
 
@@ -463,8 +463,7 @@ fn decorations(&self, state: &EditorState) -> DecorationSet {
         let node = state.doc.child(i);
         let end = pos + node.node_size();
         if self.is_marked(node) {
-            let attrs = Attrs::new().with("class", "marked");
-            out.push(Decoration::node(Pos(pos), Pos(end), attrs));
+            out.push(Decoration::node(Pos(pos), Pos(end), "marked"));
         }
         pos = end;
     }
@@ -477,11 +476,15 @@ fn decorations(&self, state: &EditorState) -> DecorationSet {
 [data-pm-editor] h2.folded + p { display: none; }
 ```
 
+- **A class is all it carries** — no `style`, `data-*` or tag name, unlike
+  ProseMirror's node decoration. Style the node through the class in your
+  stylesheet. An attribute that belongs to the content is set on the node.
 - **Naming the node.** `from` is the position immediately before the node and
   `to` the position immediately after it (`from + node.node_size()`), as in
   ProseMirror. A range that does not span exactly one node draws nothing; it is
   not moved to the nearest one. A plugin that caches positions maps `from` with
-  `tr.mapping().map(from, 1)` and `to` with `map(to, -1)`.
+  `Pos(tr.mapping().map(from.0, 1))` and `to` with
+  `Pos(tr.mapping().map(to.0, -1))`.
 - **Which nodes.** Every node but the document and a text run: textblocks,
   containers (lists, items, quotes, tables, rows, cells), block and inline
   leaves (a rule, an image, a hard break), and a node a node view draws, whose

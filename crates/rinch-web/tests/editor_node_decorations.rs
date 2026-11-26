@@ -5,7 +5,7 @@
 use rinch_core::dom::RenderScope;
 use rinch_core::element::ThemeProviderProps;
 use rinch_editor_core::decoration::{Decoration, DecorationSet};
-use rinch_editor_core::{Attrs, EditorState, Plugin, PluginKey, Pos, Selection};
+use rinch_editor_core::{EditorState, Plugin, PluginKey, Pos, Selection};
 use rinch_web::create_editor;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -30,11 +30,7 @@ impl Plugin for Fold {
             return DecorationSet::empty();
         }
         let end = Pos(state.doc.child(0).node_size());
-        DecorationSet::new(vec![Decoration::node(
-            Pos(0),
-            end,
-            Attrs::new().with("class", "folded"),
-        )])
+        DecorationSet::new(vec![Decoration::node(Pos(0), end, "folded")])
     }
 }
 

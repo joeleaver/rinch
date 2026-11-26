@@ -5,7 +5,7 @@
 
 use super::*;
 use rinch_editor_core::decoration::{Decoration, DecorationSet};
-use rinch_editor_core::{Attrs, EditorState, Plugin, PluginKey, Pos, Selection};
+use rinch_editor_core::{EditorState, Plugin, PluginKey, Pos, Selection};
 
 const VP: (u32, u32) = (800, 600);
 
@@ -24,7 +24,7 @@ impl Plugin for First {
         DecorationSet::new(
             self.class
                 .borrow()
-                .map(|c| Decoration::node(Pos(0), end, Attrs::new().with("class", c)))
+                .map(|c| Decoration::node(Pos(0), end, c))
                 .into_iter()
                 .collect(),
         )

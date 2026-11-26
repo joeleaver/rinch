@@ -55,10 +55,39 @@ impl HostClasses {
     /// Make `el` carry `wanted` besides whatever else its class list holds.
     /// Writes nothing when `wanted` is what was asked for last time. Returns
     /// whether the element was written.
-    fn set(&mut self, el: &NodeHandle, wanted: Vec<String>) -> bool {
-        if self.wanted == wanted {
+    fn set<'a>(&mut self, el: &NodeHandle, words: impl Iterator<Item = &'a str> + Clone) -> bool {
+        // Compared before anything is built: every transaction asks again for
+        // every decorated node.
+        if self.asked_for(words.clone()) {
             return false;
         }
+        let mut wanted: Vec<String> = Vec::new();
+        for word in words {
+            if !wanted.iter().any(|w| w == word) {
+                wanted.push(word.to_string());
+            }
+        }
+        self.write(el, wanted)
+    }
+
+    /// Whether `words`, each counted where it first appears, are what was
+    /// asked for last time. Allocates nothing.
+    fn asked_for<'a>(&self, words: impl Iterator<Item = &'a str>) -> bool {
+        let mut seen = 0;
+        for word in words {
+            if self.wanted[..seen].iter().any(|w| w == word) {
+                continue;
+            }
+            if self.wanted.get(seen).is_none_or(|w| w != word) {
+                return false;
+            }
+            seen += 1;
+        }
+        seen == self.wanted.len()
+    }
+
+    /// Bring `el` from what is remembered to `wanted` (each word once).
+    fn write(&mut self, el: &NodeHandle, wanted: Vec<String>) -> bool {
         let current = el.get_attribute("class");
         let before: Vec<&str> = current
             .as_deref()
@@ -97,7 +126,7 @@ impl HostClasses {
     pub(super) fn move_to(&mut self, el: &NodeHandle) {
         let wanted = std::mem::take(&mut self.wanted);
         self.added.clear();
-        self.set(el, wanted);
+        self.write(el, wanted);
     }
 }
 
@@ -133,16 +162,12 @@ pub(super) fn sync_node_decos(
         if !child.is_text && (!reaching.is_empty() || child.has_node_deco) {
             let at_start = reaching.partition_point(|d| d.from == pos);
             let (own, inside) = reaching.split_at(at_start);
-            let mut wanted: Vec<String> = Vec::new();
-            for deco in own.iter().filter(|d| d.to == end) {
-                for word in deco.class.split_whitespace() {
-                    if !wanted.iter().any(|w| w == word) {
-                        wanted.push(word.to_string());
-                    }
-                }
-            }
-            let decorated = !wanted.is_empty();
-            *wrote |= child.host_classes.set(&child.dom, wanted);
+            let words = own
+                .iter()
+                .filter(|d| d.to == end)
+                .flat_map(|d| d.class.split_whitespace());
+            let decorated = words.clone().next().is_some();
+            *wrote |= child.host_classes.set(&child.dom, words);
             let below = sync_node_decos(child, inside, pos + 1, wrote);
             child.has_node_deco = decorated || below;
         }
@@ -150,4 +175,25 @@ pub(super) fn sync_node_decos(
         pos = end;
     }
     any
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asked_for_compares_the_words_in_draw_order_each_once() {
+        let held = HostClasses {
+            wanted: vec!["a".into(), "b".into()],
+            added: Vec::new(),
+        };
+        let asked = |words: &[&str]| held.asked_for(words.iter().copied());
+        assert!(asked(&["a", "b"]));
+        assert!(asked(&["a", "a", "b", "a"]));
+        assert!(!asked(&["a"]));
+        assert!(!asked(&["b", "a"]));
+        assert!(!asked(&["a", "b", "c"]));
+        assert!(!asked(&[]));
+        assert!(HostClasses::default().asked_for(std::iter::empty()));
+    }
 }

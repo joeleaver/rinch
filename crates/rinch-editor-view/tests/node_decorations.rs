@@ -9,7 +9,7 @@ use std::rc::Rc;
 use rinch_core::dom::mock::MockDomDocument;
 use rinch_core::dom::{DomContent, DomDocument, DomTree, NodeHandle, NodeId, RenderScope};
 use rinch_editor_core::decoration::{Decoration, DecorationSet};
-use rinch_editor_core::{Attrs, EditorState, Node, Plugin, PluginKey, Pos, Selection};
+use rinch_editor_core::{EditorState, Node, Plugin, PluginKey, Pos, Selection};
 use rinch_editor_view::{EditorHandle, NodeViewCtx, NodeViewSpec, create_editor};
 
 /// What a test asks to have decorated.
@@ -39,7 +39,7 @@ fn nodes(doc: &Node) -> Vec<(usize, usize, Node)> {
 }
 
 fn deco(from: usize, to: usize, class: &str) -> Decoration {
-    Decoration::node(Pos(from), Pos(to), Attrs::new().with("class", class))
+    Decoration::node(Pos(from), Pos(to), class)
 }
 
 impl Plugin for Asks {
