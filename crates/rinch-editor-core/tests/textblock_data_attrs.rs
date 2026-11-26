@@ -9,7 +9,8 @@ use rinch_editor_core::commands::{
 };
 use rinch_editor_core::schema::{MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS};
 use rinch_editor_core::serialize::{
-    CLIPBOARD_MARK, node_to_html, slice_from_html, slice_from_pasted_html, slice_to_html,
+    CLIPBOARD_MARK, clipboard_slice, node_to_html, slice_from_html, slice_from_pasted_html,
+    slice_from_text, slice_to_html,
 };
 use rinch_editor_core::{
     AttrValue, Attrs, Command, EditorState, Node, Pos, Schema, Selection, default_plugins,
@@ -436,6 +437,73 @@ fn blocks_pasted_into_text_join_it() {
         html(&paste(&s, &open_copy(1, 3))),
         r#"<p data-role="t">wxabyz</p>"#
     );
+}
+
+/// At the start of a block's text it is still a paste into that text.
+#[test]
+fn a_paste_at_the_start_of_text_joins_that_block() {
+    for doc in [
+        r#"<p data-role="t">wxyz</p>"#,
+        r#"<ul><li><p data-role="t">wxyz</p></li></ul>"#,
+    ] {
+        let at = if doc.starts_with("<ul") { 3 } else { 1 };
+        let one = r#"<p data-role="a" data-rinch-clip="">X</p>"#;
+        let out = html(&paste(&state(doc, at), one));
+        assert_eq!(out, doc.replace("wxyz", "Xwxyz"));
+    }
+    let out = html(&paste(
+        &state(r#"<p data-role="t">wxyz</p>"#, 1),
+        &open_copy(1, 7),
+    ));
+    assert_eq!(out, r#"<p data-role="t">ab</p><p data-role="b">cdwxyz</p>"#);
+}
+
+/// A copy of all the text of one block takes the block along.
+#[test]
+fn a_copy_of_one_whole_block_carries_it() {
+    let source = state(r#"<p data-role="a">abcd</p><p>z</p>"#, 1);
+    let copy = |from, to| slice_to_html(&clipboard_slice(&source.doc, from, to).unwrap());
+    assert_eq!(copy(2, 4), "bc");
+    assert_eq!(copy(1, 4), "abc");
+    let whole = copy(1, 5);
+    assert_eq!(whole, r#"<p data-role="a" data-rinch-clip="">abcd</p>"#);
+    for empty in ["<p></p>", "<h2></h2>"] {
+        let out = html(&paste(&state(empty, 1), &whole));
+        assert_eq!(out, r#"<p data-role="a">abcd</p>"#, "{empty}");
+    }
+    // Into text it is only its text.
+    let out = html(&paste(&state("<p>wxyz</p>", 3), &whole));
+    assert_eq!(out, "<p>wxabcdyz</p>");
+}
+
+#[test]
+fn lines_of_plain_text_place_them_as_enter_does() {
+    let lines = |at, to| {
+        let s = select(state(SUB, 1), at, to);
+        let mut tr = s.tr();
+        let slice = slice_from_text(s.schema(), "1\n2\n3").unwrap();
+        tr.replace_selection_with_lines(slice).unwrap();
+        html(&s.apply(tr))
+    };
+    assert_eq!(
+        lines(1, 1),
+        r#"<p>1</p><p>2</p><p data-role="sub">3abcd</p>"#
+    );
+    assert_eq!(
+        lines(3, 3),
+        r#"<p data-role="sub">ab1</p><p>2</p><p data-role="sub">3cd</p>"#
+    );
+    assert_eq!(
+        lines(5, 5),
+        r#"<p data-role="sub">abcd1</p><p>2</p><p>3</p>"#
+    );
+    assert_eq!(lines(1, 3), r#"<p>1</p><p>2</p><p data-role="sub">3cd</p>"#);
+}
+
+#[test]
+fn an_element_holding_blocks_gives_its_attributes_to_none_of_them() {
+    let s = state(r#"<h1 data-role="x">a<div>b</div>c</h1>"#, 1);
+    assert!(!html(&s).contains("data-role"), "{}", html(&s));
 }
 
 #[cfg(feature = "serde")]

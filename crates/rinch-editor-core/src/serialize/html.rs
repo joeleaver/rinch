@@ -35,7 +35,7 @@ use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::pos::Pos;
-use crate::schema::data_attrs::node_app_data;
+use crate::schema::data_attrs::{node_app_data, without_data_attrs};
 use crate::schema::{IMAGE_MAX_WIDTH, Schema, app_data_attrs, kept_data_attrs};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -108,6 +108,17 @@ pub fn clipboard_slice(doc: &Node, from: usize, to: usize) -> Result<Slice, Edit
         return Ok(slice);
     }
     let r_from = doc.resolve(Pos(from))?;
+    // All of the text of one block that carries an app's data attributes: the
+    // block goes along, so that pasted over an empty line it arrives as itself.
+    let block = r_from.parent();
+    if block.is_textblock()
+        && r_from.parent_offset() == 0
+        && to == from + block.content().size()
+        && node_app_data(block).next().is_some()
+    {
+        let block = block.copy_with_content(slice.content);
+        return Ok(Slice::new(Fragment::from_node(block), 1, 1));
+    }
     let mut depth = r_from.shared_depth(Pos(to));
     while depth > 0
         && let Some(first) = slice.content.children().first()
@@ -1237,7 +1248,10 @@ impl<'a> HtmlParser<'a> {
         self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
         let attrs = self.textblock_attrs(nt, tag, attributes);
         let refs: Vec<&ParsedNode> = children.iter().collect();
-        let inner = self.parse_block_refs(&refs, Some((nt, &attrs)), &b.active)?;
+        // The element's data attributes are one block's: where it holds blocks,
+        // none of what comes apart takes them (they would be on several).
+        let apart = without_data_attrs(&attrs);
+        let inner = self.parse_block_refs(&refs, Some((nt, &apart)), &b.active)?;
         if inner.blocks.is_empty() {
             let block = self.make_node(nt, attrs, inline_fragment(inner.blank))?;
             self.push_blocks(b, [block]);

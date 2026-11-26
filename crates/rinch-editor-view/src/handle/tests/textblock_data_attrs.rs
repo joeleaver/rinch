@@ -61,6 +61,15 @@ fn the_host_element_follows_a_split_a_retype_and_a_load() {
 }
 
 #[test]
+fn a_plain_text_paste_at_the_start_leaves_them_with_the_text() {
+    let h = two();
+    assert!(h.handle.set_block_data_attr("data-role", Some("sub")));
+    h.handle.set_selection(Selection::cursor(Pos(1)));
+    assert!(h.handle.replace_selection_with_text("1\n2"));
+    assert_eq!(roles(&h), [None, Some("sub".into()), None]);
+}
+
+#[test]
 fn a_read_only_editor_refuses_it_and_still_answers() {
     let h = two();
     assert!(h.handle.set_block_data_attr("data-role", Some("sub")));

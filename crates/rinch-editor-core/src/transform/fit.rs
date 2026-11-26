@@ -865,6 +865,10 @@ pub(crate) fn range_candidates(
     // Back the preferred depth up over defining nodes directly above it, so
     // that the defining node comes along; a non-defining textblock is skipped.
     let mut preferred_depth = slice.open_start;
+    // Whether the range takes everything its textblocks hold, an empty one's
+    // nothing included.
+    let covers_text =
+        r_from.parent_offset() == 0 && r_to.parent_offset() == r_to.parent().content().size();
     let context = r_from.node(
         (preferred_target.unsigned_abs())
             .saturating_sub(1)
@@ -873,9 +877,10 @@ pub(crate) fn range_candidates(
     for d in (0..slice.open_start).rev() {
         let Some(node) = &left[d] else { break };
         // A textblock carrying an app's data attributes defines its content
-        // too: pasted over a whole textblock it arrives as itself.
+        // too where it is pasted over a whole textblock: it arrives as itself.
+        // Pasted into text it joins the block it lands in, which keeps its own.
         let defines = node.node_type().spec().defining
-            || (node.is_textblock() && node_app_data(node).next().is_some());
+            || (covers_text && node.is_textblock() && node_app_data(node).next().is_some());
         if defines && !node.same_markup(context) {
             preferred_depth = d;
         } else if defines || !node.is_textblock() {

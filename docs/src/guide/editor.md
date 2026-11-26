@@ -172,8 +172,11 @@ belong to the block:
 | Changing to a code block | dropped, and not restored by changing back (undo restores them) |
 | The Paragraph reset (`set_paragraph`) | removed |
 | Wrapping in or lifting out of a list or quote | kept |
-| Pasting whole blocks over an empty line | they arrive with their own |
-| Pasting into a block's text | the block joined keeps its own; a following pasted block keeps its own |
+| Pasting whole blocks over an empty line, or over all of a block's text | they arrive with their own |
+| Pasting into a block's text, its start included | the block joined keeps its own; a following pasted block keeps its own |
+| Pasting lines of plain text into a block | as Enter: the text after the caret keeps them, a new line above it has none |
+| Copying all of one block's text | the copy carries the block and its attributes (a part of it copies as text) |
+| Loading an element that holds blocks of its own (`<h1>a<div>b</div></h1>`) | none of the blocks takes them |
 
 A raw `Transform::split` copies the block's markup onto both halves. **Markdown** has no
 syntax for them and writes none; a table written as HTML keeps them.

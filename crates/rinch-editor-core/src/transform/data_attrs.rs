@@ -1,6 +1,7 @@
 //! Setting and removing an app's `data-*` attribute on textblocks
 //! ([`crate::schema::data_attrs`]).
 
+use crate::model::Slice;
 use crate::pos::Pos;
 use crate::schema::data_attrs::node_app_data;
 use crate::schema::{MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS, is_app_data_attr};
@@ -69,5 +70,68 @@ impl Transform<'_> {
             }))?;
         }
         Ok(self)
+    }
+
+    /// Replace `[from, to)` with pasted **lines of plain text** (`slice`, as
+    /// [`slice_from_text`](crate::serialize::slice_from_text) builds it),
+    /// placing a block's app data attributes as Enter would: the lines are new
+    /// text, so where they split a textblock the text after the range keeps
+    /// the block's attributes, and where the range is at the block's start the
+    /// first line's block has none. Anything else is
+    /// [`replace_range`](Self::replace_range). Returns what that does, the
+    /// position right after the inserted content.
+    pub fn replace_range_with_lines(
+        &mut self,
+        from: usize,
+        to: usize,
+        slice: Slice,
+    ) -> Result<usize, StepError> {
+        // The textblock split, where there is text after the range to move.
+        let split = (slice.content.child_count() > 1)
+            .then(|| {
+                let r_from = self.doc.resolve(Pos(from)).ok()?;
+                let r_to = self.doc.resolve(Pos(to)).ok()?;
+                let block = r_from.parent();
+                let splits = r_from.depth() > 0
+                    && r_from.depth() == r_to.depth()
+                    && r_from.start(r_from.depth()) == r_to.start(r_to.depth())
+                    && block.is_textblock()
+                    && node_app_data(block).next().is_some()
+                    && r_to.parent_offset() < block.content().size();
+                let after = self.doc.content().size() - to;
+                let at_start = r_from.parent_offset() == 0;
+                splits.then(|| {
+                    (
+                        r_from.before(r_from.depth()),
+                        block.clone(),
+                        after,
+                        at_start,
+                    )
+                })
+            })
+            .flatten();
+        let end = self.replace_range(from, to, slice)?;
+        let Some((Some(head), block, after, at_start)) = split else {
+            return Ok(end);
+        };
+        // What was after the range is as far from the document's end as it was.
+        let tail = self.doc.content().size().saturating_sub(after);
+        let Ok(r) = self.doc.resolve(Pos(tail)) else {
+            return Ok(end);
+        };
+        if r.depth() == 0 || r.before(r.depth()) == Some(head) {
+            return Ok(end);
+        }
+        if let Some(tail) = r.before(r.depth()) {
+            for (name, value) in node_app_data(&block) {
+                self.set_block_data_attr(tail + 1, tail + 1, name, Some(value))?;
+            }
+        }
+        if at_start {
+            for (name, _) in node_app_data(&block) {
+                self.set_block_data_attr(head + 1, head + 1, name, None)?;
+            }
+        }
+        Ok(end)
     }
 }

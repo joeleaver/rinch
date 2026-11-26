@@ -36,9 +36,14 @@
 //!   ([`set_paragraph`](crate::commands::set_paragraph)) removes them.
 //! - **Wrapping and lifting** (lists, quotes) move the block, attributes and
 //!   all.
-//! - **Paste**: a whole block pasted over a whole textblock (an empty line
-//!   included) arrives as itself, attributes and all; content pasted into a
-//!   block's text joins that block, which keeps its own.
+//! - **Paste**: a whole block pasted over all of a textblock's text (an empty
+//!   line included) arrives as itself, attributes and all; content pasted into
+//!   a block's text, its start included, joins that block, which keeps its
+//!   own. A copy of all of one such block's text carries the block. Lines of
+//!   plain text pasted into a block place them as Enter does
+//!   ([`Transform::replace_range_with_lines`](crate::transform::Transform::replace_range_with_lines)).
+//! - **Loading HTML** keeps an element's attributes on the one block it is; an
+//!   element that holds blocks of its own gives them to none.
 //!
 //! [`Transform::split`]: crate::transform::Transform::split
 //!
@@ -277,6 +282,17 @@ pub(crate) fn node_app_data(node: &Node) -> impl Iterator<Item = (&str, &str)> {
         .into_iter()
         .flatten()
         .filter(move |(name, _)| !spec.attrs.contains_key(*name))
+}
+
+/// `attrs` less every app data attribute name.
+pub(crate) fn without_data_attrs(attrs: &Attrs) -> Attrs {
+    attrs.iter().fold(attrs.clone(), |kept, (name, _)| {
+        if is_app_data_attr(name) {
+            kept.without(name)
+        } else {
+            kept
+        }
+    })
 }
 
 /// `attrs`, for a node of type `typ` that takes `from`'s place: with every app

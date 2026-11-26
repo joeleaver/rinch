@@ -223,7 +223,19 @@ impl Transaction {
         let (from, to) = self.selection_range()?;
         let tables = slice.content.children().iter().any(holds_table);
         self.with_table_repair(from, to, tables, None, |tr| {
-            tr.replace_selection_inner(from, to, slice)
+            tr.replace_selection_inner(from, to, slice, false)
+        })?;
+        Ok(self)
+    }
+
+    /// [`replace_selection`](Self::replace_selection) with pasted lines of plain
+    /// text: the default plain-text paste. An app's data attributes on the
+    /// block the lines split follow the text, as at Enter
+    /// ([`Transform::replace_range_with_lines`]).
+    pub fn replace_selection_with_lines(&mut self, slice: Slice) -> Result<&mut Self, StepError> {
+        let (from, to) = self.selection_range()?;
+        self.with_table_repair(from, to, false, None, |tr| {
+            tr.replace_selection_inner(from, to, slice, true)
         })?;
         Ok(self)
     }
@@ -233,6 +245,7 @@ impl Transaction {
         from: usize,
         to: usize,
         slice: Slice,
+        lines: bool,
     ) -> Result<(), StepError> {
         // Whether the slice ends in inline content: the caret then stays in
         // it rather than moving on to what follows.
@@ -248,7 +261,11 @@ impl Transaction {
             (None, Some(parent)) => parent.is_textblock(),
             (None, None) => false,
         };
-        let end = self.replace_range(from, to, slice)?;
+        let end = if lines {
+            self.with_transform(|tf| tf.replace_range_with_lines(from, to, slice))?
+        } else {
+            self.replace_range(from, to, slice)?
+        };
         let near = Selection::near(&self.doc, Pos(end), if inline_end { -1 } else { 1 });
         self.set_selection(near);
         Ok(())
