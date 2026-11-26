@@ -54,7 +54,8 @@ pub use model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slic
 pub use motion::{CursorMotion, block_range_at, resolve_cursor_motion, word_range_at};
 pub use plugin::{PasteContent, Plugin, PluginKey};
 pub use plugins::{
-    DataAttrSplitPlugin, HistoryPlugin, MarkdownInputRulesPlugin, PlaceholderPlugin,
+    DATA_ATTR_SPLIT_KEY, DataAttrSplitPlugin, HistoryPlugin, MarkdownInputRulesPlugin,
+    PlaceholderPlugin,
 };
 pub use pos::{Pos, ResolvedPos};
 pub use schema::{

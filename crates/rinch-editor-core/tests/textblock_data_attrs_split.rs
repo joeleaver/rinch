@@ -9,7 +9,11 @@ use rinch_editor_core::commands::{
     delete_char_backward, insert_horizontal_rule, split_block, split_block_or_list_item,
 };
 use rinch_editor_core::schema::DataAttrSplit;
-use rinch_editor_core::{DataAttrSplitPlugin, Pos};
+use rinch_editor_core::serialize::slice_from_html;
+use rinch_editor_core::{
+    DataAttrSplitPlugin, EditorState, Plugin, PluginKey, Pos, Schema, default_plugins,
+};
+use std::rc::Rc;
 
 #[test]
 fn enter_copies_them_to_both_blocks() {
@@ -309,4 +313,44 @@ fn a_headings_tail_made_a_paragraph_is_plain() {
         lines(DataAttrSplit::Copy, h, 5, 5, "1\n2"),
         r#"<h2 data-role="h">abcd1</h2><p>2</p>"#
     );
+}
+
+/// A plugin of its own key answering one choice for `data-role`.
+struct Answers(&'static str, DataAttrSplit);
+
+impl Plugin for Answers {
+    fn key(&self) -> PluginKey {
+        PluginKey(self.0)
+    }
+
+    fn data_attr_splits(&self) -> Vec<(String, DataAttrSplit)> {
+        vec![("data-role".into(), self.1)]
+    }
+}
+
+/// Precedence: a later plugin wins, and a `DataAttrSplitPlugin` wins over
+/// plugins of other keys wherever it is in the list.
+#[test]
+fn the_precedence_of_split_choices() {
+    use DataAttrSplit::{Copy, CopyToText, Keep};
+    let both = r#"<p data-role="sub">abcd</p><p data-role="sub"></p>"#;
+    let old = r#"<p data-role="sub">abcd</p><p></p>"#;
+    let entered = |plugins: Vec<Rc<dyn Plugin>>| {
+        let schema = Rc::new(Schema::starter_kit());
+        let slice = slice_from_html(&schema, SUB).unwrap();
+        let doc = schema.branch("doc", slice.content).unwrap();
+        let mut all = default_plugins();
+        all.extend(plugins);
+        let s = EditorState::create(schema, doc, all);
+        html(&run(&select(s, 5, 5), split_block()))
+    };
+    let a = |split| Rc::new(Answers("a", split)) as Rc<dyn Plugin>;
+    let b = |split| Rc::new(Answers("b", split)) as Rc<dyn Plugin>;
+    let app =
+        |split| Rc::new(DataAttrSplitPlugin::new().with("data-role", split)) as Rc<dyn Plugin>;
+    assert_eq!(entered(vec![a(Copy), b(CopyToText)]), old);
+    assert_eq!(entered(vec![b(CopyToText), a(Copy)]), both);
+    assert_eq!(entered(vec![app(Copy), a(CopyToText), b(Keep)]), both);
+    assert_eq!(entered(vec![a(Copy), app(CopyToText), b(Copy)]), old);
+    assert_eq!(entered(vec![app(Copy), app(CopyToText)]), old);
 }

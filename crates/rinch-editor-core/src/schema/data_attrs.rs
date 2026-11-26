@@ -32,9 +32,11 @@
 //!   markup and asks no policy.
 //! - **Joining** two blocks (Backspace, Delete, deleting across a boundary,
 //!   typing over one): the joined block keeps the first block's, unless none
-//!   of the first block's text is left and some of the second's is, when it
-//!   has the second's (`<h2></h2>` and `<p data-b>cd</p>` join as
-//!   `<h2 data-b>cd</h2>`). A browser keeps the first block's there too.
+//!   of the first block's text is left and some of the second's is. Then it
+//!   has the second's if it is the same element as the second, and none if it
+//!   is another (`<h2></h2>` and `<p data-b>cd</p>` join as `<h2>cd</h2>`):
+//!   a join never gives a block another element's attributes. A browser keeps
+//!   the first block's there too.
 //! - **Changing block type** drops them when the element changes (paragraph to
 //!   heading, one heading level to another, anything to a code block) and
 //!   keeps them when it does not.

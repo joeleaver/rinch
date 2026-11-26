@@ -14,6 +14,16 @@ pub const DATA_ATTR_SPLIT_KEY: PluginKey = PluginKey("data_attr_split");
 /// attributes. An attribute it does not name is copied
 /// ([`DataAttrSplit::Copy`]).
 ///
+/// Its choices are the app's: they win over what any plugin of another key
+/// answers from [`Plugin::data_attr_splits`], whatever the order of the
+/// plugins. An editor has one set of them. On a mounted editor
+/// (`rinch-editor-view`'s `EditorHandle`), `set_data_attr_split` sets one at
+/// any time, and adding this plugin, a second one too, merges its choices into
+/// those already there: for a name both have, the later call wins. Neither
+/// touches the undo history. A component library that only wants to offer a
+/// default the app can override implements
+/// [`Plugin::data_attr_splits`] on a plugin of its own.
+///
 /// ```
 /// use rinch_editor_core::DataAttrSplitPlugin;
 /// use rinch_editor_core::schema::DataAttrSplit;

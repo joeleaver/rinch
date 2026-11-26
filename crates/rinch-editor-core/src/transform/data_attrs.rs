@@ -224,13 +224,14 @@ impl Transform<'_> {
                 return Ok(());
             } else if ends.after {
                 // Nothing of the first block's text is left: the attributes
-                // follow the text that is. A paste that made it another element
-                // leaves the pasted block's.
+                // follow the text that is, where the block is still that text's
+                // element. Where it is another (a heading left of a join with a
+                // paragraph), a paste leaves the pasted block's and every other
+                // edit none.
                 match edit {
-                    Edit::Paste(slice) if !same_element(&ends.to_block, block) => {
-                        open_textblock(slice).map(pairs).unwrap_or_default()
-                    }
-                    _ => pairs(&ends.to_block),
+                    _ if same_element(&ends.to_block, block) => pairs(&ends.to_block),
+                    Edit::Paste(slice) => open_textblock(slice).map(pairs).unwrap_or_default(),
+                    _ => Vec::new(),
                 }
             } else {
                 match edit {

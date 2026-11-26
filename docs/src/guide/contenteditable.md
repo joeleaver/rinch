@@ -795,12 +795,12 @@ p[data-role="note"] + p { margin-top: 1em; }
 ```
 
 Enter copies them to the new paragraph, as in a browser. For a style that should end
-with its paragraph, say so once, when the handle is created:
+with its paragraph, say so (once, at startup or any later time; the undo history stays):
 
 ```rust
-handle.add_plugin(Rc::new(
-    DataAttrSplitPlugin::new().with("data-role", DataAttrSplit::CopyToText),
-));
+use rinch_editor_core::schema::DataAttrSplit;
+
+handle.set_data_attr_split("data-role", DataAttrSplit::CopyToText);
 ```
 
 Now Enter at the end of a note starts a plain paragraph. What every choice does, and

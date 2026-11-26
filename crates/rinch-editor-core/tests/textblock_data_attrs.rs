@@ -150,7 +150,7 @@ fn a_join_that_keeps_only_the_seconds_text_has_the_seconds() {
         ),
         (r#"<p data-role="a"></p><p>cd</p>"#, "<p>cd</p>"),
         (
-            r#"<h2></h2><p data-role="b">cd</p>"#,
+            r#"<h2 data-role="a"></h2><h2 data-role="b">cd</h2>"#,
             r#"<h2 data-role="b">cd</h2>"#,
         ),
     ] {
@@ -174,6 +174,47 @@ fn a_join_that_keeps_only_the_seconds_text_has_the_seconds() {
         html(&run(&state(both, 3), delete_char_backward())),
         r#"<p data-role="a"></p>"#
     );
+}
+
+/// A join never gives a block another element's attributes: the second's go
+/// with its text only into a block of the second's element.
+#[test]
+fn a_join_into_another_element_takes_none_of_the_seconds() {
+    for (doc, joined) in [
+        (r#"<h2></h2><p data-role="b">cd</p>"#, "<h2>cd</h2>"),
+        (r#"<h1></h1><p data-role="b">cd</p>"#, "<h1>cd</h1>"),
+        (
+            r#"<h2 data-role="a"></h2><p data-role="b">cd</p>"#,
+            "<h2>cd</h2>",
+        ),
+        // Two heading levels are two elements.
+        (r#"<h1></h1><h2 data-role="b">cd</h2>"#, "<h1>cd</h1>"),
+        (
+            r#"<p data-role="a"></p><h2 data-role="b">cd</h2>"#,
+            "<p>cd</p>",
+        ),
+    ] {
+        let at = 3;
+        assert_eq!(
+            html(&run(&state(doc, at), delete_char_backward())),
+            joined,
+            "Backspace in {doc}"
+        );
+        assert_eq!(
+            html(&run(&state(doc, 1), delete_char_forward())),
+            joined,
+            "Delete in {doc}"
+        );
+    }
+    // From a heading's start into a paragraph's middle: deleted, typed over
+    // and pasted over with a line of plain text.
+    let doc = r#"<h2 data-role="a">ab</h2><p data-role="b">cd</p>"#;
+    let s = select(state(doc, 1), 1, 6);
+    assert_eq!(html(&run(&s, delete_char_backward())), "<h2>d</h2>");
+    let mut tr = s.tr();
+    tr.insert_text("Z").unwrap();
+    assert_eq!(html(&s.apply(tr)), "<h2>Zd</h2>");
+    assert_eq!(html(&paste_text(&s, "Z")), "<h2>Zd</h2>");
 }
 
 /// The attributes never decide the shape: every join, deletion, paste and

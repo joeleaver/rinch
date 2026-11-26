@@ -170,7 +170,7 @@ where the table says otherwise:
 | Enter (at the end of a block, at its start, in its middle, in a list item) | both blocks have them, unless the app chose otherwise ([below](#what-enter-carries)) |
 | Enter at the end of a heading | the paragraph after it has none |
 | A rule or table inserted inside a block | splits it as Enter does |
-| Joining two blocks (Backspace, Delete, deleting or typing across them) | the first block's stay. With none of the first block's text left and some of the second's, the joined block has the second's (a browser keeps the first's) |
+| Joining two blocks (Backspace, Delete, deleting or typing across them) | the first block's stay. With none of the first block's text left and some of the second's, the joined block has the second's if it is the same element as the second, and none if it is another (`<h2></h2>` and a marked paragraph join as a plain `<h2>`). A browser keeps the first's |
 | Changing the element (paragraph to heading, one heading level to another, a code block) | dropped, and not restored by changing back (undo restores them) |
 | Setting a block to the type it already is (`set_paragraph` on a paragraph, which resets alignment and indent) | kept |
 | Wrapping in or lifting out of a list or quote | kept |
@@ -187,19 +187,34 @@ where the table says otherwise:
 ##### What Enter carries
 
 By default Enter copies every attribute to both blocks, as a browser does. An app
-chooses per attribute with `DataAttrSplitPlugin`, added to a handle as soon as it is
-created (adding a plugin discards the undo history):
+chooses per attribute, at startup or at any later time:
 
 ```rust
-use rinch_editor_core::DataAttrSplitPlugin;
 use rinch_editor_core::schema::DataAttrSplit;
 
-handle.add_plugin(Rc::new(
-    DataAttrSplitPlugin::new()
-        .with("data-role", DataAttrSplit::CopyToText)
-        .with("data-id", DataAttrSplit::Keep),
-));
+handle.set_data_attr_split("data-role", DataAttrSplit::CopyToText);
+handle.set_data_attr_split("data-id", DataAttrSplit::Keep);
 ```
+
+It is not an edit: the document, the selection and the undo history stay, a read-only
+editor takes it, and it holds for the splits made afterwards. It returns `false` for a
+name that is not an app data attribute. A `DataAttrSplitPlugin` holds the same choices
+as a plugin, for a state built without a handle or to set several at once:
+`handle.add_plugin(Rc::new(DataAttrSplitPlugin::new().with("data-role",
+DataAttrSplit::CopyToText)))`. Unlike other plugins, adding it keeps the undo history,
+and a second one is merged with the first.
+
+**Which choice wins**, per attribute name:
+
+1. The app's own (`set_data_attr_split` and any `DataAttrSplitPlugin`): the last one
+   made for the name.
+2. Else what a plugin of another key answers from `Plugin::data_attr_splits`, a later
+   plugin in the list over an earlier one. This is the place for a component library's
+   default, which the app can then override.
+3. Else `Copy`.
+
+`remove_plugin(DATA_ATTR_SPLIT_KEY)` drops all of the app's own choices (and, like
+every removal, the undo history).
 
 | Enter | `Copy` (default) | `CopyToText` | `Keep` |
 | --- | --- | --- | --- |
@@ -209,9 +224,8 @@ handle.add_plugin(Rc::new(
 | in an empty block | both | the first | the first |
 
 `CopyToText` is the one for a style named by an attribute (a subtitle): Enter at its end
-starts a plain paragraph. `Keep` is for an id. A plugin of your own can answer
-`Plugin::data_attr_splits` instead. The choice is the editor's, not the document's: each
-peer of a collaboration follows its own, so install it in every one.
+starts a plain paragraph. `Keep` is for an id. The choice is the editor's, not the
+document's: each peer of a collaboration follows its own, so make it in every one.
 
 A raw `Transform::split` copies the block's markup onto both halves and asks no choice.
 **Markdown** has no syntax for them and writes none; a table written as HTML keeps them.

@@ -106,10 +106,22 @@ pub trait Plugin {
     }
 
     /// What a split of a textblock does with the app data attributes this
-    /// plugin names ([`DataAttrSplit`]), as `(name, choice)` pairs. A later
-    /// plugin that names one again replaces the choice; an attribute no plugin
-    /// names is copied. [`DataAttrSplitPlugin`](crate::plugins::DataAttrSplitPlugin)
-    /// is the ready-made one.
+    /// plugin names ([`DataAttrSplit`]), as `(name, choice)` pairs. Read once,
+    /// when a state is built with the plugin.
+    ///
+    /// **Precedence**, per attribute name:
+    ///
+    /// 1. A [`DataAttrSplitPlugin`](crate::plugins::DataAttrSplitPlugin) (the
+    ///    key [`DATA_ATTR_SPLIT_KEY`](crate::plugins::DATA_ATTR_SPLIT_KEY),
+    ///    what `EditorHandle::set_data_attr_split` writes) is the app's own
+    ///    choice and wins over every other plugin's, wherever each is in the
+    ///    list.
+    /// 2. Among plugins of other keys (an extension's defaults), a later one in
+    ///    the list wins.
+    /// 3. An attribute no plugin names is copied.
+    ///
+    /// Within one plugin's pairs, and between two `DataAttrSplitPlugin`s given
+    /// to one state, the later wins.
     fn data_attr_splits(&self) -> Vec<(String, DataAttrSplit)> {
         Vec::new()
     }
