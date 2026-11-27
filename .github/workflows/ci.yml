@@ -651,6 +651,38 @@ jobs:
             }
           done
 
+      # #1526: zbus is one crate per build, and in tokio mode it spawns its
+      # tasks with `tokio::spawn`, so a portal file dialog (rfd blocks on the
+      # caller's thread, outside any runtime) panics with "there is no
+      # reactor running". `system-tray`'s ksni used to turn that mode on for
+      # every app with a tray. Fails if any rinch feature set that links zbus
+      # puts it in tokio mode again. The tree must show zbus in async-io mode,
+      # so an empty or failed `cargo tree` fails instead of passing, and
+      # rinch-screen-capture (ashpd on tokio, which rinch does not depend on)
+      # proves the pattern still matches cargo's output.
+      - name: zbus stays out of tokio mode
+        run: |
+          set -o pipefail
+          zbus_features() {
+            cargo tree -e features -i zbus --target x86_64-unknown-linux-gnu "$@"
+          }
+          for features in file-dialogs,system-tray \
+              desktop,file-dialogs,system-tray,notifications,global-hotkeys,a11y; do
+            tree=$(zbus_features -p rinch --no-default-features --features "$features")
+            grep -q 'zbus feature "async-io"' <<<"$tree" || {
+              echo "::error::rinch with --features $features: no zbus in async-io mode, the check proves nothing"
+              exit 1
+            }
+            if grep -A3 'zbus feature "tokio"' <<<"$tree"; then
+              echo "::error::rinch with --features $features puts zbus in tokio mode: portal file dialogs panic outside a tokio runtime (#1526)"
+              exit 1
+            fi
+          done
+          zbus_features -p rinch-screen-capture | grep -q 'zbus feature "tokio"' || {
+            echo "::error::the tokio-mode pattern no longer matches cargo tree's output"
+            exit 1
+          }
+
       # Every optional feature of `rinch` that builds on this host, in one
       # build (#1786). Nothing else in the workspace turns `file-dialogs` on,
       # and `system-tray`, `notifications`, `global-hotkeys`, `image-network`,

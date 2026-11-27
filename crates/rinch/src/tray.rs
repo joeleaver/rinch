@@ -401,11 +401,11 @@ const SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 impl TrayService for ksni::blocking::Handle<RinchKsniTray> {
     fn shutdown(&self) -> Shutdown {
         // Sending the request never blocks. Waiting for it does: ksni's
-        // `wait` is a `block_on` on ksni's own runtime, which panics when the
-        // calling thread is already inside a tokio runtime — and an app may well
-        // have entered one on its main thread. So the wait runs on a thread of
-        // its own, which is inside no runtime whatever the caller is, and is
-        // left detached if it outlasts the bound: it ends when ksni's loop does.
+        // `wait` is a `block_on` on ksni's own executor (async-io, #1526),
+        // which would stall whatever the calling thread is doing — an app's
+        // main thread, or a tokio runtime the app entered there. So the wait
+        // runs on a thread of its own and is left detached if it outlasts the
+        // bound: it ends when ksni's loop does.
         let awaiter = ksni::blocking::Handle::shutdown(self);
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let spawned = std::thread::Builder::new()
@@ -957,9 +957,9 @@ impl TrayIconBuilder {
         };
 
         // `spawn` runs ksni's service on a thread ksni starts itself, but it
-        // first `block_on`s the D-Bus setup on ksni's runtime — which panics on
-        // a thread that is already inside a tokio runtime. Doing the spawn on a
-        // short-lived thread keeps the caller's runtime context out of it.
+        // first `block_on`s the D-Bus setup on ksni's executor (async-io,
+        // #1526). Doing the spawn on a short-lived thread keeps that blocking
+        // off the caller's thread and out of any runtime the caller is in.
         //
         // That setup ends in `RegisterStatusNotifierItem` on the watcher, a
         // call zbus makes with no timeout; a watcher that holds its name and
