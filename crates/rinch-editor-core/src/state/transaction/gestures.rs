@@ -2,7 +2,7 @@
 //! inserting a node or a block.
 
 use super::*;
-use crate::transform::data_attrs::Edit;
+use crate::transform::data_attrs::{Edit, Spot};
 use crate::transform::steps::ReplaceStep;
 
 impl Transaction {
@@ -23,8 +23,8 @@ impl Transaction {
             .resolve(Pos(from))
             .map_err(|e| StepError::new(e.to_string()))?;
         let marks = self.stored_marks.clone().unwrap_or_else(|| r.marks());
-        self.with_table_repair(from, to, false, Some(r), |tr| {
-            tr.insert_text_inner(from, to, text, marks)
+        self.with_table_repair(from, to, false, Some(r), |tr, spot| {
+            tr.insert_text_inner(from, to, text, marks, spot)
         })?;
         Ok(self)
     }
@@ -35,6 +35,7 @@ impl Transaction {
         to: usize,
         text: &str,
         marks: Vec<Mark>,
+        spot: Spot<'_>,
     ) -> Result<(), StepError> {
         let node = self
             .schema
@@ -42,7 +43,7 @@ impl Transaction {
             .map_err(|e| StepError::new(e.to_string()))?;
         let len = node.text_len();
         self.with_transform(|tf| {
-            tf.replace_inline(from, to, Fragment::from_node(node))
+            tf.replace_inline(from, to, Fragment::from_node(node), spot)
                 .map(|_| ())
         })?;
         self.set_selection(Selection::cursor(Pos(from + len)));
@@ -54,7 +55,7 @@ impl Transaction {
     pub fn replace_selection_with(&mut self, node: Node) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
         let tables = holds_table(&node);
-        self.with_table_repair(from, to, tables, None, |tr| {
+        self.with_table_repair(from, to, tables, None, |tr, _| {
             let size = node.node_size();
             tr.replace_with(from, to, Fragment::from_node(node))?;
             let after = Selection::near(&tr.doc, Pos(from + size), 1);
@@ -74,7 +75,7 @@ impl Transaction {
     pub fn insert_block(&mut self, node: Node) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
         let tables = holds_table(&node);
-        self.with_table_repair(from, to, tables, None, |tr| {
+        self.with_table_repair(from, to, tables, None, |tr, _| {
             tr.insert_block_inner(from, to, node)
         })?;
         Ok(self)
@@ -126,8 +127,8 @@ impl Transaction {
         if from == to {
             return Ok(self);
         }
-        self.with_table_repair(from, to, false, None, |tr| {
-            tr.delete(from, to)?;
+        self.with_table_repair(from, to, false, None, |tr, spot| {
+            tr.delete_at(from, to, spot)?;
             // A fitted delete whose tail could not join the textblock it began
             // in (code, then marked text) maps the range's end past `from`: the
             // caret still goes where the range began (ProseMirror's
@@ -174,7 +175,7 @@ impl Transaction {
     /// Remove the two tokens around `cut`, joining the nodes that meet there.
     pub(crate) fn join_textblocks(&mut self, cut: usize) -> Result<(), StepError> {
         self.with_transform(|tf| {
-            let ends = tf.data_ends(cut - 1, cut + 1, Edit::Join);
+            let ends = tf.data_ends(cut - 1, cut + 1, Edit::Join, Spot::Unknown);
             tf.step(Box::new(ReplaceStep::structural(
                 cut - 1,
                 cut + 1,
@@ -212,7 +213,7 @@ impl Transaction {
     pub fn replace_selection(&mut self, slice: Slice) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
         let tables = slice.content.children().iter().any(holds_table);
-        self.with_table_repair(from, to, tables, None, |tr| {
+        self.with_table_repair(from, to, tables, None, |tr, _| {
             tr.replace_selection_inner(from, to, slice, false)
         })?;
         Ok(self)
@@ -224,7 +225,7 @@ impl Transaction {
     /// ([`Transform::replace_range_with_lines`]).
     pub fn replace_selection_with_lines(&mut self, slice: Slice) -> Result<&mut Self, StepError> {
         let (from, to) = self.selection_range()?;
-        self.with_table_repair(from, to, false, None, |tr| {
+        self.with_table_repair(from, to, false, None, |tr, _| {
             tr.replace_selection_inner(from, to, slice, true)
         })?;
         Ok(self)

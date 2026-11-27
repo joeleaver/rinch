@@ -7,7 +7,7 @@
 //! afterwards, setting them on the blocks the edit produced.
 
 use crate::model::{Node, Slice};
-use crate::pos::Pos;
+use crate::pos::{Pos, ResolvedPos, inside_one_textblock};
 use crate::schema::data_attrs::{node_app_data, same_element};
 use crate::schema::{DataAttrSplit, MAX_DATA_ATTR_VALUE, MAX_DATA_ATTRS, is_app_data_attr};
 use crate::transform::Transform;
@@ -32,6 +32,39 @@ pub(crate) enum Edit<'s> {
     /// Pasted lines of plain text: new text, as if Enter were pressed between
     /// them.
     Lines,
+}
+
+/// What the caller of an edit already knows about where its range lies, so
+/// that finding out costs it nothing: every typed character and every delete
+/// inside a textblock is such an edit, and resolving a position walks every row
+/// before it in a table.
+#[derive(Clone, Copy)]
+pub(crate) enum Spot<'r> {
+    /// Nothing.
+    Unknown,
+    /// The range is inside the content of one textblock.
+    OneBlock,
+    /// The range's two ends, resolved, **in two different textblocks** or
+    /// outside any. Each against the document or any node around it: only its
+    /// parent, the offset in it and (for `from`) the position before it are
+    /// read, the last from `from` alone, which is against the document.
+    Ends {
+        from: &'r ResolvedPos,
+        to: &'r ResolvedPos,
+    },
+}
+
+impl Spot<'_> {
+    /// [`Spot::OneBlock`] when `from..to` lies in the textblock `r` (a
+    /// position of the same document) is in, and [`Spot::Unknown`] otherwise.
+    pub(crate) fn within(r: &ResolvedPos, from: usize, to: usize) -> Spot<'static> {
+        let d = r.depth();
+        if r.parent().is_textblock() && r.start(d) <= from && to <= r.end(d) {
+            Spot::OneBlock
+        } else {
+            Spot::Unknown
+        }
+    }
 }
 
 /// The textblocks the two ends of a range are in, as they were before the edit.
@@ -159,7 +192,7 @@ impl Transform<'_> {
         to: usize,
         slice: Slice,
     ) -> Result<usize, StepError> {
-        let ends = self.data_ends(from, to, Edit::Lines);
+        let ends = self.data_ends(from, to, Edit::Lines, Spot::Unknown);
         let end = self.fit_range(from, to, slice)?;
         if let Some(ends) = ends {
             self.settle_data(ends, Edit::Lines)?;
@@ -169,31 +202,82 @@ impl Transform<'_> {
 
     /// What [`settle_data`](Self::settle_data) needs to know of `from..to`
     /// before `edit` replaces it: `None` when no attribute can be at stake.
-    pub(crate) fn data_ends(&self, from: usize, to: usize, edit: Edit<'_>) -> Option<Ends> {
+    ///
+    /// A [`Edit::Join`] inside one textblock (a typed character, a delete
+    /// there) changes no block's attributes and costs nothing here: a caret,
+    /// or [`Spot::OneBlock`], is answered at once, and an unknown range by one
+    /// walk down to its textblock. Positions are resolved only for a range
+    /// that crosses a block boundary, and for pasted content.
+    pub(crate) fn data_ends(
+        &self,
+        from: usize,
+        to: usize,
+        edit: Edit<'_>,
+        spot: Spot<'_>,
+    ) -> Option<Ends> {
+        // What a caller says it knows is checked in debug builds.
+        debug_assert!(
+            match spot {
+                Spot::Unknown => true,
+                _ if from == to => true,
+                Spot::OneBlock => inside_one_textblock(&self.doc, from, to),
+                Spot::Ends { .. } => !inside_one_textblock(&self.doc, from, to),
+            },
+            "a wrong Spot for {from}..{to}"
+        );
+        if matches!(edit, Edit::Join) {
+            let one_block = match spot {
+                _ if from == to => true,
+                Spot::OneBlock => true,
+                Spot::Unknown => inside_one_textblock(&self.doc, from, to),
+                Spot::Ends { .. } => false,
+            };
+            if one_block {
+                return None;
+            }
+        }
+        if let Spot::Ends {
+            from: r_from,
+            to: r_to,
+        } = spot
+        {
+            return self.ends_of(r_from, r_to, false, to, edit);
+        }
         let r_from = self.doc.resolve(Pos(from)).ok()?;
         let r_to = self.doc.resolve(Pos(to)).ok()?;
-        if r_from.depth() == 0 || r_to.depth() == 0 {
-            return None;
-        }
+        let same = r_from.depth() > 0
+            && r_to.depth() > 0
+            && r_from.before(r_from.depth()) == r_to.before(r_to.depth());
+        self.ends_of(&r_from, &r_to, same, to, edit)
+    }
+
+    /// [`data_ends`](Self::data_ends) from the two ends resolved, `same`
+    /// saying whether one textblock holds both.
+    fn ends_of(
+        &self,
+        r_from: &ResolvedPos,
+        r_to: &ResolvedPos,
+        same: bool,
+        to: usize,
+        edit: Edit<'_>,
+    ) -> Option<Ends> {
         let (from_block, to_block) = (r_from.parent(), r_to.parent());
-        if !from_block.is_textblock() || !to_block.is_textblock() {
-            return None;
-        }
-        let head = r_from.before(r_from.depth())?;
-        let same = r_to.before(r_to.depth()) == Some(head);
-        // A join inside one block changes no block's attributes.
-        if same && matches!(edit, Edit::Join) {
-            return None;
-        }
         let pasted = match edit {
             Edit::Paste(slice) => slice.content.children().iter().any(holds_app_data),
             _ => false,
         };
-        if !pasted && !holds_app_data(from_block) && !holds_app_data(to_block) {
+        // The attributes of the two blocks themselves, asked before whether
+        // they are textblocks: that is a lookup of each one's type, which two
+        // blocks with no attributes then never cost.
+        let held = |block: &Node| node_app_data(block).next().is_some();
+        if !pasted && !held(from_block) && !held(to_block) {
+            return None;
+        }
+        if !from_block.is_textblock() || !to_block.is_textblock() {
             return None;
         }
         Some(Ends {
-            head,
+            head: r_from.before(r_from.depth())?,
             same,
             before: r_from.parent_offset() > 0,
             after: r_to.parent_offset() < to_block.content().size(),
