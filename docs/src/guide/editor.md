@@ -80,7 +80,7 @@ block/inline/offset math with one consistent model.
 The **schema** defines which nodes and marks exist and what content each node may
 contain. The starter-kit catalogue:
 
-- **Nodes:** `doc`, `paragraph`, `heading{level}`, `blockquote`, `code_block`,
+- **Nodes:** `doc`, `paragraph{data-*}`, `heading{level, data-*}`, `blockquote`, `code_block`,
   `bullet_list`, `ordered_list`, `list_item`, `horizontal_rule`, `embed{data-*}`,
   `hard_break`, `text`, `image{src, alt, title, width, data-*}`, plus the table nodes.
 - **Marks:** `bold`, `italic`, `underline`, `strike`, `code`, `link{href}`,
@@ -140,12 +140,107 @@ handle.update(|state| {
 ```
 
 The opt-in is the node spec's: `NodeSpec::data_attrs` (`NodeSpecBuilder::data_attrs(true)`).
-The starter kit's `image` and `embed` set it, and nothing else does. Only a **leaf**
-node type (an atom: `<img>`, `<hr>`, `<br>`, an embed's `<div>`) may set it —
-`SchemaBuilder::build` panics for one with content — because HTML carries the
-attributes only on an element that holds none of the document's content. An
+The starter kit's `paragraph`, `heading`, `image` and `embed` set it. Only a **leaf**
+node type (an atom: `<img>`, `<hr>`, `<br>`, an embed's `<div>`) or a **textblock**
+may set it — `SchemaBuilder::build` panics for any other node with content — because
+HTML carries the attributes on the node's own element, and a copy that cuts through a
+container loses that element. An
 attribute a node's spec neither declares nor keeps is dropped by validation
 (`to_doc`, `node_from_doc`), and the HTML writer does not write it.
+
+#### A paragraph's and a heading's attributes
+
+A textblock keeps the same attributes (same names, bounds and paste rule), written on
+its own element (`<p data-role="note">`) and on its host element, so an app's
+stylesheet can select on them: `p[data-role="note"]`, `p[data-role="note"] + p`
+(`:has()` does not work on the desktop). Set or remove one on every textblock of the
+selection with `EditorHandle::set_block_data_attr(name, Some(value) | None)`, read the
+shared value with `EditorHandle::block_data_attr(name)`; in a plugin or a command,
+`commands::set_block_data_attr`, `commands::block_data_attr` and
+`Transaction::set_block_data_attr(from, to, name, value)`. Each is one undo step, and a
+block that does not keep data attributes (a code block) is passed over.
+
+**Attributes pass only between blocks of the same element** (one node type, and for a
+heading one level): no split, join, type change or paste puts one element's attributes
+on another.
+
+**No data attribute ever changes what a document is made of.** Every split, join and
+paste produces the blocks it would produce without them; the attributes then follow the
+text. They are what a browser's `contenteditable` does (measured in Chrome 158), except
+where the table says otherwise:
+
+| Edit | Result |
+| --- | --- |
+| Enter (at the end of a block, at its start, in its middle, in a list item) | both blocks have them, unless the app chose otherwise ([below](#what-enter-carries)) |
+| Enter at the end of a heading | the paragraph after it has none |
+| A rule or table inserted inside a block | splits it as Enter does |
+| Joining two blocks (Backspace, Delete, deleting or typing across them) | the first block's stay. With none of the first block's text left and some of the second's, the joined block has the second's if it is the same element as the second, and none if it is another (`<h2></h2>` and a marked paragraph join as a plain `<h2>`). A browser keeps the first's |
+| Changing the element (paragraph to heading, one heading level to another, a code block) | dropped, and not restored by changing back (undo restores them) |
+| Setting a block to the type it already is (`set_paragraph` on a paragraph, which resets alignment and indent) | kept |
+| Wrapping in or lifting out of a list or quote | kept |
+| Pasting into a block's text | the block keeps its own |
+| A paste that leaves text of a block after it, in another block of the same element | that block has them too (in place of those of the pasted block the text joins) |
+| A pasted block that stays a block of its own | keeps its own |
+| A paste of one block over all of a block's text, or on an empty block | the block takes the pasted block's, if that is its element and it has any; else it keeps what it had (a marked `<p>` on an empty `<h2>` gives it nothing) |
+| A paste of several blocks at a block's start, or over all its text | the first takes the pasted block's if that is its element (none, when it has none); if it is another, it keeps what it had, unless that went on with the text after the paste |
+| A paste that leaves a block only a later block's text, where the two are different elements | the pasted block's if that is its element, else none |
+| A paste at a block's start that turns it into another element (a pasted heading) | it has the pasted block's |
+| Pasting lines of plain text into one block | new blocks as that many Enters would make them, the app's choice included |
+| Pasting lines over two blocks | the lines follow the first block's Enter rules; the text left of the second keeps the second's |
+| Copying all of one block's text | the copy carries the block and its attributes (a part of it copies as text) |
+| Loading an element that holds blocks of its own (`<h1>a<div>b</div></h1>`) | none of the blocks takes them |
+
+##### What Enter carries
+
+By default Enter copies every attribute to both blocks, as a browser does. An app
+chooses per attribute, at startup or at any later time:
+
+```rust
+use rinch_editor_core::schema::DataAttrSplit;
+
+handle.set_data_attr_split("data-role", DataAttrSplit::CopyToText);
+handle.set_data_attr_split("data-id", DataAttrSplit::Keep);
+```
+
+It is not an edit: the document, the selection and the undo history stay, a read-only
+editor takes it, and it holds for the splits made afterwards. It returns `false` for a
+name that is not an app data attribute. A `DataAttrSplitPlugin` holds the same choices
+as a plugin, for a state built without a handle or to set several at once:
+`handle.add_plugin(Rc::new(DataAttrSplitPlugin::new().with("data-role",
+DataAttrSplit::CopyToText)))`. Unlike other plugins, adding it keeps the undo history,
+and a second one is merged with the first.
+
+**Which choice wins**, per attribute name:
+
+1. The app's own (`set_data_attr_split` and any `DataAttrSplitPlugin`): the last one
+   made for the name.
+2. Else what a plugin of another key answers from `Plugin::data_attr_splits`, a later
+   plugin in the list over an earlier one. This is the place for a component library's
+   default, which the app can then override.
+3. Else `Copy`.
+
+`remove_plugin(DATA_ATTR_SPLIT_KEY)` drops all of the app's own choices (and, like
+every removal, the undo history).
+
+| Enter | `Copy` (default) | `CopyToText` | `Keep` |
+| --- | --- | --- | --- |
+| at the end | both | the old block; **the new one is plain** | the old block |
+| at the start | both | the text; the empty block above is plain | the text |
+| in the middle | both | both | the first half |
+| in an empty block | both | the first | the first |
+
+`CopyToText` is the one for a style named by an attribute (a subtitle): Enter at its end
+starts a plain paragraph. `Keep` is for an id. The choice is the editor's, not the
+document's: each peer of a collaboration follows its own, so make it in every one.
+
+A raw `Transform::split` copies the block's markup onto both halves and asks no choice.
+**Markdown** has no syntax for them and writes none; a table written as HTML keeps them.
+
+**Collaboration** merges them per attribute. A peer running a build from before
+textblocks kept them preserves them in the document through reading, typing, moving
+and splitting, but does not draw them or copy them out. Its splits copy them to both
+halves whatever the others chose, and its own change of the block's type removes
+them.
 
 `width` (whole CSS pixels, absent or not positive for the natural width; read from
 HTML by HTML's dimension rules, so `320px` is 320, rounded and at most 65535) is the
@@ -581,7 +676,7 @@ every node it rebuilds must be valid. Content that comes from somewhere else rar
 lines up — a list has no place inside the paragraph the caret is in — so paste goes
 through `Transform::replace_range(from, to, slice)` (`Transaction::replace_range`, and
 `Transaction::replace_selection(slice)`, which also places the caret). It is
-ProseMirror's `replaceRange` and `Fitter` (`transform/fit.rs`), and it adds **one**
+ProseMirror's `replaceRange` and `Fitter` (`transform/fit/`), and it adds **one**
 step or fails with nothing changed.
 
 The rules, with `|` the caret and a pasted `<ul><li>A</li><li>B</li></ul>`:

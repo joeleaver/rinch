@@ -778,6 +778,37 @@ one brings an earlier one back. **Markdown** writes the bare element as an HTML
 block, which both of its readers take back, and a `DocNode` keeps the attributes
 like any others.
 
+### Block attributes: styling a paragraph your own way
+
+A paragraph or a heading keeps your app's `data-*` attributes, written on its element,
+so your stylesheet selects on them:
+
+```rust
+handle.set_block_data_attr("data-role", Some("note")); // the selection's textblocks
+handle.set_block_data_attr("data-role", None);         // remove it
+let role: Option<String> = handle.block_data_attr("data-role");
+```
+
+```css
+p[data-role="note"] { opacity: 0.7; }
+p[data-role="note"] + p { margin-top: 1em; }
+```
+
+They pass only between blocks of the same element (heading levels are different
+elements), so pasting a marked paragraph into a heading never marks the heading.
+Enter copies them to the new paragraph, as in a browser. For a style that should end
+with its paragraph, say so (once, at startup or any later time; the undo history stays):
+
+```rust
+use rinch_editor_core::schema::DataAttrSplit;
+
+handle.set_data_attr_split("data-role", DataAttrSplit::CopyToText);
+```
+
+Now Enter at the end of a note starts a plain paragraph. What every choice does, and
+what joining, a change of block type, paste, Markdown and collaboration do with the
+attributes, is in [the editor guide](editor.md#a-paragraphs-and-a-headings-attributes).
+
 ### Node views: your component in the document
 
 A node view draws one of your components in place of an embed: a live sheet, a

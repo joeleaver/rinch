@@ -35,6 +35,7 @@ use super::html_tree::{HtmlFragmentParser, ParsedNode, is_table_part, step};
 use crate::EditorError;
 use crate::model::{AttrValue, Attrs, Fragment, Mark, MarkType, Node, NodeType, Slice};
 use crate::pos::Pos;
+use crate::schema::data_attrs::{node_app_data, without_data_attrs};
 use crate::schema::{IMAGE_MAX_WIDTH, Schema, app_data_attrs, kept_data_attrs};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -107,6 +108,17 @@ pub fn clipboard_slice(doc: &Node, from: usize, to: usize) -> Result<Slice, Edit
         return Ok(slice);
     }
     let r_from = doc.resolve(Pos(from))?;
+    // All of the text of one block that carries an app's data attributes: the
+    // block goes along, so that pasted over an empty line it arrives as itself.
+    let block = r_from.parent();
+    if block.is_textblock()
+        && r_from.parent_offset() == 0
+        && to == from + block.content().size()
+        && node_app_data(block).next().is_some()
+    {
+        let block = block.copy_with_content(slice.content);
+        return Ok(Slice::new(Fragment::from_node(block), 1, 1));
+    }
     let mut depth = r_from.shared_depth(Pos(to));
     while depth > 0
         && let Some(first) = slice.content.children().first()
@@ -184,7 +196,10 @@ fn write_node(node: &Node, out: &mut String, mode: Mode) {
         return;
     }
     // Container element.
-    let (open, close) = block_tags(node);
+    let (mut open, close) = block_tags(node);
+    if node.is_textblock() {
+        push_block_data_attrs(&mut open, node, mode.clipboard);
+    }
     out.push_str(&open);
     for child in node.content().children() {
         write_node(child, out, mode);
@@ -244,6 +259,26 @@ fn block_tags(node: &Node) -> (String, String) {
             let tag = primary_tag(node.node_type());
             (format!("<{tag}>"), format!("</{tag}>"))
         }
+    }
+}
+
+/// A textblock's app data attributes, written inside its open tag `open`, with
+/// [`CLIPBOARD_MARK`] beside them on the copy-out. Nothing for a block that
+/// holds none.
+fn push_block_data_attrs(open: &mut String, node: &Node, clipboard: bool) {
+    let mut data = String::new();
+    for (name, value) in node_app_data(node) {
+        data.push_str(&format!(" {name}=\"{}\"", escape_attr(value)));
+    }
+    if data.is_empty() {
+        return;
+    }
+    if clipboard {
+        data.push_str(&format!(" {CLIPBOARD_MARK}=\"\""));
+    }
+    // A textblock's tag pair opens with one element's tag.
+    if let Some(end) = open.find('>') {
+        open.insert_str(end, &data);
     }
 }
 
@@ -878,6 +913,16 @@ impl<'a> HtmlParser<'a> {
             .collect()
     }
 
+    /// The attrs of a textblock of type `nt` read from a `tag` element: those
+    /// the element says ([`element_attrs`]) and the app data attributes a node
+    /// of that type keeps from it ([`Self::data_attr_pairs`]).
+    fn textblock_attrs(&self, nt: &NodeType, tag: &str, attributes: &[(String, String)]) -> Attrs {
+        self.data_attr_pairs(nt, attributes).into_iter().fold(
+            element_attrs(nt, tag, attributes),
+            |attrs, (name, value)| attrs.with(name, value),
+        )
+    }
+
     /// The block atom a `<div data-pm-type="…">` names ([`writes_as_div`]), if
     /// it is one: any other element, or a type that is not such an atom, is
     /// read as it always was.
@@ -1162,7 +1207,8 @@ impl<'a> HtmlParser<'a> {
             // one `<div>` per line. A code block keeps its lines and
             // their indentation, which paragraphs would not.
             self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
-            let block = self.build_code_block(code, children)?;
+            // A container taken as code: its attributes are not the block's.
+            let block = self.build_code_block(code, Attrs::new(), children)?;
             self.push_blocks(b, [block]);
             Ok(())
         } else if !holds_block && !is_block_level(tag) {
@@ -1200,9 +1246,12 @@ impl<'a> HtmlParser<'a> {
         b: &mut Building,
     ) -> Result<(), EditorError> {
         self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
-        let attrs = textblock_attrs(nt, tag, attributes);
+        let attrs = self.textblock_attrs(nt, tag, attributes);
         let refs: Vec<&ParsedNode> = children.iter().collect();
-        let inner = self.parse_block_refs(&refs, Some((nt, &attrs)), &b.active)?;
+        // The element's data attributes are one block's: where it holds blocks,
+        // none of what comes apart takes them (they would be on several).
+        let apart = without_data_attrs(&attrs);
+        let inner = self.parse_block_refs(&refs, Some((nt, &apart)), &b.active)?;
         if inner.blocks.is_empty() {
             let block = self.make_node(nt, attrs, inline_fragment(inner.blank))?;
             self.push_blocks(b, [block]);
@@ -1342,7 +1391,11 @@ impl<'a> HtmlParser<'a> {
         children: &[ParsedNode],
     ) -> Result<Node, EditorError> {
         match nt.name() {
-            "code_block" => self.build_code_block(nt, children),
+            "code_block" => self.build_code_block(
+                nt,
+                Attrs::from_iter(self.data_attr_pairs(nt, attributes)),
+                children,
+            ),
             "bullet_list" | "ordered_list" => {
                 let items: Vec<&ParsedNode> = children.iter().collect();
                 self.build_list(nt, attributes, is_task_list(attributes), &items)
@@ -1354,7 +1407,7 @@ impl<'a> HtmlParser<'a> {
             ),
             _ if nt.is_textblock() => {
                 let content = self.parse_inline_children(children)?;
-                self.make_node(nt, textblock_attrs(nt, tag, attributes), content)
+                self.make_node(nt, self.textblock_attrs(nt, tag, attributes), content)
             }
             // A blockquote, a list item, any other block of blocks.
             _ => {
@@ -1369,6 +1422,7 @@ impl<'a> HtmlParser<'a> {
     fn build_code_block(
         &self,
         nt: &NodeType,
+        attrs: Attrs,
         children: &[ParsedNode],
     ) -> Result<Node, EditorError> {
         let mut text = String::new();
@@ -1379,7 +1433,7 @@ impl<'a> HtmlParser<'a> {
         } else {
             Fragment::from_node(self.schema.text(&text)?)
         };
-        self.make_node(nt, Attrs::new(), content)
+        self.make_node(nt, attrs, content)
     }
 
     /// Gather the text under `nodes`, tags aside, for a code block.
@@ -2192,10 +2246,10 @@ fn inline_fragment(nodes: Vec<Node>) -> Fragment {
     Fragment::from_children(out)
 }
 
-/// The attrs of a textblock of type `nt` read from a `tag` element: a
-/// heading's level, and the alignment of a heading or a paragraph (the two
-/// types whose schema declares `text_align`).
-fn textblock_attrs(nt: &NodeType, tag: &str, attributes: &[(String, String)]) -> Attrs {
+/// The attrs a `tag` element says of a textblock of type `nt`: a heading's
+/// level, and the alignment of a heading or a paragraph (the two types whose
+/// schema declares `text_align`).
+fn element_attrs(nt: &NodeType, tag: &str, attributes: &[(String, String)]) -> Attrs {
     match nt.name() {
         "heading" => align_attrs(attributes).with("level", AttrValue::Int(heading_level(tag))),
         "paragraph" => align_attrs(attributes),
@@ -2500,6 +2554,12 @@ pub(crate) enum DroppedAttr {
     Other,
 }
 
+/// Whether the schema's node type `name` keeps an app's data attributes.
+#[cfg(feature = "markdown")]
+fn keeps_data_attrs(schema: &Schema, name: &str) -> bool {
+    schema.node(name).is_some_and(|spec| spec.data_attrs)
+}
+
 /// The first attribute in `html` that [`slice_from_html`] would not carry into
 /// the document, for the tags a table block may hold: `href`/`title`/`target`
 /// (`rel` is the writer's own) on `<a>`, `src`/`alt`/`title`, a `width` the
@@ -2510,7 +2570,7 @@ pub(crate) enum DroppedAttr {
 /// `<span>` (`color`, `background-color`) and `<mark>` (`background-color`).
 #[cfg(feature = "markdown")]
 pub(crate) fn dropped_table_attr(html: &str, schema: &Schema) -> Option<DroppedAttr> {
-    let img_data_attrs = schema.node("image").is_some_and(|image| image.data_attrs);
+    let img_data_attrs = keeps_data_attrs(schema, "image");
     fn style_is(style: &str, ok: &dyn Fn(&str, &str) -> bool) -> bool {
         super::style_scan::style_declarations(style)
             .into_iter()
@@ -2557,6 +2617,18 @@ pub(crate) fn dropped_table_attr(html: &str, schema: &Schema) -> Option<DroppedA
                         && data_seen <= crate::schema::MAX_DATA_ATTRS
                 }
                 ("img", "width") => image_width(value).is_some(),
+                // A paragraph's or a heading's, as the image's.
+                ("p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6", name)
+                    if crate::schema::is_app_data_attr(name)
+                        && keeps_data_attrs(
+                            schema,
+                            if tag == "p" { "paragraph" } else { "heading" },
+                        ) =>
+                {
+                    data_seen += 1;
+                    value.len() <= crate::schema::MAX_DATA_ATTR_VALUE
+                        && data_seen <= crate::schema::MAX_DATA_ATTRS
+                }
                 ("div", PM_TYPE) => true,
                 ("div", name) if div_data_attrs && crate::schema::is_app_data_attr(name) => {
                     data_seen += 1;

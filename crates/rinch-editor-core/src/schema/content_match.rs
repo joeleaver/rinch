@@ -2,7 +2,7 @@
 //!
 //! A node type's `content` string (e.g. `"inline*"`, `"block+"`, `"list_item+"`,
 //! `"paragraph block*"`) describes which child sequences are valid. The old
-//! engine matched these with an ad-hoc string-splitter (`schema/mod.rs`'s
+//! engine matched these with an ad-hoc string-splitter (`schema/`'s
 //! `matches_content`) that was correct only for single-part expressions. This
 //! module compiles an expression once (resolving group names like `block` to the
 //! concrete node types in that group) and matches child sequences with a small,

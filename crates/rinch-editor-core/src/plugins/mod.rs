@@ -3,10 +3,12 @@
 //! (M9), and IME-preedit decorations (M6) join here (or in their own crates) as
 //! later milestones land.
 
+mod data_attr_split;
 pub mod history;
 pub mod markdown;
 pub mod placeholder;
 
+pub use data_attr_split::{DATA_ATTR_SPLIT_KEY, DataAttrSplitPlugin};
 pub use history::{__history_work, HISTORY_KEY, HistoryPlugin, HistoryState};
 pub use markdown::MarkdownInputRulesPlugin;
 pub use placeholder::{PLACEHOLDER_KEY, PlaceholderPlugin};

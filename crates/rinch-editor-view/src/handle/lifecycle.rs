@@ -2,6 +2,7 @@
 //! mutation path (`update`/`dispatch`), plugins and commands.
 
 use super::*;
+use rinch_editor_core::DATA_ATTR_SPLIT_KEY;
 
 impl EditorHandle {
     /// Build a handle over a fresh [`EditorState`] **without** a host projection —
@@ -335,6 +336,14 @@ impl EditorHandle {
     /// created handle, before any content is loaded or typed. Adding a key that is
     /// already installed is a no-op, so calling it twice is harmless.
     ///
+    /// A [`DataAttrSplitPlugin`](rinch_editor_core::DataAttrSplitPlugin) (the key
+    /// [`DATA_ATTR_SPLIT_KEY`]) is the
+    /// exception to both: its choices are **merged** into those already
+    /// installed, the newer winning for a name both have, and every plugin's
+    /// state (the undo history) is kept
+    /// ([`set_data_attr_split`](Self::set_data_attr_split) is the same for one
+    /// name).
+    ///
     /// Adding a plugin is **not an edit**: the document is the same node before
     /// and after, so a [read-only](Self::set_read_only) editor accepts it — a
     /// collaborating one included — nothing is recorded onto a collaboration
@@ -344,6 +353,11 @@ impl EditorHandle {
     /// Returns whether the plugin was added. It is all-or-nothing: `false` leaves
     /// the plugin list untouched, so a later call can still add it.
     pub fn add_plugin(&self, plugin: Rc<dyn Plugin>) -> bool {
+        if plugin.key() == DATA_ATTR_SPLIT_KEY {
+            // The plugin's own code, run untracked as a state's creation is.
+            let splits = untracked_handler(|| plugin.data_attr_splits());
+            return self.merge_data_attr_splits(splits);
+        }
         self.install_plugin(plugin, false, |plugins| plugins.len())
     }
 
@@ -360,13 +374,20 @@ impl EditorHandle {
         keep: bool,
         at: impl FnOnce(&[Rc<dyn Plugin>]) -> usize,
     ) -> bool {
-        let mut core = self.core_mut();
-        if core.plugins.iter().any(|p| p.key() == plugin.key()) {
+        let mut plugins = self.core().plugins.clone();
+        if plugins.iter().any(|p| p.key() == plugin.key()) {
             return false;
         }
-        let mut plugins = core.plugins.clone();
         let index = at(&plugins).min(plugins.len());
         plugins.insert(index, plugin);
+        self.reconfigure_plugins(plugins, keep)
+    }
+
+    /// Make `plugins` this editor's, keeping the folded state of those whose
+    /// key stays when `keep` and rebuilding every plugin's otherwise. All or
+    /// nothing.
+    pub(super) fn reconfigure_plugins(&self, plugins: Vec<Rc<dyn Plugin>>, keep: bool) -> bool {
+        let mut core = self.core_mut();
         let prev = core.state.clone();
         let next = if keep {
             prev.reconfigure(plugins.clone())
@@ -485,10 +506,15 @@ impl EditorHandle {
     /// whether it applied — a [read-only](Self::set_read_only) editor refuses every
     /// command that would change the document. The toolbar/keymap entry point.
     pub fn command(&self, name: &str) -> bool {
-        let mut core = self.core_mut();
-        let Some(cmd) = core.state.command(name) else {
+        let Some(cmd) = self.core().state.command(name) else {
             return false;
         };
+        self.run_command(cmd)
+    }
+
+    /// [`Self::command`] for a command in hand.
+    pub(super) fn run_command(&self, cmd: rinch_editor_core::Command) -> bool {
+        let mut core = self.core_mut();
         // `run_command_mapped`, keeping the attribute proof of the transaction
         // (an undo of a node view's `set_attrs` keeps the view mounted).
         let mut result: Option<(EditorState, Mapping, Vec<Kept>)> = None;

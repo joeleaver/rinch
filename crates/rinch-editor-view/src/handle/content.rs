@@ -343,7 +343,9 @@ impl EditorHandle {
             };
         }
         match slice_from_text(&schema, text) {
-            Ok(slice) if slice.content.child_count() > 0 => self.replace_selection_slice(slice),
+            Ok(slice) if slice.content.child_count() > 0 => {
+                self.replace_selection_pasted(slice, true)
+            }
             _ => false,
         }
     }
@@ -358,6 +360,12 @@ impl EditorHandle {
     /// is not table cells. (A cell selection's `from()..to()` is not a range
     /// of content: replacing it took cells out of their rows.)
     fn replace_selection_slice(&self, slice: Slice) -> bool {
+        self.replace_selection_pasted(slice, false)
+    }
+
+    /// [`Self::replace_selection_slice`], `lines` for lines of plain text
+    /// ([`Transaction::replace_selection_with_lines`]).
+    fn replace_selection_pasted(&self, slice: Slice, lines: bool) -> bool {
         self.dispatch(
             move |state| {
                 let mut tr = if matches!(state.selection, Selection::Cell(_)) {
@@ -365,7 +373,11 @@ impl EditorHandle {
                 } else {
                     state.tr()
                 };
-                tr.replace_selection(slice).ok()?;
+                if lines {
+                    tr.replace_selection_with_lines(slice).ok()?;
+                } else {
+                    tr.replace_selection(slice).ok()?;
+                }
                 Some(tr)
             },
             true,

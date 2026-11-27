@@ -17,6 +17,11 @@ use super::{command_tr, newline_in_code, table_ops};
 /// Split the current textblock at the cursor (Enter). Deletes a non-empty
 /// selection first; at the end of a heading, the new block becomes a paragraph.
 ///
+/// An empty block made by the split is made without the block's
+/// [app data attributes](crate::schema::data_attrs): at its end the new block
+/// below, at its start the one above (the text keeps them). A split in the
+/// middle gives both halves the block's attributes.
+///
 /// Refuses (`None`) when the cursor, after that delete, is not in a textblock:
 /// a caret at a gap between blocks (between a rule and a paragraph in a table
 /// cell, #1232; inside a table row) would otherwise split the node around the
@@ -42,7 +47,7 @@ pub fn split_block() -> Command {
         } else {
             None
         };
-        tr.split(pos, 1, types_after).ok()?;
+        tr.split_textblock(pos, 1, types_after).ok()?;
         Some(tr)
     })
 }
@@ -92,7 +97,8 @@ pub fn split_list_item(item_type: &'static str) -> Command {
         } else {
             None
         };
-        tr.split(pos, 2, Some(vec![new_item, inner])).ok()?;
+        tr.split_textblock(pos, 2, Some(vec![new_item, inner]))
+            .ok()?;
         Some(tr)
     })
 }
