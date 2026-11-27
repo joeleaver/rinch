@@ -152,7 +152,7 @@ fn the_handles_commands_over_a_cell_selection() {
     assert!(h.command("insertHardBreak"));
     assert_eq!(
         node_to_html(&h.doc()),
-        "<p>x</p><table><tr><td><p><br></p></td><td><p></p></td></tr>\
+        "<p>x</p><table><tr><td><p><br><br></p></td><td><p></p></td></tr>\
          <tr><td><p></p></td><td><p></p></td></tr></table><p>zw</p>"
     );
     let h = grid(Selection::cell(Pos(5), Pos(25)));

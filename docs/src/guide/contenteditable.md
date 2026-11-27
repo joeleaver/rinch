@@ -394,6 +394,24 @@ are dropped at parse time. The document can only ever hold structure the schema
 allows, and it holds all of the text: see
 [What the HTML reader keeps](#what-the-html-reader-keeps).
 
+> **Compatibility: a block's last `<br>` is not a line (since #3096).** The
+> reader reads HTML as a browser draws it, and a browser draws no line for the
+> `<br>` that ends a block: `<p>a<br></p>` loads as the paragraph `a`, and
+> `<p>a<br><br></p>` as `a` and one hard break. Whitespace after that `<br>`
+> changes nothing (`<p>a<br>\n</p>` is `a` too) unless the block's
+> `white-space` keeps it. rinch writes a paragraph that ends in a hard break
+> as `<p>a<br><br></p>`, so HTML that rinch writes now reads back whole.
+> **HTML written by an earlier rinch** wrote that paragraph as `<p>a<br></p>`,
+> and now loads one hard break short: the line after it is gone. This affects
+> what is read from HTML: `load_html`, `slice_from_html`, the `content:` prop,
+> and the HTML `<table>` blocks in Markdown that rinch wrote
+> (`doc_from_markdown`). A document stored as `DocNode` (serde), collaboration
+> through yrs, and the web backend's DOM are not affected. If you keep
+> documents as HTML written by an earlier rinch and a trailing hard break
+> matters to them, convert them before the upgrade (load each with the earlier
+> version and save it as `DocNode`; the current version cannot recover the
+> lost break, because it reads that markup as a browser does).
+
 ### Your own plugins and decorations
 
 `add_plugin(Rc<dyn Plugin>) -> bool` installs a plugin of your own — a
@@ -1917,7 +1935,36 @@ included: Docs writes a nested list beside the item it belongs to
 in a list is dropped for not being an `<li>`. A link or other mark around whole
 blocks (a card that is one `<a>` around a heading and a paragraph) is kept on the
 text of those blocks. A `<b style="font-weight:normal">`, which Docs wraps its
-copies in, is not bold. All of this is the HTML reader, so `load_html` and
+copies in, is not bold. Docs' formatting arrives as the marks the schema has (bold,
+italic, underline, strikethrough, colour, highlight, superscript, subscript, links,
+headings, lists, alignment); font size and family are dropped, as the starter kit
+has no mark for them.
+
+A source's default text colour is no colour. Google Docs and Google Sheets write
+`color:#000000` on text whose colour is "automatic"; inside their copy that black
+(in any spelling: `#000`, `rgb(0, 0, 0)`, `black`) gives no colour mark, so pasted
+text takes the editor's own. Every other colour is kept, and so is black anywhere
+outside a known source's copy: a Gmail message that quotes a Docs paste keeps the
+black Gmail wrote. This differs from Chrome on purpose. Chrome drops a colour equal
+to the editing host's, so on a dark theme it keeps Docs' black, black on dark.
+
+An empty line is the one empty line it was. A browser draws no line for a block's
+last `<br>`, and neither does the reader: a bare `<br>` between blocks, as Docs
+writes an empty paragraph, `<div><br></div>` (Gmail, Apple Mail) and `<p><br></p>`
+(Apple Notes, Chrome's own `contenteditable`, many web editors) are each an empty
+paragraph, `<p>a<br></p>` is `a`, and `<p>a<br><br></p>` is `a` and a line break,
+two lines. rinch writes a paragraph that ends in a line break that way too, with the
+browser's extra `<br>`, so its HTML shows the same lines wherever it is pasted and
+reads back the same. (HTML rinch wrote before this, `<p>a<br></p>` for that
+paragraph, now reads as `a`, as browsers have always shown it.) At the end of a
+paste it depends on what follows the caret, as in Chrome: where text follows, a
+`<br>` the copy ends with breaks the line before that text; where nothing follows
+(an empty line, the end of a paragraph or of the document) a `<br>` after the copy's
+blocks makes no line. A copy of part of one line (inline content alone, as rinch and
+browsers copy a selection inside a line) keeps its `<br>`s wherever it goes. A copy
+that ends in `<br class="Apple-interchange-newline">`, as Chrome's and Docs' do,
+ends in a paragraph end: the text after the caret goes on a line of its own, and with
+nothing after the caret no empty line is added. All of this but the end of a paste is the HTML reader, so `load_html` and
 `content:` read the same way. (Before #1382 HTML
 that began with a `<meta>` tag, as what Chrome and Firefox copy does, was read as
 empty, and the paste fell back to its plain text.)
@@ -2011,8 +2058,8 @@ What the applications people paste from write, and how it reads:
 | From | Reads as |
 |---|---|
 | Word | Headings, paragraphs, tables, links, bold. A Word list is paragraphs that start with their bullet or number (`·`, `1.`): that is how Word writes it, and it is kept that way rather than rebuilt into a list. |
-| Excel, Google Sheets | A table (Sheets' `<google-sheets-html-origin>` wrapper and Excel's `<col>` are read through); one Sheets cell is a line of text. |
-| Google Docs | Headings, paragraphs, links, nested lists, and bold, italic, underline, strikethrough, subscript and superscript, which Docs says with CSS on a `<span>` (`font-weight`, `font-style`, `text-decoration`, `vertical-align`; #1407). Text keeps the colour Docs gives it, black included. |
+| Excel, Google Sheets | A table (Sheets' `<google-sheets-html-origin>` wrapper and Excel's `<col>` are read through); one Sheets cell is a line of text. Sheets' default black is no colour. |
+| Google Docs | Headings, paragraphs, links, nested lists, and bold, italic, underline, strikethrough, subscript and superscript, which Docs says with CSS on a `<span>` (`font-weight`, `font-style`, `text-decoration`, `vertical-align`; #1407). Text keeps the colour Docs gives it, except Docs' default black, which is no colour (#3096). |
 | Notion, GitHub, Slack, Apple Notes and Mail, Gmail | Their headings, lists, quotes, code blocks, tables and links; a `<div>` per line is a paragraph per line. |
 | VS Code | A **code block**: VS Code copies a `<div style="white-space: pre">` holding one `<div>` per line, and a code block is what keeps the lines and their indentation. The token colours are not kept. Pasted inside a line of text, one copied line is its text, and several lines are a line of text each: the first continues the line, the text after the caret joins the last. |
 

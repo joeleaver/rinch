@@ -269,8 +269,8 @@ impl EditorHandle {
     /// place inside the textblock the caret is in, so the textblock is closed
     /// or split around it rather than the paste being refused.
     ///
-    /// It reads as a paste does ([`slice_from_pasted_html`]): an image keeps
-    /// its `data-*` attributes only when rinch's own copy-out wrote them
+    /// It reads as a paste does ([`slice_from_pasted_html_ending`]): an image
+    /// keeps its `data-*` attributes only when rinch's own copy-out wrote them
     /// ([`selection_clipboard`](Self::selection_clipboard)), so another
     /// application's are dropped. [`Self::load_html`] keeps them all. An app
     /// inserting its own markup here keeps its data attributes by putting
@@ -278,9 +278,22 @@ impl EditorHandle {
     /// (`data-rinch-clip=""`) on the element that carries them, as the
     /// copy-out does; or it builds the node and inserts it with
     /// [`Self::update`].
+    ///
+    /// How the markup's last line ends depends on what follows the selection
+    /// ([`PasteEnd::at`] its end, #3096): a `<br>` that ends the markup breaks
+    /// the line before text after the caret, and makes no line where nothing
+    /// follows it. Over a cell selection the cells are cleared first, so
+    /// nothing follows.
     pub fn replace_selection_with_html(&self, html: &str) -> bool {
-        let schema = self.core().schema.clone();
-        match slice_from_pasted_html(&schema, html) {
+        let (schema, end) = {
+            let core = self.core();
+            let end = match &core.state.selection {
+                Selection::Cell(_) => PasteEnd::Ended,
+                sel => PasteEnd::at(&core.state.doc, sel.to()),
+            };
+            (core.schema.clone(), end)
+        };
+        match slice_from_pasted_html_ending(&schema, html, end) {
             Ok(slice) if slice.content.child_count() > 0 => self.replace_selection_slice(slice),
             _ => false,
         }
