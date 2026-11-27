@@ -1359,8 +1359,8 @@ let tray = TrayIconBuilder::new()
   `Shutdown` and waits up to `SHUTDOWN_WAIT` (1 s; ~10 ms on a healthy
   session) for a helper thread to report that the D-Bus connection closed. The
   wait runs off the caller's thread because ksni's `wait` is a `block_on` (on
-  ksni's async-io executor, #1526) that would stall the caller, and it is **bounded** because ksni reads the
-  request only between D-Bus calls: a watcher that stops answering leaves it in
+  ksni's async-io executor, #1526) that would stall the caller, and it is
+  **bounded** because ksni reads the request only between D-Bus calls: a watcher that stops answering leaves it in
   a call with no timeout, and an unbounded wait froze the main thread for good
   (review of #1054). The callbacks go only after the close: before #377 the icon
   stayed on the panel for the life of the process, and once #183 released the

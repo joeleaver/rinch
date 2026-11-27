@@ -158,9 +158,10 @@ tray-icon = "0.19"
 # with a tray. `async-io` keeps zbus on its own executor, which runs anywhere,
 # inside a tokio runtime or not. 0.3.5 is the first with the async-io
 # executor's lifetime handling (no thread left behind when every tray stops)
-# and a compile error, not a silent choice, if anything turns `tokio` back on.
-# CI's "zbus stays out of tokio mode" step pins it.
-ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"] }
+# and a compile error if ksni's own `tokio` feature is turned on beside it.
+# Another crate can still turn on `zbus/tokio` directly, with no compile
+# error: CI's "zbus stays out of tokio mode" step catches that.
+ksni = { version = "0.3.5", default-features = false, features = ["blocking", "async-io"] }
 
 # File dialogs
 rfd = "0.15"
