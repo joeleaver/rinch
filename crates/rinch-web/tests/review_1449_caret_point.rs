@@ -166,7 +166,7 @@ fn editor(html: &str) -> F {
 fn rich_html() -> String {
     format!(
         "<h2>Head line</h2>\
-         <p>alpha <strong>bold</strong> <a href=\"https://e.test/\">link text</a> bravo<br>charlie delta<br></p>\
+         <p>alpha <strong>bold</strong> <a href=\"https://e.test/\">link text</a> bravo<br>charlie delta<br><br></p>\
          <p></p>\
          <p><img src=\"{GIF}\" style=\"width:20px;height:16px\"> echo <img src=\"{GIF}\" style=\"width:20px;height:16px\"> foxtrot <img src=\"{GIF}\" style=\"width:20px;height:16px\"></p>\
          <p>a long paragraph that wraps over several visual lines in a narrow column so line ends are soft wraps</p>\

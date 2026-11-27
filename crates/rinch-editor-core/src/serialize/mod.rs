@@ -16,6 +16,10 @@ pub mod doc_json;
 pub mod html;
 mod html_entities;
 mod html_integer;
+mod html_line_end_space;
+mod html_lines;
+mod html_slice;
+mod html_sources;
 mod html_tree;
 #[cfg(feature = "markdown")]
 pub mod markdown;
@@ -25,8 +29,9 @@ pub mod text;
 #[cfg(feature = "serde")]
 pub use doc_json::{DocMark, DocNode, JsonAttr};
 pub use html::{
-    CLIPBOARD_MARK, HtmlFallbackGuard, clipboard_slice, mark_dom_tag, node_dom_tag, node_to_html,
-    set_html_fallback, slice_from_html, slice_from_pasted_html, slice_to_html,
+    CLIPBOARD_MARK, HtmlFallbackGuard, PasteEnd, clipboard_slice, mark_dom_tag, node_dom_tag,
+    node_to_html, set_html_fallback, slice_from_html, slice_from_pasted_html,
+    slice_from_pasted_html_ending, slice_to_html,
 };
 #[doc(hidden)]
 pub use html_tree::{html_reader_max_depth, html_reader_steps};

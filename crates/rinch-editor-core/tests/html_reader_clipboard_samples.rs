@@ -202,10 +202,13 @@ fn google_docs() {
         read(DOCS),
         "<h1>Trip plan</h1>\
          <p>Leave on <strong>Friday</strong>, see <u><span style=\"color:#1155cc\"><a href=\"https://example.com/map\">the map</a></span></u>.</p>\
-         <p><br></p>\
-         <ul><li><p>Tickets</p><ul><li><p>Train</p></li></ul></li><li><p>Hotel</p></li></ul>\
-         <p><br></p>"
+         <p></p>\
+         <ul><li><p>Tickets</p><ul><li><p>Train</p></li></ul></li><li><p>Hotel</p></li></ul>"
     );
+    // The `<br class="Apple-interchange-newline">` Docs' copy ends in is a
+    // paragraph end, not an empty line (#3096): nothing is open at the end.
+    let slice = slice_from_pasted_html(&Schema::starter_kit(), DOCS).unwrap();
+    assert_eq!(slice.open_end, 0);
 }
 
 /// Notion: plain structure, with an `<aside>` for a callout and
@@ -294,7 +297,8 @@ fn vs_code() {
 }
 
 /// Apple Notes and Mail (WebKit): `<div>` per line, `<div><br></div>` for an
-/// empty one, `Apple-converted-space`, a quoted reply.
+/// empty one (one empty line, as a browser shows it: a block's last `<br>`
+/// makes no line, #3096), `Apple-converted-space`, a quoted reply.
 const APPLE_NOTES: &str = "<html><head><meta http-equiv=\"content-type\" content=\"text/html; charset=utf-8\">\
 <style type=\"text/css\">\np.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 13.0px 'Helvetica Neue'}\n\
 li.li1 {margin: 0.0px 0.0px 0.0px 0.0px}\nspan.s1 {font: 9.0px Menlo}\n</style></head><body>\n\
@@ -311,12 +315,12 @@ dir=\"ltr\">Are you coming?</div></div></blockquote></div></div>";
 fn apple_notes_and_mail() {
     assert_eq!(
         read(APPLE_NOTES),
-        "<p><strong>Shopping</strong></p><p><br></p><ul><li><p>Milk</p></li><li><p>Bread\u{a0}</p></li></ul>"
+        "<p><strong>Shopping</strong></p><p></p><ul><li><p>Milk</p></li><li><p>Bread\u{a0}</p></li></ul>"
     );
     assert_eq!(
         read(APPLE_MAIL),
-        "<p>Hi Sam,</p><p><br></p><p>See you <em>there</em>.\u{a0}</p><p><br></p>\
-         <blockquote><p>On 3 May, Sam wrote:</p><p><br></p><p>Are you coming?</p></blockquote>"
+        "<p>Hi Sam,</p><p></p><p>See you <em>there</em>.\u{a0}</p><p></p>\
+         <blockquote><p>On 3 May, Sam wrote:</p><p></p><p>Are you coming?</p></blockquote>"
     );
 }
 
@@ -366,8 +370,8 @@ order</h1></td></tr><tr><td>Shipped <b>today</b>.</td></tr></tbody></table></td>
 fn gmail() {
     assert_eq!(
         read(GMAIL),
-        "<p>Thanks!</p><p><br></p>\
-         <p>On Mon, 3 May 2027 at 10:00, Ada &lt;<a href=\"mailto:ada@example.com\">ada@example.com</a>&gt; wrote:<br></p>\
+        "<p>Thanks!</p><p></p>\
+         <p>On Mon, 3 May 2027 at 10:00, Ada &lt;<a href=\"mailto:ada@example.com\">ada@example.com</a>&gt; wrote:</p>\
          <blockquote><table><tr><td><table><tr><td><h1>Your order</h1></td></tr>\
          <tr><td><p>Shipped <strong>today</strong>.</p></td></tr></table></td></tr></table></blockquote>"
     );

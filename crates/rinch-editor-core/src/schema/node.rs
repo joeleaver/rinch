@@ -62,8 +62,11 @@ pub struct NodeSpec {
     /// validation, `DocNode`, HTML (as themselves on the node's void element, or
     /// on the `<div>` a tagless block atom is written as), collaboration and the
     /// view (which writes them on the host element). Off by default; the
-    /// starter kit's `image` and `embed` opt in. Only a **leaf** node
-    /// type may set it: [`SchemaBuilder::build`] panics for one with content.
+    /// starter kit's `paragraph`, `heading`, `image` and `embed` opt in. Only a
+    /// **leaf** or a **textblock** type may set it: [`SchemaBuilder::build`]
+    /// panics for any other node with content. On a textblock they are written
+    /// on its element in HTML and follow the block through edits as
+    /// [the data attribute rules](crate::schema::data_attrs) say.
     ///
     /// [`is_app_data_attr`]: crate::schema::is_app_data_attr
     /// [`kept_data_attrs`]: crate::schema::kept_data_attrs

@@ -821,7 +821,7 @@ fn inserts_over_a_cell_selection_clear_the_cells_and_go_in_the_first() {
     let st = state(&s, grid_doc(&s), Selection::cell(Pos(5), Pos(25)));
     let empty = "<td><p></p></td>";
     for (cmd, first) in [
-        ("insertHardBreak", "<td><p><br></p></td>".to_string()),
+        ("insertHardBreak", "<td><p><br><br></p></td>".to_string()),
         ("insertHorizontalRule", "<td><hr><p></p></td>".to_string()),
         (
             "insertTable",

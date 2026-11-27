@@ -16,6 +16,8 @@ use crate::input_rules::InputRule;
 use crate::keymap::Keymap;
 use crate::model::{Mark, Node};
 use crate::plugin::{PasteContent, Plugin, PluginKey};
+use crate::plugins::DATA_ATTR_SPLIT_KEY;
+use crate::schema::DataAttrSplit;
 use crate::schema::Schema;
 use crate::selection::Selection;
 use crate::transform::Mapping;
@@ -36,6 +38,9 @@ struct Config {
     selection_commands: HashSet<String>,
     keymap: Keymap,
     input_rules: Vec<InputRule>,
+    /// What a split does with the app data attributes the plugins name
+    /// ([`Plugin::data_attr_splits`], whose precedence is stated there).
+    data_attr_splits: Rc<HashMap<String, DataAttrSplit>>,
 }
 
 /// The editor's entire state at one instant: the document, the selection, the
@@ -63,6 +68,15 @@ impl EditorState {
         let mut selection_commands: HashSet<String> = HashSet::new();
         let mut keymap = Keymap::new();
         let mut input_rules: Vec<InputRule> = Vec::new();
+        // Later choices replace earlier ones: the plugins in list order, then
+        // the `DataAttrSplitPlugin`s, the app's own choice.
+        let is_apps = |p: &&Rc<dyn Plugin>| p.key() == DATA_ATTR_SPLIT_KEY;
+        let data_attr_splits: HashMap<String, DataAttrSplit> = plugins
+            .iter()
+            .filter(|p| !is_apps(p))
+            .chain(plugins.iter().filter(is_apps))
+            .flat_map(|p| p.data_attr_splits())
+            .collect();
         for p in &plugins {
             let declared = p.selection_commands();
             for (name, cmd) in p.commands() {
@@ -104,6 +118,7 @@ impl EditorState {
             selection_commands,
             keymap,
             input_rules,
+            data_attr_splits: Rc::new(data_attr_splits),
         });
         EditorState {
             config,
@@ -133,12 +148,14 @@ impl EditorState {
 
     /// A fresh [`Transaction`] starting from this state.
     pub fn tr(&self) -> Transaction {
-        Transaction::new(
+        let mut tr = Transaction::new(
             self.config.schema.clone(),
             self.doc.clone(),
             self.selection.clone(),
             self.stored_marks.clone(),
-        )
+        );
+        tr.data_attr_splits = Some(self.config.data_attr_splits.clone());
+        tr
     }
 
     /// Apply a transaction, returning a **new** state. Pure: runs no I/O. The new

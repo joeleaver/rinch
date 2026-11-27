@@ -23,8 +23,8 @@ use rinch_core::reactive::{Owner, current_owner, unowned, untracked_handler};
 use rinch_editor_core::commands::{current_block_type, in_node_type, is_mark_active, marks_at};
 use rinch_editor_core::model::{Fragment, Slice};
 use rinch_editor_core::serialize::{
-    clipboard_slice, slice_from_html, slice_from_pasted_html, slice_from_text, slice_to_html,
-    slice_to_text,
+    PasteEnd, clipboard_slice, slice_from_html, slice_from_pasted_html_ending, slice_from_text,
+    slice_to_html, slice_to_text,
 };
 use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{
@@ -54,6 +54,7 @@ mod callbacks;
 #[cfg(feature = "collaboration")]
 mod collaboration;
 mod content;
+mod data_attrs;
 mod editor_core;
 mod focus_scroll;
 mod guards;

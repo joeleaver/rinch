@@ -15,6 +15,7 @@ use crate::decoration::DecorationSet;
 use crate::input_rules::InputRule;
 use crate::keymap::KeyBinding;
 use crate::model::Node;
+use crate::schema::DataAttrSplit;
 use crate::state::{EditorState, Transaction};
 use std::any::Any;
 use std::rc::Rc;
@@ -101,6 +102,27 @@ pub trait Plugin {
     /// plugin that replaces a command by name replaces its declaration with its
     /// own.
     fn selection_commands(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    /// What a split of a textblock does with the app data attributes this
+    /// plugin names ([`DataAttrSplit`]), as `(name, choice)` pairs. Read once,
+    /// when a state is built with the plugin.
+    ///
+    /// **Precedence**, per attribute name:
+    ///
+    /// 1. A [`DataAttrSplitPlugin`](crate::plugins::DataAttrSplitPlugin) (the
+    ///    key [`DATA_ATTR_SPLIT_KEY`](crate::plugins::DATA_ATTR_SPLIT_KEY),
+    ///    what `EditorHandle::set_data_attr_split` writes) is the app's own
+    ///    choice and wins over every other plugin's, wherever each is in the
+    ///    list.
+    /// 2. Among plugins of other keys (an extension's defaults), a later one in
+    ///    the list wins.
+    /// 3. An attribute no plugin names is copied.
+    ///
+    /// Within one plugin's pairs, and between two `DataAttrSplitPlugin`s given
+    /// to one state, the later wins.
+    fn data_attr_splits(&self) -> Vec<(String, DataAttrSplit)> {
         Vec::new()
     }
 

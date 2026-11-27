@@ -394,7 +394,25 @@ are dropped at parse time. The document can only ever hold structure the schema
 allows, and it holds all of the text: see
 [What the HTML reader keeps](#what-the-html-reader-keeps).
 
-### Your own plugins and inline decorations
+> **Compatibility: a block's last `<br>` is not a line (since #3096).** The
+> reader reads HTML as a browser draws it, and a browser draws no line for the
+> `<br>` that ends a block: `<p>a<br></p>` loads as the paragraph `a`, and
+> `<p>a<br><br></p>` as `a` and one hard break. Whitespace after that `<br>`
+> changes nothing (`<p>a<br>\n</p>` is `a` too) unless the block's
+> `white-space` keeps it. rinch writes a paragraph that ends in a hard break
+> as `<p>a<br><br></p>`, so HTML that rinch writes now reads back whole.
+> **HTML written by an earlier rinch** wrote that paragraph as `<p>a<br></p>`,
+> and now loads one hard break short: the line after it is gone. This affects
+> what is read from HTML: `load_html`, `slice_from_html`, the `content:` prop,
+> and the HTML `<table>` blocks in Markdown that rinch wrote
+> (`doc_from_markdown`). A document stored as `DocNode` (serde), collaboration
+> through yrs, and the web backend's DOM are not affected. If you keep
+> documents as HTML written by an earlier rinch and a trailing hard break
+> matters to them, convert them before the upgrade (load each with the earlier
+> version and save it as `DocNode`; the current version cannot recover the
+> lost break, because it reads that markup as a browser does).
+
+### Your own plugins and decorations
 
 `add_plugin(Rc<dyn Plugin>) -> bool` installs a plugin of your own — a
 spellchecker, a search highlighter. It rebuilds the editor's state over the
@@ -448,6 +466,66 @@ document there. The view's own pass is about linear in the decorations (a sort, 
 top-level blocks once beside the decorations sorted by position and descends
 only into a block a decoration reaches (or one that still shows a segment to
 take off), and a run whose decorations did not change is not rewritten (#848).
+
+#### Node decorations: a class on a whole block
+
+`Decoration::node(from, to, class)` adds the words of `class` to the
+host element of **one node**: the block the caret is in, a heading whose
+section is folded away, a row an app wants to mark. The document is not changed.
+
+```rust
+fn decorations(&self, state: &EditorState) -> DecorationSet {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for i in 0..state.doc.child_count() {
+        let node = state.doc.child(i);
+        let end = pos + node.node_size();
+        if self.is_marked(node) {
+            out.push(Decoration::node(Pos(pos), Pos(end), "marked"));
+        }
+        pos = end;
+    }
+    DecorationSet::new(out)
+}
+```
+
+```css
+[data-pm-editor] p.marked { background: #fff3bf; }
+[data-pm-editor] h2.folded + p { display: none; }
+```
+
+- **A class is all it carries** — no `style`, `data-*` or tag name, unlike
+  ProseMirror's node decoration. Style the node through the class in your
+  stylesheet. An attribute that belongs to the content is set on the node.
+- **`class` is a class list**: one word or several separated by spaces
+  (`"marked folded"`). `Decoration::inline` takes `Attrs`, whose `class` its
+  view reads; `Decoration::node` takes the class string itself, so there is no
+  other attribute to pass that would be silently ignored.
+- **Matching.** The `Node` variant is `#[non_exhaustive]`: outside
+  `rinch-editor-core` a pattern on it needs `..`
+  (`Decoration::Node { from, to, class, .. }`), beside the `_` arm the enum
+  needs.
+- **Naming the node.** `from` is the position immediately before the node and
+  `to` the position immediately after it (`from + node.node_size()`), as in
+  ProseMirror. A range that does not span exactly one node draws nothing; it is
+  not moved to the nearest one. A plugin that caches positions maps `from` with
+  `Pos(tr.mapping().map(from.0, 1))` and `to` with
+  `Pos(tr.mapping().map(to.0, -1))`.
+- **Which nodes.** Every node but the document and a text run: textblocks,
+  containers (lists, items, quotes, tables, rows, cells), block and inline
+  leaves (a rule, an image, a hard break), and a node a node view draws, whose
+  class is on the view's host element, around your component.
+- **Merging.** The element gets the union of the words of every decoration on
+  the node, beside any class it already has. Only the words decorations added
+  are ever removed. The order of the words in the attribute is not specified.
+- **Changes.** The classes follow the node when its element is rebuilt (a
+  paragraph made a heading), and change with no document change when a
+  transaction changes only what the plugin answers.
+- **Sibling selectors** (`p.folded + p`, `~`) work on the desktop and on the
+  web. `:has()` does not work on the desktop.
+
+A class that hides a block does not move the caret out of it or stop an edit
+reaching it; a plugin that hides content keeps the selection out itself.
 
 Plugin code runs **untracked** (issue #943). `decorations`, `apply`,
 `init_state`, `handle_paste` and a plugin's commands run synchronously inside
@@ -777,6 +855,37 @@ is unregistered when the guard is dropped; registrations stack, so dropping a la
 one brings an earlier one back. **Markdown** writes the bare element as an HTML
 block, which both of its readers take back, and a `DocNode` keeps the attributes
 like any others.
+
+### Block attributes: styling a paragraph your own way
+
+A paragraph or a heading keeps your app's `data-*` attributes, written on its element,
+so your stylesheet selects on them:
+
+```rust
+handle.set_block_data_attr("data-role", Some("note")); // the selection's textblocks
+handle.set_block_data_attr("data-role", None);         // remove it
+let role: Option<String> = handle.block_data_attr("data-role");
+```
+
+```css
+p[data-role="note"] { opacity: 0.7; }
+p[data-role="note"] + p { margin-top: 1em; }
+```
+
+They pass only between blocks of the same element (heading levels are different
+elements), so pasting a marked paragraph into a heading never marks the heading.
+Enter copies them to the new paragraph, as in a browser. For a style that should end
+with its paragraph, say so (once, at startup or any later time; the undo history stays):
+
+```rust
+use rinch_editor_core::schema::DataAttrSplit;
+
+handle.set_data_attr_split("data-role", DataAttrSplit::CopyToText);
+```
+
+Now Enter at the end of a note starts a plain paragraph. What every choice does, and
+what joining, a change of block type, paste, Markdown and collaboration do with the
+attributes, is in [the editor guide](editor.md#a-paragraphs-and-a-headings-attributes).
 
 ### Node views: your component in the document
 
@@ -1826,7 +1935,36 @@ included: Docs writes a nested list beside the item it belongs to
 in a list is dropped for not being an `<li>`. A link or other mark around whole
 blocks (a card that is one `<a>` around a heading and a paragraph) is kept on the
 text of those blocks. A `<b style="font-weight:normal">`, which Docs wraps its
-copies in, is not bold. All of this is the HTML reader, so `load_html` and
+copies in, is not bold. Docs' formatting arrives as the marks the schema has (bold,
+italic, underline, strikethrough, colour, highlight, superscript, subscript, links,
+headings, lists, alignment); font size and family are dropped, as the starter kit
+has no mark for them.
+
+A source's default text colour is no colour. Google Docs and Google Sheets write
+`color:#000000` on text whose colour is "automatic"; inside their copy that black
+(in any spelling: `#000`, `rgb(0, 0, 0)`, `black`) gives no colour mark, so pasted
+text takes the editor's own. Every other colour is kept, and so is black anywhere
+outside a known source's copy: a Gmail message that quotes a Docs paste keeps the
+black Gmail wrote. This differs from Chrome on purpose. Chrome drops a colour equal
+to the editing host's, so on a dark theme it keeps Docs' black, black on dark.
+
+An empty line is the one empty line it was. A browser draws no line for a block's
+last `<br>`, and neither does the reader: a bare `<br>` between blocks, as Docs
+writes an empty paragraph, `<div><br></div>` (Gmail, Apple Mail) and `<p><br></p>`
+(Apple Notes, Chrome's own `contenteditable`, many web editors) are each an empty
+paragraph, `<p>a<br></p>` is `a`, and `<p>a<br><br></p>` is `a` and a line break,
+two lines. rinch writes a paragraph that ends in a line break that way too, with the
+browser's extra `<br>`, so its HTML shows the same lines wherever it is pasted and
+reads back the same. (HTML rinch wrote before this, `<p>a<br></p>` for that
+paragraph, now reads as `a`, as browsers have always shown it.) At the end of a
+paste it depends on what follows the caret, as in Chrome: where text follows, a
+`<br>` the copy ends with breaks the line before that text; where nothing follows
+(an empty line, the end of a paragraph or of the document) a `<br>` after the copy's
+blocks makes no line. A copy of part of one line (inline content alone, as rinch and
+browsers copy a selection inside a line) keeps its `<br>`s wherever it goes. A copy
+that ends in `<br class="Apple-interchange-newline">`, as Chrome's and Docs' do,
+ends in a paragraph end: the text after the caret goes on a line of its own, and with
+nothing after the caret no empty line is added. All of this but the end of a paste is the HTML reader, so `load_html` and
 `content:` read the same way. (Before #1382 HTML
 that began with a `<meta>` tag, as what Chrome and Firefox copy does, was read as
 empty, and the paste fell back to its plain text.)
@@ -1920,8 +2058,8 @@ What the applications people paste from write, and how it reads:
 | From | Reads as |
 |---|---|
 | Word | Headings, paragraphs, tables, links, bold. A Word list is paragraphs that start with their bullet or number (`·`, `1.`): that is how Word writes it, and it is kept that way rather than rebuilt into a list. |
-| Excel, Google Sheets | A table (Sheets' `<google-sheets-html-origin>` wrapper and Excel's `<col>` are read through); one Sheets cell is a line of text. |
-| Google Docs | Headings, paragraphs, links, nested lists, and bold, italic, underline, strikethrough, subscript and superscript, which Docs says with CSS on a `<span>` (`font-weight`, `font-style`, `text-decoration`, `vertical-align`; #1407). Text keeps the colour Docs gives it, black included. |
+| Excel, Google Sheets | A table (Sheets' `<google-sheets-html-origin>` wrapper and Excel's `<col>` are read through); one Sheets cell is a line of text. Sheets' default black is no colour. |
+| Google Docs | Headings, paragraphs, links, nested lists, and bold, italic, underline, strikethrough, subscript and superscript, which Docs says with CSS on a `<span>` (`font-weight`, `font-style`, `text-decoration`, `vertical-align`; #1407). Text keeps the colour Docs gives it, except Docs' default black, which is no colour (#3096). |
 | Notion, GitHub, Slack, Apple Notes and Mail, Gmail | Their headings, lists, quotes, code blocks, tables and links; a `<div>` per line is a paragraph per line. |
 | VS Code | A **code block**: VS Code copies a `<div style="white-space: pre">` holding one `<div>` per line, and a code block is what keeps the lines and their indentation. The token colours are not kept. Pasted inside a line of text, one copied line is its text, and several lines are a line of text each: the first continues the line, the text after the caret joins the last. |
 

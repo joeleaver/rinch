@@ -46,6 +46,7 @@ mod read_only;
 /// `rinch-web/tests/editor_focus_and_reveal.rs`.
 mod reveal;
 mod scroll_gate;
+mod textblock_data_attrs;
 
 struct Harness {
     doc: Rc<RefCell<dyn DomDocument>>,

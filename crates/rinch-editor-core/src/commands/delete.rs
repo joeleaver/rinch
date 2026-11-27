@@ -7,6 +7,7 @@ use crate::model::{Attrs, Node, NodeType};
 use crate::pos::{Pos, ResolvedPos};
 use crate::state::{EditorState, Transaction};
 use crate::transform::block_range_simple;
+use crate::transform::data_attrs::Spot;
 use crate::transform::steps::{ReplaceAroundStep, ReplaceStep};
 
 use super::wrapping::build_lift;
@@ -371,7 +372,7 @@ pub fn delete_char_backward() -> Command {
             // sequence it ends (#1684).
             let from = crate::motion::backspace_start(&state.doc, Pos(pos)).unwrap_or(pos - 1);
             let mut tr = state.tr();
-            tr.delete(from, pos).ok()?;
+            tr.delete_at(from, pos, Spot::within(&r, from, pos)).ok()?;
             return tr.doc_changed().then_some(tr);
         }
         // At block start: join across the nearest cut, else move into the preceding
@@ -387,25 +388,14 @@ pub fn delete_char_backward() -> Command {
             if table_barrier(&state.doc, cut) {
                 return backspace_after_table(state, &r, cut);
             }
-            {
-                let mut tr = state.tr();
-                if tr
-                    .step(Box::new(ReplaceStep::structural(
-                        cut - 1,
-                        cut + 1,
-                        crate::Slice::empty(),
-                    )))
-                    .is_ok()
-                    && tr.doc_changed()
-                {
-                    return Some(tr);
-                }
-                // Could not join directly across the cut — try moving this block
-                // into the container before it (a paragraph after a list → a new
-                // list item).
-                if let Some(tr) = wrap_into_before(state, cut) {
-                    return Some(tr);
-                }
+            if let Some(tr) = join_at(state, cut) {
+                return Some(tr);
+            }
+            // Could not join directly across the cut — try moving this block
+            // into the container before it (a paragraph after a list → a new
+            // list item).
+            if let Some(tr) = wrap_into_before(state, cut) {
+                return Some(tr);
             }
         }
         build_lift(state)
@@ -434,7 +424,7 @@ pub fn delete_char_forward() -> Command {
             // Mid-text: delete the grapheme cluster after the cursor (#1684).
             let to = crate::motion::grapheme_step(&state.doc, Pos(pos), true).unwrap_or(pos + 1);
             let mut tr = state.tr();
-            tr.delete(pos, to).ok()?;
+            tr.delete_at(pos, to, Spot::within(&r, pos, to)).ok()?;
             return tr.doc_changed().then_some(tr);
         }
         // At block end: join across the nearest cut, else lift the next block out.
@@ -442,22 +432,22 @@ pub fn delete_char_forward() -> Command {
         if let Some(tr) = select_atom_across(state, &r, cut, false) {
             return Some(tr);
         }
-        if !table_barrier(&state.doc, cut) {
-            let mut tr = state.tr();
-            if tr
-                .step(Box::new(ReplaceStep::structural(
-                    cut - 1,
-                    cut + 1,
-                    crate::Slice::empty(),
-                )))
-                .is_ok()
-                && tr.doc_changed()
-            {
-                return Some(tr);
-            }
+        if !table_barrier(&state.doc, cut)
+            && let Some(tr) = join_at(state, cut)
+        {
+            return Some(tr);
         }
         build_lift_after(state, cut)
     })
+}
+
+/// Join the two nodes that meet at `cut`, the textblocks' app data attributes
+/// placed by [the rules](crate::schema::data_attrs). `None` where they cannot
+/// be joined directly.
+fn join_at(state: &EditorState, cut: usize) -> Option<Transaction> {
+    let mut tr = state.tr();
+    tr.join_textblocks(cut).ok()?;
+    tr.doc_changed().then_some(tr)
 }
 
 /// The range a word delete removes from a collapsed caret: from the caret to

@@ -2,6 +2,7 @@
 //! through the model's attribute validation, copy and paste (HTML), the durable
 //! `DocNode` shape and Markdown's HTML tables. A node keeps them only when its
 //! schema opts in (`NodeSpec::data_attrs`); the starter kit's `image` does.
+//! (Its textblocks do too: `textblock_data_attrs.rs`.)
 //!
 //! What is kept is a *valid* custom data attribute name (`data-` + at least one
 //! character, no ASCII uppercase, XML-compatible) that rinch does not reserve
@@ -77,9 +78,9 @@ fn an_image_keeps_valid_app_data_attrs_and_nothing_else() {
 
 /// A node whose schema does not opt in keeps no data attribute.
 #[test]
-fn a_paragraph_keeps_no_data_attr() {
+fn a_code_block_keeps_no_data_attr() {
     let schema = Schema::starter_kit();
-    let nt = schema.node_type("paragraph").unwrap();
+    let nt = schema.node_type("code_block").unwrap();
     let kept = nt
         .compute_attrs(&Attrs::from_iter([("data-ref", AttrValue::from("r1"))]))
         .unwrap();
@@ -319,8 +320,8 @@ fn validation_bounds_what_an_image_keeps() {
     assert_eq!(kept.get("data-k32"), None);
 }
 
-/// Only a leaf node type may keep data attributes: a container would lose them
-/// on every copy and paste.
+/// Only a leaf or a textblock type may keep data attributes: a container
+/// would lose them on a copy that cuts through it.
 #[test]
 #[should_panic(expected = "sets `data_attrs`")]
 fn a_container_that_opts_in_is_refused() {
@@ -328,11 +329,18 @@ fn a_container_that_opts_in_is_refused() {
     let _ = Schema::builder()
         .node("doc", NodeSpec::builder("doc").content("block+").build())
         .node(
+            "blockquote",
+            NodeSpec::builder("blockquote")
+                .content("block+")
+                .group("block")
+                .data_attrs(true)
+                .build(),
+        )
+        .node(
             "paragraph",
             NodeSpec::builder("paragraph")
                 .content("text*")
                 .group("block")
-                .data_attrs(true)
                 .build(),
         )
         .node(
@@ -403,10 +411,10 @@ fn the_model_holds_only_the_data_attrs_a_node_keeps() {
     assert_eq!(img.attrs().get("data-pm-type"), None);
     assert_eq!(img.attrs().get("data-long"), None);
 
-    // A paragraph does not opt in: `create_node` keeps what it is given.
+    // A code block does not opt in: `create_node` keeps what it is given.
     let p = schema
         .create_node(
-            "paragraph",
+            "code_block",
             Attrs::from_iter([("data-rid", AttrValue::from("1"))]),
             Fragment::empty(),
         )

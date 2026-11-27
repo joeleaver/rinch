@@ -16,6 +16,7 @@ use crate::state::{EditorState, Transaction};
 mod base_plugin;
 mod block_format;
 pub mod code;
+mod data_attrs;
 mod delete;
 mod marks;
 mod queries;
@@ -28,6 +29,7 @@ pub use block_format::{
     TEXT_ALIGN_VALUES, indent, outdent, set_block_type, set_paragraph, set_text_align,
 };
 pub use code::{exit_code, insert_line_break, newline_in_code};
+pub use data_attrs::{block_data_attr, set_block_data_attr};
 pub use delete::{
     delete_char_backward, delete_char_forward, delete_selection, delete_word_backward,
     delete_word_forward,
