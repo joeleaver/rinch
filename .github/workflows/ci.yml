@@ -199,6 +199,18 @@ jobs:
               # `rinch::worker` (#1772) on the desktop: off by default, and nothing
               # in the workspace turns it on for a host build.
               cargo test -p rinch --no-default-features --features worker --test worker_1772
+              # #1526: rfd's portal dialogs in both of zbus's modes. zbus is one
+              # crate per build and any crate can turn on its `tokio` mode, in
+              # which a portal call outside a tokio runtime panicked ("there is
+              # no reactor running"). `system-tray` (ksni) puts zbus in tokio
+              # mode, the configuration of an app with a tray; `file-dialogs`
+              # alone leaves it in async-io mode. Nothing in the workspace turns
+              # `file-dialogs` on, so these two lines are where the test runs;
+              # the tray's own tests run in tokio mode under `--workspace`
+              # (rinch-screen-capture's ashpd turns it on there). The variable makes the test assert the mode it found, so a change of
+              # features cannot quietly turn one line into the other.
+              RINCH_1526_ZBUS_MODE=tokio cargo test -p rinch --no-default-features --features file-dialogs,system-tray --lib dialogs::
+              RINCH_1526_ZBUS_MODE=async-io cargo test -p rinch --no-default-features --features file-dialogs --lib dialogs::
               # rinch-dom without the software painter (the `embed` build): its
               # background pattern path (#468, #1158) is cfg'd on that, and
               # `--workspace` unifies `software-renderer` on.
