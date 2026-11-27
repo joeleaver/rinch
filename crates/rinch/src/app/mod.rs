@@ -204,6 +204,8 @@ mod editor_margin_anchors_1677_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_mark_edge_caret_1426_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_node_decoration_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_node_view_image_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_node_view_tests;

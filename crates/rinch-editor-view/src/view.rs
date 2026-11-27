@@ -13,6 +13,10 @@ use rinch_editor_core::serialize::{mark_dom_tag, node_dom_tag};
 use rinch_editor_core::transform::Mapping;
 use rinch_editor_core::{EditorState, EditorView, Mark, Node, Pos, Selection, ViewRequest};
 
+mod node_decos;
+
+use node_decos::{HostClasses, NodeDeco, node_decos, sync_node_decos};
+
 /// A weak handle to the host document. The view upgrades + borrows it briefly to
 /// create/patch nodes; holding only a `Weak` lets the document drop normally.
 type DocRef = Weak<RefCell<dyn DomDocument>>;
@@ -497,6 +501,12 @@ pub(crate) struct ViewDesc {
     /// decoration, so a per-keystroke pass costs one range test per top-level
     /// block rather than a walk of the whole document.
     has_deco: bool,
+    /// The classes node decorations have put on [`Self::dom`] (empty for a
+    /// text run). A host built anew starts empty.
+    host_classes: HostClasses,
+    /// Whether any descendant or this node carries a node-decoration class:
+    /// [`Self::has_deco`] for [`sync_node_decos`].
+    has_node_deco: bool,
     /// The trailing-break placeholder — a `<br>` after a textblock's last
     /// child when that child is a hard break or text ending in a newline —
     /// while shown
@@ -858,6 +868,8 @@ impl ViewDesc {
             decos: Vec::new(),
             segments: Vec::new(),
             has_deco: false,
+            host_classes: HostClasses::default(),
+            has_node_deco: false,
             trailing_break: None,
             grid_placement: None,
         })
@@ -1618,6 +1630,8 @@ pub struct RinchDomEditorView {
     /// The inline decorations of [`Self::decorations`], flattened once per
     /// change of the set rather than once per transaction (#848).
     inline: Vec<InlineDeco>,
+    /// The node decorations of [`Self::decorations`], flattened likewise.
+    node_decos: Vec<NodeDeco>,
     /// Set whenever the post-layout pass writes an overlay's geometry (caret,
     /// selection rect, or node outline). The runtime reads it via
     /// [`Self::take_overlay_dirty`] to re-resolve layout and schedule a repaint,
@@ -1757,6 +1771,8 @@ impl RinchDomEditorView {
             decos: Vec::new(),
             segments: Vec::new(),
             has_deco: false,
+            host_classes: HostClasses::default(),
+            has_node_deco: false,
             trailing_break: None,
             grid_placement: None,
         };
@@ -1790,6 +1806,7 @@ impl RinchDomEditorView {
             last_preedit: None,
             decorations: DecorationSet::empty(),
             inline: Vec::new(),
+            node_decos: Vec::new(),
             overlay_dirty: false,
             host_paints_text: false,
             reveal_probes: Vec::new(),
@@ -1811,8 +1828,8 @@ impl RinchDomEditorView {
 
     /// Diff `state`'s decorations against the projected set and patch what they
     /// render to — independent of the document diff (design A4): the placeholder
-    /// overlay for widgets, and the wrapper spans over decorated text runs for
-    /// inline decorations.
+    /// overlay for widgets, the wrapper spans over decorated text runs for
+    /// inline decorations, and the classes on node hosts for node decorations.
     /// Whether the decoration set changed.
     fn sync_decorations(&mut self, state: &EditorState) -> bool {
         let next = state.decorations();
@@ -1820,6 +1837,7 @@ impl RinchDomEditorView {
         if changed {
             self.sync_widget_decorations(&next);
             self.inline = inline_decos(&next);
+            self.node_decos = node_decos(&next);
             self.decorations = next;
         }
         // Inline decorations are re-applied whenever any are present *or* any were
@@ -1831,6 +1849,20 @@ impl RinchDomEditorView {
         // decoration it reaches (#848), and an unchanged run writes nothing.
         if !self.inline.is_empty() || self.root.has_deco {
             self.root.has_deco = sync_inline_decos(&mut self.root, &self.inline, 0, &self.doc);
+        }
+        // Node decorations likewise: the diff may have built, retagged or
+        // re-used a host since they were last put on.
+        if !self.node_decos.is_empty() || self.root.has_node_deco {
+            let mut wrote = false;
+            self.root.has_node_deco =
+                sync_node_decos(&mut self.root, &self.node_decos, 0, &mut wrote);
+            if wrote {
+                // A class can move any box with no change to the document or
+                // the selection: the highlight is drawn again, and the pass
+                // that places it and the caret is owed.
+                self.last_selection = None;
+                crate::registry::owe_overlay_pass(self.doc_key());
+            }
         }
         changed
     }
@@ -2192,6 +2224,7 @@ impl RinchDomEditorView {
         } else {
             apply_element_attrs(&el, &desc.node, None);
         }
+        desc.host_classes.move_to(&el);
         let old = desc.dom.clone();
         // In place: its mark wrappers (`<a>`) stay around it.
         old.replace_with(&el);

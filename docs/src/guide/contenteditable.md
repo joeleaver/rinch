@@ -394,7 +394,7 @@ are dropped at parse time. The document can only ever hold structure the schema
 allows, and it holds all of the text: see
 [What the HTML reader keeps](#what-the-html-reader-keeps).
 
-### Your own plugins and inline decorations
+### Your own plugins and decorations
 
 `add_plugin(Rc<dyn Plugin>) -> bool` installs a plugin of your own — a
 spellchecker, a search highlighter. It rebuilds the editor's state over the
@@ -448,6 +448,66 @@ document there. The view's own pass is about linear in the decorations (a sort, 
 top-level blocks once beside the decorations sorted by position and descends
 only into a block a decoration reaches (or one that still shows a segment to
 take off), and a run whose decorations did not change is not rewritten (#848).
+
+#### Node decorations: a class on a whole block
+
+`Decoration::node(from, to, class)` adds the words of `class` to the
+host element of **one node**: the block the caret is in, a heading whose
+section is folded away, a row an app wants to mark. The document is not changed.
+
+```rust
+fn decorations(&self, state: &EditorState) -> DecorationSet {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for i in 0..state.doc.child_count() {
+        let node = state.doc.child(i);
+        let end = pos + node.node_size();
+        if self.is_marked(node) {
+            out.push(Decoration::node(Pos(pos), Pos(end), "marked"));
+        }
+        pos = end;
+    }
+    DecorationSet::new(out)
+}
+```
+
+```css
+[data-pm-editor] p.marked { background: #fff3bf; }
+[data-pm-editor] h2.folded + p { display: none; }
+```
+
+- **A class is all it carries** — no `style`, `data-*` or tag name, unlike
+  ProseMirror's node decoration. Style the node through the class in your
+  stylesheet. An attribute that belongs to the content is set on the node.
+- **`class` is a class list**: one word or several separated by spaces
+  (`"marked folded"`). `Decoration::inline` takes `Attrs`, whose `class` its
+  view reads; `Decoration::node` takes the class string itself, so there is no
+  other attribute to pass that would be silently ignored.
+- **Matching.** The `Node` variant is `#[non_exhaustive]`: outside
+  `rinch-editor-core` a pattern on it needs `..`
+  (`Decoration::Node { from, to, class, .. }`), beside the `_` arm the enum
+  needs.
+- **Naming the node.** `from` is the position immediately before the node and
+  `to` the position immediately after it (`from + node.node_size()`), as in
+  ProseMirror. A range that does not span exactly one node draws nothing; it is
+  not moved to the nearest one. A plugin that caches positions maps `from` with
+  `Pos(tr.mapping().map(from.0, 1))` and `to` with
+  `Pos(tr.mapping().map(to.0, -1))`.
+- **Which nodes.** Every node but the document and a text run: textblocks,
+  containers (lists, items, quotes, tables, rows, cells), block and inline
+  leaves (a rule, an image, a hard break), and a node a node view draws, whose
+  class is on the view's host element, around your component.
+- **Merging.** The element gets the union of the words of every decoration on
+  the node, beside any class it already has. Only the words decorations added
+  are ever removed. The order of the words in the attribute is not specified.
+- **Changes.** The classes follow the node when its element is rebuilt (a
+  paragraph made a heading), and change with no document change when a
+  transaction changes only what the plugin answers.
+- **Sibling selectors** (`p.folded + p`, `~`) work on the desktop and on the
+  web. `:has()` does not work on the desktop.
+
+A class that hides a block does not move the caret out of it or stop an edit
+reaching it; a plugin that hides content keeps the selection out itself.
 
 Plugin code runs **untracked** (issue #943). `decorations`, `apply`,
 `init_state`, `handle_paste` and a plugin's commands run synchronously inside
