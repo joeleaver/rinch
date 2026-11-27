@@ -69,6 +69,14 @@ fn open_textblock(slice: &Slice) -> Option<&Node> {
     (slice.open_start > 0 && node.is_textblock()).then_some(node)
 }
 
+/// The attributes of the pasted textblock that joins `block`
+/// ([`open_textblock`]), when the two are the same element.
+fn pasted_pairs(slice: &Slice, block: &Node) -> Option<Pairs> {
+    open_textblock(slice)
+        .filter(|pasted| same_element(pasted, block))
+        .map(pairs)
+}
+
 /// Whether `node` or anything in it holds app data attributes.
 fn holds_app_data(node: &Node) -> bool {
     node_app_data(node).next().is_some()
@@ -226,22 +234,32 @@ impl Transform<'_> {
                 // Nothing of the first block's text is left: the attributes
                 // follow the text that is, where the block is still that text's
                 // element. Where it is another (a heading left of a join with a
-                // paragraph), a paste leaves the pasted block's and every other
-                // edit none.
+                // paragraph), a paste leaves those of a pasted block of that
+                // element, and every other edit none.
                 match edit {
                     _ if same_element(&ends.to_block, block) => pairs(&ends.to_block),
-                    Edit::Paste(slice) => open_textblock(slice).map(pairs).unwrap_or_default(),
+                    Edit::Paste(slice) => pasted_pairs(slice, block).unwrap_or_default(),
                     _ => Vec::new(),
                 }
             } else {
-                match edit {
-                    Edit::Paste(slice) => match open_textblock(slice).map(pairs) {
-                        // A pasted block that brings its own arrives with them.
-                        Some(own) if !own.is_empty() => own,
-                        _ if same_element(&ends.from_block, block) => from_data,
-                        _ => return Ok(()),
-                    },
-                    _ => from_data,
+                let own = match edit {
+                    // A closed slice's first block arrives whole.
+                    Edit::Paste(slice) if slice.open_start == 0 => slice
+                        .content
+                        .children()
+                        .first()
+                        .filter(|first| first.is_textblock() && same_element(first, block))
+                        .map(pairs),
+                    Edit::Paste(slice) => pasted_pairs(slice, block),
+                    _ => None,
+                };
+                match own {
+                    // A pasted block that brings its own arrives with them.
+                    Some(own) if !own.is_empty() => own,
+                    _ if same_element(&ends.from_block, block) => from_data,
+                    // The block keeps what it holds, which is its own
+                    // element's.
+                    _ => return Ok(()),
                 }
             };
             return self.set_app_data(*h, &want);
@@ -260,27 +278,34 @@ impl Transform<'_> {
                 .collect()
         };
 
-        if let Some((pos, _)) = &head
+        if let Some((pos, block)) = &head
             && !ends.before
         {
             match edit {
                 Edit::Lines => {
-                    let block = self.doc.node_at(*pos);
-                    let want = match block {
-                        Some(b) if same_element(&ends.from_block, &b) => {
-                            carried(self, Place::First)
-                        }
-                        _ => Vec::new(),
+                    let want = if same_element(&ends.from_block, block) {
+                        carried(self, Place::First)
+                    } else {
+                        Vec::new()
                     };
                     self.set_app_data(*pos, &want)?;
                 }
-                // The block holds only pasted text: it has the pasted block's.
-                Edit::Paste(slice) => {
-                    if let Some(pasted) = open_textblock(slice) {
-                        self.set_app_data(*pos, &pairs(pasted))?;
+                // The block holds only pasted text: it has the pasted
+                // block's, where that is its element. Where it is not, it
+                // keeps its own, unless those went on with its text.
+                Edit::Paste(slice) if open_textblock(slice).is_some() => {
+                    let followed = ends.same
+                        && ends.after
+                        && tail
+                            .as_ref()
+                            .is_some_and(|(_, t)| same_element(&ends.to_block, t));
+                    match pasted_pairs(slice, block) {
+                        Some(want) => self.set_app_data(*pos, &want)?,
+                        None if followed => self.set_app_data(*pos, &[])?,
+                        None => {}
                     }
                 }
-                Edit::Join => {}
+                Edit::Paste(_) | Edit::Join => {}
             }
         }
 

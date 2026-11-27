@@ -24,6 +24,10 @@
 //! The rules are what a browser's `contenteditable` does (measured in Chrome
 //! 158), except where said.
 //!
+//! One rule holds for every edit: **attributes pass only between blocks of the
+//! same element** (one node type, and for a heading one level). No split,
+//! join, type change or paste puts one element's attributes on another.
+//!
 //! - **Enter** (and the block split a rule or a table is inserted at, inside a
 //!   list item too) copies them to both blocks: at the end of a block, at its
 //!   start and in its middle. A block of another element gets none: the
@@ -47,15 +51,21 @@
 //!   own. The text after the paste keeps the attributes of the block it was
 //!   in, where it is still that element (a paste into the middle of a marked
 //!   paragraph marks both pieces; they replace those of the pasted block that
-//!   text joins). A paste that leaves none of a block's text gives it the
-//!   pasted block's, if that block has any, and else leaves it what it had. A
-//!   copy of all of one marked block's text carries the block. Lines of plain
-//!   text pasted into a block are new text, placed as Enter places it
+//!   text joins). A block left holding only pasted text takes the pasted
+//!   block's **where that is its element**: a marked `<p>` pasted on an empty
+//!   `<h2>` gives the `<h2>` nothing, and neither does a pasted `<h3>`. Where
+//!   the paste is that one block (over all of its text, or on an empty one), a
+//!   pasted block with none, or of another element, leaves it what it had.
+//!   Where it is the first of several, a pasted block of its element gives it
+//!   exactly its own (none, when it has none), and one of another element
+//!   leaves it what it had unless that went on with the text after the paste.
+//!   A paste at a block's start that makes it another element (a pasted
+//!   heading) leaves it the pasted block's. A copy of all of one marked
+//!   block's text carries the block. Lines of plain text pasted into a block
+//!   are new text, placed as Enter places it
 //!   ([`Transform::replace_range_with_lines`](crate::transform::Transform::replace_range_with_lines)):
 //!   the pieces of one block follow [`DataAttrSplit`], and over two blocks the
-//!   text left of the second keeps the second's. A paste at a block's start
-//!   that makes it another element (a pasted heading) leaves it the pasted
-//!   block's.
+//!   text left of the second keeps the second's.
 //! - **Loading HTML** keeps an element's attributes on the one block it is; an
 //!   element that holds blocks of its own gives them to none.
 //!

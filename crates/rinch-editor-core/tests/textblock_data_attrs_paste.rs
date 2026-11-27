@@ -4,6 +4,7 @@
 mod data_attr_common;
 
 use data_attr_common::*;
+use rinch_editor_core::Slice;
 use rinch_editor_core::commands::delete_char_backward;
 use rinch_editor_core::serialize::{clipboard_slice, slice_to_html};
 
@@ -69,12 +70,12 @@ fn a_copy_of_one_whole_block_carries_it() {
     assert_eq!(copy(1, 4), "abc");
     let whole = copy(1, 5);
     assert_eq!(whole, r#"<p data-role="a" data-rinch-clip="">abcd</p>"#);
-    for empty in ["<p></p>", "<h2></h2>"] {
-        // The line stays what it is, as it does for an unmarked block.
-        let out = html(&paste(&state(empty, 1), &whole));
-        let tag = &empty[1..empty.find('>').unwrap()];
-        assert_eq!(out, format!(r#"<{tag} data-role="a">abcd</{tag}>"#));
-    }
+    let out = html(&paste(&state("<p></p>", 1), &whole));
+    assert_eq!(out, r#"<p data-role="a">abcd</p>"#);
+    // The line stays what it is, as it does for an unmarked block, and a
+    // paragraph's attributes are not a heading's.
+    let out = html(&paste(&state("<h2></h2>", 1), &whole));
+    assert_eq!(out, "<h2>abcd</h2>");
     // Into text it is only its text.
     let out = html(&paste(&state("<p>wxyz</p>", 3), &whole));
     assert_eq!(out, "<p>wxabcdyz</p>");
@@ -115,14 +116,32 @@ fn a_paste_over_two_blocks_leaves_each_texts_own() {
 }
 
 /// Marked blocks over all of a heading: the heading stays one, as it does for
-/// unmarked ones, and the attributes follow their content.
+/// unmarked ones, and takes nothing from a paragraph.
 #[test]
 fn blocks_over_a_whole_heading_leave_it_a_heading() {
     let s = select(state("<h2>wxyz</h2>", 1), 1, 5);
     assert_eq!(
         html(&paste(&s, &copy(&state(TWO, 1)))),
-        r#"<h2 data-role="a">ab</h2><p data-role="b">cd</p>"#
+        r#"<h2>ab</h2><p data-role="b">cd</p>"#
     );
+    // Its own it keeps.
+    let s = select(state(r#"<h2 data-role="h">wxyz</h2>"#, 1), 1, 5);
+    assert_eq!(
+        html(&paste(&s, &copy(&state(TWO, 1)))),
+        r#"<h2 data-role="h">ab</h2><p data-role="b">cd</p>"#
+    );
+}
+
+/// A closed slice's block that takes an empty line's place keeps its own, as a
+/// pasted one does.
+#[test]
+fn a_closed_block_over_an_empty_line_keeps_its_own() {
+    let s = state(r#"<p data-role="line"></p>"#, 1);
+    let source = state(SUB, 1);
+    let closed = Slice::from_fragment(source.doc.content().clone());
+    let mut tr = s.tr();
+    tr.replace_selection(closed).unwrap();
+    assert_eq!(html(&s.apply(tr)), SUB);
 }
 
 /// A single unmarked block over a marked empty line leaves the line's.

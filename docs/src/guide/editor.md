@@ -160,6 +160,10 @@ shared value with `EditorHandle::block_data_attr(name)`; in a plugin or a comman
 `Transaction::set_block_data_attr(from, to, name, value)`. Each is one undo step, and a
 block that does not keep data attributes (a code block) is passed over.
 
+**Attributes pass only between blocks of the same element** (one node type, and for a
+heading one level): no split, join, type change or paste puts one element's attributes
+on another.
+
 **No data attribute ever changes what a document is made of.** Every split, join and
 paste produces the blocks it would produce without them; the attributes then follow the
 text. They are what a browser's `contenteditable` does (measured in Chrome 158), except
@@ -177,7 +181,9 @@ where the table says otherwise:
 | Pasting into a block's text | the block keeps its own |
 | A paste that leaves text of a block after it, in another block of the same element | that block has them too (in place of those of the pasted block the text joins) |
 | A pasted block that stays a block of its own | keeps its own |
-| A paste that leaves none of a block's text | the block takes the pasted block's, if it has any, else keeps what it had |
+| A paste of one block over all of a block's text, or on an empty block | the block takes the pasted block's, if that is its element and it has any; else it keeps what it had (a marked `<p>` on an empty `<h2>` gives it nothing) |
+| A paste of several blocks at a block's start, or over all its text | the first takes the pasted block's if that is its element (none, when it has none); if it is another, it keeps what it had, unless that went on with the text after the paste |
+| A paste that leaves a block only a later block's text, where the two are different elements | the pasted block's if that is its element, else none |
 | A paste at a block's start that turns it into another element (a pasted heading) | it has the pasted block's |
 | Pasting lines of plain text into one block | new blocks as that many Enters would make them, the app's choice included |
 | Pasting lines over two blocks | the lines follow the first block's Enter rules; the text left of the second keeps the second's |

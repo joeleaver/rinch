@@ -794,6 +794,8 @@ p[data-role="note"] { opacity: 0.7; }
 p[data-role="note"] + p { margin-top: 1em; }
 ```
 
+They pass only between blocks of the same element (heading levels are different
+elements), so pasting a marked paragraph into a heading never marks the heading.
 Enter copies them to the new paragraph, as in a browser. For a style that should end
 with its paragraph, say so (once, at startup or any later time; the undo history stays):
 
