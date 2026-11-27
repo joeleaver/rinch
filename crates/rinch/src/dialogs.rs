@@ -47,7 +47,7 @@
 pub use native::*;
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-mod portal_runtime;
+pub(crate) mod portal_runtime;
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod native {

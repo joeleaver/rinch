@@ -2072,7 +2072,7 @@ would break CSS semantics and make desktop diverge from rinch-web.
   own zbus) it spawns with `tokio::spawn`, which panicked outside a runtime
   ("there is no reactor running"). `dialogs/portal_runtime.rs` keeps one
   multi-thread runtime (one worker, `rinch-dialogs`) for the process and enters
-  it around each rfd call; one for the process because ashpd caches its
+  it around each rfd call (`rinch::dialogs` and `file::FilePicker`); one for the process because ashpd caches its
   connection in a static whose tasks live on the runtime that made it. Pin:
   `dialogs::portal_runtime::tests::a_portal_call_works_in_either_zbus_mode`
   (a private `dbus-daemon`, the call rfd makes; `RINCH_1526_ZBUS_MODE` asserts

@@ -181,8 +181,8 @@ x11rb = { version = "0.13", default-features = false, features = ["xfixes", "sha
 # hotkey/backend/portal.rs) and the freedesktop notification service
 # (`notifications`, #1522, see notification/backend/freedesktop.rs), each run
 # inside a current-thread tokio runtime on its own thread (right whether zbus
-# ends up in async-io or tokio mode). None adds a package to Cargo.lock. (tokio is the crate-wide optional
-# dependency, so the feature builds it on every platform; a Linux-only rename
+# ends up in async-io or tokio mode). None adds a package to Cargo.lock. (tokio is the native optional
+# dependency beside rfd, so the feature builds it on every native platform; a Linux-only rename
 # of it does not survive a build that also has `gpu`: "depends on crate tokio
 # multiple times with different names".)
 zbus = { version = "5", default-features = false, features = ["async-io"], optional = true }

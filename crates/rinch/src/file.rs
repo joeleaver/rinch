@@ -139,11 +139,15 @@ impl FilePicker {
         for (name, extensions) in &self.filters {
             dialog = dialog.add_filter(name, extensions);
         }
-        let paths = if self.multiple {
-            dialog.pick_files().unwrap_or_default()
-        } else {
-            dialog.pick_file().into_iter().collect()
-        };
+        // Inside the dialogs' runtime, so the portal works whichever mode zbus
+        // is in (#1526).
+        let paths = crate::dialogs::portal_runtime::run(|| {
+            if self.multiple {
+                dialog.pick_files().unwrap_or_default()
+            } else {
+                dialog.pick_file().into_iter().collect()
+            }
+        });
         std::future::ready(
             paths
                 .into_iter()

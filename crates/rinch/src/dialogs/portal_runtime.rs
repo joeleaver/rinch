@@ -8,7 +8,8 @@
 //! tasks with `tokio::spawn` and `spawn_blocking`. On a thread with no tokio
 //! runtime that panics: "there is no reactor running, must be called from the
 //! context of a Tokio 1.x runtime". rinch cannot know which mode an app's build
-//! ends up in, so every dialog runs with this runtime entered. In async-io mode
+//! ends up in, so every dialog (`rinch::dialogs`, and `file::FilePicker` on the
+//! desktop) runs with this runtime entered. In async-io mode
 //! zbus never looks at it.
 //!
 //! A multi-thread runtime with one worker: its worker drives zbus's tasks while
@@ -51,7 +52,7 @@ mod portal {
     }
 
     /// Run `dialog` (a blocking rfd call) with the portal runtime entered.
-    pub(in crate::dialogs) fn run<R>(dialog: impl FnOnce() -> R) -> R {
+    pub(crate) fn run<R>(dialog: impl FnOnce() -> R) -> R {
         let _entered = runtime().map(Runtime::enter);
         dialog()
     }
@@ -64,7 +65,7 @@ mod portal {
     target_os = "netbsd",
     target_os = "openbsd"
 ))]
-pub(super) use portal::run;
+pub(crate) use portal::run;
 
 /// No portal and no zbus here: rfd calls the platform's own dialogs.
 #[cfg(not(any(
@@ -74,7 +75,7 @@ pub(super) use portal::run;
     target_os = "netbsd",
     target_os = "openbsd"
 )))]
-pub(super) fn run<R>(dialog: impl FnOnce() -> R) -> R {
+pub(crate) fn run<R>(dialog: impl FnOnce() -> R) -> R {
     dialog()
 }
 
@@ -151,12 +152,33 @@ mod tests {
     fn portal_shaped_call(address: &str) -> zbus::Result<String> {
         pollster::block_on(async {
             let connection = zbus::connection::Builder::address(address)?.build().await?;
-            let id = zbus::fdo::DBusProxy::new(&connection)
-                .await?
-                .get_id()
-                .await?;
-            Ok(id.to_string())
+            bus_id(&connection).await
         })
+    }
+
+    /// The dialogs' calls, on one connection kept in a static as ashpd keeps
+    /// its session connection: made by the first dialog, used by every later
+    /// one, so its tasks must outlive the dialog that made it.
+    fn cached_connection_call(address: &str) -> zbus::Result<String> {
+        static CONNECTION: std::sync::OnceLock<zbus::Connection> = std::sync::OnceLock::new();
+        pollster::block_on(async {
+            let connection = match CONNECTION.get() {
+                Some(c) => c,
+                None => {
+                    let made = zbus::connection::Builder::address(address)?.build().await?;
+                    CONNECTION.get_or_init(|| made)
+                }
+            };
+            bus_id(connection).await
+        })
+    }
+
+    async fn bus_id(connection: &zbus::Connection) -> zbus::Result<String> {
+        let id = zbus::fdo::DBusProxy::new(connection)
+            .await?
+            .get_id()
+            .await?;
+        Ok(id.to_string())
     }
 
     /// How a call on a thread of its own ended.
@@ -191,7 +213,14 @@ mod tests {
     /// set by CI, asserts that the build is the one the line meant to test.
     #[test]
     fn a_portal_call_works_in_either_zbus_mode() {
+        let expected = std::env::var("RINCH_1526_ZBUS_MODE").ok();
         let Some(bus) = PrivateBus::start() else {
+            // CI names the mode it means to test; there a skip would pass
+            // without testing anything.
+            assert!(
+                expected.is_none(),
+                "RINCH_1526_ZBUS_MODE is set but there is no dbus-daemon"
+            );
             return;
         };
         let address = bus.address.clone();
@@ -201,19 +230,20 @@ mod tests {
             Ended::Answered(Err(e)) => panic!("the control call failed on the private bus: {e}"),
         };
         eprintln!("zbus in {mode} mode in this build");
-        if let Ok(expected) = std::env::var("RINCH_1526_ZBUS_MODE") {
+        if let Some(expected) = expected {
             assert_eq!(mode, expected, "this build's zbus mode");
         }
 
         let dialog = |address: String| match on_a_thread(move || {
-            run(|| portal_shaped_call(&address))
+            run(|| cached_connection_call(&address))
         }) {
             Ended::Answered(answer) => answer.expect("the call inside the portal runtime"),
             Ended::Panicked => panic!("a dialog's zbus call panicked inside the portal runtime"),
         };
         let first = dialog(bus.address.clone());
         assert!(!first.is_empty(), "the bus answered with an id");
-        // A second dialog, on the runtime the first one started.
+        // A second dialog, on the connection the first one made: it answers
+        // only while the runtime that connection's tasks run on is alive.
         assert_eq!(dialog(bus.address.clone()), first, "the same bus");
     }
 }
