@@ -50,7 +50,7 @@ pub(crate) fn write(arena: &Arena, capacity: usize) -> String {
     write_children(arena, 0, capacity)
 }
 
-/// What is inside `root` (a node of `arena`), written as [`write`] writes a
+/// What is inside `root` (a node of `arena`), written as [`write()`] writes a
 /// document; empty if it cannot be written.
 pub(crate) fn write_children(arena: &Arena, root: Id, capacity: usize) -> String {
     let mut out = Vec::with_capacity(capacity);
