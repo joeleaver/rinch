@@ -3,6 +3,7 @@
 //! line of pasted markup ends is `html_lines` (#3096).
 
 use super::html::{DataAttrSource, HtmlParser};
+use super::html_line_end_space::trim_line_end_space;
 use super::html_lines::{LineEnd, PasteEnd, take_interchange_newline};
 use super::html_sources::drop_source_default_colours;
 use super::html_tree::HtmlFragmentParser;
@@ -93,6 +94,13 @@ fn read_slice(
     } else {
         LineEnd::Open
     };
+    // Pretty-printed markup's whitespace after a line's last `<br>` is not
+    // content at that line's end (`<p>a<br>\n</p>` is `<p>a<br></p>`).
+    trim_line_end_space(
+        &mut forest,
+        &|tag| parser.is_block_tag(tag),
+        line_end == LineEnd::Closed,
+    );
     let blocks = parser.parse_fragment(&forest, line_end)?;
     if blocks.is_empty() {
         return Ok(Slice::empty());

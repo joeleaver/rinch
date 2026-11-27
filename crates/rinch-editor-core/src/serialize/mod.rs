@@ -16,6 +16,7 @@ pub mod doc_json;
 pub mod html;
 mod html_entities;
 mod html_integer;
+mod html_line_end_space;
 mod html_lines;
 mod html_slice;
 mod html_sources;

@@ -394,6 +394,26 @@ are dropped at parse time. The document can only ever hold structure the schema
 allows, and it holds all of the text: see
 [What the HTML reader keeps](#what-the-html-reader-keeps).
 
+> **Compatibility: a block's last `<br>` is not a line (since #3096).** The
+> reader reads HTML as a browser draws it, and a browser draws no line for the
+> `<br>` that ends a block: `<p>a<br></p>` loads as the paragraph `a`, and
+> `<p>a<br><br></p>` as `a` and one hard break. Whitespace after that `<br>`
+> changes nothing (`<p>a<br>\n</p>` is `a` too) unless the block's
+> `white-space` keeps it. rinch writes a paragraph that ends in a hard break
+> as `<p>a<br><br></p>`, so HTML that rinch writes now reads back whole.
+> **HTML written by an earlier rinch** wrote that paragraph as `<p>a<br></p>`,
+> and now loads one hard break short: the line after it is gone. This affects
+> what is read from HTML: `load_html`, `slice_from_html`, the `content:` prop,
+> the HTML `<table>` blocks in Markdown that rinch wrote (`doc_from_markdown`),
+> and `html_is_only_images`, which decides whether a paste goes to
+> `on_image_input` (`<p><img src="…"><br></p>` now counts as pictures alone,
+> as a browser shows it). A document stored as `DocNode` (serde), collaboration
+> through yrs, and the web backend's DOM are not affected. If you keep
+> documents as HTML written by an earlier rinch and a trailing hard break
+> matters to them, convert them before the upgrade (load each with the earlier
+> version and save it as `DocNode`, or re-save its HTML with the current
+> writer).
+
 ### Your own plugins and inline decorations
 
 `add_plugin(Rc<dyn Plugin>) -> bool` installs a plugin of your own — a

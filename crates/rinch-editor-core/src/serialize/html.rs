@@ -31,6 +31,7 @@ use super::html_integer::{
     HtmlDimension, parse_html_clamped_non_negative_integer, parse_html_dimension,
     parse_html_integer,
 };
+use super::html_line_end_space::needs_line_end_placeholder;
 pub use super::html_lines::PasteEnd;
 use super::html_lines::{LineEnd, drop_line_end_break};
 pub use super::html_slice::{
@@ -198,13 +199,7 @@ fn write_node(node: &Node, out: &mut String, mode: Mode) {
     // so too, #3096), so a textblock that ends in a hard break gets one more
     // `<br>` for the line after it, as a browser's own editor writes it:
     // `<p>a<br><br></p>` is `a` and an empty line, in rinch and anywhere.
-    if node.is_textblock()
-        && node
-            .content()
-            .children()
-            .last()
-            .is_some_and(|c| c.type_name() == "hard_break")
-    {
+    if needs_line_end_placeholder(node) {
         out.push_str("<br>");
     }
     out.push_str(&close);
@@ -862,7 +857,7 @@ impl<'a> HtmlParser<'a> {
 
     /// Whether `tag` is a block: one of the schema's, or an HTML element that
     /// is a line (or more) of its own.
-    fn is_block_tag(&self, tag: &str) -> bool {
+    pub(super) fn is_block_tag(&self, tag: &str) -> bool {
         self.block.contains_key(tag) || is_block_level(tag)
     }
 
@@ -2598,7 +2593,7 @@ pub(crate) fn dropped_table_attr(html: &str, schema: &Schema) -> Option<DroppedA
             }
         })
     }
-    let mut parser = HtmlFragmentParser::new(html);
+    let mut parser = super::html_tree::HtmlFragmentParser::new(html);
     parser.all_attributes = true;
     walk(&parser.parse(), false, img_data_attrs, schema)
 }

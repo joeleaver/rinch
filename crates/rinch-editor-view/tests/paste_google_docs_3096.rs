@@ -165,3 +165,43 @@ fn a_docs_copy_ending_in_an_interchange_newline_into_a_line() {
         "<p>xfirst</p><p></p><p>second</p><p><br><br></p><p>third</p><p>y</p>"
     );
 }
+
+/// Pretty-printed markup pastes, and loads, as the same markup without the
+/// whitespace (#3096 review): whitespace after a block's last `<br>`
+/// collapses, so that `<br>` is still the placeholder. Chrome (`insertHTML`
+/// at the end of `x`) gives `<p>alpha<br>\n</p>` the lines of
+/// `<p>alpha<br></p>`, and `<p>alpha<br>\n</p>\n<p>beta<br>\n</p>` those of
+/// `<p>alpha<br></p><p>beta<br></p>`.
+#[test]
+fn pretty_printed_markup_pastes_as_the_compact_markup() {
+    for (pretty, compact) in [
+        ("<p>alpha<br>\n</p>", "<p>alpha<br></p>"),
+        (
+            "<p>alpha<br>\n</p>\n<p>beta<br>\n</p>\n",
+            "<p>alpha<br></p><p>beta<br></p>",
+        ),
+        (
+            "<div>\n  <p>\n    alpha<br>\n  </p>\n  <ul>\n    <li>beta<br>\n    </li>\n  </ul>\n</div>\n",
+            "<div><p>\n    alpha<br></p><ul><li>beta<br></li></ul></div>",
+        ),
+    ] {
+        for (target, at) in [("<p>x</p>", 2), ("<p></p>", 1), ("<p>xy</p>", 2)] {
+            assert_eq!(
+                node_to_html(&paste_html(target, at, pretty)),
+                node_to_html(&paste_html(target, at, compact)),
+                "{pretty:?} into {target} at {at}"
+            );
+        }
+        let (a, b) = (create_editor(), create_editor());
+        a.load_html(pretty);
+        b.load_html(compact);
+        assert_eq!(
+            node_to_html(&a.doc()),
+            node_to_html(&b.doc()),
+            "{pretty:?} loaded"
+        );
+    }
+    let doc = paste_html("<p></p>", 1, "<p>alpha<br>\n</p>\n<p>beta<br>\n</p>\n");
+    assert_eq!(node_to_html(&doc), "<p>alpha</p><p>beta</p>");
+    assert_eq!(lines(&doc), 2);
+}
