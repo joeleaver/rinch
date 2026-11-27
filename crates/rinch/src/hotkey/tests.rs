@@ -146,10 +146,9 @@ fn backend_choice_on_linux() {
 
 /// `global-hotkeys` adds no package to `Cargo.lock`: every crate its backends
 /// use directly is already a dependency of some *other* package in the lock
-/// (zbus through ksni, accesskit_unix and rfd's portal; tokio through
-/// rinch-screen-capture's ashpd and the workspace's other users;
-/// futures-lite through zbus; x11rb through winit and softbuffer;
-/// windows-sys 0.59 through winit and muda). Measured with `cargo tree
+/// (zbus through ksni, accesskit_unix and rfd's portal; tokio through ksni
+/// and ashpd; futures-lite through zbus; x11rb through winit and
+/// softbuffer; windows-sys 0.59 through winit and muda). Measured with `cargo tree
 /// -e normal`: on Windows and macOS the feature adds tokio and tokio-macros
 /// to the tree; on Linux the zbus stack and tokio, two crates more than
 /// `file-dialogs` alone. If this fails, a backend started depending on a

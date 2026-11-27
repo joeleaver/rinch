@@ -980,6 +980,11 @@ Native file dialogs for opening, saving, and folder selection, and message
 dialogs (alert, confirm). In the browser only the message dialogs exist — see
 [Message Dialogs](#message-dialogs).
 
+On Linux the dialogs go through the XDG desktop portal over D-Bus (zbus), and
+each one runs inside a tokio runtime that rinch keeps for them, so they work
+whatever else in your app uses zbus or tokio (#1526). The feature builds tokio
+natively for that.
+
 ### Opening Files
 
 ```rust
@@ -1798,7 +1803,7 @@ The portal files shortcuts under an **app id**, and it accepts only an app id th
 
 In an X11 session (no `WAYLAND_DISPLAY`) rinch uses X11. `RINCH_HOTKEY_BACKEND=x11` or `=portal` overrides the choice; X11 in a Wayland session sees only keys typed into XWayland windows.
 
-The feature adds no crate to `Cargo.lock`. On Windows and macOS it adds tokio to the build (two crates; only the Linux portal uses it). On Linux it builds the D-Bus stack (zbus) and tokio, which the portal thread runs in; with `file-dialogs` already on, that is two more crates (tokio and its macros).
+The feature adds no crate to `Cargo.lock`. On Windows and macOS it adds tokio to the build (two crates; only the Linux portal uses it). On Linux it builds the D-Bus stack (zbus) and tokio, which the portal thread runs in; with `file-dialogs` already on it adds no more, since that feature builds tokio too (#1526).
 
 ---
 

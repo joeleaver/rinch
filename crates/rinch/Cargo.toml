@@ -48,7 +48,6 @@ rinch-renderer = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 muda = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
 futures-util = { version = "0.3", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
@@ -194,6 +193,11 @@ futures-lite = { version = "2", optional = true }
 # path (#1773).
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 rfd = { workspace = true, optional = true }
+# The GPU renderer, the notification and hotkey backends, and the runtime rfd's
+# portal dialogs run inside (`dialogs::portal_runtime`, #1526). Native only:
+# the workspace's tokio has `rt-multi-thread`, which tokio refuses on wasm, and
+# nothing in the browser build uses it, so `file-dialogs` still builds there.
+tokio = { workspace = true, optional = true }
 
 # The browser: `wasm32-unknown-unknown`, not every `wasm32`. A WASI guest
 # (`wasm32-wasip1`) that embeds rinch's components runs inside a host that is
@@ -258,6 +262,11 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # #2773) opens libfontconfig at run time to read the settings the way rinch
 # did before, from a configuration of its own. Already in Cargo.lock.
 libloading = "0.8"
+# Test-only: `dialogs::portal_runtime`'s live test makes the zbus call rfd's
+# portal backend makes, blocked on with pollster as rfd does (#1526). Both are
+# already in Cargo.lock.
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+pollster = "0.4"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -409,7 +418,9 @@ embed = [
     # ICC-tagged pictures converted to sRGB at decode (#2779).
     "rinch-dom/color-management",
 ]
-file-dialogs = ["rfd"]
+# On Linux and the BSDs rfd's dialogs run inside a tokio runtime of rinch's own,
+# so they work whichever mode zbus is in (#1526, `dialogs::portal_runtime`).
+file-dialogs = ["rfd", "dep:tokio", "tokio/rt-multi-thread"]
 clipboard = ["dep:rinch-clipboard"]
 # The tray's menus are muda's, so the tray brings the native menus with it.
 system-tray = ["native-menus", "tray-icon", "gtk", "ksni"]

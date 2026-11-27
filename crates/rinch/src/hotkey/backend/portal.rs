@@ -28,8 +28,7 @@
 //! runs in tokio mode, where it spawns its tasks with `tokio::spawn`. So this
 //! thread asks zbus for `async-io` and still runs everything inside a
 //! current-thread tokio runtime: right in either mode, whatever else in the
-//! app unifies in (rinch's own features keep zbus in async-io mode, #1526, but
-//! an app's other dependencies may turn tokio mode on).
+//! app (the `system-tray` feature's `ksni` turns tokio mode on) unifies in.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};

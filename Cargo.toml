@@ -150,18 +150,7 @@ muda = "0.15"
 
 # System tray
 tray-icon = "0.19"
-# On ksni's own `async-io` executor, never `tokio` (#1526). zbus is one crate per
-# build, so ksni's `tokio` feature turned on `zbus/tokio` for every crate that
-# shares it, and zbus in tokio mode spawns its tasks with `tokio::spawn`: rfd's
-# portal dialogs (`file-dialogs`), which block on the caller's thread outside
-# any runtime, then panicked with "there is no reactor running" in every app
-# with a tray. `async-io` keeps zbus on its own executor, which runs anywhere,
-# inside a tokio runtime or not. 0.3.5 is the first with the async-io
-# executor's lifetime handling (no thread left behind when every tray stops)
-# and a compile error if ksni's own `tokio` feature is turned on beside it.
-# Another crate can still turn on `zbus/tokio` directly, with no compile
-# error: CI's "zbus stays out of tokio mode" step catches that.
-ksni = { version = "0.3.5", default-features = false, features = ["blocking", "async-io"] }
+ksni = { version = "0.3", default-features = false, features = ["blocking", "tokio"] }
 
 # File dialogs
 rfd = "0.15"

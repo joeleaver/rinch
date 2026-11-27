@@ -10,8 +10,7 @@
 //! **Why a current-thread tokio runtime** (the reasoning #1521's portal
 //! backend gives): `zbus` runs its internal tasks on its own executor in
 //! `async-io` mode and on `tokio::spawn` in tokio mode, and another crate in
-//! the app can switch it to tokio mode (rinch's own features keep it in
-//! async-io mode since #1526; an app's other dependencies may not).
+//! the app (the `system-tray` feature's `ksni`) can switch it to tokio mode.
 //! Running everything inside a tokio runtime is right in both.
 
 use std::collections::HashMap;
