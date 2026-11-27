@@ -44,6 +44,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 | `common-issues.md` | a rendering surprise: inline-level flex/grid, UA stylesheet defaults (headings, lists, `<hr>`, form controls, `<select>`), CSS tables, unsupported selectors, sizing keywords, empty blocks |
 | `rtc.md` | `rinch-rtc` (WebRTC data channels): the native webrtc-rs worker, the web backend, the main-thread registry rules, exit handling, the str0m interop tests |
 | `spellcheck.md` | `rinch-spell` (#2862): the `SpellChecker` trait, the spellbook Hunspell backend, dictionary loading and system discovery, word segmentation and skip rules, the personal dictionary and session ignores |
+| `html-cleaning.md` | `rinch-html`'s `clean` pipeline, `Policy::allow`/`AllowList`, carried attributes and why they are renamed after ammonia, `<pre>` newlines through re-serializing |
 | `ci.md` | GitHub Actions workflows, which checks a PR gets, batched merges and the batch procedure, a red batch, the `test` shards, retargets |
 
 User-facing guides are in `docs/src/guide/`, architecture write-ups in `docs/src/architecture/`, design records in `docs/design/`. The rsx usage rules every UI change needs are in `.claude/rules/rinch-best-practices.md` (loaded automatically).

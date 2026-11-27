@@ -21,7 +21,7 @@ use std::cell::{Ref, RefCell};
 use html5ever::serialize::{Serialize, SerializeOpts, Serializer, TraversalScope};
 use html5ever::tendril::{StrTendril, TendrilSink};
 use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
-use html5ever::{Attribute, QualName, parse_document};
+use html5ever::{Attribute, QualName, ns, parse_document};
 
 /// The deepest nesting kept, in elements below the document.
 pub const MAX_DEPTH: usize = 512;
@@ -47,15 +47,27 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
 /// (`<html><head>…<body>…`), leaving out what is nested deeper than
 /// [`MAX_DEPTH`]; empty if it cannot be written.
 pub(crate) fn write(arena: &Arena, capacity: usize) -> String {
+    write_children(arena, 0, capacity)
+}
+
+/// What is inside `root` (a node of `arena`), written as [`write`] writes a
+/// document; empty if it cannot be written.
+pub(crate) fn write_children(arena: &Arena, root: Id, capacity: usize) -> String {
     let mut out = Vec::with_capacity(capacity);
     let opts = SerializeOpts {
         traversal_scope: TraversalScope::ChildrenOnly(None),
         ..Default::default()
     };
-    if html5ever::serialize(&mut out, arena, opts).is_err() {
+    if html5ever::serialize(&mut out, &Children { arena, root }, opts).is_err() {
         return String::new();
     }
     String::from_utf8(out).unwrap_or_default()
+}
+
+/// The children of one node of an arena, to serialize.
+struct Children<'a> {
+    arena: &'a Arena,
+    root: Id,
 }
 
 pub(crate) type Id = usize;
@@ -276,16 +288,16 @@ impl TreeSink for Arena {
     }
 }
 
-impl Serialize for Arena {
-    /// The document's children, leaving out each element deeper than
-    /// [`MAX_DEPTH`] (and what is in it).
+impl Serialize for Children<'_> {
+    /// The root's children, leaving out each element deeper than
+    /// [`MAX_DEPTH`] below it (and what is in it).
     fn serialize<S: Serializer>(&self, s: &mut S, _scope: TraversalScope) -> std::io::Result<()> {
         enum Step {
             Open(Id, usize),
             Close(Id),
         }
-        let nodes = self.nodes.borrow();
-        let mut stack: Vec<Step> = nodes[0]
+        let nodes = self.arena.nodes.borrow();
+        let mut stack: Vec<Step> = nodes[self.root]
             .children
             .iter()
             .rev()
@@ -313,6 +325,17 @@ impl Serialize for Arena {
                         )?;
                         stack.push(Step::Close(id));
                         let inside = contents.map_or(&nodes[id].children, |c| &nodes[c].children);
+                        if drops_a_leading_newline(name)
+                            && inside.first().is_some_and(
+                                |&c| matches!(&nodes[c].kind, Kind::Text(t) if t.starts_with('\n')),
+                            )
+                        {
+                            // The parser drops a newline straight after
+                            // `<pre>`, so a text that starts with one is
+                            // written with another in front, or every
+                            // parse would lose one.
+                            s.write_text("\n")?;
+                        }
                         stack.extend(inside.iter().rev().map(|&c| Step::Open(c, depth + 1)));
                     }
                     Kind::Text(t) => s.write_text(t)?,
@@ -327,9 +350,15 @@ impl Serialize for Arena {
     }
 }
 
+/// Whether the parser drops a newline straight after this element's start
+/// tag (HTML's `pre`, `textarea` and `listing`).
+fn drops_a_leading_newline(name: &QualName) -> bool {
+    name.ns == ns!(html) && matches!(&*name.local, "pre" | "textarea" | "listing")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Arena, MAX_DEPTH, cap};
+    use super::{Arena, MAX_DEPTH, cap, parse_document};
     use html5ever::tendril::TendrilSink;
 
     #[test]
@@ -378,5 +407,20 @@ mod tests {
                 html5ever::parse_document(Arena::default(), Default::default()).one(out.as_ref());
             assert!(arena.depth() <= MAX_DEPTH + 1, "{unit}: {}", arena.depth());
         }
+    }
+
+    #[test]
+    fn a_preformatted_texts_leading_newline_survives_a_write() {
+        let doc = "<pre>\n\nx</pre><textarea>\ny</textarea><listing>\n\nz</listing>";
+        let once = super::write(
+            &parse_document(Arena::default(), Default::default()).one(doc),
+            0,
+        );
+        let twice = super::write(
+            &parse_document(Arena::default(), Default::default()).one(&*once),
+            0,
+        );
+        assert_eq!(once, twice);
+        assert!(once.contains("<pre>\n\nx</pre>"), "{once}");
     }
 }

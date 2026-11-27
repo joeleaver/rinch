@@ -199,6 +199,51 @@ the nearest `<a href>` the click went through on its way to the handler that
 runs, on desktop and on the web. A handler on a container whose content you
 set with `set_inner_html` can use it directly.
 
+## A narrower allow-list for a fixed format
+
+Some documents come in a format that names what they may contain, such as a
+protocol's message bodies ("only `p`, `a`, `img`…, only `href` on `a`").
+`Policy::allow` takes an `AllowList` for them:
+
+```rust
+use rinch::html::{AllowList, Policy};
+
+let policy = Policy {
+    allow: Some(
+        AllowList::new()
+            .tags(["p", "br", "a", "img", "blockquote"])
+            .attribute("a", "href")
+            .attribute("img", "alt")
+            .remove_with_content("iframe")
+            .remove_with_content("noscript")
+            .carry("img", "data-attachment"),
+    ),
+    ..Policy::default()
+};
+```
+
+- **It only narrows.** An element or attribute is kept only when rinch's own
+  list keeps it *and* yours names it. Naming `script`, `form`, `onclick` or
+  a `data-*` attribute rinch's DOM reads (`data-rid`, `data-oninput`…) keeps
+  nothing, so your list can't make the view less safe. A kept `href`, `src`
+  or `style` still goes through `link_schemes`, `picture` and the style
+  filter. `attribute("*", name)` keeps `name` wherever rinch keeps it.
+- **Removal with content.** By default an element left out is unwrapped, and
+  its text stays. `remove_with_content` removes the element and everything
+  inside it, which is right for fallback content such as `noscript` or
+  `iframe` text. `script`, `style` and `title` are always removed that way.
+  It holds inside tables and SVG/MathML too.
+- **Carrying an attribute.** Your format may give a meaning to an attribute
+  that rinch's DOM must never see as itself (`<img data-attachment="att_2">`).
+  `carry(element, attribute)` brings it through renamed, as
+  `CARRIED` + its name (`data-rinch-carried-data-attachment`). Your code
+  reads it back from `Cleaned::html` and acts on it, for example to replace
+  the picture. A document can't forge one: any attribute it writes under a
+  carried name is removed. An attribute the cleaner writes itself (`rel` on
+  links) can't be carried, and is skipped.
+- **No body style.** With a list, `Cleaned::body_style` is empty: the
+  document's `<body>` styles are not part of any fixed format.
+
 ## Widths and `@media`
 
 HTML email lays itself out for a phone with `@media (max-width: 600px)`
