@@ -39,18 +39,35 @@ pub const CARRIED: &str = "data-rinch-carried-";
 
 /// The elements and attributes a document may keep, beyond which nothing
 /// rinch's own list keeps survives.
+///
+/// Built with [`AllowList::new`] and its methods, so that a later rinch can
+/// add to it:
+///
+/// ```
+/// use rinch_html::AllowList;
+///
+/// let allow = AllowList::new()
+///     .tags(["p", "a", "img"])
+///     .attribute("a", "href")
+///     .attribute("img", "alt")
+///     .remove_with_content("iframe")
+///     .carry("img", "data-attachment");
+/// assert_eq!(allow.tags, ["p", "a", "img"]);
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AllowList {
     /// Elements kept (lower-case names). Any other element is removed and
     /// what is inside it kept, unless [`removed_with_content`] names it.
     ///
     /// [`removed_with_content`]: AllowList::removed_with_content
     pub tags: Vec<String>,
-    /// Attributes kept, as `(element, attribute)`; `"*"` for the element
-    /// keeps the attribute on every kept element. Every other attribute is
-    /// removed. A kept `href` or `src`, and a kept `style`, still go through
-    /// the [`Policy`](crate::Policy)'s link and picture rules and rinch's
-    /// style filter.
+    /// Attributes kept, as `(element, attribute)`. `"*"` for the element
+    /// keeps the attribute on every kept element that rinch's own list keeps
+    /// it on (so `("*", "href")` keeps `href` on `a` and nowhere else). Every
+    /// other attribute is removed. A kept `href` or `src`, and a kept
+    /// `style`, still go through the [`Policy`](crate::Policy)'s link and
+    /// picture rules and rinch's style filter.
     pub attributes: Vec<(String, String)>,
     /// Elements removed together with everything inside them. `script`,
     /// `style` and `title` always are.
@@ -59,14 +76,58 @@ pub struct AllowList {
     /// for the element meaning every kept element (see the module docs): on
     /// a kept element, `attribute` comes out as [`CARRIED`]`attribute`, its
     /// value as the document wrote it (escaped as every value is). It is
-    /// never kept as itself.
+    /// never kept as itself, even where [`attributes`] names it too.
+    ///
+    /// An attribute the cleaner writes itself cannot be carried, and is
+    /// left out of this list as if not named: `rel`, which rinch sets on
+    /// every link. So is a name under the [`CARRIED`] prefix.
+    ///
+    /// [`attributes`]: AllowList::attributes
     pub carried: Vec<(String, String)>,
 }
 
 /// What rinch removes with its content whatever the app says.
 const ALWAYS_REMOVED: &[&str] = &["script", "style", "title"];
 
+/// Attributes the cleaner writes itself, which a document's value must not
+/// stand in for: `rel` on links (`clean.rs` sets `link_rel`).
+const WRITTEN_BY_THE_CLEANER: &[&str] = &["rel"];
+
 impl AllowList {
+    /// An empty list: no elements, no attributes. Each method adds to it.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Keep these elements (lower-case names).
+    pub fn tags<I, S>(mut self, tags: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.tags.extend(tags.into_iter().map(Into::into));
+        self
+    }
+
+    /// Keep `attribute` on `element` (`"*"`: wherever rinch keeps it).
+    pub fn attribute(mut self, element: impl Into<String>, attribute: impl Into<String>) -> Self {
+        self.attributes.push((element.into(), attribute.into()));
+        self
+    }
+
+    /// Remove `element` together with everything inside it.
+    pub fn remove_with_content(mut self, element: impl Into<String>) -> Self {
+        self.removed_with_content.push(element.into());
+        self
+    }
+
+    /// Carry `attribute` on `element` (`"*"`: on every kept element) through
+    /// renamed ([`AllowList::carried`]).
+    pub fn carry(mut self, element: impl Into<String>, attribute: impl Into<String>) -> Self {
+        self.carried.push((element.into(), attribute.into()));
+        self
+    }
+
     /// Narrow `builder`, set up with rinch's own list, to this one. `marks`
     /// are attributes rinch adds itself (the user sheet's), kept on every
     /// element.
@@ -100,6 +161,10 @@ impl AllowList {
             if tag == "*" {
                 if rinch_generic.contains(attribute) {
                     generic.insert(attribute);
+                } else {
+                    for &kept in tags.iter().filter(|&&t| rinch_keeps(t, attribute)) {
+                        per_tag.entry(kept).or_default().insert(attribute);
+                    }
                 }
             } else if tags.contains(tag) && rinch_keeps(tag, attribute) {
                 per_tag.entry(tag).or_default().insert(attribute);
@@ -123,13 +188,15 @@ impl AllowList {
     }
 
     /// The carried attributes, as `(element, attribute)`, leaving out any
-    /// named under the carried prefix itself (a name the cleaning must always
-    /// remove).
+    /// the cleaner writes itself and any named under the carried prefix (a
+    /// name the cleaning must always remove).
     fn carried_attributes(&self) -> impl Iterator<Item = (&str, &str)> {
         self.carried
             .iter()
             .map(|(tag, attribute)| (tag.as_str(), attribute.as_str()))
-            .filter(|(_, attribute)| !attribute.starts_with(CARRIED))
+            .filter(|(_, attribute)| {
+                !attribute.starts_with(CARRIED) && !WRITTEN_BY_THE_CLEANER.contains(attribute)
+            })
     }
 }
 

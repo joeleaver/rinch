@@ -5,20 +5,15 @@ use std::sync::Arc;
 
 use rinch_html::{AllowList, CARRIED, Cleaned, Policy, USER_MARK, clean};
 
-fn strings(names: &[&str]) -> Vec<String> {
-    names.iter().map(|s| (*s).to_owned()).collect()
-}
-
 fn list(tags: &[&str], attributes: &[(&str, &str)], removed: &[&str]) -> AllowList {
-    AllowList {
-        tags: strings(tags),
-        attributes: attributes
-            .iter()
-            .map(|(t, a)| ((*t).to_owned(), (*a).to_owned()))
-            .collect(),
-        removed_with_content: strings(removed),
-        carried: Vec::new(),
+    let mut allow = AllowList::new().tags(tags.iter().copied());
+    for (tag, attribute) in attributes {
+        allow = allow.attribute(*tag, *attribute);
     }
+    for tag in removed {
+        allow = allow.remove_with_content(*tag);
+    }
+    allow
 }
 
 fn narrowed(doc: &str, allow: AllowList) -> Cleaned {
@@ -239,4 +234,79 @@ fn a_document_that_parses_differently_twice_cannot_forge_a_carried_value() {
     let html = out.html;
     assert_eq!(html.matches(&name).count(), 1, "{html}");
     assert!(html.contains(&format!(r#"{name}="real""#)), "{html}");
+}
+
+#[test]
+fn an_attribute_the_cleaner_writes_itself_is_not_carried() {
+    // rinch sets `rel` on every link; carrying it would let a document's
+    // value stand in for rinch's (and ammonia refuses to be asked to keep it).
+    let allow = list(&["p", "a"], &[("a", "href")], &[])
+        .carry("a", "rel")
+        .carry("*", "rel");
+    let out = narrowed(
+        r#"<p><a href="https://e.example" rel="opener">l</a></p>"#,
+        allow,
+    );
+    assert!(
+        out.html.contains(r#"rel="noopener noreferrer""#),
+        "{}",
+        out.html
+    );
+    assert!(
+        !out.html.contains(CARRIED) && !out.html.contains("opener\""),
+        "{}",
+        out.html
+    );
+}
+
+#[test]
+fn an_attribute_for_every_element_is_kept_wherever_rinch_keeps_it() {
+    let allow = list(&["p", "a", "img"], &[("*", "href"), ("*", "alt")], &[]);
+    let out = narrowed(
+        r#"<p href="x" alt="p"><a href="https://e.example" alt="a">l</a><img alt="i"></p>"#,
+        allow,
+    );
+    let html = out.html;
+    assert!(html.contains(r#"href="https://e.example""#), "{html}");
+    assert!(html.contains(r#"alt="i""#), "{html}");
+    assert!(
+        !html.contains(r#"href="x""#) && !html.contains(r#"alt="p""#),
+        "{html}"
+    );
+}
+
+#[test]
+fn carrying_does_not_cost_a_preformatted_text_its_leading_newline() {
+    let doc = "<pre>\n\nfirst\n</pre><textarea>\n\nsecond</textarea><img data-attachment=a>";
+    let plain = narrowed(doc, list(&["pre", "img"], &[], &[]));
+    let carrying = narrowed(
+        doc,
+        list(&["pre", "img"], &[], &[]).carry("img", "data-attachment"),
+    );
+    assert_eq!(
+        carrying
+            .html
+            .replace(&format!(r#" {CARRIED}data-attachment="a""#), ""),
+        plain.html
+    );
+}
+
+#[test]
+fn removed_with_content_inside_a_table_and_in_foreign_content() {
+    let allow = list(
+        &["table", "tbody", "tr", "td", "p"],
+        &[],
+        &["iframe", "noscript"],
+    );
+    let out = narrowed(
+        "<table><noscript>one</noscript><tr><td><iframe>two</iframe>kept</td></tr></table>\
+         <svg><noscript>three</noscript><foreignObject><iframe>four</iframe></foreignObject></svg>\
+         <math><mtext><iframe>five</iframe><noscript>six</noscript></mtext></math><p>end</p>",
+        allow,
+    );
+    let html = out.html;
+    for hidden in ["one", "two", "three", "four", "five", "six"] {
+        assert!(!html.contains(hidden), "{hidden}: {html}");
+    }
+    assert!(html.contains("kept") && html.contains("end"), "{html}");
 }

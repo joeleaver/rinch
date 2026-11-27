@@ -21,7 +21,7 @@ use std::cell::{Ref, RefCell};
 use html5ever::serialize::{Serialize, SerializeOpts, Serializer, TraversalScope};
 use html5ever::tendril::{StrTendril, TendrilSink};
 use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
-use html5ever::{Attribute, QualName, parse_document};
+use html5ever::{Attribute, QualName, ns, parse_document};
 
 /// The deepest nesting kept, in elements below the document.
 pub const MAX_DEPTH: usize = 512;
@@ -325,6 +325,17 @@ impl Serialize for Children<'_> {
                         )?;
                         stack.push(Step::Close(id));
                         let inside = contents.map_or(&nodes[id].children, |c| &nodes[c].children);
+                        if drops_a_leading_newline(name)
+                            && inside.first().is_some_and(
+                                |&c| matches!(&nodes[c].kind, Kind::Text(t) if t.starts_with('\n')),
+                            )
+                        {
+                            // The parser drops a newline straight after
+                            // `<pre>`, so a text that starts with one is
+                            // written with another in front, or every
+                            // parse would lose one.
+                            s.write_text("\n")?;
+                        }
                         stack.extend(inside.iter().rev().map(|&c| Step::Open(c, depth + 1)));
                     }
                     Kind::Text(t) => s.write_text(t)?,
@@ -339,9 +350,15 @@ impl Serialize for Children<'_> {
     }
 }
 
+/// Whether the parser drops a newline straight after this element's start
+/// tag (HTML's `pre`, `textarea` and `listing`).
+fn drops_a_leading_newline(name: &QualName) -> bool {
+    name.ns == ns!(html) && matches!(&*name.local, "pre" | "textarea" | "listing")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Arena, MAX_DEPTH, cap};
+    use super::{Arena, MAX_DEPTH, cap, parse_document};
     use html5ever::tendril::TendrilSink;
 
     #[test]
@@ -390,5 +407,20 @@ mod tests {
                 html5ever::parse_document(Arena::default(), Default::default()).one(out.as_ref());
             assert!(arena.depth() <= MAX_DEPTH + 1, "{unit}: {}", arena.depth());
         }
+    }
+
+    #[test]
+    fn a_preformatted_texts_leading_newline_survives_a_write() {
+        let doc = "<pre>\n\nx</pre><textarea>\ny</textarea><listing>\n\nz</listing>";
+        let once = super::write(
+            &parse_document(Arena::default(), Default::default()).one(doc),
+            0,
+        );
+        let twice = super::write(
+            &parse_document(Arena::default(), Default::default()).one(&*once),
+            0,
+        );
+        assert_eq!(once, twice);
+        assert!(once.contains("<pre>\n\nx</pre>"), "{once}");
     }
 }
