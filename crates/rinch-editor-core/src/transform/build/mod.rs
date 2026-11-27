@@ -18,7 +18,7 @@ use crate::model::{AttrValue, Attrs, Fragment, Mark, Node, NodeType};
 use crate::pos::Pos;
 use crate::schema::data_attrs::carry_app_data;
 use crate::schema::{DataAttrSplit, Schema};
-use crate::transform::data_attrs::Edit;
+use crate::transform::data_attrs::{Edit, Spot};
 use crate::transform::fit;
 use crate::transform::node_range::NodeRange;
 use crate::transform::step::{Step, StepError};

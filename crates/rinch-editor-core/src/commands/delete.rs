@@ -7,6 +7,7 @@ use crate::model::{Attrs, Node, NodeType};
 use crate::pos::{Pos, ResolvedPos};
 use crate::state::{EditorState, Transaction};
 use crate::transform::block_range_simple;
+use crate::transform::data_attrs::Spot;
 use crate::transform::steps::{ReplaceAroundStep, ReplaceStep};
 
 use super::wrapping::build_lift;
@@ -371,7 +372,7 @@ pub fn delete_char_backward() -> Command {
             // sequence it ends (#1684).
             let from = crate::motion::backspace_start(&state.doc, Pos(pos)).unwrap_or(pos - 1);
             let mut tr = state.tr();
-            tr.delete(from, pos).ok()?;
+            tr.delete_at(from, pos, Spot::within(&r, from, pos)).ok()?;
             return tr.doc_changed().then_some(tr);
         }
         // At block start: join across the nearest cut, else move into the preceding
@@ -423,7 +424,7 @@ pub fn delete_char_forward() -> Command {
             // Mid-text: delete the grapheme cluster after the cursor (#1684).
             let to = crate::motion::grapheme_step(&state.doc, Pos(pos), true).unwrap_or(pos + 1);
             let mut tr = state.tr();
-            tr.delete(pos, to).ok()?;
+            tr.delete_at(pos, to, Spot::within(&r, pos, to)).ok()?;
             return tr.doc_changed().then_some(tr);
         }
         // At block end: join across the nearest cut, else lift the next block out.

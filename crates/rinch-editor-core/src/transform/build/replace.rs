@@ -60,7 +60,7 @@ impl Transform<'_> {
             return Ok(from);
         }
         let pasted = slice.clone();
-        let ends = self.data_ends(from, to, Edit::Paste(&pasted));
+        let ends = self.data_ends(from, to, Edit::Paste(&pasted), Spot::Unknown);
         let end = self.fit_range(from, to, slice)?;
         if let Some(ends) = ends {
             self.settle_data(ends, Edit::Paste(&pasted))?;
@@ -124,7 +124,17 @@ impl Transform<'_> {
     /// and the plain replacement's error. Blocks it joins then take their
     /// app data attributes by [the rules](crate::schema::data_attrs).
     pub fn delete(&mut self, from: usize, to: usize) -> Result<&mut Self, StepError> {
-        let ends = self.data_ends(from, to, Edit::Join);
+        self.delete_at(from, to, Spot::Unknown)
+    }
+
+    /// [`delete`](Self::delete), the caller saying what it knows of the range.
+    pub(crate) fn delete_at(
+        &mut self,
+        from: usize,
+        to: usize,
+        spot: Spot<'_>,
+    ) -> Result<&mut Self, StepError> {
+        let ends = self.data_ends(from, to, Edit::Join, spot);
         self.fit_delete(from, to)?;
         if let Some(ends) = ends {
             self.settle_data(ends, Edit::Join)?;
@@ -166,7 +176,7 @@ impl Transform<'_> {
             .schema
             .text(text)
             .map_err(|e| StepError::new(e.to_string()))?;
-        self.replace_inline(from, to, Fragment::from_node(node))
+        self.replace_inline(from, to, Fragment::from_node(node), Spot::Unknown)
     }
 
     /// Replace `from..to` with inline `content` typed there: a
@@ -177,8 +187,9 @@ impl Transform<'_> {
         from: usize,
         to: usize,
         content: Fragment,
+        spot: Spot<'_>,
     ) -> Result<&mut Self, StepError> {
-        let ends = self.data_ends(from, to, Edit::Join);
+        let ends = self.data_ends(from, to, Edit::Join, spot);
         self.replace_with(from, to, content)?;
         if let Some(ends) = ends {
             self.settle_data(ends, Edit::Join)?;

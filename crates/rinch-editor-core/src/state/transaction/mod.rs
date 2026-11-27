@@ -31,6 +31,7 @@ use crate::schema::{DataAttrSplit, Schema};
 use crate::selection::Selection;
 use crate::tables::{self, TableProblem};
 use crate::transform::Transform;
+use crate::transform::data_attrs::Spot;
 use crate::transform::node_range::NodeRange;
 use crate::transform::step::{Step, StepError};
 use crate::transform::step_map::{Mapping, StepMap};
@@ -227,7 +228,17 @@ impl Transaction {
 
     /// Delete `from..to`.
     pub fn delete(&mut self, from: usize, to: usize) -> Result<&mut Self, StepError> {
-        self.with_transform(|tf| tf.delete(from, to).map(|_| ()))?;
+        self.delete_at(from, to, Spot::Unknown)
+    }
+
+    /// [`delete`](Self::delete), the caller saying what it knows of the range.
+    pub(crate) fn delete_at(
+        &mut self,
+        from: usize,
+        to: usize,
+        spot: Spot<'_>,
+    ) -> Result<&mut Self, StepError> {
+        self.with_transform(|tf| tf.delete_at(from, to, spot).map(|_| ()))?;
         Ok(self)
     }
 

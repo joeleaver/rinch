@@ -2,6 +2,8 @@
 //! tables an edit can have left ragged, and padding them to a rectangle.
 
 use super::*;
+use crate::pos::inside_one_textblock;
+use crate::transform::data_attrs::Spot;
 
 impl Transaction {
     /// Run the selection gesture `f`, which replaces `from..to`, then repair
@@ -43,17 +45,17 @@ impl Transaction {
         to: usize,
         inserts_tables: bool,
         r_from: Option<ResolvedPos>,
-        f: impl FnOnce(&mut Self) -> Result<(), StepError>,
+        f: impl FnOnce(&mut Self, Spot<'_>) -> Result<(), StepError>,
     ) -> Result<(), StepError> {
         if from == to && !inserts_tables {
-            return f(self);
+            return f(self, Spot::Unknown);
         }
         // Everything below is read off `from`'s resolved position (the
         // caller's, when it has one) without resolving `to`: a resolve walks
         // every row before the position in a table, so an edit inside one
         // cell would cost in the table's size.
         let Some(r) = r_from.or_else(|| self.doc.resolve(Pos(from)).ok()) else {
-            return f(self);
+            return f(self, Spot::Unknown);
         };
         let cell_depth = (1..=r.depth()).rev().find(|&d| tables::is_cell(r.node(d)));
         // `to` in the same innermost cell: inside its end, and not inside a
@@ -63,20 +65,29 @@ impl Transaction {
         // the cell only, so the cost is the cell's content, not the table's.
         // A range inside the textblock is inside the cell (no resolve).
         let in_block = r.parent().is_textblock() && to <= r.end(r.depth());
-        let in_from_cell = cell_depth.is_some_and(|d| {
-            in_block
-                || (to <= r.end(d)
-                    && r.node(d).resolve(Pos(to - r.start(d))).is_ok_and(|inner| {
-                        !(1..=inner.depth()).any(|k| tables::is_cell(inner.node(k)))
-                    }))
-        });
+        // `to` resolved inside that cell, when it is in it and in no cell
+        // below it: not needed for a range inside the textblock.
+        let inner = cell_depth
+            .filter(|&d| !in_block && to <= r.end(d))
+            .and_then(|d| r.node(d).resolve(Pos(to - r.start(d))).ok())
+            .filter(|inner| !(1..=inner.depth()).any(|k| tables::is_cell(inner.node(k))));
+        let in_from_cell = cell_depth.is_some() && (in_block || inner.is_some());
+        // What the edit's data attribute check would otherwise resolve again.
+        let spot = match &inner {
+            _ if in_block => Spot::OneBlock,
+            Some(inner) => Spot::Ends {
+                from: &r,
+                to: inner,
+            },
+            None => Spot::Unknown,
+        };
         // Nothing to check when the edit takes nothing out of a table's grid
         // and puts no table in: a range inside one textblock or one cell (a
         // nested table wholly inside the range goes whole; one an end is in
         // makes that end's innermost cell another), with no table inserted.
         // This is every keystroke over a range.
         if !inserts_tables && (in_block || in_from_cell) {
-            return f(self);
+            return f(self, spot);
         }
         let from_cell = cell_depth.and_then(|d| r.before(d));
         let to_cell = if in_from_cell {
@@ -90,7 +101,7 @@ impl Transaction {
         let confined = from_cell == to_cell;
         let old_doc = self.doc.clone();
         let first = self.mapping.maps().len();
-        f(self)?;
+        f(self, spot)?;
         let total = self.mapping.maps().len();
         if total == first {
             return Ok(());
@@ -469,33 +480,6 @@ pub(crate) fn repair_every_undo() -> bool {
 #[doc(hidden)]
 pub fn __set_full_repair_scan(level: u8) {
     FULL_REPAIR_SCAN.with(|f| f.set(level));
-}
-
-/// Whether `from..to` of `doc` lies inside the content of one textblock: one walk
-/// down from the top, a scan of each level's children (what a resolve scans too,
-/// without building one).
-fn inside_one_textblock(doc: &Node, from: usize, to: usize) -> bool {
-    let (mut node, mut from, mut to) = (doc, from, to);
-    loop {
-        if node.is_textblock() {
-            return true;
-        }
-        let content = node.content();
-        if from > content.size() || to > content.size() {
-            return false;
-        }
-        let (i, start) = content.find_index(from);
-        let Some(child) = content.maybe_child(i) else {
-            return false;
-        };
-        let end = start + child.node_size();
-        if !(from > start && to < end) || child.is_leaf() {
-            return false;
-        }
-        node = child;
-        from -= start + 1;
-        to -= start + 1;
-    }
 }
 
 /// Whether `content` holds a table, a row or a cell anywhere: what a replace must

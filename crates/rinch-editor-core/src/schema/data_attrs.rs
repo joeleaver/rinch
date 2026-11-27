@@ -350,12 +350,14 @@ pub fn app_data_attrs(attrs: &Attrs) -> impl Iterator<Item = (&str, &str)> {
 /// ([`app_data_attrs`]), an attribute its spec declares by such a name aside
 /// (that one is the schema's). None for a type that does not opt in.
 pub(crate) fn node_app_data(node: &Node) -> impl Iterator<Item = (&str, &str)> {
-    let spec = node.node_type().spec();
-    spec.data_attrs
-        .then(|| app_data_attrs(node.attrs()))
-        .into_iter()
-        .flatten()
-        .filter(move |(name, _)| !spec.attrs.contains_key(*name))
+    // Most blocks have no attributes at all, and an edit that joins two asks
+    // this of both: the type's spec is a lookup by name, left out for them.
+    let spec = (!node.attrs().is_empty())
+        .then(|| node.node_type().spec())
+        .filter(|spec| spec.data_attrs);
+    spec.into_iter().flat_map(|spec| {
+        app_data_attrs(node.attrs()).filter(|(name, _)| !spec.attrs.contains_key(*name))
+    })
 }
 
 /// `attrs` less every app data attribute name.
