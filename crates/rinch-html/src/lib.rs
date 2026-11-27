@@ -14,6 +14,7 @@
 //!
 //! Enabled in the `rinch` facade by its `html` feature, as `rinch::html`.
 
+mod allow;
 mod bound;
 mod clean;
 mod depth;
@@ -24,7 +25,7 @@ mod text;
 mod user_sheet;
 mod view;
 
-pub use clean::{Cleaned, PictureRule, Policy, clean, clean_at};
+pub use clean::{AllowList, CARRIED, Cleaned, PictureRule, Policy, clean, clean_at};
 pub use links::{LinkCheck, TooltipFn, Tooltips, Warning, check as check_link, default_tooltip};
 pub use media::{Queries, queries, signature};
 pub use text::{Text, text, text_on};

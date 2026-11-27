@@ -24,6 +24,10 @@
 //! - **The app's user sheet ([`Policy::user_css`]) is matched first**,
 //!   against the document as written, and its matches marked
 //!   (`user_sheet.rs`).
+//! - **An app can narrow the allow-list** ([`Policy::allow`]), for a
+//!   document whose format fixes its own (a protocol's message bodies): only
+//!   what both lists keep is kept, so naming a tag or an attribute rinch
+//!   leaves out never lets it through (`allow.rs`).
 //! - Legacy presentational attributes (`bgcolor`, `width`, `align`,
 //!   `valign`, `cellpadding`, `border`, `<font color>`…) are kept: rinch maps
 //!   them as presentational hints, as a browser does (`rinch-dom`'s
@@ -31,6 +35,8 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+
+pub use crate::allow::{AllowList, CARRIED};
 
 /// Decides a picture's source: `Some` with the source to load (the same, or
 /// rewritten, such as a `cid:` reference turned into a `data:` URL), `None`
@@ -56,6 +62,12 @@ pub struct Policy {
     /// [`HtmlView`](crate::HtmlView) gives them the rule's declarations.
     /// Empty by default: rinch knows no mail client's markup.
     pub user_css: String,
+    /// A narrower allow-list than rinch's own: `None` (the default) keeps
+    /// rinch's. With one, only the elements and attributes both lists keep
+    /// are kept, the elements it names to remove are removed with what is
+    /// inside them, and [`Cleaned::body_style`] is empty (the body's look is
+    /// not in any allow-list).
+    pub allow: Option<AllowList>,
 }
 
 impl Default for Policy {
@@ -69,6 +81,7 @@ impl Default for Policy {
             }),
             link_schemes: vec!["http".into(), "https".into(), "mailto".into()],
             user_css: String::new(),
+            allow: None,
         }
     }
 }
@@ -79,6 +92,7 @@ impl std::fmt::Debug for Policy {
             .field("picture", &"<rule>")
             .field("link_schemes", &self.link_schemes)
             .field("user_css", &self.user_css)
+            .field("allow", &self.allow)
             .finish()
     }
 }
@@ -166,7 +180,10 @@ fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
     let resolved = crate::media::resolve(&document, width);
     let inlined = inline_sheets(&resolved);
     let document = inlined.as_str();
-    let body_style = body_style(body_tag(document).unwrap_or_default(), policy);
+    let body_style = match policy.allow {
+        Some(_) => String::new(),
+        None => body_style(body_tag(document).unwrap_or_default(), policy),
+    };
 
     // ammonia checks the scheme of every URL attribute first; pictures and
     // links get their own rules below, so it lets through what either may.
@@ -202,8 +219,16 @@ fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
                 _ => Some(value.into()),
             },
         );
+    if let Some(allow) = &policy.allow {
+        allow.narrow(&mut builder, &mark);
+    }
+    let html = builder.clean(document).to_string();
+    let html = match &policy.allow {
+        Some(allow) => crate::allow::carry(&html, allow).into_owned(),
+        None => html,
+    };
     Cleaned {
-        html: builder.clean(document).to_string(),
+        html,
         body_style,
         user_selectors,
         user_matches,
