@@ -10,6 +10,10 @@
 //! and labels `ask`'s buttons OK / Cancel. The file and folder pickers are
 //! native-only: a browser picker is asynchronous and gives no path.
 //!
+//! On Linux and the BSDs every dialog runs inside a tokio runtime of rinch's
+//! own, so the portal backend works whichever mode zbus ends up in for the
+//! app's build (#1526, `portal_runtime`).
+//!
 //! # Example
 //!
 //! ```ignore
@@ -43,7 +47,11 @@
 pub use native::*;
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) mod portal_runtime;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod native {
+    use super::portal_runtime::run;
     use rfd::{FileDialog, MessageButtons, MessageDialog};
     use std::path::{Path, PathBuf};
 
@@ -95,12 +103,12 @@ mod native {
 
         /// Show the dialog and pick a single file.
         pub fn pick_file(self) -> Option<PathBuf> {
-            self.dialog.pick_file()
+            run(|| self.dialog.pick_file())
         }
 
         /// Show the dialog and pick multiple files.
         pub fn pick_files(self) -> Option<Vec<PathBuf>> {
-            self.dialog.pick_files()
+            run(|| self.dialog.pick_files())
         }
     }
 
@@ -161,7 +169,7 @@ mod native {
 
         /// Show the dialog and get the save path.
         pub fn save(self) -> Option<PathBuf> {
-            self.dialog.save_file()
+            run(|| self.dialog.save_file())
         }
     }
 
@@ -209,12 +217,12 @@ mod native {
 
         /// Show the dialog and pick a folder.
         pub fn pick(self) -> Option<PathBuf> {
-            self.dialog.pick_folder()
+            run(|| self.dialog.pick_folder())
         }
 
         /// Show the dialog and pick multiple folders.
         pub fn pick_multiple(self) -> Option<Vec<PathBuf>> {
-            self.dialog.pick_folders()
+            run(|| self.dialog.pick_folders())
         }
     }
 
@@ -268,17 +276,19 @@ mod native {
 
         /// Show an OK button only.
         pub fn show(self) {
-            self.dialog.set_buttons(MessageButtons::Ok).show();
+            run(|| self.dialog.set_buttons(MessageButtons::Ok).show());
         }
 
         /// Show OK/Cancel buttons and return whether OK was clicked.
         pub fn confirm(self) -> bool {
-            self.dialog.set_buttons(MessageButtons::OkCancel).show() == rfd::MessageDialogResult::Ok
+            run(|| self.dialog.set_buttons(MessageButtons::OkCancel).show())
+                == rfd::MessageDialogResult::Ok
         }
 
         /// Show Yes/No buttons and return whether Yes was clicked.
         pub fn ask(self) -> bool {
-            self.dialog.set_buttons(MessageButtons::YesNo).show() == rfd::MessageDialogResult::Yes
+            run(|| self.dialog.set_buttons(MessageButtons::YesNo).show())
+                == rfd::MessageDialogResult::Yes
         }
     }
 
